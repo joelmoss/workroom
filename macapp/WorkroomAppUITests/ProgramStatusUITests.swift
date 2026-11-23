@@ -34,7 +34,7 @@ final class ProgramStatusUITests: XCTestCase {
   /// children, so the label is the reliable handle.
   private func workroomGlyph(_ app: XCUIApplication) -> XCUIElement {
     app.buttons.matching(
-      NSPredicate(format: "label == %@", "2 terminals need you, may be out of date")
+      NSPredicate(format: "label == %@", "2 terminals need you")
     ).firstMatch
   }
 
@@ -47,13 +47,13 @@ final class ProgramStatusUITests: XCTestCase {
     return condition()
   }
 
-  /// Two terminals wait in the workroom, one of them on a stale host: one glyph, counted, and the
-  /// row says the count may be out of date.
+  /// Two terminals wait in the workroom, one of them on a disconnected host: one glyph, counted,
+  /// and still the hand, since the other can be answered now.
   func testTheWorkroomRowCountsItsWaitingTerminals() {
     let app = launchedApp()
     XCTAssertTrue(
       workroomGlyph(app).waitForExistence(timeout: 15),
-      "the workroom row shows the waiting glyph with its count and stale state")
+      "the workroom row shows the waiting glyph with its count, not disconnected")
   }
 
   /// The glyph button focuses the terminal that has waited longest, Terminal 2, from Terminal 1.
@@ -84,11 +84,11 @@ final class ProgramStatusUITests: XCTestCase {
     XCTAssertTrue(
       permission.label.contains(" ~") || permission.label.contains(" /"),
       "titled by program and folder: \(permission.label)")
-    XCTAssertFalse(permission.label.contains("may be out of date"), "its host is live")
+    XCTAssertFalse(permission.label.contains("disconnected"), "its host is live")
 
     let stale = chip(app, "Terminal 3")
     XCTAssertEqual(stale.value as? String, "Waiting for your answer")
-    XCTAssertTrue(stale.label.contains("may be out of date"), "got \(stale.label)")
+    XCTAssertTrue(stale.label.contains("disconnected, reconnecting"), "got \(stale.label)")
 
     XCTAssertEqual(chip(app, "Terminal 4").value as? String, "Error")
     XCTAssertEqual(chip(app, "Terminal 1").value as? String, "Busy")

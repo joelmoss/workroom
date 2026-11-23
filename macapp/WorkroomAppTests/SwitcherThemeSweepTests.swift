@@ -138,9 +138,9 @@ final class SwitcherThemeSweepTests: XCTestCase {
   /// floor on every surface they sit on — a sidebar row, the rail and an idle tab (`panel`), a
   /// selected sidebar row, a selected Changes or History row, and the active tab (`bg`).
   ///
-  /// The stale mark is a clock in `fg` on its own `panel` disk (`ProgramStatusGlyph`), so it is
-  /// measured against that disk. The plan's first choice, a hairline ring in `fgMuted`, failed this
-  /// floor on 25 bundled themes (TokyoNight Day 2.23:1, iTerm2 Solarized Light 2.09:1).
+  /// The disconnected mark (`ProgramStatusGlyph`, a stale host) is muted text walked toward `fg`
+  /// until it clears the floor on every ground it sits on: muted text alone failed it on 25 bundled
+  /// themes (TokyoNight Day 2.23:1, iTerm2 Solarized Light 2.09:1).
   ///
   /// Covers every traffic-light token, not just the two glyphs: they are the app's only status
   /// colours (usage bars, change badges, PR and CI states), and as each theme defines them 70 fell
@@ -171,9 +171,15 @@ final class SwitcherThemeSweepTests: XCTestCase {
             "\(theme.name): \(role) disappears on the \(surface)")
         }
       }
-      XCTAssertGreaterThanOrEqual(
-        ThemeTokens.contrastRatio(tokens.nsFg, tokens.nsPanel), 3 - 0.01,
-        "\(theme.name): the stale clock disappears on its disk")
+      let markGrounds = zip(
+        ["row/rail/tab", "selected sidebar row", "active tab"],
+        ThemeTokens.programStatusGrounds(
+          bg: tokens.nsBg, panel: tokens.nsPanel, fg: tokens.nsFg, accent: tokens.nsAccent))
+      for (surface, background) in markGrounds {
+        XCTAssertGreaterThanOrEqual(
+          ThemeTokens.contrastRatio(tokens.nsDisconnected, background), 3 - 0.01,
+          "\(theme.name): the disconnected mark disappears on the \(surface)")
+      }
     }
   }
 

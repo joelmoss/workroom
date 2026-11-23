@@ -260,8 +260,11 @@ struct SidebarProjectsList: View, Equatable {
         .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
       Text(row.label).font(.callout).lineLimit(1).truncationMode(.tail)
       Spacer()
-      if let run = lifecycle.creationRun(for: row.id) { CreateStepCircle(run: run) }
+      SidebarHoverTrailing {
+        if let run = lifecycle.creationRun(for: row.id) { CreateStepCircle(run: run) }
+      }
     }
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .sidebarRowFrame(ProjectSidebar.childRowInsets)
     .onTapGesture { actions.select(row.id) }
     .help(row.label)
@@ -370,7 +373,32 @@ struct SidebarHoverRegion<Content: View>: View {
     #if DEBUG
       if let id { ProjectSidebar.didRenderHover?(id, $hovered) }
     #endif
-    return content(hovered).onHover { hovered = $0 }
+    return content(hovered).sidebarRowHover($hovered)
+  }
+}
+
+extension View {
+  /// A sidebar row's hover, kept in `hovered`: set on every pointer move over it, not only on
+  /// entry, and dropped when the row itself moves. A row that slides in or out under a still
+  /// pointer (another row expanding or collapsing) is told the pointer entered and never that it
+  /// left, so it lets go as it moves, and takes the hover back on the pointer's next move if it is
+  /// under it. A row that stays put, such as the one just clicked to expand, keeps its hover.
+  func sidebarRowHover(_ hovered: Binding<Bool>) -> some View {
+    onContinuousHover { phase in
+      switch phase {
+      case .active: if !hovered.wrappedValue { hovered.wrappedValue = true }
+      case .ended: if hovered.wrappedValue { hovered.wrappedValue = false }
+      }
+    }
+    .background {
+      // Measured from behind the row rather than with `onGeometryChange` on it, which hides the
+      // List row's own background (`listRowBackground`) set inside it.
+      GeometryReader { proxy in
+        Color.clear.onChange(of: proxy.frame(in: .global)) {
+          if hovered.wrappedValue { hovered.wrappedValue = false }
+        }
+      }
+    }
   }
 }
 
@@ -604,32 +632,96 @@ struct RootLabelTint: ViewModifier {
   }
 }
 
-/// The small indeterminate spinner shown on a root/workroom row while one of its terminals is
-/// running a command (issue #28). Matches the project row's create/delete spinner so the sidebar
-/// has one progress idiom. A command that reported OSC 9;4 ERROR shows the failure mark instead, so
-/// the row reads as failed at a glance rather than as one more busy spinner.
+/// The small busy mark shown on a root, workroom or terminal row while one of its terminals is
+/// running a command (issue #28): the sidebar's one progress idiom, `ActivityDots`, as a create's
+/// and a stopping run command's rows show it too. A command that reported OSC 9;4 ERROR shows the
+/// failure mark instead, so the row reads as failed at a glance rather than as one more busy mark.
 struct RunningSpinner: View {
   var failed = false
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     if failed {
+      // The size of the program status marks beside it (`ProgramStatusGlyph`).
       Image(systemName: "exclamationmark.circle.fill")
+        .font(.system(size: 11))
         .foregroundStyle(tokens.failure)
         .help("A command reported an error")
         .accessibilityLabel("A command reported an error")
     } else {
-      ProgressView()
-        .controlSize(.small)
+      ActivityDots()
         .help("Running a command")
         .accessibilityLabel("Running a command")
     }
   }
 }
 
-/// How far a create has got (#356, #483), on its row: complete steps out of all of them, with the
-/// step it is on as its tooltip, the failed mark once it has failed, and nothing once it has
-/// succeeded, while its checklist waits for Done.
+/// The sidebar's busy mark: three small dots that light up in turn, left to right, like a typing
+/// indicator. Quieter than a system spinner, so a column of busy rows doesn't shout over their
+/// names. Its square frame is the small spinner's it replaced, so no row's layout moved. One
+/// repeating keyframe clock drives all three dots, so it keeps running when a `List` reuses its
+/// row. With Reduce Motion it holds still, as a plain ellipsis.
+struct ActivityDots: View {
+  /// The dots' colour: the secondary label colour unless a row gives its own (a stopping run).
+  var tint: Color? = nil
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// One full wave, slow enough to read as calm.
+  nonisolated static let period: Double = 1.8
+  nonisolated static let dot: CGFloat = 2.5
+  nonisolated static let gap: CGFloat = 1.5
+  nonisolated static let side: CGFloat = 16
+  /// How far behind the previous dot each one lights, as a share of the wave.
+  nonisolated static let stagger: Double = 0.125
+  nonisolated static let dim: Double = 0.25
+
+  var body: some View {
+    Group {
+      if reduceMotion {
+        dots { _ in 0.6 }
+      } else {
+        KeyframeAnimator(initialValue: 0.0, repeating: true) { phase in
+          dots { Self.opacity(phase: phase, index: $0) }
+        } keyframes: { _ in
+          LinearKeyframe(1.0, duration: Self.period)
+        }
+      }
+    }
+    .frame(width: Self.side, height: Self.side)
+    .accessibilityElement()
+    .accessibilityAddTraits(.updatesFrequently)
+  }
+
+  private func dots(_ opacity: @escaping (Int) -> Double) -> some View {
+    HStack(spacing: Self.gap) {
+      ForEach(0..<3, id: \.self) { index in
+        Circle()
+          .frame(width: Self.dot, height: Self.dot)
+          .opacity(opacity(index))
+      }
+    }
+    .foregroundStyle(tint.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+  }
+
+  /// A dot's opacity at `phase` (0–1 through the wave): it eases up to full over the first 30% of
+  /// its own turn, back down over the next 30%, and rests dim for the remainder.
+  nonisolated static func opacity(phase: Double, index: Int) -> Double {
+    var t = (phase - Double(index) * stagger).truncatingRemainder(dividingBy: 1)
+    if t < 0 { t += 1 }
+    let rise: Double
+    switch t {
+    case ..<0.3: rise = t / 0.3
+    case ..<0.6: rise = 1 - (t - 0.3) / 0.3
+    default: rise = 0
+    }
+    let eased = rise * rise * (3 - 2 * rise)
+    return dim + (1 - dim) * eased
+  }
+}
+
+/// How far a create has got (#356, #483), on its row: the sidebar's busy mark, with the step it is
+/// on as its tooltip and its complete steps out of all of them as its spoken value, the failed mark
+/// once it has failed, and nothing once it has succeeded, while its checklist waits for Done.
 struct CreateStepCircle: View {
   /// Observed here: a run's steps change without the store (read through Observation) changing.
   @ObservedObject var run: CreationRun
@@ -647,21 +739,22 @@ struct CreateStepCircle: View {
       EmptyView()
     } else if step.failed {
       Image(systemName: "xmark.octagon.fill")
+        .font(.system(size: 11))
         .foregroundStyle(tokens.failure)
         .help("Couldn't create the workroom: \(step.label) failed")
         .accessibilityLabel("Couldn't create the workroom: \(step.label) failed")
     } else {
-      ProgressView(value: step.fraction)
-        .progressViewStyle(.circular)
-        .controlSize(.small)
+      ActivityDots()
         .help(step.label)
         .accessibilityLabel(step.label)
+        .accessibilityValue(step.fraction.formatted(.percent.precision(.fractionLength(0))))
     }
   }
 }
 
-/// The always-visible "new workroom" button on a project row: a menu of the places a workroom can
-/// go (#309). Its own hover paints a subtle neutral background to read as an actionable control.
+/// The "new workroom" button on a project row: a menu of the places a workroom can go (#309),
+/// revealed while the row is hovered (`SidebarHoverTrailing`), as its settings button is. Its own
+/// hover paints a subtle neutral background to read as an actionable control.
 struct CreateRowButton<Places: View>: View {
   let help: String
   @ViewBuilder let places: () -> Places
@@ -733,8 +826,7 @@ private struct RowRunToggle: View {
     } label: {
       Group {
         if stopping {
-          ProgressView().controlSize(.mini)
-            .tint(tokens.warning)
+          ActivityDots(tint: tokens.warning)
             .frame(width: 12, height: 12)
         } else {
           Image(systemName: running ? "stop.circle.fill" : "play.circle.fill")
@@ -760,42 +852,30 @@ private struct RowRunToggle: View {
   }
 }
 
-/// The gear button on a project row, revealed on hover to the left of the new-workroom button,
-/// opening Project Settings (issue #7). Laid out always (so the row size is stable) and only made
-/// visible via `visible`; its own hover paints a subtle neutral background like the new-workroom one.
+/// The gear button on a project row, revealed on hover to the left of the new-workroom button
+/// (`SidebarHoverTrailing`), opening Project Settings (issue #7). Its own hover paints a subtle
+/// neutral background like the new-workroom one.
 struct SettingsRowButton: View {
   let help: String
-  let visible: Bool
   let action: () -> Void
   @State private var hovering = false
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: "gearshape")
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: Radius.xs)
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
+      // A slot as wide as the "+" beside it, with the same hover well.
+      SidebarIconGlyph(systemImage: "gearshape", hovering: hovering)
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
     .help(help)
     .accessibilityLabel(help)
-    .opacity(visible ? 1 : 0)
-    .allowsHitTesting(visible)
   }
 }
 
-/// The trash button revealed when a workroom row is hovered. It is always laid out (so
-/// the row's size doesn't change on hover) and only made visible via `visible`. Its own
+/// The trash button revealed when a workroom row is hovered (`SidebarHoverTrailing`). Its own
 /// hover paints a soft pastel-red background to flag the destructive action.
 struct DeleteRowButton: View {
   let name: String
-  let visible: Bool
   let action: () -> Void
   @State private var hovering = false
   @Environment(\.themeTokens) private var tokens
@@ -817,8 +897,27 @@ struct DeleteRowButton: View {
     // menus' item; VoiceOver keeps the name, as it reads the button away from its row.
     .help("Delete Workroom…")
     .accessibilityLabel("Delete \(name)…")
-    .opacity(visible ? 1 : 0)
-    .allowsHitTesting(visible)
+  }
+}
+
+/// A sidebar row's expand/collapse chevron: one right-pointing chevron that turns to point down as
+/// its row expands, and fades in while `visible` (its row hovered), both with the sidebar's hover
+/// ease (`SidebarAnimated`).
+struct SidebarDisclosureChevron: View {
+  let expanded: Bool
+  var visible = true
+  var weight: Font.Weight = .regular
+
+  var body: some View {
+    SidebarAnimated(target: expanded) { turn in
+      SidebarAnimated(target: visible) { shown in
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: weight))
+          .foregroundStyle(.secondary)
+          .rotationEffect(.degrees(90 * turn))
+          .opacity(shown)
+      }
+    }
   }
 }
 
@@ -838,13 +937,10 @@ struct TerminalDisclosureButton: View {
 
   var body: some View {
     Button(action: action) {
-      // Center the chevron in the caret slot. Centring pins its *center* to the slot center regardless
-      // of which chevron is shown — so the glyph doesn't jump on toggle and the hover fill (also
-      // centered on the slot) sits symmetrically around it. The terminal-row glyph centers in the same
-      // slot, so the two share one vertical axis.
-      Image(systemName: expanded ? "chevron.down" : "chevron.right")
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
+      // Centred in the caret slot, so it turns about the slot's centre and the hover fill (also
+      // centred on the slot) sits symmetrically around it. The terminal-row glyph centres in the
+      // same slot, so the two share one vertical axis.
+      SidebarDisclosureChevron(expanded: expanded)
         .frame(width: width, height: 18, alignment: .center)
         .background {
           RoundedRectangle(cornerRadius: Radius.xs)

@@ -593,6 +593,31 @@ struct TerminalState {
   }
 }
 
+/// What a target's terminals report (#358), counted in one pass (`TerminalPanes.statusSummary`):
+/// summed over several targets or windows with `+`, it still says whether every waiting or
+/// finished terminal is on a disconnected host.
+struct TargetStatusSummary: Equatable {
+  var waiting = 0
+  /// How many of the waiting terminals are on a host whose link is down.
+  var waitingStale = 0
+  var failed = false
+  var running = false
+  var done = 0
+  /// How many of the finished terminals are on a host whose link is down.
+  var doneStale = 0
+
+  /// Something waits, and every one that does is disconnected: nothing to answer yet.
+  var allWaitingStale: Bool { waiting > 0 && waitingStale == waiting }
+  var allDoneStale: Bool { done > 0 && doneStale == done }
+
+  static func + (lhs: Self, rhs: Self) -> Self {
+    Self(
+      waiting: lhs.waiting + rhs.waiting, waitingStale: lhs.waitingStale + rhs.waitingStale,
+      failed: lhs.failed || rhs.failed, running: lhs.running || rhs.running,
+      done: lhs.done + rhs.done, doneStale: lhs.doneStale + rhs.doneStale)
+  }
+}
+
 /// The mark a terminal's indicator slots show (#358).
 enum PaneIndicator: Equatable {
   case none
@@ -1173,11 +1198,32 @@ final class TerminalPanes {
     heldTabs(id).count { $0.needsAttention }
   }
 
-  /// Whether a waiting terminal of this target is on a host whose link is down (#358).
+  /// Whether every waiting terminal of this target is on a host whose link is down (#358), so
+  /// its mark shows it disconnected. One that can be answered now keeps the hand.
   func isWaitingStale(forTargetID id: TerminalTarget.ID) -> Bool {
-    heldTabs(id).contains {
-      $0.needsAttention && $0.programStatus?.stale == true
+    statusSummary(forTargetID: id).allWaitingStale
+  }
+
+  /// What this target's terminals report (#358), read in one pass over them.
+  func statusSummary(forTargetID id: TerminalTarget.ID) -> TargetStatusSummary {
+    var summary = TargetStatusSummary()
+    for tab in heldTabs(id) {
+      let stale = tab.programStatus?.stale == true
+      switch tab.indicator {
+      case .blocked:
+        summary.waiting += 1
+        if stale { summary.waitingStale += 1 }
+      case .running(let failed):
+        summary.running = true
+        if failed { summary.failed = true }
+      case .error: summary.failed = true
+      case .done:
+        summary.done += 1
+        if stale { summary.doneStale += 1 }
+      case .none: break
+      }
     }
+    return summary
   }
 
   /// Whether any terminal of this target reported an error that stopped it (#358).

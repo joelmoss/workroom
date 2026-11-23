@@ -74,6 +74,10 @@ public struct ThemeTokens: Sendable {
   // from the palette's red + yellow to stay theme-derived like every other token.
   public let conflict: Color
   public let nsConflict: NSColor
+  // A program status mark whose host's link is down: secondary text, made readable (3:1) on every
+  // surface such a mark sits on (`programStatusGrounds`), toward `fg` where muted text is too faint.
+  public let disconnected: Color
+  public let nsDisconnected: NSColor
 
   // Diff / VCS semantics (palette green/red/cyan).
   public let diffAddFg: Color
@@ -196,6 +200,15 @@ public struct ThemeTokens: Sendable {
     }()
     nsConflict = status(conflictColor)
     conflict = Color(nsColor: nsConflict)
+    let muted =
+      (panelColor.usingColorSpace(.sRGB) ?? panelColor)
+      .blended(withFraction: 0.65, of: fgSRGB) ?? fgSRGB
+    nsDisconnected = Self.legible(
+      muted,
+      on: Self.programStatusGrounds(
+        bg: bgColor, panel: panelColor, fg: fgColor, accent: accentColor),
+      towards: fgSRGB)
+    disconnected = Color(nsColor: nsDisconnected)
 
     let addColor = p(2) ?? .systemGreen
     let removeColor = p(1) ?? .systemRed
@@ -333,6 +346,15 @@ public struct ThemeTokens: Sendable {
       panel, panel.blended(withFraction: 0.08, of: fg) ?? panel,
       panel.blended(withFraction: 0.22, of: accent) ?? panel, bg,
     ]
+  }
+
+  /// The `statusGrounds` a program status mark sits on: all but the selected Changes or History
+  /// row, which shows none.
+  public static func programStatusGrounds(bg: NSColor, panel: NSColor, fg: NSColor, accent: NSColor)
+    -> [NSColor]
+  {
+    let grounds = statusGrounds(bg: bg, panel: panel, fg: fg, accent: accent)
+    return [grounds[0], grounds[1], grounds[3]]
   }
 
   /// `color` blended toward `fg` in 10% steps until it clears 3:1 on every ground. A colour that

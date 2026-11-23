@@ -408,7 +408,7 @@ struct SidebarStandaloneRowModel: Equatable {
   /// The program its pane tab shows the logo of (#141), shown in its glyph's place.
   var tool: RecognizedTool? = nil
   /// What its terminal reports, in whichever window holds it, as a workroom's row shows it (#358):
-  /// waiting, then a stopped error, then running.
+  /// waiting, then a stopped error, then running, then finished.
   let activity: SidebarTargetActivity
 }
 
@@ -453,13 +453,16 @@ struct SidebarStandaloneRow: View, Equatable {
           .lineLimit(1).truncationMode(.middle)
       }
       Spacer(minLength: 0)
-      if let id = sid.targetID { SidebarUnreadDot(source: .target(id)) }
-      // The trailing column: its status at rest, its close button on hover. The button is drawn
-      // over it (below), out of the row's combined accessibility element, so it stays a button of
-      // its own.
-      SidebarSectionStatusMark(sid: sid, activity: model.activity, actions: actions)
-        .opacity(hovered && !renaming ? 0 : 1)
-        .frame(width: SidebarRowMetrics.iconColumnWidth)
+      // Its unread dot and status, sliding left on hover for its close button. The button is
+      // drawn over the row (below), out of its combined accessibility element, so it stays a
+      // button of its own; the slide keeps its room.
+      SidebarHoverTrailing(hovered: hovered && !renaming) {
+        if let id = sid.targetID { SidebarUnreadDot(source: .target(id)) }
+        SidebarSectionStatusMark(
+          sid: sid, activity: model.activity, actions: actions, showsDone: true)
+      } buttons: {
+        Color.clear.frame(width: SidebarRowMetrics.iconColumnWidth, height: 1)
+      }
     }
     .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
@@ -512,12 +515,15 @@ struct SidebarSectionActivityMarks: View {
 }
 
 /// A Terminals-section row's status alone, without its unread dot: waiting (which focuses the
-/// terminal that has waited longest), a stopped error or running. A standalone terminal's row
-/// shows it in its trailing column, where its close button takes its place on hover.
+/// terminal that has waited longest), a stopped error, running or, on a standalone terminal's row
+/// (`showsDone`), a finished program's check, as its terminal's row under a workroom shows it. A
+/// standalone terminal's row shows it in its trailing column, where its close button takes its
+/// place on hover.
 struct SidebarSectionStatusMark: View {
   let sid: SidebarID
   let activity: SidebarTargetActivity
   let actions: SidebarSectionActions
+  var showsDone = false
 
   var body: some View {
     if let id = sid.targetID {
@@ -527,6 +533,10 @@ struct SidebarSectionStatusMark: View {
         }
       } else if activity.failed || activity.running {
         RunningSpinner(failed: activity.failed)
+      } else if showsDone, activity.done {
+        ProgramStatusGlyph(mark: .done, stale: activity.doneStale)
+          .help(ProgramStatusPresentation.turnFinished)
+          .accessibilityLabel(ProgramStatusPresentation.turnFinished)
       }
     }
   }

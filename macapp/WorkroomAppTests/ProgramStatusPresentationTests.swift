@@ -61,7 +61,7 @@ final class ProgramStatusPresentationTests: XCTestCase {
 
   func testStaleAndStuckLinesEndTheWaitingTooltip() {
     let stale = lines(.blocked, rollup(blocked: [blocked(.permission)], stale: true))
-    XCTAssertEqual(stale.last, "May be out of date: reconnecting…")
+    XCTAssertEqual(stale.last, "Connection to the host was lost. Reconnecting…")
 
     let justUnder = now.addingTimeInterval(-599)
     XCTAssertFalse(
@@ -169,7 +169,7 @@ final class ProgramStatusPresentationTests: XCTestCase {
     XCTAssertEqual(
       ProgramStatusPresentation.accessibilityParts(
         indicator: .blocked, rollup: rollup(blocked: [blocked(.permission)], stale: true)),
-      ["waiting for your permission", "may be out of date"])
+      ["waiting for your permission", "disconnected, reconnecting"])
     XCTAssertEqual(
       ProgramStatusPresentation.accessibilityParts(indicator: .running(failed: false), rollup: nil),
       [])
@@ -177,7 +177,7 @@ final class ProgramStatusPresentationTests: XCTestCase {
       ProgramStatusPresentation.waitingLabel(count: 2, stale: false), "2 terminals need you")
     XCTAssertEqual(
       ProgramStatusPresentation.waitingLabel(count: 1, stale: true),
-      "1 terminal needs you, may be out of date")
+      "1 terminal needs you, disconnected, reconnecting")
     XCTAssertEqual(
       ProgramStatusPresentation.waitingTooltip(count: 2), "2 terminals waiting for you")
   }
