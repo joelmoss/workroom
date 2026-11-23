@@ -109,17 +109,23 @@ fn root() -> String {
     text += "```\n\n## See also\n\n";
     let mut commands: Vec<&Command> = public(COMMANDS).collect();
     commands.sort_by_key(|command| command.name);
+    // This page is stable, so the links to Nightly pages say so in their prose (docs-site/README.md).
     for command in commands {
+        let short = if nightly(command.name) {
+            format!("{} (Nightly only)", command.short)
+        } else {
+            command.short.to_string()
+        };
         text += &see(
             &format!("workroom {}", command.name),
             &file_name(command.name),
-            command.short,
+            &short,
         );
     }
     text += &see(
         "workroom help agents",
         "workroom-help-agents.md",
-        "The terminal API, for coding agents",
+        "The terminal API, for coding agents (Nightly only)",
     );
     text
 }
