@@ -14,32 +14,32 @@ For a background watcher that reports check transitions and failures promptly, s
 
 `.github/workflows/ci.yml` runs on every push to `master` or a `release/**` maintenance branch,
 and every PR against either. It calls one workflow per language, each holding that language's jobs:
-`ci-actions.yml` (`workflows`), `ci-go.yml` (`cli`), `ci-rust.yml` (`rust`,
+`ci-actions.yml` (`workflows`), `ci-rust.yml` (`rust`,
 `daemon-terminal-state`, `daemon-linux`), `ci-app.yml` (`app-packages`, `app`, `app-scripts`) and
 `ci-docs.yml` (`docs-deploy`, master pushes only). Each check is named `<call> / <job>`, such as
 `app / app`.
 
 A push runs every job, and skips the `changes` job. On a PR, `changes` reads the diff and skips
-the jobs it does not need, so a Go-only change runs no macOS job. The rules are in
+the jobs it does not need, so a docs-only change runs no macOS job. The rules are in
 `scripts/ci/changed_areas.py`: each path runs the jobs whose tests or build read it, a path no rule
 names runs every job, and a skipped job still reports, as skipped. When a test starts reading a
 file outside its own tree, add that path to the rules. `test_tool_pins.py` fails when a pin is
 written two ways: Zig in the install-zig composite and `vcs/scripts/build-ghostty-vt.sh`,
 cargo-zigbuild anywhere but its composite, or Rust in the workflows and `mk/vcs.mk`. The build steps the three workflows share
-(Xcode, Go and Homebrew; Zig, the rustup targets and cargo-zigbuild; the signing certificate) are
+(Xcode and Homebrew; Zig, the rustup targets and cargo-zigbuild; the signing certificate) are
 composite actions under `.github/actions/`.
 
 - **`workflows` job** (`ubuntu-latest`): `make actions-lint`, `make app-scripts-lint`, the
   `scripts/ci/` tests and `daemon-name_test.sh`. Never skipped.
-- **`cli` job** (`ubuntu-latest`): sets up Go from `go.mod`, runs `golangci-lint` (subsumes `go vet`
-  / `gofmt`), `go build`, and `go test ./...`.
 - **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo doc` with
   `RUSTDOCFLAGS="-D warnings"`, and `cargo test` for the whole `vcs/` Rust workspace, on a pinned
-  toolchain. `make vcs-lint` runs the same format, lint and doc checks locally, plus the
+  toolchain. That covers the CLI: its unit tests, the contract suite's groups that run on Linux, and
+  the docs-site checks (the CLI pages, and the format and Nightly markers, for which it checks out
+  the tags). `make vcs-lint` runs the same format, lint and doc checks locally, plus the
   `daemon-terminal-state` job's clippy pass and a `terminal-state` doc check CI does not run.
 - **`app-packages` job** (`xcode-27`): sets up Xcode 27.1 and runs `make app-package-test`, the local
   Swift packages' own `swift test` suites, beside `app` rather than ahead of its build.
-- **`app` job** (`xcode-27`): sets up Xcode 27.1 + Go, `brew install xcodegen`, runs `make app-lint`
+- **`app` job** (`xcode-27`): sets up Xcode 27.1, `brew install xcodegen`, runs `make app-lint`
   (swift-format `--strict`), restores the sources' mtimes to their landing times (`macapp/Scripts/restore-mtime.py`,
   so the cached build dir rebuilds only what changed since the checkout it was built from), then
   `make app-test` with **ad-hoc signing** flags (hosted runners have no signing cert), e.g.:
@@ -48,10 +48,10 @@ composite actions under `.github/actions/`.
   CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=
   ```
 
-  It also runs the few Rust tests that only mean something on macOS: `workroomd`'s `pty::tests`
-  and its stale-socket relay tests. macOS sets a new socket's close-on-exec flag in a second call,
-  and those tests cover what a child spawned in between inherits. Everything else in Rust stays on
-  the `rust` job.
+  It also runs the few Rust tests that only mean something on macOS: the daemon's `pty::tests`
+  and its stale-socket relay tests (macOS sets a new socket's close-on-exec flag in a second call,
+  and those tests cover what a child spawned in between inherits), and the whole CLI contract suite,
+  whose Mac-only groups are ignored on Linux. Everything else in Rust stays on the `rust` job.
 
 ## Cutting a release
 
@@ -153,9 +153,10 @@ They are separate because Sparkle offers every *untagged* item to every client w
 [Auto-update](#auto-update-sparkle-appcast) for the failure it caused. Sparkle's bundle-id check
 still backstops a cross-product install, but it is a backstop, not the channel filter.
 
-The canonical tag → channel classification lives in **`internal/channel`** (Go), mirrored by
-`macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — keep the
-three in sync. All appcast-writing workflows (`release`, `nightly`, `appcast-notes`) share a
+The canonical tag → channel classification lives in the CLI's
+**`vcs/crates/workroomd/src/commands/channel.rs`**, mirrored by
+`macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh`, on one
+shared fixture, `testdata/channel_cases.tsv` — keep the three in sync. All appcast-writing workflows (`release`, `nightly`, `appcast-notes`) share a
 `concurrency: appcast-feed` group so they can't
 clobber each other's `appcast.xml` edits.
 
@@ -205,16 +206,16 @@ makes them in the `macapp` job, for `darwin` and `linux` × `arm64` and `amd64`:
 stamped with the version (`WORKROOM_VERSION`) and, for the Nightly, the channel. darwin is one thin
 Mach-O per arch, signed with the Developer ID (hardened runtime, secure timestamp) and notarized;
 a bare Mach-O can't be stapled, so Gatekeeper checks its ticket online. linux is a static musl ELF
-per arch. There is no Windows build; `install.ps1` only says so and fails. `cli-archives.sh
+per arch. Windows builds of the CLI have ended; installed copies keep working but get no updates,
+and `install.ps1` is gone with the Go CLI (#682). `cli-archives.sh
 check`, which the build and the `publish` job both run, refuses any other set of files, a Go binary
 or a bad checksum, and runs every binary of its own OS: `version --json` must report exactly the
 version and channel. So each binary runs before anything publishes: the darwin ones in the build
 (the amd64 one under Rosetta), the linux ones in `publish` (the arm64 one under qemu-user).
 `publish-assets.sh` then refuses a release holding any other archive, and removes the Go CLI's
 Windows archives from the reused `nightly` release. `macapp/Scripts/cli-archives_test.sh` builds
-both channels' archives for this Mac and updates a Go CLI built from this checkout into the Rust
-binary with `workroom update`, from a releases server on 127.0.0.1; in CI, missing Go or python3
-fails it. The release runs the CLI contract suite against the darwin arm64 binary unpacked from its
+both channels' archives for this Mac and checks their names, layout and checksums, and that `check`
+refuses each kind of bad archive. The release runs the CLI contract suite against the darwin arm64 binary unpacked from its
 archive, and the Nightly does too, skipping the four cases whose goldens are the main binary's: the
 nightly's baked channel changes `version --json` and refuses `update --channel` by design.
 
@@ -225,10 +226,10 @@ a night does, then its `dry-run` job uploads into a draft release of its own,
 Latest, and deletes it. `publish` doesn't run, so the `nightly` release, the appcast, the download
 stats and Sentry are untouched; `test-invariants_test.sh` pins those guards.
 
-These are goreleaser's names, kept so `install.sh` and every Go CLI's `workroom update` reach the
-Rust binary. The archive name (`workroom_<version>_…`) is what `install.sh` builds and what the
-updaters (`commands/update.rs`, and the Go CLI's `internal/updater/updater.go` in every install
-before the swap) look up, so the script and those paths must stay in lockstep — a rename in one
+These are the names the retired Go CLI's goreleaser gave its archives, kept so `install.sh` and
+every installed Go CLI's `workroom update` reach the Rust binary. The archive name
+(`workroom_<version>_…`) is what `install.sh` builds and what the updaters (`commands/update.rs`, and
+the Go CLI's updater in every install before the swap) look up, so the script and those paths must stay in lockstep — a rename in one
 without the others breaks `curl | sh` and `workroom update`. Intel Macs keep a standalone CLI
 (`darwin_amd64`), though the app is arm64 only (ADR 0061).
 

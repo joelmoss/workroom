@@ -7,36 +7,34 @@ Workroom manages development workrooms (isolated project copies) using Git workt
 - **The macOS app** (`macapp/` — see [`macapp/AGENTS.md`](../macapp/AGENTS.md)) is the primary,
   recommended product: a native SwiftUI app (macOS 15 Sequoia+) with a project/workroom sidebar and
   embedded terminals. It **bundles the CLI** and drives it over the machine-readable `--json` API
-  (`create`/`list`/`delete`/`add-project`/`delete-project --json`). Since #681 the CLI it bundles is
-  the Rust `workroom` (ADR 0078), which is its daemon too; the Go CLI below keeps the same contract
-  and still builds the standalone release until #682.
-- **The Go CLI** (repo root, documented below) is the engine that does the VCS work. It's also a
-  fully **standalone** tool — terminal-first, and the only option on Linux/Windows — so app users
+  (`create`/`list`/`delete`/`add-project`/`delete-project --json`). The CLI it bundles is the Rust
+  `workroom` (ADR 0078), which is its daemon too.
+- **The CLI** (`vcs/crates/workroomd`, documented below) is the engine that does the VCS work. It's
+  also a fully **standalone** tool — terminal-first, and the only option on Linux — so app users
   never need to install it separately. It checks the project is a Git repo, generates friendly
-  workroom names, and stores config at `~/.config/workroom/config.json`.
+  workroom names, and stores config at `~/.config/workroom/config.json`. It was a Go program until
+  #682 retired it; Windows builds of the CLI have ended, and installed copies keep working but get no
+  updates.
 
-The app's structured **VCS engine** reads git through SwiftGitX (libgit2), with the `vcs/` Rust
-workspace (the `workroomd` daemon and its git read crates) serving daemon-routed reads and writes. It's
-app-only and separate from this Go CLI; see [app VCS and sessions](macapp/vcs-and-sessions.md).
+The app's structured **VCS engine** reads git through SwiftGitX (libgit2), with the same binary's
+daemon (and the `vcs/` workspace's git read crates) serving daemon-routed reads and writes; see
+[app VCS and sessions](macapp/vcs-and-sessions.md).
 
-When working on the app, start with `macapp/AGENTS.md`; the rest of this file covers the Go CLI.
+When working on the app, start with `macapp/AGENTS.md`; the rest of this file covers the CLI.
 
 ## Build & Test
 
-Dev tasks run through the repo-root `Makefile`, namespaced `cli-*` (Go CLI) and `app-*` (macOS
-app under `macapp/`). `make` with no target lists them. The Go CLI:
+Dev tasks run through the repo-root `Makefile`, namespaced `vcs-*` (the Rust workspace, the CLI
+included) and `app-*` (macOS app under `macapp/`). `make` with no target lists them. The CLI:
 
 ```bash
-make cli-build                      # build with version injection
-make cli-test                       # run tests
-make cli-lint                       # golangci-lint (config: .golangci.yml)
-make cli-install                    # install to $GOBIN
+cargo build --manifest-path vcs/Cargo.toml -p workroom   # vcs/target/debug/workroom
+make vcs-test                       # the Rust tests, as CI runs them
+make contract-test                  # the CLI's black-box contract suite
+make vcs-lint                       # rustfmt, clippy and rustdoc on CI's Rust
+make docs-cli                       # regenerate docs-site/pages/cli after a command or flag changes
 ```
 
-`cli-lint` requires `golangci-lint` **v2.x** (`.golangci.yml` is v2-format; a v1 binary refuses it,
-and v1 cannot typecheck Go 1.27 at all):
-`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0` — note the `/v2` in the
-module path, and install with `go install` so it's built by the local toolchain.
 The macOS app targets (`app-build`, `app-run`, `app-test`, `app-test-scripts`, `app-format`,
 `app-lint`, …) are documented in `macapp/AGENTS.md`.
 
@@ -64,10 +62,10 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   with `--create` a missing PATH is created and git-initialized with an initial empty commit (so it's
   immediately usable as a project), an empty/junk-only existing dir is git-initialized, an existing
   Git repo is used as-is, and a non-empty non-repo dir or a file path is rejected
-  (`ErrUnsupportedVCS` / `ErrNotDirectory`); `--create --pretend` is a dry-run (reports
+  (`UnsupportedVCS` / `NotADirectory`); `--create --pretend` is a dry-run (reports
   `would_create`, mutates nothing). Backs the app's "Create new directory…" mode (issue #103).
   `add-project PATH --clone URL` (issue #620, the "Clone a repository…" mode) clones URL into a
-  missing or empty PATH (`ErrDestinationNotEmpty` otherwise), streams git's progress as `clone`
+  missing or empty PATH (`DestinationNotEmpty` otherwise), streams git's progress as `clone`
   log events on stderr, and fails with `CloneFailed` carrying git's own error lines (the last
   64 KiB of its stderr, progress filtered out). git runs in a session of its own (no controlling
   terminal and `GIT_TERMINAL_PROMPT=0`, so ssh and https credentials fail fast rather than prompt) without the
@@ -82,7 +80,7 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   registration failure reports `ConfigWriteFailed` saying the clone is at PATH but not registered;
   `--pretend` reports `would_clone`. Staging names carry their owner (`.clone-<host>-<pid>-…`,
   the host an 8-hex FNV-32a hash of the machine's hardware id: the Mac's `IOPlatformUUID` from
-  `ioreg`, Linux's `/etc/machine-id` (or `/var/lib/dbus/machine-id`), Windows' `MachineGuid`; read,
+  `ioreg`, Linux's `/etc/machine-id` (or `/var/lib/dbus/machine-id`); read,
   never written, so unchanged by hostname changes and `--pretend` stays read-only). While a clone
   runs the CLI holds an exclusive `flock` on a lock file beside its staging (the staging name plus
   `.lock`: `<parent>/.<name>.clone-….lock`, or `PATH/.clone-….lock` inside), made before the
@@ -91,8 +89,8 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   and cancel. A later clone into the same place first sweeps what a crashed or killed clone left,
   saying `Removing staging a crashed clone left: <name>` on the progress stream and stopping with
   `Cancelled` on SIGTERM: only real folders named with this machine id, whose lock file is free
-  (whatever their pid), or, with no lock file (an earlier build's staging, or Windows and
-  filesystems without `flock`), whose pid is no longer running; a lock file whose staging is gone
+  (whatever their pid), or, with no lock file (an earlier build's staging, or a filesystem without
+  `flock`), whose pid is no longer running; a lock file whose staging is gone
   goes once free. Without a machine id no owned staging is swept. A name without an owner (an
   earlier build's `.clone-<digits>`) is never removed. A refusal caused only by staging-shaped
   entries (`.clone-*` folders, `.clone-*.lock` files) names them; a user's `.clone-notes` file is
@@ -104,7 +102,7 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then
   workrooms) — it does NOT delete anything itself, the macOS app moves those dirs to the Bin via
-  `FileManager.trashItem` (recoverable). `--from-disk` refuses unsafe targets (`ErrUnsafeDeletePath`:
+  `FileManager.trashItem` (recoverable). `--from-disk` refuses unsafe targets (`UnsafeDeletePath`:
   root, `$HOME`, the workrooms dir, or an ancestor of another registered project).
 
 ### Flags
