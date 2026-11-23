@@ -64,11 +64,68 @@ mod yaml {
     /// A value: a scalar, or a list of mappings.
     #[derive(Debug)]
     pub enum Value {
-        Scalar(String),
+        Scalar(Scalar),
         List(Vec<Map>),
     }
 
     pub type Map = BTreeMap<String, Value>;
+
+    /// A scalar's text, and what YAML reads it as.
+    #[derive(Debug)]
+    pub struct Scalar {
+        pub text: String,
+        pub kind: Kind,
+    }
+
+    /// What YAML reads a scalar as. A quoted one is always a string; a plain one is a null, a
+    /// boolean, a number or a timestamp when it is written as one, as YAML 1.1 (Codaset's Psych)
+    /// and 1.2 read them, and a string otherwise.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Kind {
+        Str,
+        Null,
+        Bool,
+        Int,
+        Float,
+        Timestamp,
+    }
+
+    impl Kind {
+        pub fn name(self) -> &'static str {
+            match self {
+                Kind::Str => "a string",
+                Kind::Null => "null",
+                Kind::Bool => "a boolean",
+                Kind::Int => "an integer",
+                Kind::Float => "a number",
+                Kind::Timestamp => "a date",
+            }
+        }
+    }
+
+    /// What a plain (unquoted) scalar is read as.
+    pub fn plain_kind(text: &str) -> Kind {
+        let matches = |pattern: &str| {
+            regex::Regex::new(pattern)
+                .expect("a pattern")
+                .is_match(text)
+        };
+        if matches(r"^(~|null|Null|NULL)$") {
+            Kind::Null
+        } else if matches(r"^(?i:true|false|yes|no|on|off)$") {
+            Kind::Bool
+        } else if matches(r"^[-+]?(0|[1-9][0-9_]*)$|^0x[0-9a-fA-F_]+$|^0o?[0-7_]+$|^0b[01_]+$") {
+            Kind::Int
+        } else if matches(
+            r"^[-+]?([0-9][0-9_]*)?\.[0-9_]+([eE][-+]?[0-9]+)?$|^[-+]?[0-9][0-9_]*(\.[0-9_]*)?[eE][-+]?[0-9]+$|^[-+]?\.(inf|Inf|INF)$|^\.(nan|NaN|NAN)$",
+        ) {
+            Kind::Float
+        } else if matches(r"^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}([Tt ].*)?$") {
+            Kind::Timestamp
+        } else {
+            Kind::Str
+        }
+    }
 
     /// One line that holds something, with its 1-based number and its indent.
     struct Line<'a> {
@@ -193,12 +250,18 @@ mod yaml {
     }
 
     /// One scalar: double-quoted (read as JSON, which YAML reads the same), single-quoted, or
-    /// plain, where plain is text that can't be read as anything but itself.
-    fn scalar(text: &str) -> Result<String, String> {
+    /// plain, where plain is text that YAML reads as one scalar, of the kind [`plain_kind`] says.
+    fn scalar(text: &str) -> Result<Scalar, String> {
+        let string = |text: String| Scalar {
+            text,
+            kind: Kind::Str,
+        };
         if text.starts_with('"') {
-            return serde_json::from_str::<String>(text).map_err(|_| {
-                "a double-quoted value is one JSON string, with JSON's escapes".to_string()
-            });
+            return serde_json::from_str::<String>(text)
+                .map(string)
+                .map_err(|_| {
+                    "a double-quoted value is one JSON string, with JSON's escapes".to_string()
+                });
         }
         if let Some(inner) = text.strip_prefix('\'') {
             let inner = inner
@@ -207,7 +270,7 @@ mod yaml {
             if inner.replace("''", "").contains('\'') {
                 return Err("write ' inside single quotes as ''".to_string());
             }
-            return Ok(inner.replace("''", "'"));
+            return Ok(string(inner.replace("''", "'")));
         }
         let mut chars = text.chars();
         let first = chars.next().unwrap_or(' ');
@@ -217,15 +280,39 @@ mod yaml {
         if indicator || text.contains(": ") || text.contains(" #") || text.ends_with(':') {
             return Err("quote this value: YAML reads it as more than text".to_string());
         }
-        Ok(text.to_string())
+        Ok(Scalar {
+            text: text.to_string(),
+            kind: plain_kind(text),
+        })
     }
 }
 
 /// The scalar at `key`, if it is one.
-fn text<'a>(map: &'a yaml::Map, key: &str) -> Option<&'a str> {
+fn scalar_at<'a>(map: &'a yaml::Map, key: &str) -> Option<&'a yaml::Scalar> {
     match map.get(key) {
         Some(yaml::Value::Scalar(value)) => Some(value),
         _ => None,
+    }
+}
+
+/// The string at `key`: None when it is missing, or when YAML reads it as something else (a
+/// plain `true`, `~`, `3` or `2026-01-01`), which a string key can't take.
+fn text<'a>(map: &'a yaml::Map, key: &str) -> Option<&'a str> {
+    scalar_at(map, key)
+        .filter(|value| value.kind == yaml::Kind::Str)
+        .map(|value| value.text.as_str())
+}
+
+/// A problem with the string key `key` of `map`, or None: missing or blank, or not a string.
+fn string_problem(map: &yaml::Map, key: &str) -> Option<String> {
+    match scalar_at(map, key) {
+        Some(value) if value.kind != yaml::Kind::Str => Some(format!(
+            "{key} is {} as YAML reads `{}`, not text; quote it",
+            value.kind.name(),
+            value.text
+        )),
+        Some(value) if !value.text.trim().is_empty() => None,
+        _ => Some(format!("needs a {key}")),
     }
 }
 
@@ -287,14 +374,18 @@ fn parse_page(src: &str, report: &mut dyn FnMut(String)) -> Page {
                             "front matter: {key} is not a key; title, description and nightly are"
                         ));
                     }
-                    if text(&map, "title").is_none_or(|title| title.trim().is_empty()) {
-                        report("front matter needs a title".to_string());
+                    for key in ["title", "description"] {
+                        if let Some(problem) = string_problem(&map, key) {
+                            report(format!("front matter {problem}"));
+                        }
                     }
-                    if text(&map, "description").is_none_or(|value| value.trim().is_empty()) {
-                        report("front matter needs a description".to_string());
-                    }
+                    // A plain `true` or `false`: a quoted "true" is a string, and `yes` is a
+                    // boolean only to YAML 1.1.
                     if map.contains_key("nightly")
-                        && !matches!(text(&map, "nightly"), Some("true" | "false"))
+                        && !scalar_at(&map, "nightly").is_some_and(|value| {
+                            value.kind == yaml::Kind::Bool
+                                && matches!(value.text.as_str(), "true" | "false")
+                        })
                     {
                         report("front matter: nightly is true or false".to_string());
                     }
@@ -499,8 +590,12 @@ fn check(dir: &Path) -> Vec<String> {
                         "nav.yml: group {title:?} has {key}, which is not a key"
                     ));
                 }
-                if title.trim().is_empty() {
-                    problems.push("nav.yml: a group has no title".to_string());
+                match string_problem(group, "title") {
+                    Some(problem) if scalar_at(group, "title").is_some() => {
+                        problems.push(format!("nav.yml: a group's {problem}"));
+                    }
+                    Some(_) => problems.push("nav.yml: a group has no title".to_string()),
+                    None => {}
                 }
                 let entries = match group.get("pages") {
                     Some(yaml::Value::List(entries)) => entries.as_slice(),
@@ -514,8 +609,17 @@ fn check(dir: &Path) -> Vec<String> {
                     for key in unknown_keys(entry, &["title", "page"]) {
                         problems.push(format!("nav.yml: {page:?} has {key}, which is not a key"));
                     }
-                    if text(entry, "title").is_none_or(|title| title.trim().is_empty()) {
-                        problems.push(format!("nav.yml: {page:?} has no title"));
+                    match string_problem(entry, "title") {
+                        Some(problem) if scalar_at(entry, "title").is_some() => {
+                            problems.push(format!("nav.yml: {page:?}'s {problem}"));
+                        }
+                        Some(_) => problems.push(format!("nav.yml: {page:?} has no title")),
+                        None => {}
+                    }
+                    if let Some(problem) = string_problem(entry, "page")
+                        && scalar_at(entry, "page").is_some()
+                    {
+                        problems.push(format!("nav.yml: an entry's {problem}"));
                     }
                     *seen.entry(page.to_string()).or_default() += 1;
                     if !pages.contains_key(page) {
@@ -702,6 +806,14 @@ fn the_check_finds_each_kind_of_breakage() {
         "pages/guides/c.md",
         "---\ntitle: C: the third\ndescription: C.\n---\n",
     );
+    site.write(
+        "pages/guides/d.md",
+        "---\ntitle: true\ndescription: 2026-01-01\nnightly: \"true\"\n---\n",
+    );
+    site.write(
+        "pages/guides/e.md",
+        "---\ntitle: ~\ndescription: '2026-01-01'\nnightly: yes\n---\n",
+    );
 
     let got = check(&site.0).join("\n");
     for want in [
@@ -722,10 +834,20 @@ fn the_check_finds_each_kind_of_breakage() {
         "pages/guides/b.md: line 7: {nightly} goes only at the end of a heading",
         "pages/guides/Bad_Name.md: file names use lowercase letters",
         "pages/guides/c.md: front matter: line 1: title: quote this value",
+        "pages/guides/d.md: front matter title is a boolean as YAML reads `true`, not text",
+        "pages/guides/d.md: front matter description is a date as YAML reads `2026-01-01`",
+        "pages/guides/d.md: front matter: nightly is true or false",
+        "pages/guides/e.md: front matter title is null as YAML reads `~`, not text",
+        "pages/guides/e.md: front matter: nightly is true or false",
         r#"nav.yml: "guides/gone" has no page at pages/guides/gone.md"#,
     ] {
         assert!(got.contains(want), "missing problem {want:?} in:\n{got}");
     }
+    // A quoted date is a string.
+    assert!(
+        !got.contains("pages/guides/e.md: front matter description"),
+        "a quoted value was read as more than text:\n{got}"
+    );
     assert!(
         !got.contains("line 19: <https>") && !got.contains("line 19: <me@"),
         "an autolink was reported as raw HTML:\n{got}"
@@ -745,8 +867,42 @@ fn the_yaml_subset_reads_scalars_as_yaml_does() {
     .expect("a mapping");
     assert_eq!(text(&map, "title"), Some("workroom create"));
     assert_eq!(text(&map, "description"), Some("Say: \"hi\""));
-    assert_eq!(text(&map, "nightly"), Some("true"));
+    assert_eq!(text(&map, "nightly"), None, "a plain true is no string");
+    assert_eq!(
+        scalar_at(&map, "nightly").map(|value| value.kind),
+        Some(yaml::Kind::Bool)
+    );
     assert_eq!(text(&map, "other"), Some("it's"));
+    for (plain, kind) in [
+        ("~", yaml::Kind::Null),
+        ("null", yaml::Kind::Null),
+        ("false", yaml::Kind::Bool),
+        ("Yes", yaml::Kind::Bool),
+        ("off", yaml::Kind::Bool),
+        ("42", yaml::Kind::Int),
+        ("-7", yaml::Kind::Int),
+        ("0x1F", yaml::Kind::Int),
+        ("3.14", yaml::Kind::Float),
+        ("1e3", yaml::Kind::Float),
+        (".inf", yaml::Kind::Float),
+        ("2026-11-23", yaml::Kind::Timestamp),
+        ("2026-11-23T08:00:00Z", yaml::Kind::Timestamp),
+        ("workroom create", yaml::Kind::Str),
+        ("v3.1.0", yaml::Kind::Str),
+        ("1.2.3", yaml::Kind::Str),
+        ("nullable", yaml::Kind::Str),
+    ] {
+        assert_eq!(yaml::plain_kind(plain), kind, "{plain}");
+        let map = yaml::mapping(&format!("title: {plain}\n")).expect("a mapping");
+        assert_eq!(
+            text(&map, "title").is_some(),
+            kind == yaml::Kind::Str,
+            "{plain}"
+        );
+        // Quoted, every one of them is text.
+        let map = yaml::mapping(&format!("title: \"{plain}\"\n")).expect("a mapping");
+        assert_eq!(text(&map, "title"), Some(plain));
+    }
     for bad in [
         "title: a: b\n",
         "title: [a]\n",
