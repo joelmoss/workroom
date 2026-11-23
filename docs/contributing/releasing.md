@@ -1,7 +1,8 @@
 # Deployment & Releases
 
 Part of the [contributor guide](../../CONTRIBUTING.md). After a release publishes, use the
-curate-release skill when your agent has it.
+curate-release skill when your agent has it. Before signing off a Nightly, or tagging a release
+from it, run the manual checklist in [Signing off a Nightly](nightly-sign-off.md).
 
 There is no server to deploy — Workroom is a desktop app plus a CLI distributed through **GitHub
 Releases**. "Deployment" here means cutting a release: GitHub Actions builds and publishes both
