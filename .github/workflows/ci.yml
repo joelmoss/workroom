@@ -19,7 +19,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The jobs live in one workflow per language (ci-actions, ci-go, ci-rust, ci-app, ci-docs), called
+# The jobs live in one workflow per language (ci-actions, ci-rust, ci-app, ci-docs), called
 # from here so that a pull request runs only the jobs its changes need: `changes` decides, from the
 # diff. A push runs every job without asking it, so every commit a release can be cut from has the
 # full signal, and so does the master push docs-deploy waits on.
@@ -41,7 +41,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      cli: ${{ steps.areas.outputs.cli }}
       rust: ${{ steps.areas.outputs.rust }}
       packages: ${{ steps.areas.outputs.packages }}
       app: ${{ steps.areas.outputs.app }}
@@ -77,15 +76,6 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-actions.yml
 
-  go:
-    needs: changes
-    if: ${{ !cancelled() }}
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ci-go.yml
-    with:
-      run: ${{ needs.changes.outputs.cli != 'false' }}
-
   rust:
     needs: changes
     if: ${{ !cancelled() }}
@@ -116,7 +106,7 @@ jobs:
       && !contains(needs.*.result, 'failure')
       && !contains(needs.*.result, 'cancelled')
       && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-    needs: [actions, go, rust, app]
+    needs: [actions, rust, app]
     permissions: {}
     uses: ./.github/workflows/ci-docs.yml
     secrets:

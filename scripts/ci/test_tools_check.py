@@ -1,6 +1,5 @@
 """tools_check reads the repo's pins and reports tools against them."""
 
-import re
 import unittest
 
 from makevars import make_value
@@ -10,17 +9,16 @@ import tools_check as tc
 class PinParsingTests(unittest.TestCase):
     def test_every_pin_is_read_from_the_repo(self):
         pins = tc.parse_pins()
-        self.assertRegex(pins["go"], r"^\d+\.\d+(\.\d+)?$")
         self.assertEqual(pins["rust"], make_value("VCS_RUST"))
         self.assertEqual(pins["cargo-about"], make_value("CARGO_ABOUT_VERSION"))
-        for name in ("golangci-lint", "shellcheck", "jactionlint", "cargo-about"):
+        for name in ("shellcheck", "jactionlint", "cargo-about"):
             with self.subTest(name=name):
                 self.assertRegex(pins[name], r"^\d+\.\d+\.\d+$")
         self.assertRegex(pins["xcode"], r"^\d+(\.\d+)*$")
 
-    def test_go_pin_matches_go_mod(self):
-        go_mod = tc.read("go.mod")
-        self.assertEqual(tc.parse_pins()["go"], re.search(r"^go (\S+)$", go_mod, re.M)[1])
+    def test_no_go_toolchain_is_pinned(self):
+        # Go retired with #682: contributors need only Rust and Swift toolchains.
+        self.assertFalse({"go", "golangci-lint"} & set(tc.parse_pins()))
 
 
 class CompareTests(unittest.TestCase):

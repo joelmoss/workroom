@@ -3,7 +3,8 @@ import WorkroomDomain
 import XCTest
 
 /// Decodes the CLI's `--json` contract goldens (`testdata/contracts`) with the app's own types.
-/// `cmd/contract_test.go` checks the CLI still prints each file byte for byte, so a change on
+/// The CLI's contract suite (`vcs/crates/workroomd/tests/commands_contract.rs`) checks the CLI
+/// still prints each file byte for byte, so a change on
 /// either side that the other cannot read fails one of the two tests. The app's own reading of a
 /// create's events, through `CreationRun`, is `CreationRunContractTests` in the app's tests.
 final class CLIContractTests: XCTestCase {

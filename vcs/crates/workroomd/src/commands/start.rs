@@ -497,6 +497,33 @@ mod tests {
         assert_eq!(split_base("", &remotes), ("origin", ""));
     }
 
+    /// Every row of the table the app's `RemoteWorkrooms.splitBase` is tested against, so the CLI
+    /// and the app read a base branch alike.
+    #[test]
+    fn a_base_splits_as_the_shared_table_says() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../testdata/twins/split_base.tsv"
+        );
+        let table = std::fs::read_to_string(path).expect("read split_base.tsv");
+        let mut rows = 0;
+        for line in table.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4, "{line:?}");
+            let remotes: Vec<&str> = fields[0].split(',').collect();
+            assert_eq!(
+                split_base(fields[1], &remotes),
+                (fields[2], fields[3]),
+                "{line:?}"
+            );
+            rows += 1;
+        }
+        assert!(rows >= 8, "read only {rows} rows");
+    }
+
     #[test]
     fn local_work_says_what_a_create_leaves_out() {
         let work = |ahead, uncommitted, behind| LocalWork {

@@ -331,7 +331,7 @@ enum RemoteProvisioning {
 
   // MARK: Workroom scripts
 
-  /// A workroom's two scripts, by the word the CLI uses for each (`internal/script`).
+  /// A workroom's two scripts, by the word the CLI uses for each (`workroom run-script`).
   enum Script: String, Sendable {
     case setup, teardown
     var fileName: String { "workroom_\(rawValue)" }

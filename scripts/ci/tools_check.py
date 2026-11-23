@@ -1,13 +1,11 @@
 """`make tools-check`: compare this machine's tools with the versions the repo pins.
 
-Read-only. Every pin is read from where the repo already records it (go.mod, ci-go.yml,
-ci-actions.yml, mk/vcs.mk and mk/notices.mk through make, the setup-app-build composite); none is
-written here.
-Tools are found on PATH however they were installed (Homebrew, `go install`, rustup, mise, ...).
+Read-only. Every pin is read from where the repo already records it (ci-actions.yml, mk/vcs.mk and
+mk/notices.mk through make, the setup-app-build composite); none is written here.
+Tools are found on PATH however they were installed (Homebrew, rustup, cargo, mise, ...).
 Prints one line per tool and exits non-zero when a tool is missing or at another version.
 """
 
-import os
 from pathlib import Path
 import re
 import shutil
@@ -34,13 +32,9 @@ def first(pattern, text, what):
 
 def parse_pins():
     """Every pinned version, read from the file that records it."""
-    ci_go = read(".github/workflows/ci-go.yml")
     ci_actions = read(".github/workflows/ci-actions.yml")
     xcode = read(".github/actions/setup-app-build/action.yml")
     return {
-        "go": first(r"^go (\d+(?:\.\d+)*)\s*$", read("go.mod"), "the go line in go.mod"),
-        "golangci-lint": first(r"^\s*GOLANGCI_LINT_VERSION:\s*(\S+)", ci_go,
-                               "GOLANGCI_LINT_VERSION in ci-go.yml"),
         "rust": make_value("VCS_RUST"),
         "cargo-about": make_value("CARGO_ABOUT_VERSION"),
         "shellcheck": first(r"^\s*SHELLCHECK_VERSION:\s*(\S+)", ci_actions,
@@ -56,10 +50,10 @@ def numbers(version):
     return tuple(int(part) for part in version.split("."))
 
 
-def run(command, env=None):
+def run(command):
     """The command's stdout, or None when it is missing or fails."""
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60, env=env)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout if result.returncode == 0 else None
@@ -74,30 +68,13 @@ def compare(name, local, pinned, hint, newer_is_note=False):
     """A (status, line) pair for a tool at `local` against the version `pinned`."""
     if local is None:
         return MISSING, f"{name}: not found; {hint}"
-    # A pin of `1.27` (go.mod may write two parts) is met by any `1.27.x`.
+    # A pin of `27.1` (a two-part version, as Xcode's) is met by any `27.1.x`.
     same = local == pinned or local.startswith(pinned + ".")
     if same:
         return OK, f"{name} {local}"
     if newer_is_note and numbers(local) > numbers(pinned):
         return NOTE, f"{name} {local} is newer than the pinned {pinned}, which is fine"
     return MISMATCH, f"{name}: local {local}, pinned {pinned}; {hint}"
-
-
-def check_go(pin):
-    if not shutil.which("go"):
-        return [(MISSING, f"go: not found; install Go {pin}")]
-    local = version_in(run(["go", "version"]), r"go version go(\d+\.\d+(?:\.\d+)?)")
-    rows = [compare("go", local, pin, f"install Go {pin}", newer_is_note=True)]
-    # A GOROOT left over from another Go makes every package fail to compile with
-    # `version "goX" does not match go tool version "goY"`.
-    env_root = os.environ.get("GOROOT")
-    if env_root:
-        clean = {key: value for key, value in os.environ.items() if key != "GOROOT"}
-        own = (run(["go", "env", "GOROOT"], env=clean) or "").strip()
-        if own and os.path.realpath(env_root) != os.path.realpath(own):
-            rows.append((MISMATCH, f"GOROOT: env says {env_root}, the go on PATH uses {own}; "
-                                   "unset GOROOT"))
-    return rows
 
 
 def check_rust(pin):
@@ -145,8 +122,6 @@ def check_simple(name, pin, command):
 def main():
     pins = parse_pins()
     rows = []
-    rows += check_go(pins["go"])
-    rows += check_simple("golangci-lint", pins["golangci-lint"], ["golangci-lint", "--version"])
     rows += check_rust(pins["rust"])
     rows += check_cargo_about(pins["cargo-about"])
     rows += check_simple("shellcheck", pins["shellcheck"], ["shellcheck", "--version"])

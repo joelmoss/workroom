@@ -137,7 +137,8 @@ enum AddProjectSheetModel {
   }
 
   /// What Finder leaves in a folder it has shown, which doesn't make it non-empty: the CLI's own
-  /// list (`finderJunk` in internal/workroom), kept the same so the sheet and the CLI agree.
+  /// list (`FINDER_JUNK` in the CLI's `add_project.rs`), kept the same so the sheet and the CLI
+  /// agree.
   static let finderJunk: Set<String> = [".DS_Store", ".localized"]
 
   /// The confirm button's title and tooltip, the same in the sheet and the onboarding step.

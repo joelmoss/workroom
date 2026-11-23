@@ -1,16 +1,16 @@
 # shellcheck shell=sh
 #
 # Shared release-channel classification for Workroom's shell tooling (appcast.sh and the
-# curl installers). Mirrors the Go `internal/channel` package and the Swift `ReleaseChannel`
-# enum, and the Rust copy in vcs/crates/workroomd/src/commands/channel.rs — all four MUST agree
-# on what a tag's channel is. If you change a rule here, change all four.
+# curl installers). Mirrors the CLI's vcs/crates/workroomd/src/commands/channel.rs and the Swift
+# `ReleaseChannel` enum — all three MUST agree on what a tag's channel is. If you change a rule
+# here, change all three.
 #
 # wr_classify_channel <tag>
 #   Prints the channel name (stable | pre | nightly) and returns 0, or prints nothing and
 #   returns 1 for a tag that belongs to no channel (the "appcast" feed release, or a tag that
 #   is not a recognizable version).
 #
-#   Rules (identical to internal/channel.Classify):
+#   Rules (identical to channel.rs's classify):
 #     appcast        -> excluded (return 1)
 #     nightly        -> nightly   (the fixed rolling release)
 #     vX.Y.Z         -> stable    (no prerelease component)

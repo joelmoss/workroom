@@ -2,9 +2,8 @@
 //! `--json` error envelope, and its process exit code (ADR 0013). Callers branch on the code, not
 //! the message, so a code never changes once shipped.
 //!
-//! The Go CLI's registry (`internal/errs/errs.go`) is the source until Go retires (#682); a test
-//! holds this table to it, entry by entry. `MacOnly` and `ManagedInstall` are new with the Rust
-//! binary (ADR 0078).
+//! The retired Go CLI's registry shipped first; a test holds this table to its codes, entry by
+//! entry. `MacOnly` and `ManagedInstall` are new with the Rust binary (ADR 0078).
 //!
 //! The terminal API's kinds are new with it too (#360, ADR 0079): the daemon replies with them by
 //! code (`terminal::api::kind`), and its commands exit with them.
@@ -298,37 +297,44 @@ impl CliError {
 mod tests {
     use super::*;
 
-    /// Each `{ErrX, "Code", N},` entry of Go's registry, as (code, exit code).
-    fn go_registry() -> Vec<(String, u8)> {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../internal/errs/errs.go"
-        );
-        let source = std::fs::read_to_string(path).expect("read internal/errs/errs.go");
-        let start = source
-            .find("var registry = []classification{")
-            .expect("registry");
-        let body = &source[start..source[start..].find("\n}").map(|end| start + end).unwrap()];
-        body.lines()
-            .filter_map(|line| {
-                let entry = line.trim().strip_prefix('{')?.strip_suffix("},")?;
-                let mut fields = entry.split(", ");
-                let _sentinel = fields.next()?;
-                let code = fields.next()?.trim_matches('"').to_string();
-                let exit = fields.next()?.parse().ok()?;
-                Some((code, exit))
-            })
-            .collect()
-    }
+    /// The retired Go CLI's registry (`internal/errs/errs.go` until #682), as (code, exit code):
+    /// shipped codes, which callers branch on, so frozen here.
+    const SHIPPED_BY_GO: &[(&str, u8)] = &[
+        ("InWorkroom", 3),
+        ("UnsupportedVCS", 3),
+        ("NotADirectory", 3),
+        ("InvalidName", 3),
+        ("DirExists", 3),
+        ("WorkspaceExists", 3),
+        ("WorkspaceNotFound", 3),
+        ("ConfirmationMismatch", 2),
+        ("UnsafeDeletePath", 2),
+        ("Cancelled", 4),
+        ("SetupScriptFailed", 5),
+        ("TeardownScriptFailed", 5),
+        ("ConfigReadFailed", 6),
+        ("ConfigWriteFailed", 6),
+        ("VCSCommandFailed", 1),
+        ("RemoteProjectUnsupported", 3),
+        ("RemoteWorkroomUnsupported", 3),
+        ("ProjectNotFound", 3),
+        ("WorkroomNotFound", 3),
+        ("InvalidHostDescriptor", 2),
+        ("WorkroomExists", 3),
+        ("BaseBranchNotFound", 3),
+        ("ScriptNotTrusted", 3),
+        ("LocalWorkLeftOut", 3),
+        ("StartCommitUnusable", 3),
+        ("CloneFailed", 1),
+        ("DestinationNotEmpty", 3),
+    ];
 
     #[test]
     fn every_go_kind_has_the_same_code_and_exit_code_here() {
-        let go = go_registry();
-        assert!(
-            go.len() >= 20,
-            "read only {} entries from errs.go",
-            go.len()
-        );
+        let go: Vec<(String, u8)> = SHIPPED_BY_GO
+            .iter()
+            .map(|(code, exit)| (code.to_string(), *exit))
+            .collect();
         let ours: Vec<(String, u8)> = ALL
             .iter()
             .map(|kind| (kind.code().to_string(), kind.exit_code()))

@@ -38,13 +38,10 @@ jobs:
           fetch-depth: 0
 
       # Xcode and XcodeGen + create-dmg + sentry-cli. sentry-cli uploads dSYMs in release.sh
-      # (skipped there if the Sentry env vars are unset). No Go: no release builds the Go CLI
-      # (ADR 0078). go-cache stays off as well, for the linter, which can't see the step is skipped.
+      # (skipped there if the Sentry env vars are unset).
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
         with:
-          go: "false"
-          go-cache: "false"
           formulae: xcodegen create-dmg getsentry/tools/sentry-cli
 
       # Zig, the darwin and Linux targets (Homebrew rust can't cross-compile, hence rustup's), and
@@ -117,7 +114,7 @@ jobs:
           mkdir "$SHIPPED"
           tar -xzf "macapp/build/release/cli/workroom_${VERSION#v}_darwin_arm64.tar.gz" -C "$SHIPPED"
           WORKROOM_BIN="$SHIPPED/workroom" rustup run "$(make -s print-VCS_RUST)" \
-            cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- --include-ignored
+            cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract
 
       - name: Preserve signed installer for publication
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

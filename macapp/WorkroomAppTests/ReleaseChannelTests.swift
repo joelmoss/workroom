@@ -4,7 +4,7 @@ import XCTest
 
 /// The floor model, expressed as Sparkle allowed-channel sets. Sparkle always includes the default
 /// (untagged = stable) channel, so `.stable` is empty and pre/nightly list only the extra channels
-/// they opt into. Mirror of the Go `internal/channel` FloorSet contract.
+/// they opt into. Mirror of the CLI's floor sets (`vcs/crates/workroomd/src/commands/channel.rs`).
 final class ReleaseChannelTests: XCTestCase {
   func testAllowedSparkleChannelsFloor() {
     XCTAssertEqual(ReleaseChannel.stable.allowedSparkleChannels, [])
@@ -23,11 +23,10 @@ final class ReleaseChannelTests: XCTestCase {
 
   /// The app classifies no tags, but its raw values must be the channel names the CLI and
   /// `channel-helper.sh` classify tags into (and `appcast.sh` writes): every channel in their
-  /// shared fixture, `internal/channel/testdata/channel_cases.tsv`, and no other.
+  /// shared fixture, `testdata/channel_cases.tsv`, and no other.
   func testRawValuesAreTheChannelsTheClassifiersProduce() throws {
     var channels = Set<String>()
-    for fields in try SharedFixture.rows(
-      "internal/channel/testdata/channel_cases.tsv", columns: 2)
+    for fields in try SharedFixture.rows("testdata/channel_cases.tsv", columns: 2)
     where fields[1] != "EXCLUDED" {
       channels.insert(fields[1])
     }

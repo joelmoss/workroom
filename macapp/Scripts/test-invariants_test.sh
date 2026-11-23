@@ -242,9 +242,9 @@ if ! grep -q '^[[:space:]]*CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlem
 fi
 
 # --- the release and the Nightly ship the one Rust binary --------------------------------------
-# ADR 0078: no release ships both binaries. The standalone archives are cli-archives.sh's, which
+# ADR 0078: the release ships one binary. The standalone archives are cli-archives.sh's, which
 # refuses a Go binary and a Windows build, and publish-assets.sh puts them up, which refuses a
-# release holding any other archive. Nothing builds the Go CLI or runs goreleaser beside them. The
+# release holding any other archive. Nothing builds the retired Go CLI or runs goreleaser. The
 # release runs the contract suite against the binary it ships; the Nightly cannot, as the suite's
 # goldens are the main binary's and the nightly's baked channel differs by design.
 expect_workflow_runs() {
@@ -282,7 +282,7 @@ version_json_flag_may_come_before_the_command
 version_json_matches_the_golden
 version_json_reports_the_configured_channel"
   got_skips="$(grep -o -- '--skip [A-Za-z0-9_]*' "$NIGHTLY_YML" | sed 's/^--skip //' | LC_ALL=C sort)"
-  if [ "$got_skips" != "$want_skips" ] || ! grep -q -- '^[^#]*--include-ignored --exact' "$NIGHTLY_YML"; then
+  if [ "$got_skips" != "$want_skips" ] || ! grep -q -- '^[^#]*--exact' "$NIGHTLY_YML"; then
     echo "FAIL: nightly.yml's contract suite no longer skips exactly the four main-channel cases"
     echo "      (with --exact): got '$(echo "$got_skips" | tr '\n' ' ')'."
     fails=$((fails + 1))

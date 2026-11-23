@@ -10,12 +10,11 @@
 
 <!-- List what you ran and the result. Say which checks you skipped and why. -->
 
-- [ ] `make cli-lint` and `make cli-test` (Go)
 - [ ] `make app-lint` and `make app-test` (Swift)
 - [ ] `make app-package-test` (changes under `macapp/Packages`)
 - [ ] `make app-test-scripts` (changes under `macapp/Scripts`)
 - [ ] `make actions-lint` (changes under `.github/workflows`)
-- [ ] In `vcs/`: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test` (Rust changes)
+- [ ] `make vcs-lint`, `make vcs-test` and `make contract-test` (Rust changes, the CLI included)
 
 ## Screenshots
 
@@ -23,7 +22,7 @@
 
 ## Checklist
 
-- [ ] The `--json` contract has no breaking change, or `schema_version` in `cmd/json.go` is bumped.
+- [ ] The `--json` contract has no breaking change, or `SCHEMA_VERSION` in `vcs/crates/workroomd/src/commands/envelope.rs` is bumped.
 - [ ] Tests cover the changed behavior and any regression it fixes.
 - [ ] `docs-site/` is updated for any change users see, or none is needed.
 - [ ] The title follows the repo's commit style, such as `fix(macapp): …`, `refactor(macapp): …` or `docs(…): …`.

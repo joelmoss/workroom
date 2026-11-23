@@ -1,8 +1,8 @@
-# Shared $SHELL -> login-shell invocation cases. Three runtimes each decide how to start the user's
-# login shell, and all three MUST agree on every row: Go internal/script's loginShellInvocation
-# (login_environment_test.go), Swift ShellEnvironment.loginShellInvocation (WorkroomSystem's
-# ShellEnvironmentTests) and Rust workroomd's host::environment::probe_invocation
-# (host/environment/tests.rs). The code stays three copies, one per runtime (ADR 0005's spirit);
+# Shared $SHELL -> login-shell invocation cases. Two runtimes each decide how to start the user's
+# login shell, and both MUST agree on every row: Swift ShellEnvironment.loginShellInvocation
+# (WorkroomSystem's ShellEnvironmentTests) and the Rust workroom's
+# host::environment::probe_invocation (host/environment/tests.rs). The code stays two copies, one
+# per runtime (ADR 0005's spirit);
 # this table is what keeps them one rule. A shell the rule doesn't know runs as a login /bin/sh.
 # Format: <shell><TAB><program><TAB><flag>. A row with an empty shell (a line starting with a tab)
 # tests an unset or empty $SHELL.
