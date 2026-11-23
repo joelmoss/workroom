@@ -320,8 +320,7 @@ fn check_golden(owner: Owner, file: &str, got: &str) {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let how = match owner {
         Owner::ThisSuite => "rerun with WORKROOM_CONTRACT_UPDATE=1",
-        Owner::Frozen => "not happen: it is the retired Go CLI's output, frozen, which the binary \
-                          must match",
+        Owner::Frozen => "not happen: it is the retired Go CLI's output, which the binary matches",
     };
     assert!(
         got == want,
