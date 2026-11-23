@@ -132,6 +132,8 @@ Deleting removes the workroom's directory. For a workroom on your Mac, Workroom 
 
 The row leaves the sidebar at once. Workroom runs your project's `scripts/workroom_teardown` script in the background, then removes the directory. You cannot delete a workroom while its setup is still running.
 
+Nightly only. Only you can delete a workroom or a project. Run by a coding agent such as Claude Code or Codex, `workroom delete` and `workroom delete-project` delete nothing and tell the agent to ask you to delete it here or in your own terminal. This stops a confused agent, not a determined one. See [What a coding agent leaves to you](../guides/drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
+
 ### When the teardown fails
 
 If the teardown script fails or can't start, the delete stops. The workroom comes back in the sidebar with its folder and branch, but its terminals were closed before the script ran, so open new ones if you keep it. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script?** instead, says which workroom and project it's for, and shows the script.

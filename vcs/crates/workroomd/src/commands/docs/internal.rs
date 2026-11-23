@@ -734,6 +734,10 @@ fn hidden_section(command: &Command, path: &str, app: &str, sub: bool) -> String
     if !sub && command.mac_only {
         text += "Runs on a Mac only.\n\n";
     }
+    if !sub && super::super::needs_the_user::guards(command.name) {
+        text += &escaped(super::super::needs_the_user::SAYS);
+        text += "\n\n";
+    }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     // A subcommand that takes its parent's flags lists them; its parent, with none of its own, says
     // so only when it has no subcommands either.

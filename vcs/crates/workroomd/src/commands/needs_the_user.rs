@@ -55,6 +55,17 @@ const GUARDED: &[Guarded] = &[
     },
 ];
 
+/// What a guarded command's `--help` and CLI page say of it, after its description.
+pub(super) const SAYS: &str = "Only a person may run it. Under a coding agent, such as Claude Code \
+    or Codex, it is refused with NeedsTheUser and changes nothing, so the agent asks you to do it in \
+    the Workroom app or in your own terminal. That stops a confused coding agent, not a determined \
+    one.";
+
+/// Whether the command `name` (a top-level command's) is one only a person may run.
+pub(super) fn guards(name: &str) -> bool {
+    GUARDED.iter().any(|guarded| guarded.command == name)
+}
+
 /// The refusal of `command` (a top-level command's name, its subcommand's `leaf`) under the coding
 /// agent `agent_above` finds, or `None` when the command is no person's alone, or no coding agent
 /// is above. Only a guarded command looks.

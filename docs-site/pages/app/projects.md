@@ -90,6 +90,8 @@ Deleting a project removes it from Workroom. What happens to the files depends o
 
 With either option that removes local workrooms, each workroom's teardown script runs before its directory goes, and a failing teardown stops the delete. **Remove from Workroom only** runs no local teardown scripts. Remote workrooms are deleted, with their teardowns, whichever option you choose. After a failure, **Delete Without Teardowns** skips the scripts for every remaining workroom. See [Delete a workroom](workrooms.md#delete-a-workroom).
 
+Nightly only. A coding agent can't delete a project for you: run by one, `workroom delete-project` deletes nothing and tells it to ask you. See [What a coding agent leaves to you](../guides/drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
+
 Deleting a project also closes its terminals. If a coding agent started with **Investigate** is still running there, the sheet warns you that deleting stops it. Workroom will not delete a project while a workroom in it is still being created.
 
 > [!WARNING]

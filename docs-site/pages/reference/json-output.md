@@ -135,6 +135,7 @@ Branch on the exit code when you don't need the details.
 | `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it, or the folder gained files while the clone ran. No clone is left behind. Hidden staging that a crashed clone on this machine left is removed first and doesn't count. When only clone staging (`.clone-*` folders and `.clone-*.lock` files) is in the way, the message names it. |
 | `MacOnly` | 3 | Nightly only. A command that reads or writes the Mac's Workroom config, such as `create` or `list`, ran somewhere other than a Mac, such as a remote host. |
 | `ManagedInstall` | 3 | Nightly only. `update` ran in an install something else keeps up to date: the copy inside the Workroom app, the daemon the app installed on a host, or the daemon's own copy that its terminals run. Update the app instead; a host gets each newer build when the app connects. |
+| `NeedsTheUser` | 3 | Nightly only. `trust`, `delete` or `delete-project` ran under a coding agent, such as Claude Code or Codex: approving a script and deleting are the user's to do. Nothing was approved or deleted. The message says to ask the user to do it in the Workroom app, or to run the command in their own terminal. |
 | `InternalError` | 1 | Anything else. |
 
 <!-- End of the generated kinds. -->

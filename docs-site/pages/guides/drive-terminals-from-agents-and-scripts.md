@@ -120,6 +120,14 @@ unset WORKROOM_BIN_DIR
 
 In fish, use `set -e WORKROOM_BIN_DIR` in `config.fish`. You can always run the matching one directly, whether or not the variable is set, as `"$WORKROOM_DAEMON.bin/path/workroom"`: the bin folder sits beside the daemon's socket. See [Environment variables](../reference/environment-variables.md#variables-your-terminals-receive) for `WORKROOM_PANE`, `WORKROOM_DAEMON` and how Workroom keeps the folder first.
 
+## What a coding agent leaves to you
+
+Two things in Workroom are yours to do, not a coding agent's: approving a project's setup and teardown scripts, and deleting a workroom or a project. So `workroom trust`, `workroom delete` and `workroom delete-project` refuse to run under a coding agent such as Claude Code or Codex, whatever their flags. They approve and delete nothing, exit `3` with `NeedsTheUser`, and say what to ask you: to approve or delete it in the Workroom app, or to run the command yourself in your own terminal. `workroom help agents` and the skill tell agents to ask you instead.
+
+A command counts as run under a coding agent when one of the processes it was started from is one: the agent itself, or a shell the agent started. The app, your own terminals, your scripts and cron jobs aren't, so they run these commands as before. Commands that only read, such as `workroom trust status` and `workroom list`, and `workroom create --skip-setup`, run under a coding agent as anywhere.
+
+This stops a confused coding agent, not a determined one. An agent that sets out to get around it can, for example by typing the command into another terminal with `workroom send`.
+
 ## Who can use it
 
 The terminal API is reached through the daemon's socket, which only your user can open. Anything that can open it can read and type into every terminal, as you can, so it adds no access your user doesn't already have. A command finds which pane it runs in from its own process: the pane whose shell it runs under. Only a process outside every pane's processes uses `WORKROOM_PANE` instead, such as a shell in a tmux server's window, whose server a pane started and left running. tmux can hand such a window another pane's `WORKROOM_PANE` (its `update-environment` option), and the command is then taken for that pane: refused as that pane's own by `send` and `close`, and named as sent from it.
