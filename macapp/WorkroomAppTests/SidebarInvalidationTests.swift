@@ -726,18 +726,22 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [group], "only the hovered row re-runs")
   }
 
-  /// The fold chevron is always in a group's leading column while it can fold, hovered or not.
-  func testAGroupsRowShowsItsFoldChevronWheneverItCanFold() throws {
-    let group = TerminalGroup(id: UUID(), name: "Ops")
-    func model(canFold: Bool, hovered: Bool) -> SidebarTerminalGroupRowModel {
-      SidebarTerminalGroupRowModel(
+  /// A group lists its terminals under its row, and so hides its own marks, only while it can
+  /// fold and is unfolded; hover never changes that.
+  func testAGroupsRowListsItsTerminalsOnlyWhileUnfolded() throws {
+    func model(folded: Bool, canFold: Bool, hovered: Bool) -> SidebarTerminalGroupRowModel {
+      var group = TerminalGroup(id: UUID(), name: "Ops")
+      group.isFolded = folded
+      return SidebarTerminalGroupRowModel(
         sid: .terminalGroup(group.id), group: group, title: "Ops",
         activity: SidebarTargetActivity(), canFold: canFold, hovered: hovered)
     }
-    XCTAssertTrue(model(canFold: true, hovered: false).showsFoldButton, "its chevron at rest")
-    XCTAssertTrue(model(canFold: true, hovered: true).showsFoldButton)
+    XCTAssertTrue(model(folded: false, canFold: true, hovered: false).showsTerminals)
+    XCTAssertTrue(model(folded: false, canFold: true, hovered: true).showsTerminals)
+    XCTAssertFalse(model(folded: true, canFold: true, hovered: true).showsTerminals, "folded")
     XCTAssertFalse(
-      model(canFold: false, hovered: true).showsFoldButton, "an empty Quick Terminal never folds")
+      model(folded: false, canFold: false, hovered: true).showsTerminals,
+      "an empty Quick Terminal never folds")
   }
 
   /// A group's menu and VoiceOver offer Collapse while its terminals show and Expand while folded,

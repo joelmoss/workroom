@@ -12,9 +12,9 @@ enum ProgramStatusPresentation {
   static let showWaitingAction = "Show the terminal that needs you"
   static let reportedBy = "Reported by the program in this terminal"
   static let reportedByShell = "Reported by the shell in this terminal"
-  static let staleLine = "May be out of date: reconnecting…"
+  static let staleLine = "Connection to the host was lost. Reconnecting…"
   static let stuckLine = "Stuck? Right-click, then Clear status."
-  static let mayBeOutOfDate = "may be out of date"
+  static let mayBeOutOfDate = "disconnected, reconnecting"
   static let turnFinished = "Turn finished"
   /// A command result's headline (#473), in the shell's words; nil for a program's record.
   static func commandHeadline(_ record: ProgramStatusRecord) -> String? {
@@ -144,7 +144,7 @@ enum ProgramStatusPresentation {
   }
 
   /// What a parent element's VoiceOver label appends for a terminal: the waiting sentence or the
-  /// finished turn, then "may be out of date" while the host's link is down.
+  /// finished turn, then "disconnected, reconnecting" while the host's link is down.
   static func accessibilityParts(indicator: PaneIndicator, rollup: ProgramStatusRollup?)
     -> [String]
   {
@@ -156,6 +156,12 @@ enum ProgramStatusPresentation {
     }
     if !parts.isEmpty, rollup?.stale == true { parts.append(mayBeOutOfDate) }
     return parts
+  }
+
+  /// A disconnected terminal's mark tooltip: that it is reconnecting, then what it last showed.
+  static func disconnectedTooltip(lastSeen mark: ProgramStatusGlyph.Mark) -> String {
+    let last = mark == .blocked ? "waiting for you" : turnFinished.lowercased()
+    return "\(staleLine)\nLast seen: \(last)"
   }
 
   /// A workroom row's glyph tooltip.

@@ -26,17 +26,17 @@ struct SidebarProjectRowAdapter: View, Equatable {
 
   private var model: SidebarProjectRowModel {
     let expanded = !store.collapsedProjects.contains(project.path)
-    var waiting = 0
-    var waitingStale = false
     // The waiting count shows only while collapsed, so an expanded project observes no terminal.
-    if !expanded {
-      let ids = project.targetIDs
-      let terminals = store.terminals
-      waiting = ids.reduce(0) { $0 + terminals.blockedTerminalCount(forTargetID: $1) }
-      waitingStale = waiting > 0 && ids.contains { terminals.isWaitingStale(forTargetID: $0) }
-    }
+    let summary =
+      expanded
+      ? TargetStatusSummary()
+      : project.targetIDs.reduce(TargetStatusSummary()) {
+        $0 + store.terminals.statusSummary(forTargetID: $1)
+      }
+    // Disconnected only when every waiting terminal is: one that can be answered keeps the hand.
     return SidebarProjectRowModel(
-      project: project, expanded: expanded, waiting: waiting, waitingStale: waitingStale)
+      project: project, expanded: expanded, waiting: summary.waiting,
+      waitingStale: summary.allWaitingStale)
   }
 }
 
@@ -158,28 +158,17 @@ extension AppStore {
 
   /// What `targetID`'s terminals report on its row (#358).
   func sidebarActivity(of targetID: TerminalTarget.ID) -> SidebarTargetActivity {
-    let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
-    return SidebarTargetActivity(
-      waiting: waiting,
-      waitingStale: waiting > 0 && terminals.isWaitingStale(forTargetID: targetID),
-      failed: terminals.isProgressFailed(forTargetID: targetID)
-        || terminals.hasProgramError(forTargetID: targetID),
-      running: terminals.isRunning(forTargetID: targetID))
+    SidebarTargetActivity(terminals.statusSummary(forTargetID: targetID))
   }
 
   /// What a Terminals-section row's terminals report on it (story 13): every holder's, since a
   /// standalone terminal or a group's terminals may be in another window or the Quick Terminal's
   /// panel, and the row is in every window.
   func sectionActivity(of targetID: TargetID) -> SidebarTargetActivity {
-    let panes = terminalsSection.observedHolders.map(\.terminals)
-    let waiting = panes.reduce(0) { $0 + $1.blockedTerminalCount(forTargetID: targetID) }
-    return SidebarTargetActivity(
-      waiting: waiting,
-      waitingStale: waiting > 0 && panes.contains { $0.isWaitingStale(forTargetID: targetID) },
-      failed: panes.contains {
-        $0.isProgressFailed(forTargetID: targetID) || $0.hasProgramError(forTargetID: targetID)
-      },
-      running: panes.contains { $0.isRunning(forTargetID: targetID) })
+    SidebarTargetActivity(
+      terminalsSection.observedHolders.reduce(TargetStatusSummary()) {
+        $0 + $1.terminals.statusSummary(forTargetID: targetID)
+      })
   }
 
   /// A Terminals-section row's waiting mark was clicked: focus the terminal in it that has waited

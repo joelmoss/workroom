@@ -3,8 +3,9 @@ import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
-/// A terminal group's row in the Terminals section (ADR 0077): its fold chevron, its name, styled
-/// as a project's, (edited inline by Rename…) and New Terminal in Group. Selecting it shows the group in this
+/// A terminal group's row in the Terminals section (ADR 0077), laid out as a project's: its name
+/// (edited inline by Rename…) with its fold chevron after it, its terminals' marks, and New
+/// Terminal in Group, shown on hover with the marks sliding left for it. Selecting it shows the group in this
 /// window as a workroom shows; its menu renames it, sets its starting folder and deletes it. The
 /// Quick Terminal's group is listed first: its row slides the panel in, it folds only once its panel
 /// has terminals to list, and it has no rename or delete, since it is built in.
@@ -30,21 +31,6 @@ struct SidebarTerminalGroupRow: View, Equatable {
       }()
     #endif
     HStack(spacing: Spacing.s) {
-      // One leading column: the fold chevron whenever the group has terminals to fold, as a
-      // project row always shows its chevron; an empty column while it has none (the Quick
-      // Terminal before its first terminal), so the name stays in line.
-      if model.showsFoldButton {
-        TerminalDisclosureButton(
-          expanded: !group.isFolded, width: SidebarRowMetrics.caretWidth,
-          help: group.isFolded ? "Show this group's terminals" : "Hide this group's terminals",
-          label: group.isFolded ? "Expand \(title)" : "Collapse \(title)",
-          action: toggleFold
-        )
-        .accessibilityIdentifier("sidebar.group.fold.\(key)")
-      } else {
-        Color.clear.frame(width: SidebarRowMetrics.caretWidth, height: 18)
-      }
-
       if renaming {
         SidebarInlineNameField(
           placeholder: "Terminal group name", draft: $draft,
@@ -55,14 +41,36 @@ struct SidebarTerminalGroupRow: View, Equatable {
         Text(title).font(.subheadline).fontWeight(.medium).foregroundStyle(.secondary)
           .lineLimit(1).truncationMode(.middle)
       }
+      // The fold chevron after the name, as a project row's, shown while the row is hovered,
+      // whenever the group has terminals to fold (not the Quick Terminal before its first
+      // terminal). Laid out always, so nothing moves as it fades in.
+      if model.canFold, !renaming {
+        Button(action: toggleFold) {
+          SidebarDisclosureChevron(
+            expanded: !group.isFolded, visible: model.hovered, weight: .semibold
+          )
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(group.isFolded ? "Show this group's terminals" : "Hide this group's terminals")
+        .accessibilityLabel(group.isFolded ? "Expand \(title)" : "Collapse \(title)")
+        .accessibilityIdentifier("sidebar.group.fold.\(key)")
+      }
       Spacer(minLength: 0)
 
-      // Its terminals' marks: waiting beats a stopped error beats running.
-      SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
-
-      SidebarIconButton(
-        systemImage: "plus", help: newTerminalTitle, id: "sidebar.group.new.\(key)",
-        action: newTerminal)
+      // Its terminals' marks (waiting beats a stopped error beats running), sliding left on hover
+      // for its "+", as a project row's do for its settings and "+".
+      SidebarHoverTrailing(hovered: model.hovered && !renaming) {
+        // Expanded, its terminals' rows show their own marks and unread dots, so it shows neither,
+        // as a root's or workroom's row does.
+        if !model.showsTerminals {
+          SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
+        }
+      } buttons: {
+        SidebarIconButton(
+          systemImage: "plus", help: newTerminalTitle, id: "sidebar.group.new.\(key)",
+          action: newTerminal)
+      }
     }
     .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
@@ -195,8 +203,8 @@ struct SidebarTerminalGroupRowModel: Equatable {
   /// Whether the pointer is over the row.
   var hovered = false
 
-  /// The fold chevron is always in its leading column while it can fold, as a project row's is.
-  var showsFoldButton: Bool { canFold }
+  /// Whether its terminals are listed under it: it can fold, and is not folded.
+  var showsTerminals: Bool { canFold && !group.isFolded }
 
   /// Its menu's and VoiceOver's Expand or Collapse, offered whenever its chevron would be.
   var foldItem: SidebarFoldItem? { canFold ? SidebarFoldItem(expanded: !group.isFolded) : nil }
@@ -287,7 +295,7 @@ struct SidebarTerminalGroupChild: View {
           rowDrag.moved(.terminal(tabID, of: parent), in: store)
         }
     )
-    .onHover { hovered = $0 }
+    .sidebarRowHover($hovered)
     .listRowInsets(EdgeInsets())
     .listRowSeparator(.hidden)
     .listRowBackground(

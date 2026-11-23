@@ -524,7 +524,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(store.notifications.unreadExcludingRequests + alerts.countedWaiting, 2)
   }
 
-  /// "2 requests waiting, 1 unread notification (1 may be out of date)".
+  /// "2 requests waiting, 1 unread notification (1 disconnected)".
   func testTheMenuBarSaysTheBreakdown() {
     let record = blocked()
     let fresh = WaitingRequest(
@@ -533,7 +533,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
       id: "b", session: UUID(), record: record, since: .now, stale: true, counted: true)
     XCTAssertEqual(
       MenuBarController.breakdown(waiting: [fresh, stale], unread: 1),
-      "2 requests waiting, 1 unread notification (1 may be out of date)")
+      "2 requests waiting, 1 unread notification (1 disconnected)")
     XCTAssertEqual(MenuBarController.breakdown(waiting: [], unread: 2), "2 unread notifications")
     XCTAssertNil(MenuBarController.breakdown(waiting: [], unread: 0))
   }

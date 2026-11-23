@@ -539,8 +539,13 @@ final class ProgramStatusPaneTests: XCTestCase {
 
     monitor.seed(
       session(of: stale), host: .remote(UUID()), records: [waiting], stale: true)
-    XCTAssertTrue(s.isWaitingStale(forTargetID: target.id))
+    // One of the two can be answered now, so the target is not disconnected.
+    XCTAssertFalse(s.isWaitingStale(forTargetID: target.id))
     XCTAssertEqual(s.blockedTerminalCount(forTargetID: target.id), 2)
+
+    s.clearProgramStatus(tab: live.id, target: target.id)
+    XCTAssertTrue(s.isWaitingStale(forTargetID: target.id), "only the disconnected one waits")
+    monitor.seed(session(of: live), records: [waiting])
 
     s.clearProgramStatus(tab: stale.id, target: target.id)
     XCTAssertFalse(s.isWaitingStale(forTargetID: target.id))

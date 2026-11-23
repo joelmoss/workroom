@@ -112,7 +112,7 @@ final class MenuBarController {
     total > 0 && showsCount ? UnreadCount.label(total) : ""
   }
 
-  /// "2 requests waiting, 1 unread notification (1 may be out of date)", or nil with neither.
+  /// "2 requests waiting, 1 unread notification (1 disconnected)", or nil with neither.
   static func breakdown(waiting: [WaitingRequest], unread: Int) -> String? {
     var parts: [String] = []
     if !waiting.isEmpty {
@@ -123,7 +123,7 @@ final class MenuBarController {
     }
     guard !parts.isEmpty else { return nil }
     let stale = waiting.count { $0.stale }
-    return parts.joined(separator: ", ") + (stale > 0 ? " (\(stale) may be out of date)" : "")
+    return parts.joined(separator: ", ") + (stale > 0 ? " (\(stale) disconnected)" : "")
   }
 
   /// The logo's yellow, sampled from `AppMarkColor`.

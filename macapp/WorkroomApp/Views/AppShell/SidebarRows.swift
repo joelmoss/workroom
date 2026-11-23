@@ -139,6 +139,96 @@ enum SidebarTerminalRowStyle: Equatable {
   }
 }
 
+/// A row's trailing marks and the buttons it shows on hover: at rest the marks pack into the
+/// trailing column, with the buttons' room kept at their leading end; on hover the buttons take the
+/// trailing columns and the marks slide left by the buttons' width. Every mark and button is
+/// centred in a slot as wide as the trailing column (`SidebarRowMetrics.iconColumnWidth`), slot
+/// against slot, so the last sits on the same vertical axis as every "+" and the rest line up from
+/// row to row; one that draws nothing takes no slot. The group's width never changes, so neither
+/// does the row's name. The buttons stay laid out at rest (faded and not hit-testable), so a menu
+/// opened from one survives the pointer leaving the row.
+struct SidebarHoverTrailing<Marks: View, Buttons: View>: View {
+  let hovered: Bool
+  @ViewBuilder let marks: () -> Marks
+  @ViewBuilder let buttons: () -> Buttons
+
+  var body: some View {
+    SidebarAnimated(target: hovered) { progress in
+      SidebarHoverTrailingLayout(progress: progress) {
+        slots(buttons())
+          .opacity(progress)
+          .allowsHitTesting(hovered)
+        slots(marks())
+      }
+    }
+  }
+
+  private func slots(_ content: some View) -> some View {
+    HStack(spacing: 0) {
+      ForEach(subviews: content) { $0.frame(width: SidebarRowMetrics.iconColumnWidth) }
+    }
+  }
+}
+
+extension SidebarHoverTrailing where Buttons == EmptyView {
+  /// A row with no hover buttons: its marks, packed and slotted the same way.
+  init(@ViewBuilder marks: @escaping () -> Marks) {
+    self.init(hovered: false, marks: marks, buttons: { EmptyView() })
+  }
+}
+
+/// A 0–1 value that follows `target` with the sidebar's hover ease (0.15 s, none with Reduce
+/// Motion), handed to `content`. Explicit, as an implicit animation never reaches the sidebar's
+/// List rows.
+struct SidebarAnimated<Content: View>: View {
+  let target: Bool
+  @ViewBuilder let content: (CGFloat) -> Content
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Nil until `target` first changes, so a row appearing hovered or expanded starts there.
+  @State private var progress: CGFloat?
+
+  var body: some View {
+    content(progress ?? (target ? 1 : 0))
+      .onChange(of: target) { _, now in
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { progress = now ? 1 : 0 }
+      }
+  }
+}
+
+/// `SidebarHoverTrailing`'s placement: its first subview the buttons, at the trailing edge; its
+/// second the marks, over them at rest and at the leading edge on hover, in between as `progress`
+/// animates. As wide as both side by side.
+struct SidebarHoverTrailingLayout: Layout {
+  var progress: CGFloat
+
+  var animatableData: CGFloat {
+    get { progress }
+    set { progress = newValue }
+  }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let (buttons, marks) = sizes(subviews)
+    return CGSize(width: buttons.width + marks.width, height: max(buttons.height, marks.height))
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    let (buttons, marks) = sizes(subviews)
+    subviews[0].place(
+      at: CGPoint(x: bounds.maxX - buttons.width, y: bounds.midY), anchor: .leading,
+      proposal: ProposedViewSize(buttons))
+    let rest = bounds.maxX - marks.width
+    subviews[1].place(
+      at: CGPoint(x: rest + (bounds.minX - rest) * progress, y: bounds.midY), anchor: .leading,
+      proposal: ProposedViewSize(marks))
+  }
+
+  private func sizes(_ subviews: Subviews) -> (CGSize, CGSize) {
+    (subviews[0].sizeThatFits(.unspecified), subviews[1].sizeThatFits(.unspecified))
+  }
+}
+
 extension View {
   /// A sidebar row's one hit target (#652 critique): its content `height` tall, with the row's
   /// spacing as `padding` inside it rather than as List insets outside it, and one rectangle over
@@ -209,6 +299,35 @@ struct SidebarTargetActivity: Equatable {
   var waitingStale = false
   var failed = false
   var running = false
+  /// A program finished its turn (#358), and whether its host's link is down. Only a standalone
+  /// terminal's row shows it.
+  var done = false
+  var doneStale = false
+}
+
+extension SidebarActions {
+  /// A click anywhere on a root's or workroom's row, as on a project's or group's: expanded, it
+  /// collapses and stays as it is otherwise; else it opens, and lists its terminals under it when it
+  /// has several.
+  @MainActor func clickRow(_ id: SidebarID, target: TerminalTarget.ID, subtree: SidebarSubtreeState)
+  {
+    if subtree.expanded {
+      toggleTerminals(target)
+    } else {
+      select(id)
+      if subtree.hasSubtree { toggleTerminals(target) }
+    }
+  }
+}
+
+extension SidebarTargetActivity {
+  /// A row's marks from its terminals' summary: disconnected only when every waiting (or finished)
+  /// terminal is, as one that can be answered keeps the hand.
+  init(_ summary: TargetStatusSummary) {
+    self.init(
+      waiting: summary.waiting, waitingStale: summary.allWaitingStale, failed: summary.failed,
+      running: summary.running, done: summary.done > 0, doneStale: summary.allDoneStale)
+  }
 }
 
 // MARK: Project
@@ -251,12 +370,11 @@ struct SidebarProjectRow: View, Equatable {
         HStack(spacing: Spacing.s) {
           // The project chevron sits to the right of the project name — projects keep their own
           // disclosure idiom, distinct from the leading caret column the root/workroom/terminal
-          // rows share. Always shown (every project has at least the root as a child).
+          // rows share. Shown while the row is hovered (every project has at least the root as a
+          // child), and laid out always, so nothing moves as it fades in.
           Text(project.displayName).font(.subheadline).fontWeight(.medium)
             .foregroundStyle(.secondary)
-          Image(systemName: model.expanded ? "chevron.down" : "chevron.right")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
+          SidebarDisclosureChevron(expanded: model.expanded, visible: hovered, weight: .semibold)
           Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
@@ -264,50 +382,45 @@ struct SidebarProjectRow: View, Equatable {
       .buttonStyle(.plain)
       .accessibilityHint(model.expanded ? "Collapse project" : "Expand project")
 
-      // Aggregate dot so notifications are visible even when the project is collapsed.
-      SidebarUnreadDot(source: .project(project))
-      // A collapsed project still says a terminal waits on you (#358), in a slot reserved while
-      // collapsed so the dots beside it never move when one starts or stops waiting.
-      if !model.expanded {
-        ZStack {
-          if model.waiting > 0 {
-            NeedsYouButton(count: model.waiting, stale: model.waitingStale, showsCount: false) {
-              actions.showWaiting(project.targetIDs)
-            }
-            .accessibilityIdentifier("sidebar.project.\(project.displayName).needsYou")
+      // Its marks, sliding left on hover for its settings and "+" (`SidebarHoverTrailing`).
+      SidebarHoverTrailing(hovered: hovered) {
+        // Aggregate dot so notifications are visible even when the project is collapsed.
+        SidebarUnreadDot(source: .project(project))
+        // A collapsed project still says a terminal waits on you (#358).
+        if !model.expanded, model.waiting > 0 {
+          NeedsYouButton(count: model.waiting, stale: model.waitingStale) {
+            actions.showWaiting(project.targetIDs)
           }
+          .accessibilityIdentifier("sidebar.project.\(project.displayName).needsYou")
         }
-        .frame(width: 24)
+        // Aggregate VCS status (worst child) when collapsed — so collapsing a project doesn't
+        // hide the command-center signal (issue #24). Only when collapsed: expanded projects show
+        // each row's own dot. Visually distinct from the UnreadDot above (different concern).
+        if !model.expanded {
+          SidebarAggregateStatus(projectPath: project.path)
+        }
+      } buttons: {
+        // Project settings (run command, etc., issue #7) and "+", side by side with no gap
+        // between their slots. "+" asks where, as the context menu does (#309). A create shows
+        // its progress in its own pane and row, never here (#483).
+        SettingsRowButton(help: "Project settings for \(project.displayName)") {
+          actions.openProjectSettings(project)
+        }
+        CreateRowButton(
+          help:
+            "New workroom in \(project.displayName), on this Mac, in a local container or on "
+            + HostKind.remoteProviders.map(\.displayName).joined(separator: " or "),
+          places: { NewWorkroomPlacesMenu(project: project) }
+        )
       }
-      // Aggregate VCS status (worst child) when collapsed — so collapsing a project doesn't
-      // hide the command-center signal (issue #24). Only when collapsed: expanded projects show
-      // each row's own dot. Visually distinct from the UnreadDot above (different concern).
-      if !model.expanded {
-        SidebarAggregateStatus(projectPath: project.path)
-      }
-
-      // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
-      // button (issue #7). Laid out always (opacity-gated) so the row size is stable.
-      SettingsRowButton(
-        help: "Project settings for \(project.displayName)", visible: hovered
-      ) {
-        actions.openProjectSettings(project)
-      }
-      // "+" asks where, as the context menu does (#309). A create shows its progress in its own
-      // pane and row, never here (#483).
-      CreateRowButton(
-        help:
-          "New workroom in \(project.displayName), on this Mac, in a local container or on "
-          + HostKind.remoteProviders.map(\.displayName).joined(separator: " or "),
-        places: { NewWorkroomPlacesMenu(project: project) }
-      )
     }
     .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .frame(height: SidebarRowMetrics.rowHeight)
     .contentShape(Rectangle())
     .accessibilityIdentifier("sidebar.project.\(project.displayName)")
     .accessibilityActions {
-      if !model.expanded, model.waiting > 0 {
+      // Not while every waiting terminal is disconnected: there is nothing to answer yet.
+      if !model.expanded, model.waiting > 0, !model.waitingStale {
         Button(ProgramStatusPresentation.showWaitingAction) {
           actions.showWaiting(project.targetIDs)
         }
@@ -364,54 +477,64 @@ struct SidebarRootRow: View, Equatable {
         toggle: { actions.toggleTerminals(target.id) })
       SidebarRootLabel(projectID: model.projectPath)
       Spacer(minLength: 0)
-      SidebarUnreadDot(source: .target(target.id))
-      if target.isMissing {
-        WarningGlyph()
-          .help("Project folder not found")
-      }
-      // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
-      // the workroom rows' spinner/delete-then-run order.
-      // One mark (#358): waiting beats a stopped error beats running.
-      if activity.waiting > 0 {
-        NeedsYouButton(count: activity.waiting, stale: activity.waitingStale) {
-          actions.showWaiting([target.id])
-        }
-        .accessibilityIdentifier("sidebar.root.\(model.projectName).needsYou")
-      } else if activity.failed || activity.running {
-        RunningSpinner(failed: activity.failed)
-      }
-      // Only an active run gets a control on the project root: click it to stop the command.
-      RowRunButton(target: target, projectPath: model.projectPath)
-    }.sidebarRowFrame(ProjectSidebar.childRowInsets)
-      .modifier(SidebarDragDim(id: id, drag: drag.drag))
-      .onTapGesture { actions.select(id) }
-      // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so
-      // the List still scrolls vertically; the tap above still selects.
-      .simultaneousGesture(drag.splitGesture(id, actions: actions))
-      .modifier(SidebarRootTooltip(projectID: model.projectPath))
-      .accessibilityElement(children: .ignore)
-      .accessibilityAddTraits(.isButton)
-      .modifier(
-        SidebarRootStatusLabel(
-          id: id, projectID: model.projectPath, isMissing: target.isMissing,
-          // The marks' spoken twins: this row ignores its children, so their own labels are lost.
-          programLabels: [
-            activity.waiting > 0
-              ? ProgramStatusPresentation.waitingLabel(
-                count: activity.waiting, stale: activity.waitingStale) : "",
-            activity.failed && activity.waiting == 0 ? "a command reported an error" : "",
-          ])
-      )
-      .accessibilityActions {
-        if activity.waiting > 0 {
-          Button(ProgramStatusPresentation.showWaitingAction) { actions.showWaiting([target.id]) }
+      // Its marks, packed slot against slot as every row's are; it has no hover buttons.
+      SidebarHoverTrailing {
+        // Expanded, its terminals are listed under it, so its row shows no icons at all.
+        if !model.subtree.expanded {
+          SidebarUnreadDot(source: .target(target.id))
+          if target.isMissing {
+            WarningGlyph()
+              .font(.system(size: 11))
+              .help("Project folder not found")
+          }
+          // Only an active run gets a control on the project root: click it to stop the command.
+          // Left of the mark, as on a workroom row, so the marks share the trailing column.
+          RowRunButton(target: target, projectPath: model.projectPath)
+          // One mark (#358): waiting beats a stopped error beats running.
+          if activity.waiting > 0 {
+            NeedsYouButton(count: activity.waiting, stale: activity.waitingStale) {
+              actions.showWaiting([target.id])
+            }
+            .accessibilityIdentifier("sidebar.root.\(model.projectName).needsYou")
+          } else if activity.failed || activity.running {
+            RunningSpinner(failed: activity.failed)
+          }
         }
       }
-      .sidebarFoldAccessibilityAction(model.subtree.foldItem) { actions.toggleTerminals(target.id) }
-      .contextMenu {
-        SidebarFoldMenuItem(item: model.subtree.foldItem) { actions.toggleTerminals(target.id) }
-        SidebarRunMenu(target: target)
+    }
+    // Its last mark in the trailing column every sidebar "+" is in.
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
+    .sidebarRowFrame(ProjectSidebar.childRowInsets)
+    .modifier(SidebarDragDim(id: id, drag: drag.drag))
+    .onTapGesture { actions.clickRow(id, target: target.id, subtree: model.subtree) }
+    // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so
+    // the List still scrolls vertically; the tap above still selects.
+    .simultaneousGesture(drag.splitGesture(id, actions: actions))
+    .modifier(SidebarRootTooltip(projectID: model.projectPath))
+    .accessibilityElement(children: .ignore)
+    .accessibilityAddTraits(.isButton)
+    .modifier(
+      SidebarRootStatusLabel(
+        id: id, projectID: model.projectPath, isMissing: target.isMissing,
+        // The marks' spoken twins: this row ignores its children, so their own labels are lost.
+        programLabels: [
+          activity.waiting > 0
+            ? ProgramStatusPresentation.waitingLabel(
+              count: activity.waiting, stale: activity.waitingStale) : "",
+          activity.failed && activity.waiting == 0 ? "a command reported an error" : "",
+        ])
+    )
+    .accessibilityActions {
+      // Not while every waiting terminal is disconnected: there is nothing to answer yet.
+      if activity.waiting > 0, !activity.waitingStale {
+        Button(ProgramStatusPresentation.showWaitingAction) { actions.showWaiting([target.id]) }
       }
+    }
+    .sidebarFoldAccessibilityAction(model.subtree.foldItem) { actions.toggleTerminals(target.id) }
+    .contextMenu {
+      SidebarFoldMenuItem(item: model.subtree.foldItem) { actions.toggleTerminals(target.id) }
+      SidebarRunMenu(target: target)
+    }
   }
 }
 
@@ -447,6 +570,8 @@ struct SidebarCreationRunRef: Equatable {
 }
 
 struct SidebarWorkroomRow: View, Equatable {
+  static let setupPendingWarning = "Its setup script hasn't run. Review it in the Details pane."
+
   let model: SidebarWorkroomRowModel
   let hovered: Bool
   let drag: SidebarDragPlumbing
@@ -454,6 +579,15 @@ struct SidebarWorkroomRow: View, Equatable {
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.drag == rhs.drag
+  }
+
+  /// The row's warning mark: one glyph for all of them, each on a line of its tooltip.
+  private func warningMark(_ warnings: [String]) -> some View {
+    WarningGlyph()
+      .font(.system(size: 11))
+      .help(warnings.joined(separator: "\n"))
+      .accessibilityIdentifier(
+        model.setupPending ? "sidebar.workroom.\(model.workroom.name).setupPending" : "")
   }
 
   var body: some View {
@@ -470,6 +604,10 @@ struct SidebarWorkroomRow: View, Equatable {
     let workroom = model.workroom
     let target = model.target
     let activity = model.activity
+    let warnings =
+      workroom.warnings.map(\.message) + (model.setupPending ? [Self.setupPendingWarning] : [])
+    // Hidden while its setup is still running: it can't be deleted mid-setup (#116).
+    let deletable = !model.isCreating
     HStack(spacing: Spacing.s) {
       // Leading identity glyph (a cube for a workroom), swapped for the expand/collapse chevron on
       // hover when the row has ≥2 terminals — the same left edge as the root row, so roots and
@@ -481,76 +619,67 @@ struct SidebarWorkroomRow: View, Equatable {
       // Shows the display label when one is set (issue #41), else the real workroom name.
       Text(workroom.displayName).font(.callout).lineLimit(1).truncationMode(.tail)
       Spacer()
-      SidebarUnreadDot(source: .target(target.id))
-      ForEach(workroom.warnings, id: \.kind) { warning in
-        WarningGlyph()
-          .help(warning.message)
-      }
-      if model.setupPending {
-        WarningGlyph()
-          .help("Its setup script hasn't run. Review it in the Details pane.")
-          .accessibilityIdentifier("sidebar.workroom.\(workroom.name).setupPending")
-      }
-      // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
-      // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
-      // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so
-      // it fixes the slot's size and the smaller spinner can't shift the row. Trailing, so the
-      // spinner lines up with the root row's, which has no slot.
-      ZStack(alignment: .trailing) {
-        // A create's progress, for every kind, while its run lasts (#483).
-        if let run = model.creationRun?.run {
-          CreateStepCircle(run: run)
-        } else if activity.waiting == 0, activity.failed || activity.running, !hovered {
-          RunningSpinner(failed: activity.failed)
+      // Its marks, sliding left on hover for its delete button (`SidebarHoverTrailing`).
+      SidebarHoverTrailing(hovered: hovered) {
+        // Expanded, its terminals are listed under it, so its row shows no icons at all.
+        if !model.subtree.expanded {
+          SidebarUnreadDot(source: .target(target.id))
+          if !warnings.isEmpty { warningMark(warnings) }
+          // The run's stop control, only while its command runs. A gone host has nothing left to
+          // run or stop.
+          if !model.hostGone {
+            RowRunButton(
+              target: target, projectPath: model.projectPath,
+              identifier: "sidebar.workroom.\(workroom.name).run")
+          }
+          // A create's progress, for every kind, while its run lasts (#483); else one mark
+          // (#358): waiting beats a stopped error beats running.
+          if let run = model.creationRun?.run {
+            CreateStepCircle(run: run)
+          } else if activity.waiting > 0 {
+            NeedsYouButton(count: activity.waiting, stale: activity.waitingStale) {
+              actions.showWaiting([target.id])
+            }
+            .accessibilityIdentifier("sidebar.workroom.\(workroom.name).needsYou")
+          } else if activity.failed || activity.running {
+            RunningSpinner(failed: activity.failed)
+          }
         }
-        // Hidden while the workroom's setup is still running — it can't be deleted mid-setup
-        // (#116).
-        DeleteRowButton(
-          name: workroom.displayName,
-          visible: hovered && !model.isCreating
-        ) {
-          actions.deleteWorkroom(id)
-        }
-      }
-      // A waiting terminal (#358) takes the mark's place and stays on hover: the delete button
-      // appears in its own slot, on the glyph's leading side, so nothing moves.
-      if activity.waiting > 0 {
-        NeedsYouButton(count: activity.waiting, stale: activity.waitingStale) {
-          actions.showWaiting([target.id])
-        }
-        .accessibilityIdentifier("sidebar.workroom.\(workroom.name).needsYou")
-      }
-      // The run's stop control is only present while its command is running, as on the root row.
-      // A gone host has nothing left to run or stop.
-      if !model.hostGone {
-        RowRunButton(
-          target: target, projectPath: model.projectPath,
-          identifier: "sidebar.workroom.\(workroom.name).run")
-      }
-    }.sidebarRowFrame(ProjectSidebar.childRowInsets)
-      .modifier(SidebarDragDim(id: id, drag: drag.drag))
-      .onTapGesture { actions.select(id) }
-      // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the
-      // List still scrolls vertically; the tap above still selects.
-      .simultaneousGesture(
-        drag.splitGesture(id, actions: actions), including: model.pending ? .none : .all
-      )
-      .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
-      .accessibilityAddTraits(.isButton)
-      .accessibilityActions {
-        if activity.waiting > 0 {
-          Button(ProgramStatusPresentation.showWaitingAction) { actions.showWaiting([target.id]) }
+      } buttons: {
+        if deletable {
+          DeleteRowButton(name: workroom.displayName) {
+            actions.deleteWorkroom(id)
+          }
         }
       }
-      .sidebarFoldAccessibilityAction(model.subtree.foldItem) { actions.toggleTerminals(target.id) }
-      .contextMenu {
-        SidebarFoldMenuItem(item: model.subtree.foldItem) { actions.toggleTerminals(target.id) }
-        // A workroom still being made has nothing to open, label or delete yet.
-        if !model.pending {
-          // No Close and no Remove from Split: a row is neither a tab nor a split member.
-          WorkroomMenuAdapter(sid: id, target: target, style: .full)
-        }
+    }
+    // Its last mark in the trailing column every sidebar "+" is in.
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
+    .sidebarRowFrame(ProjectSidebar.childRowInsets)
+    .modifier(SidebarDragDim(id: id, drag: drag.drag))
+    .onTapGesture { actions.clickRow(id, target: target.id, subtree: model.subtree) }
+    // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the
+    // List still scrolls vertically; the tap above still selects.
+    .simultaneousGesture(
+      drag.splitGesture(id, actions: actions), including: model.pending ? .none : .all
+    )
+    .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
+    .accessibilityAddTraits(.isButton)
+    .accessibilityActions {
+      // Not while every waiting terminal is disconnected: there is nothing to answer yet.
+      if activity.waiting > 0, !activity.waitingStale {
+        Button(ProgramStatusPresentation.showWaitingAction) { actions.showWaiting([target.id]) }
       }
+    }
+    .sidebarFoldAccessibilityAction(model.subtree.foldItem) { actions.toggleTerminals(target.id) }
+    .contextMenu {
+      SidebarFoldMenuItem(item: model.subtree.foldItem) { actions.toggleTerminals(target.id) }
+      // A workroom still being made has nothing to open, label or delete yet.
+      if !model.pending {
+        // No Close and no Remove from Split: a row is neither a tab nor a split member.
+        WorkroomMenuAdapter(sid: id, target: target, style: .full)
+      }
+    }
   }
 }
 
@@ -692,26 +821,22 @@ struct SidebarTerminalRow: View, Equatable {
       }
       Spacer(minLength: 0)
 
-      SidebarUnreadDot(source: .tab(model.tabID))
-
-      // The trailing column, as a standalone terminal's row has it: its status at rest (a spinner
-      // while a command runs, or a waiting or finished program's mark, #358), replaced by the
-      // close button on hover. The close button is always laid out (revealed via opacity) so the
-      // row size is stable and the smaller marks can't shift it.
-      ZStack {
-        if !hovered {
-          if model.indicator == .blocked || model.indicator == .done {
-            ProgramStatusGlyph(
-              mark: model.indicator == .blocked ? .blocked : .done,
-              stale: model.programStatus?.stale == true
-            )
-            .accessibilityHidden(true)
-          } else if model.isRunning || model.indicator == .error {
-            RunningSpinner(failed: model.isProgressFailed || model.indicator == .error)
-          }
+      // Its unread dot and status (a spinner while a command runs, or a waiting or finished
+      // program's mark, #358), sliding left on hover for its close button.
+      SidebarHoverTrailing(hovered: hovered) {
+        SidebarUnreadDot(source: .tab(model.tabID))
+        if model.indicator == .blocked || model.indicator == .done {
+          ProgramStatusGlyph(
+            mark: model.indicator == .blocked ? .blocked : .done,
+            stale: model.programStatus?.stale == true
+          )
+          .accessibilityHidden(true)
+        } else if model.isRunning || model.indicator == .error {
+          RunningSpinner(failed: model.isProgressFailed || model.indicator == .error)
         }
+      } buttons: {
         TabTitleReader(content: content) { title in
-          CloseTerminalRowButton(title: title, visible: hovered) {
+          CloseTerminalRowButton(title: title, visible: true) {
             if let holder {
               holder.requestCloseTerminalTab(model.tabID, for: model.target)
             } else {
@@ -720,7 +845,6 @@ struct SidebarTerminalRow: View, Equatable {
           }
         }
       }
-      .frame(width: SidebarRowMetrics.iconColumnWidth)
     }
     // A small indent so the expanded terminal rows read as children of their root/workroom row.
     .padding(.leading, Spacing.m)
@@ -773,16 +897,25 @@ private struct SidebarLeadingSlot: View {
   let toggle: () -> Void
 
   var body: some View {
-    if subtree.hasSubtree, hovered {
-      TerminalDisclosureButton(
-        expanded: subtree.expanded, width: SidebarRowMetrics.caretWidth, action: toggle)
-    } else {
-      // The glyph's tint carries the VCS dirty signal (orange) in place of a separate status dot. A
-      // workroom on a host wears the network, with the host's kind as its tooltip (#309).
-      SidebarStatusGlyph(id: id, symbol: root ? "house" : target.workroomGlyph)
-        .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
-        .help(root ? "" : target.hostTooltip)
-        .accessibilityLabel(root ? "Project root" : target.hostKind ?? "Workroom")
+    let showsChevron = subtree.hasSubtree && hovered
+    // The glyph cross-fades into the chevron with the sidebar's hover ease (`SidebarAnimated`).
+    SidebarAnimated(target: showsChevron) { chevron in
+      ZStack {
+        // The glyph's tint carries the VCS dirty signal (orange) in place of a separate status
+        // dot. A workroom on a host wears the network, with the host's kind as its tooltip (#309).
+        SidebarStatusGlyph(id: id, symbol: root ? "house" : target.workroomGlyph)
+          .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
+          .help(root ? "" : target.hostTooltip)
+          .accessibilityLabel(root ? "Project root" : target.hostKind ?? "Workroom")
+          .opacity(1 - chevron)
+        if subtree.hasSubtree {
+          TerminalDisclosureButton(
+            expanded: subtree.expanded, width: SidebarRowMetrics.caretWidth, action: toggle
+          )
+          .opacity(chevron)
+          .allowsHitTesting(showsChevron)
+        }
+      }
     }
   }
 }
