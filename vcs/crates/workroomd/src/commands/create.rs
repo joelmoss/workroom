@@ -1,4 +1,4 @@
-//! `workroom create` (#677), as Go's `cmd/create.go` and `Service.CreateNamed` make a workroom:
+//! `workroom create` (#677), ported from the retired Go CLI's `create`, makes a workroom:
 //! a generated name, a git worktree on a `workroom/<name>` branch from the start a create takes
 //! (`start`), its config entry, the main checkout's uncommitted changes when asked, the root's
 //! included files, and then the setup script, once this Mac has approved its bytes

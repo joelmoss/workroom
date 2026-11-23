@@ -977,7 +977,7 @@ fn a_dev_build_is_not_updated() {
     assert_eq!(server.hits(), Vec::<String>::new());
 }
 
-// --- Go's tables (`cmd/update_channel_test.go`, `internal/updater/updater_test.go`) ---
+// --- Tables ported from the retired Go CLI's update tests ---
 
 #[test]
 fn resolve_channel_follows_the_binarys_identity() {

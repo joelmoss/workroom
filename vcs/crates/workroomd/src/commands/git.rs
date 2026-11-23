@@ -1,5 +1,5 @@
-//! git as the Go CLI runs it (`internal/vcs`'s `childEnvironment`), for every command here that
-//! shells out to it in a repository.
+//! git as every command here that shells out to it in a repository runs it, with the environment
+//! the retired Go CLI gave it (ported from its `childEnvironment`).
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -17,7 +17,7 @@ const GIT_REDIRECTS: [&str; 7] = [
     "GIT_CEILING_DIRECTORIES",
 ];
 
-/// git, run in `dir` with the environment Go's `childEnvironment` gives it: this process's without
+/// git, run in `dir` with the environment the Go CLI's `childEnvironment` gave it: this process's without
 /// the repository redirects, no credential prompt, and a ceiling so repository discovery stops at
 /// `dir`. Its stdin is empty; a caller that feeds it one sets its own.
 pub(super) fn command(dir: &Path) -> Command {

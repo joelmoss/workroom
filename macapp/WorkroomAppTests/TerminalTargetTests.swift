@@ -85,8 +85,8 @@ final class TerminalTargetTests: XCTestCase {
   }
 
   /// A base names another remote only when the part before the slash is one, as the CLI reads it.
-  /// The cases are `testdata/twins/split_base.tsv`, which the CLI's `TestSplitBase` also reads, so
-  /// the two copies of the rule can't drift.
+  /// The cases are `testdata/twins/split_base.tsv`, which the CLI's
+  /// `a_base_splits_as_the_shared_table_says` also reads, so the two copies of the rule can't drift.
   func testSplitBaseMatchesTheCLIsRule() throws {
     for fields in try SharedFixture.rows("testdata/twins/split_base.tsv", columns: 4) {
       let remotes = fields[0].split(separator: ",").map(String.init)

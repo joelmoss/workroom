@@ -4,7 +4,7 @@ Paths beginning `Core/`, `Packages/`, `Resources/` and `Scripts/` are relative t
 Read the [session/VCS working rules](../../macapp/AGENTS.md#session-and-vcs-changes) when changing
 or reviewing these layers.
 
-## VCS core (SwiftGitX git + workroomd)
+## VCS core (SwiftGitX git + the daemon)
 
 Workroom is git-only. VCS data reaches the app two ways, behind
 one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the first brick):
@@ -12,8 +12,8 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
 - **Local reads → SwiftGitX (libgit2), pure Swift.** `GitProvider` wraps SwiftGitX and implements
   `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
   dropped: gix bought no real unification and libgit2 is the more complete git engine.)
-- **Daemon-routed reads and writes → `workroomd`.** The `vcs/` Rust workspace holds the `workroomd`
-  daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus
+- **Daemon-routed reads and writes → the daemon (`workroom serve`).** The `vcs/` Rust workspace
+  holds the `workroom` binary's daemon (once named `workroomd`) (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus
   services) and its git read crates (`wr-vcs-git`,
   `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
   `DaemonClient`.
@@ -79,20 +79,21 @@ serializer that every commit, fetch, push and pull goes through (`CLIVCSWriter.g
 the raw, untimed call as the operation and wrap the gate in `withTimeout`, never the reverse (see the
 type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
 
-## Terminal sessions: `workroomd` (Rust) and the Swift helper it replaces
+## Terminal sessions: the daemon (Rust) and the Swift helper it replaces
 
 A pane's shell outlives the pane, so the app does not own the pty — a **session helper** does, and
-the app attaches to it. New sessions all go to `workroomd`, the Workroom daemon; the Swift `workroom-session` in this build only
-attaches to older Swift helpers that are still running (issue #154):
+the app attaches to it. New sessions all go to the Workroom daemon, `workroom serve` (once named
+`workroomd`); the Swift `workroom-session` in this build only attaches to older Swift helpers that
+are still running (issue #154):
 
-- **`workroomd`** (`vcs/crates/workroomd`, Rust) — where every NEW session goes. One binary,
-  `serve | attach`, multiplexing services over one stream with a versioned envelope
+- **The daemon** (`vcs/crates/workroomd`, Rust) — where every NEW session goes. One binary,
+  `workroom serve | attach`, multiplexing services over one stream with a versioned envelope
   (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
   rather than a byte replay, with the images on its active screen following in the background (ADR
   0062). A newer app does not kill a running daemon: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
-  (`DaemonHandOff.start()`, protocol 6, `workroomd hand-off`, #230), in every build; see
+  (`DaemonHandOff.start()`, protocol 6, `workroom hand-off`, #230), in every build; see
   the module comment in `vcs/crates/workroomd/src/daemon/handoff.rs` for the mechanics, and ADR 0009 for
   why.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
@@ -101,7 +102,7 @@ attaches to older Swift helpers that are still running (issue #154):
   live pty over.
 
 **A restored remote pane can show its last screen instead of a fresh shell (#232).** When a host's
-supervisor opts in (`workroomd serve --screens <dir>`), the daemon keeps each session's last screen on
+supervisor opts in (`workroom serve --screens <dir>`), the daemon keeps each session's last screen on
 disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
 that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
 this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
@@ -135,12 +136,13 @@ arm64-only CLI inside 23 universal betas — and the rename (a hard link stands 
 binary, and a rebuild must leave it unwritten); the cross cases need `rustup target add
 x86_64-apple-darwin aarch64-apple-darwin`, which CI installs. `terminal-state` is **not optional for
 the app**: without it a reattaching pane repaints blank, which only shows up after a
-quit-and-relaunch. `workroomd protocol` reports `terminal-state yes|no`, and the build test asserts it
+quit-and-relaunch. `workroom protocol` reports `terminal-state yes|no`, and the build test asserts it
 against the shipped binary.
 
 **Linux daemons (issue #227).** Every build also puts a static musl `workroom` per
 Linux arch in `Contents/Resources/workroom-linux-{aarch64,x86_64}`, for pushing to remote hosts,
-where it is installed as `<daemon dir>/workroomd` (ADR 0057) with a `workroom` link beside it that
+where it is installed as `<daemon dir>/workroomd` (ADR 0057; the file keeps the old name for
+compatibility) with a `workroom` link beside it that
 the daemon puts on its panes' `PATH`.
 Both arches ship always, whatever `ARCHS` says, because a remote box's arch has nothing to do with
 the Mac's. They are not codesigned; the app's signature seals them as resources. Debug builds them

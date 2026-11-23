@@ -43,7 +43,7 @@ you touch the Makefile or the test launch paths:
 - **One Debug identity per workroom.** In a workroom (a linked git worktree) `make` builds `com.developwithstyle.workroom.dev.wr-<name>-<hash>`
   (`Scripts/dev-identity.sh` → `WORKROOM_DEV_ID_SUFFIX` → the Debug bundle id in `project.yml`); the
   project's own checkout keeps the plain id. Everything keyed by bundle id — preferences, the
-  session helpers' sockets (so its own `workroomd`), the saved session, "already running" — is then
+  session helpers' sockets (so its own daemon), the saved session, "already running" — is then
   the workroom's own. Every xcodebuild that builds the app must pass `$(APP_ID_FLAGS)`; Xcode-driven
   builds don't, and build the plain id.
 - **One GUI session per Mac.** `make app-test` runs its tests holding `Scripts/gui-lock.py` shared,
