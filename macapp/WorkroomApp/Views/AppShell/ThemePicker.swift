@@ -147,11 +147,10 @@ struct ThemePicker: View {
     favourites.emptyState(on: tab, query: query, from: allEntries.map(\.name))
   }
 
-  /// Stars or unstars the highlighted row (⌘D).
-  private func toggleHighlightedFavourite() {
+  /// What ⌘D stars: the highlighted row, if there is one.
+  private var highlightedFavourite: ThemeFavourite? {
     let rows = entries
-    guard rows.indices.contains(highlighted) else { return }
-    ThemeFavourites.toggle(rows[highlighted].favourite)
+    return rows.indices.contains(highlighted) ? rows[highlighted].favourite : nil
   }
 
   private func isActive(_ entry: ThemePickerEntry) -> Bool {
@@ -238,7 +237,7 @@ struct ThemePicker: View {
               ThemeListEmptyView(
                 state: emptyState, favourites: favourites, identifier: "theme-picker.empty"
               ) { searchFocused = true }
-              .padding(.top, 24)
+              .padding(.top, Spacing.xxxl)
             } else {
               ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
                 row(entry, highlighted: index == highlighted)
@@ -309,7 +308,7 @@ struct ThemePicker: View {
     // content on each presentation, so `searchFocused` starts false every time and this can't no-op
     // on a reused view.
     .task { searchFocused = true }
-    .themeListKeys(favourites, toggleFavourite: toggleHighlightedFavourite)
+    .themeListKeys(favourites) { highlightedFavourite }
   }
 
   /// Brings the highlighted row wholly on screen (`ThemeListReveal`).
@@ -468,7 +467,7 @@ struct ThemePickerRow: View {
         Spacer(minLength: 0)
         FavouriteStar(
           favourite: favourite, isFavourite: isFavourite, revealed: hovered, size: 11,
-          outlineColor: tokens.fgDim, keyTarget: .highlighted, identifier: identifier)
+          outlineColor: tokens.fgDim, identifier: identifier)
         if isActive {
           Image(systemName: "checkmark.circle.fill")
             .font(.system(size: 12, weight: .bold))

@@ -21,6 +21,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
   private var savedDark: String!
   private var savedAppearance: AppearanceMode!
   private var savedFavouriteFamilies: Set<String>!
+  private var savedFavouriteThemes: Set<String>!
 
   override func setUp() async throws {
     try await super.setUp()
@@ -28,7 +29,9 @@ final class ThemePickerInvalidationTests: XCTestCase {
     savedDark = Defaults[.darkTheme]
     savedAppearance = Defaults[.appearance]
     savedFavouriteFamilies = Defaults[.favouriteFamilies]
+    savedFavouriteThemes = Defaults[.favouriteThemes]
     Defaults[.favouriteFamilies] = []
+    Defaults[.favouriteThemes] = []
   }
 
   override func tearDown() async throws {
@@ -36,12 +39,13 @@ final class ThemePickerInvalidationTests: XCTestCase {
     Defaults[.darkTheme] = savedDark
     Defaults[.appearance] = savedAppearance
     Defaults[.favouriteFamilies] = savedFavouriteFamilies
+    Defaults[.favouriteThemes] = savedFavouriteThemes
     try await super.tearDown()
   }
 
-  private func host() -> (NSWindow, NSView) {
+  private func host(tab: ThemePickerTab = .family) -> (NSWindow, NSView) {
     // Rooted as every production host is: the picker opens in a popover of an injected tree.
-    let hosting = NSHostingView(rootView: ThemePicker().themeTokensRoot())
+    let hosting = NSHostingView(rootView: ThemePicker(tab: tab).themeTokensRoot())
     hosting.frame = NSRect(
       origin: .zero,
       size: NSSize(width: ThemePicker.contentSize.width, height: ThemePicker.contentSize.height))
@@ -50,6 +54,9 @@ final class ThemePickerInvalidationTests: XCTestCase {
     window.isReleasedWhenClosed = false
     window.contentView = hosting
     window.makeKeyAndOrderFront(nil)
+    // Released at the end of the test, not only closed: a closed window's picker stays alive and
+    // keeps rebuilding its rows as the favourites change, which a later test's count would include.
+    addTeardownBlock { @MainActor in window.contentView = nil }
     return (window, hosting)
   }
 
@@ -108,25 +115,43 @@ final class ThemePickerInvalidationTests: XCTestCase {
 
   /// Starring a row rebuilds that row alone. The picker reads the favourites, so a star re-renders
   /// it, and every row it has materialised is handed its inputs again: only the starred one's change,
-  /// so only that one's body runs.
-  func testStarringARowRebuildsOnlyThatRow() throws {
+  /// so only that one's body runs. On the Family tab, with a family's star…
+  func testStarringAFamilyRebuildsOnlyItsRow() throws {
+    try assertStarringRebuildsOneRow(tab: .family, .family(ThemeCatalog.defaultFamily.name))
+  }
+
+  /// …and on the Dark tab, with a theme's.
+  func testStarringAThemeRebuildsOnlyItsRow() throws {
+    try assertStarringRebuildsOneRow(tab: .dark, .theme(ThemeCatalog.defaultFamily.dark))
+  }
+
+  private func assertStarringRebuildsOneRow(tab: ThemePickerTab, _ favourite: ThemeFavourite)
+    throws
+  {
     let workroom = ThemeCatalog.defaultFamily
     Defaults[.lightTheme] = workroom.light
     Defaults[.darkTheme] = workroom.dark
-    let (window, view) = host()
+    let (window, view) = host(tab: tab)
     defer { window.close() }
     view.layoutSubtreeIfNeeded()
-    settle(view, seconds: 0.5)
+    // Until the rows stop rebuilding: the list settles on the current choice and fades in first.
+    var passes = -1
+    var quiet = 0
+    let deadline = Date().addingTimeInterval(5)
+    while quiet < 3, Date() < deadline {
+      settle(view, seconds: 0.2)
+      quiet = ThemePickerRow.bodyPasses == passes ? quiet + 1 : 0
+      passes = ThemePickerRow.bodyPasses
+    }
     let materialised = ThemePickerRow.bodyPasses
-    XCTAssertGreaterThan(materialised, 2, "the fixture must render several family rows")
+    XCTAssertGreaterThan(materialised, 2, "the fixture must render several rows")
 
     ThemePickerRow.bodyPasses = 0
-    ThemeFavourites.toggle(.family(workroom.name))
+    ThemeFavourites.toggle(favourite)
     settle(view, seconds: 0.5)
-    XCTAssertGreaterThan(ThemePickerRow.bodyPasses, 0, "the starred row didn't re-render")
-    XCTAssertLessThanOrEqual(
-      ThemePickerRow.bodyPasses, 2,
-      "starring one row rebuilt \(ThemePickerRow.bodyPasses) row bodies, of \(materialised) "
-        + "materialised")
+    XCTAssertEqual(
+      ThemePickerRow.bodyPasses, 1,
+      "starring \(favourite.name) rebuilt \(ThemePickerRow.bodyPasses) row bodies, of "
+        + "\(materialised) materialised")
   }
 }

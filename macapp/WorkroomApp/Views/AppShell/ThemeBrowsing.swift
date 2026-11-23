@@ -167,11 +167,20 @@ struct TerminalSnippet: View {
 
 // MARK: - Favourites
 
-/// Which theme ⌘D stars in a list, for the tooltips that mention it: the ⌘⇧K picker's highlighted
-/// row, or the theme chosen in Settings ▸ Themes.
-enum FavouriteKeyTarget: String {
-  case highlighted
-  case selected
+/// The star of the favourites controls: filled in the accent when `filled`, else an outline in
+/// `outlineColor`, the host's muted text colour. The fill changes with a symbol replace.
+struct FavouriteStarGlyph: View {
+  @Environment(\.themeTokens) private var tokens
+  let filled: Bool
+  let size: CGFloat
+  let outlineColor: Color
+
+  var body: some View {
+    Image(systemName: filled ? "star.fill" : "star")
+      .font(.system(size: size, weight: .semibold))
+      .foregroundStyle(filled ? tokens.accent : outlineColor)
+      .contentTransition(.symbolEffect(.replace))
+  }
 }
 
 /// "Add to Favourites" or "Remove from Favourites", in a theme's context menu.
@@ -186,17 +195,14 @@ struct FavouriteMenuItem: View {
   }
 }
 
-/// The star on a theme row or tile: filled in the accent on a favourite, always; an outline in
-/// `outlineColor`, the host's muted text colour, while `revealed` (the row is hovered) on any other.
-/// Clicking it stars or unstars the theme without choosing it.
+/// The star on a theme row or tile: filled on a favourite, always; an outline while `revealed` (the
+/// row is hovered) on any other. Clicking it stars or unstars the theme without choosing it.
 struct FavouriteStar: View {
-  @Environment(\.themeTokens) private var tokens
   let favourite: ThemeFavourite
   let isFavourite: Bool
   let revealed: Bool
   let size: CGFloat
   let outlineColor: Color
-  let keyTarget: FavouriteKeyTarget
   let identifier: String
 
   /// The width the star takes in its row, whether it shows or not, so a row's name doesn't shift as
@@ -207,7 +213,9 @@ struct FavouriteStar: View {
     let name = favourite.name
     let action =
       isFavourite ? "Remove \(name) from your favourites" : "Add \(name) to your favourites"
-    return "\(action). ⌘D does the same for the \(keyTarget.rawValue) theme."
+    // "The theme you're on": the picker's highlighted row, or the Settings tile the keyboard is on
+    // (the current choice, else the first tile), which both lists ring.
+    return "\(action). ⌘D does the same for the theme you're on."
   }
 
   var body: some View {
@@ -215,10 +223,7 @@ struct FavouriteStar: View {
     Button {
       ThemeFavourites.toggle(favourite)
     } label: {
-      Image(systemName: isFavourite ? "star.fill" : "star")
-        .font(.system(size: size, weight: .semibold))
-        .foregroundStyle(isFavourite ? tokens.accent : outlineColor)
-        .contentTransition(.symbolEffect(.replace))
+      FavouriteStarGlyph(filled: isFavourite, size: size, outlineColor: outlineColor)
         .frame(width: Self.footprint(size), height: size + 3)
         .contentShape(Rectangle())
     }
@@ -250,10 +255,7 @@ struct FavouritesFilterButton: View {
       favourites.toggleFilter()
       onToggle()
     } label: {
-      Image(systemName: on ? "star.fill" : "star")
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(on ? tokens.accent : outlineColor)
-        .contentTransition(.symbolEffect(.replace))
+      FavouriteStarGlyph(filled: on, size: 11, outlineColor: outlineColor)
         .frame(width: 20, height: 18)
         .background(
           RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
@@ -285,17 +287,17 @@ struct ThemeListEmptyView: View {
   var body: some View {
     VStack(spacing: Spacing.s) {
       Image(systemName: icon)
-        .font(.system(size: 18, weight: .regular))
+        .font(FontRole.messageGlyph)
         .foregroundStyle(tokens.fgDim)
         .accessibilityHidden(true)
       Text(state.title)
-        .font(.system(size: 12, weight: .medium))
+        .font(FontRole.body)
         .foregroundStyle(tokens.fgMuted)
         .multilineTextAlignment(.center)
         .accessibilityIdentifier("\(identifier).title")
       if case .noFavourites = state {
         Text("Star one with \(Image(systemName: "star")) or ⌘D")
-          .font(.system(size: 11))
+          .font(FontRole.detail)
           .foregroundStyle(tokens.fgDim)
         Button("Show All Themes") {
           favourites.toggleFilter()
@@ -320,19 +322,23 @@ struct ThemeListEmptyView: View {
 }
 
 extension View {
-  /// Hands this theme list ⌘D (`toggleFavourite`) and ⌘F (the favourites filter, through
-  /// `favourites`, then `filterToggled`) while it's on screen in its window (`ThemeListKeys`).
+  /// Hands this theme list ⌘D and ⌘F (`ThemeListKeys`) while it's on screen in its window: ⌘D
+  /// stars the theme `keyboardFavourite` names, the one the keyboard is on, and ⌘F flips the
+  /// favourites filter. With no theme to star (an empty list), ⌘D beeps, as a key with nothing to
+  /// act on does across macOS.
   func themeListKeys(
-    _ favourites: ThemeListFavourites, toggleFavourite: @escaping () -> Void,
-    filterToggled: @escaping () -> Void = {}
+    _ favourites: ThemeListFavourites, keyboardFavourite: @escaping () -> ThemeFavourite?
   ) -> some View {
     modifier(
       ThemeListKeysModifier { command in
         switch command {
-        case .toggleFavourite: toggleFavourite()
-        case .toggleFilter:
-          favourites.toggleFilter()
-          filterToggled()
+        case .toggleFavourite:
+          if let favourite = keyboardFavourite() {
+            ThemeFavourites.toggle(favourite)
+          } else {
+            NSSound.beep()
+          }
+        case .toggleFilter: favourites.toggleFilter()
         }
       })
   }
