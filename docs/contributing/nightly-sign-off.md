@@ -158,7 +158,7 @@ workroom prompt codex 'Reply with one word'
 workroom prompt codex 'Summarise @README.md in one line' --wait --timeout 5m
 ```
 
-Run the third line while Claude is still working on the second (start the second without
+Run the fourth command while Claude is still working on the third (start the third without
 `--wait`, or from another tab).
 
 **Pass:** `sessions --json` lists both tabs with their `label`s, and `coding_agent` for Claude.
@@ -208,5 +208,45 @@ is running again. `stop` stops it, as the tab's **Stop** does. Each `close` clos
 split. The last, on your own pane, is refused with `RefusedSelf` and closes nothing.
 
 Do the `new` and `close` checks, and `prompt` where the host has an agent, in the remote
-workroom's panes too: there `workroom` is
-the host's, and acts on the host's terminals.
+workroom's panes too: there `workroom` is the host's, and acts on the host's terminals.
+
+## 6. The Workroom skill
+
+1. Open **Settings ▸ AI Agents** and turn on **Install the Workroom skill for Claude Code and
+   Codex** (under **Workroom skill**). Look at the section in light and in dark (<kbd>⇧⌘L</kbd>,
+   **View ▸ Light Mode** or **Dark Mode**).
+2. In a terminal: `ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/workroom" ~/.agents/skills/workroom`.
+3. Turn the setting off and run the same `ls`.
+
+**Pass:** the section reads clearly in both appearances, and no line under the setting says a skill
+was left alone or failed. With it on, both folders hold the skill's `SKILL.md`: the Claude one in
+`$CLAUDE_CONFIG_DIR/skills/workroom` when your login shell sets `CLAUDE_CONFIG_DIR`, else
+`~/.claude/skills/workroom`. Turned off, both folders are gone (a `~/.agents` Workroom made for it
+goes too when it is empty). With the remote workroom from [step 2](#2-a-remote-workroom) open, the
+host gets the skill in the same folders of its user's home after Workroom next connects, and loses
+it the same way.
+
+## 7. What a coding agent leaves to you
+
+Since #793 and #798, `trust`, `delete` and `delete-project` refuse under a coding agent, and so
+does a `create` that would run a setup script you haven't approved. In a workroom of the throwaway
+project, start Claude Code and ask it to run each of these with its shell tool and report the exit
+code and output (`<name>` is a workroom of the project, `<path>` the project's folder):
+
+```sh
+workroom trust
+workroom delete <name> --confirm <name>
+workroom delete-project <path> --confirm <path>
+workroom delete <name> --pretend
+workroom delete-project <path> --pretend
+workroom create            # with a setup script you haven't approved, or have changed since
+workroom create --skip-setup
+```
+
+**Pass:** the first three exit 3 with `NeedsTheUser`, saying to ask you to do it in the app or your
+own terminal, and change nothing: `workroom trust status` (which runs under the agent) is as
+before, and the workroom and the project are still in the sidebar. Both `--pretend` runs work,
+printing what they would remove, and remove nothing. The plain `create` exits 3 with
+`NeedsTheUser` and makes no workroom; `create --skip-setup` makes one without running the script.
+Delete that workroom in the app afterwards. In your own terminal, outside any agent,
+`workroom trust` asks you as it always has.
