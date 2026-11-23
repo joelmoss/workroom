@@ -42,7 +42,7 @@ user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration p
 answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
 that fails says the provider's fix (`HostKind.credentialHint`). A local container's git
-asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `workroomd credential`
+asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `workroom credential`
 (`vcs/crates/workroomd/src/host/credential.rs`). A new user's first exe.dev create walks them through
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
 `make app-run-exedev-fresh`.

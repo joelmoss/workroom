@@ -1,4 +1,5 @@
-//! Where a new workroom's branch starts, as Go's `internal/vcs` resolves it (`Git.StartPoint`):
+//! Where a new workroom's branch starts, as the retired Go CLI resolved it (ported from its
+//! `Git.StartPoint`):
 //! the project's base on its remote, freshly fetched, else the local branch, else origin's default
 //! branch, and the local work that start leaves out of the main checkout (`Git.LocalWork`).
 //!
@@ -112,8 +113,8 @@ impl<'a> FetchStep<'a> {
 /// A base branch setting read as `<remote>/<branch>` when the part before the first `/` is one of
 /// `remotes`, else a branch on origin. So `upstream/main` is upstream's main, `origin/main` is
 /// plain `main`, and `release/1.0` stays an origin branch unless a remote is named "release".
-/// Go's `SplitBase`; `testdata/twins/split_base.tsv` holds the cases the app's twin is tested
-/// against.
+/// Ported from the retired Go CLI's `SplitBase`; `testdata/twins/split_base.tsv` holds the cases
+/// this and the app's twin are tested against.
 fn split_base<'a>(base: &'a str, remotes: &[&str]) -> (&'a str, &'a str) {
     match base.split_once('/') {
         Some((remote, rest)) if !rest.is_empty() && remotes.contains(&remote) => (remote, rest),

@@ -2,7 +2,7 @@
 //! teardown script's output above all, goes to stderr as one JSON object per line, while stdout
 //! keeps its one envelope. The app reads it line by line as the script runs.
 //!
-//! The Rust copy of Go's `jsonLogWriter` and `crSplitter` (`cmd/jsonlog.go`), event for event.
+//! Ported event for event from the retired Go CLI's `jsonLogWriter` and `crSplitter`.
 //!
 //! `delete`'s and `delete-project`'s teardowns (`teardown`), `add-project --clone`'s progress
 //! (`add_project`) and `create`'s steps and setup script (`create`) write to it.

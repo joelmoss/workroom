@@ -114,7 +114,8 @@ If the server doesn't let you, ask its administrator to run `loginctl enable-lin
 With lingering on, Workroom starts its daemon under your own systemd user manager, as a unit named
 `workroomd-<number>`, so it keeps running when your logins close. It runs without root, installs
 nothing, and is never restarted by systemd. Your terminals and its log (`workroomd.log` beside its
-socket) are the same either way. Without lingering, Workroom starts the daemon as before.
+socket) are the same either way. Those two names keep the daemon's old name, `workroomd`, for
+compatibility. Without lingering, Workroom starts the daemon as before.
 
 Workroom never changes logind or lingering itself. If the daemon still dies at logout, the
 connect fails and the error says why. If you turn lingering off later, the daemon stops about ten

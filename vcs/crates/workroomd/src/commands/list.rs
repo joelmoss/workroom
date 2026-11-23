@@ -398,7 +398,7 @@ mod tests {
                 "[gone]".to_string(),
             ],
         ];
-        // Go's `cmd/list_output_test.go` bytes: bold ends with `\x1b[22m`.
+        // The bytes the retired Go CLI's list printed: bold ends with `\x1b[22m`.
         assert_eq!(
             print_table(&rows, 2),
             "  \x1b[1ma\x1b[22m     ~/x\n  calm  ~/workrooms/calm  [gone]\n"

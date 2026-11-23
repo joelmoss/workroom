@@ -2,7 +2,7 @@
 
 Part of the [contributor guide](../../CONTRIBUTING.md). Each row is an area one person can change,
 build and test without the others: a context from [`CONTEXT.md`](../../CONTEXT.md) in the app, a
-package, a Go package or a Rust crate. The gate column is the narrowest check that covers it.
+package, or a Rust crate or module. The gate column is the narrowest check that covers it.
 
 Every row's owner is `joelmoss` today, because [`.github/CODEOWNERS`](../../.github/CODEOWNERS) has
 one catch-all rule (`* @joelmoss`). Naming someone else on a row is the owner's call. So is copying
@@ -24,7 +24,7 @@ context is two folders. `DaemonConnection` and `Testing` have no views. The test
 | `Core/Terminal/`, `Views/Terminal/` | Terminal: tabs, splits, panes, sessions, run commands | `joelmoss` |
 | `Core/RemoteHosts/`, `Views/RemoteHosts/` | Remote hosts: drivers in the app, provisioning, setup sheets | `joelmoss` |
 | `Core/CodingAgents/`, `Views/CodingAgents/` | Coding agents: Claude and Codex runs, usage, failure diagnosis | `joelmoss` |
-| `Core/DaemonConnection/` | The app's side of `workroomd` | `joelmoss` |
+| `Core/DaemonConnection/` | The app's side of the daemon (`workroom serve`) | `joelmoss` |
 | `Core/Testing/` | The UI-test fixture | `joelmoss` |
 
 ## macOS app: local packages
@@ -39,7 +39,7 @@ Each package builds and tests alone with `swift test --package-path macapp/Packa
 | `macapp/Packages/WorkroomGit/` | The local git engine: `GitProvider`, over SwiftGitX | `joelmoss` |
 | `macapp/Packages/WorkroomWire/` | The session wire format | `joelmoss` |
 | `macapp/Packages/WorkroomSystem/` | Processes, shells, sockets and timeouts | `joelmoss` |
-| `macapp/Packages/DaemonConnection/` | The client for `workroomd` | `joelmoss` |
+| `macapp/Packages/DaemonConnection/` | The client for the daemon (`workroom serve`) | `joelmoss` |
 | `macapp/Packages/HostDrivers/` | Container, boxd, exe.dev and SSH drivers | `joelmoss` |
 | `macapp/Packages/DevContainer/` | `devcontainer.json` reading and setup | `joelmoss` |
 | `macapp/Packages/DesignSystem/` | `ThemeTokens` and shared UI | `joelmoss` |
