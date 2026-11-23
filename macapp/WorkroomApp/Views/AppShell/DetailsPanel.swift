@@ -447,7 +447,7 @@ struct InspectorWorkroomHeader: View {
       // No target: this menu has no run items, and its other items look `sid` up themselves.
       WorkroomMenuAdapter(sid: sid, target: nil, style: .inspectorHeader)
     } label: {
-      Image(systemName: "ellipsis").font(.system(size: 11)).foregroundStyle(.secondary)
+      VerticalEllipsis().font(.system(size: 11)).foregroundStyle(.secondary)
     }
     // As the Pull Request header's menu: a SwiftUI-button trigger, so it takes the header buttons'
     // hover fill and click target (`InspectorMenuButtonStyle`).

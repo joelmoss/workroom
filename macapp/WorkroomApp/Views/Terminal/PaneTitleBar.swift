@@ -368,7 +368,7 @@ struct PaneTitleBar: View {
           .disabled(!openFileEnabled)
       }
     } label: {
-      Image(systemName: "ellipsis")
+      VerticalEllipsis()
         .foregroundStyle(.secondary)
     }
     // `.button`, NOT `.borderlessButton` — the same call the Changes panel's row menu documents

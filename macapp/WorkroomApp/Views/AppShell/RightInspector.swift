@@ -273,7 +273,7 @@ struct RightInspector: View {
           }
         }
       } label: {
-        Image(systemName: "ellipsis").font(.system(size: 11)).foregroundStyle(.secondary)
+        VerticalEllipsis().font(.system(size: 11)).foregroundStyle(.secondary)
       }
       // `.menuStyle(.button)` (NOT `.borderlessButton`) renders the trigger as a SwiftUI button, so
       // `InspectorMenuButtonStyle` can give it the same rounded hover fill + comfortable click

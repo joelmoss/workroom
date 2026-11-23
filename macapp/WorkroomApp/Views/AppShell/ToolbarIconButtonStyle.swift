@@ -68,3 +68,13 @@ struct ToolbarIconButtonStyle: ButtonStyle {
     }
   }
 }
+
+/// The glyph for every "more actions" menu trigger: a VERTICAL ellipsis, so a menu button never reads
+/// as the horizontal three-dot animated loader. SF Symbols has no `ellipsis.vertical` (only the
+/// `.bubble` variant), so this is `ellipsis` turned a quarter. A 90° turn about the glyph's centre keeps
+/// it centred in its caller's square well, and the symbol keeps its "More" accessibility label.
+struct VerticalEllipsis: View {
+  var body: some View {
+    Image(systemName: "ellipsis").rotationEffect(.degrees(90))
+  }
+}
