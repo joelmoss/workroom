@@ -28,7 +28,7 @@ struct TerminalGroup: Hashable, Sendable {
 
   /// The Quick Terminal's group, built in (ADR 0077): a fixed id and name, and nothing else set.
   static let quickTerminal = TerminalGroup(
-    id: TargetID.quickTerminalGroupID, name: "Quick Terminal")
+    id: TargetID.quickTerminalGroupID, name: "Quick Terminals")
 
   /// Whether this is the Quick Terminal's group, which can't be deleted, moved or renamed.
   var isBuiltIn: Bool { id == TargetID.quickTerminalGroupID }
