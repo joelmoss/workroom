@@ -7,8 +7,11 @@
 //! The guarded commands are read from the one list that guards them, `GUARDED` in
 //! `src/commands/needs_the_user.rs`, which is private to the binary, so its source is read here.
 //!
-//! What counts as running a guarded command: its name as a string literal in a command's place, the
-//! first word of an array (`&["delete", "calm-river"]`, `.args(["trust"])`) or a `.arg("trust")`.
+//! What counts as running a guarded command: its name in a command's place, the first word of an
+//! array (`&["delete", "calm-river"]`, `.args(["trust"])`), a word after only flags in one that
+//! starts with a flag (`["--json", "delete"]`, `["--project", "/x", "trust"]`) or a
+//! `.arg("trust")`; as a string literal, or a name bound to one (`const TRUST: &str = "trust"`, or a
+//! `let` earlier in the same function).
 //! A name anywhere else (an assertion, a message, the middle of a list, a comment) is not one, nor
 //! is a subcommand no one guards (`["trust", "status"]`, from `trust --help`).
 //! Where it goes is read from the code around it:
@@ -22,7 +25,8 @@
 //! - into a `const` or `static` table: each function that names the table and starts a process.
 //!
 //! A function starts a process when it calls `.output()`, `.status()` or `.spawn()`, or a helper
-//! that does. A file is read as Rust tokens, so comments and the text of strings never count.
+//! that does. The harness is `tests/outside`'s public functions that start one (`spawn`), not its
+//! other helpers and methods. A file is read as Rust tokens, so comments and the text of strings never count.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -224,6 +228,8 @@ struct Function {
     name: String,
     open: usize,
     close: usize,
+    /// Declared `pub fn`.
+    public: bool,
 }
 
 fn functions(tokens: &[Token]) -> Vec<Function> {
@@ -256,6 +262,7 @@ fn functions(tokens: &[Token]) -> Vec<Function> {
                 name: name.to_string(),
                 open,
                 close,
+                public: i >= 1 && tokens[i - 1].word() == Some("pub"),
             });
         }
     }
@@ -468,6 +475,88 @@ struct Report {
     harnessed: usize,
 }
 
+/// A name bound to a guarded command's name: `let delete = "delete";`, `const TRUST: &str =
+/// "trust";`.
+struct Binding {
+    name: String,
+    value: String,
+    /// The token it is bound at; a name is read as this only after it.
+    at: usize,
+    /// The index of the function a `let` is in, among the file's; `None` for a `const` or
+    /// `static`, which the whole file sees.
+    function: Option<usize>,
+}
+
+fn bindings(tokens: &[Token], guarded: &[Guarded]) -> Vec<Binding> {
+    let functions = functions(tokens);
+    let mut out = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        let keyword = token.word();
+        if !matches!(keyword, Some("let" | "const" | "static")) {
+            continue;
+        }
+        let Some(name) = tokens.get(i + 1).and_then(Token::word) else {
+            continue;
+        };
+        // `= "…";`, after an optional `: &str` or `: &'static str`.
+        let Some(equals) = (i + 2..tokens.len().min(i + 8)).find(|&k| tokens[k].is('=')) else {
+            continue;
+        };
+        let typed = (i + 2..equals).all(|k| {
+            matches!(&tokens[k].kind, Kind::Punct(':' | '&'))
+                || matches!(tokens[k].word(), Some("str" | "static"))
+        });
+        let (Some(Kind::Str(value)), Some(true)) = (
+            tokens.get(equals + 1).map(|token| &token.kind),
+            tokens.get(equals + 2).map(|token| token.is(';')),
+        ) else {
+            continue;
+        };
+        if !typed || !guarded.iter().any(|command| &command.name == value) {
+            continue;
+        }
+        let function = (keyword == Some("let"))
+            .then(|| {
+                functions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, function)| function.open < i && i < function.close)
+                    .min_by_key(|(_, function)| function.close - function.open)
+                    .map(|(index, _)| index)
+            })
+            .flatten();
+        if keyword == Some("let") && function.is_none() {
+            continue;
+        }
+        out.push(Binding {
+            name: name.to_string(),
+            value: value.clone(),
+            at: equals + 1,
+            function,
+        });
+    }
+    out
+}
+
+/// Whether the token at `at` follows only flags in an array that starts with one: the command after
+/// global flags, `["--json", "delete", …]`, or after a flag's value, `["--project", "/x",
+/// "trust"]`. An array that starts with anything but a flag is a list of names, not a command line.
+fn after_flags(tokens: &[Token], at: usize) -> bool {
+    let mut j = at;
+    loop {
+        if j < 2 || !tokens[j - 1].is(',') {
+            return false;
+        }
+        j -= 2;
+        let Kind::Str(word) = &tokens[j].kind else {
+            return false;
+        };
+        if j >= 1 && tokens[j - 1].is('[') {
+            return word.starts_with('-');
+        }
+    }
+}
+
 /// Checks `file` with the functions of `modules` (the `common` and `outside` modules it uses) in
 /// scope.
 fn check(file: &Source, modules: &[(&Source, bool)], guarded: &[Guarded], report: &mut Report) {
@@ -477,23 +566,48 @@ fn check(file: &Source, modules: &[(&Source, bool)], guarded: &[Guarded], report
         .iter()
         .map(|function| (function.name.clone(), body(&toks, function)))
         .collect();
+    // The harness is what starts a program outside the tree: its public functions that start one
+    // (`outside::spawn`), not its helpers (`path`, `report`) nor `Outside`'s methods (`drop`),
+    // whose names a test file may well call for something else.
     let mut harness = Vec::new();
     for (module, is_harness) in modules {
         let module_tokens = tokens(&module.text);
         for function in functions(&module_tokens) {
+            let function_body = body(&module_tokens, &function);
             if *is_harness {
-                harness.push(function.name.clone());
+                if function.public && function_body.spawns {
+                    harness.push(function.name.clone());
+                }
             } else {
-                bodies.push((function.name.clone(), body(&module_tokens, &function)));
+                bodies.push((function.name.clone(), function_body));
             }
         }
     }
     let scope = Scope::new(&bodies, &harness);
     let own_bodies = &bodies[..own.len()];
+    let innermost = |i: usize| {
+        own.iter()
+            .enumerate()
+            .filter(|(_, function)| function.open < i && i < function.close)
+            .min_by_key(|(_, function)| function.close - function.open)
+            .map(|(index, _)| index)
+    };
+    let bound = bindings(&toks, guarded);
 
     for (i, token) in toks.iter().enumerate() {
-        let Kind::Str(text) = &token.kind else {
-            continue;
+        // A guarded name as a literal, or as a name bound to one: a `const`, or a `let` earlier in
+        // the same function.
+        let text = match &token.kind {
+            Kind::Str(text) => text,
+            Kind::Word(name) => match bound.iter().find(|binding| {
+                &binding.name == name
+                    && binding.at < i
+                    && (binding.function.is_none() || binding.function == innermost(i))
+            }) {
+                Some(binding) => &binding.value,
+                None => continue,
+            },
+            Kind::Punct(_) => continue,
         };
         let Some(command) = guarded.iter().find(|command| &command.name == text) else {
             continue;
@@ -511,7 +625,7 @@ fn check(file: &Source, modules: &[(&Source, bool)], guarded: &[Guarded], report
             && toks[i - 1].is('(')
             && toks[i - 2].word() == Some("arg")
             && toks[i - 3].is('.');
-        if !first_of_array && !arg {
+        if !first_of_array && !arg && !after_flags(&toks, i) {
             continue;
         }
         let enclosing = own
@@ -724,10 +838,12 @@ fn findings_in(text: &str) -> Report {
         path: "tests/example.rs".into(),
         text: text.into(),
     };
+    // The real harness, with every helper and method it has.
+    let path = crate_dir().join("tests/outside/mod.rs");
     let outside = Source {
         path: "tests/outside/mod.rs".into(),
-        text: "pub fn spawn(command: Command, input: Option<&[u8]>) -> Outside { command.spawn() }"
-            .into(),
+        text: std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
     };
     let mut report = Report::default();
     let modules = if uses_module(text, "outside") {
@@ -783,6 +899,38 @@ fn a_guarded_command_the_binary_starts_itself_is_found() {
             r#"mod outside;
             fn t() { Command::new(binary()).args(["delete"]).spawn().unwrap(); }
             fn u() { let mut c = Command::new(binary()); c.arg("trust"); outside::spawn(c, None); }"#,
+        ),
+        (
+            "beside a call that shares a name with the harness's helpers",
+            r#"mod outside;
+            fn t() {
+                let home = Home::new();
+                Command::new(binary()).args(["delete", "x"]).output().unwrap();
+                drop(home);
+                let p = path(&dir);
+                report(p, 0);
+            }"#,
+        ),
+        (
+            "after global flags",
+            r#"fn t() { Command::new(binary()).args(["--json", "delete", "x"]).output().unwrap(); }"#,
+        ),
+        (
+            "after a flag and its value",
+            r#"fn t() { Command::new(binary()).args(["--project", "/x", "trust"]).output().unwrap(); }"#,
+        ),
+        (
+            "through a let",
+            r#"fn t() {
+                let command = "delete-project";
+                Command::new(binary()).args([command, "/x"]).output().unwrap();
+            }"#,
+        ),
+        (
+            "through a const",
+            r#"
+            const TRUST: &str = "trust";
+            fn t() { let mut c = Command::new(binary()); c.arg(TRUST); c.status().unwrap(); }"#,
         ),
         (
             "after a char literal that is a quote",
@@ -851,6 +999,32 @@ fn a_guarded_command_started_through_the_harness_or_named_otherwise_is_not_found
                     Command::new(binary()).arg("--help").output().unwrap();
                 }
                 Command::new(binary()).args(["list", "delete"]).output().unwrap();
+            }"#,
+        ),
+        (
+            "later in a list that starts with a name, not a flag",
+            r#"fn t() {
+                for args in [["list", "--json", "delete"]] {
+                    Command::new(binary()).args(args).output().unwrap();
+                }
+            }"#,
+        ),
+        (
+            "a let in another function, or bound to something else",
+            r#"
+            const LIST: &str = "list";
+            fn a() { let command = "delete"; println!("{command}"); }
+            fn b(command: &str) {
+                Command::new(binary()).args([command, "x"]).output().unwrap();
+                Command::new(binary()).arg(LIST).output().unwrap();
+            }"#,
+        ),
+        (
+            "a let used before it is bound",
+            r#"fn t(command: &str) {
+                Command::new(binary()).arg(command).output().unwrap();
+                let command = "trust";
+                assert_eq!(command, "trust");
             }"#,
         ),
         (
