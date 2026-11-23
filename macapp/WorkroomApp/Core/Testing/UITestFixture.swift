@@ -1407,6 +1407,8 @@ import WorkroomVCS
     static func projects() -> [Project] {
       // Empty list for the no-projects scenario (issue #81 D3) — nothing to create or select.
       if noProjects { return [] }
+      // The sidebar gallery's projects in place of the fixture's own.
+      if SidebarGallery.isOn { return SidebarGallery.projects() }
       let vcs = "git"
       let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent("workroom-uitest", isDirectory: true)

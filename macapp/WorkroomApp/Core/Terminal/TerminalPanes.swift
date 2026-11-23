@@ -3072,6 +3072,20 @@ final class TerminalPanes {
       tab: tabID, target: targetID, host: host, records: records, stale: stale)
   }
 
+  /// The sidebar gallery's seam (`SidebarGallery`): what an unmounted fixture pane would show had
+  /// its program run, its live `title`, the `tool` its foreground would be recognised as and the
+  /// `name` a user gave it, with no surface and no shell.
+  func seedTerminalForFixture(
+    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, title: String?,
+    tool: RecognizedTool?, name: String?
+  ) {
+    terminalState(tabID, in: targetID)?.liveTitle = title
+    mutateTerminalState(tabID, target: targetID) {
+      $0.activeTool = tool
+      $0.userTitle = name
+    }
+  }
+
   // MARK: Remote pane links (#254, C7)
 
   /// The first of `word`'s candidates that is a file on `target`'s host, or nil

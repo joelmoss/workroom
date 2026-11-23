@@ -1843,6 +1843,8 @@ final class AppStore: ObservableObject {
       // Start every fixture project expanded so the sidebar tree is deterministic regardless of any
       // collapse state a prior UI-test run persisted to the shared defaults (real projects untouched).
       collapsedProjects.subtract(fixtures.map(\.id))
+      // The gallery's collapsed projects stay collapsed on every load.
+      if SidebarGallery.isOn { collapsedProjects.formUnion(SidebarGallery.collapsedPaths) }
       // Auto-select the fixture workroom only for the restoring (launch) window — a ⌘N window starts
       // blank in fixture mode too, mirroring production (issue #70). `fixtureAutoSelect` is the
       // per-window equivalent of clearing `pendingRestoreSelection` on the real path.
@@ -1985,11 +1987,14 @@ final class AppStore: ObservableObject {
           // can't wipe them. First-load only (guarded by the nil selection), so a focus-driven reload
           // never clobbers notifications a test has since dismissed.
           notifications.seedForTesting(UITestFixture.notifications(targetID: target.id))
+          // Every kind of sidebar row in every state, once, in the launch window.
+          if SidebarGallery.isOn { SidebarGallery.seed(self) }
         }
       }
       // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
       // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.
       vcsStatus.seedStatuses()
+      if SidebarGallery.isOn { SidebarGallery.seedStatuses(self) }
       lastLoadAt = Date()
     }
   #endif

@@ -114,6 +114,13 @@ app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacin
 	  sh -c 'sh Scripts/stop-dev-app.sh "$$1" && echo "Launching $$1" && open "$$1"' app-run \
 	  "$(APP_BUNDLE)"
 
+app-sidebar-gallery: app-build ## Launch the dev app on a throwaway fixture whose sidebar shows every kind of row in every state
+	cd macapp && $(call gui_lock,shared,app-run) \
+	  sh -c 'sh Scripts/stop-dev-app.sh "$$1" && echo "Launching $$1 (sidebar gallery)" && open "$$1" --args \
+	    -WorkroomUITestFixture 1 -WorkroomUITestSidebarGallery 1 \
+	    -WorkroomUITestIsolatePreferences 1 -ApplePersistenceIgnoreState YES' app-sidebar-gallery \
+	  "$(APP_BUNDLE)"
+
 app-run-exedev-fresh: app-build ## Launch the dev app as a user exe.dev has never seen (rm -rf ~/.workroom-exedev-fresh to start over)
 	cd macapp && $(call gui_lock,shared,app-run) \
 	  sh Scripts/exedev-fresh-user.sh "$(APP_BUNDLE)"
