@@ -86,7 +86,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
     XCTAssertEqual(
       groups.first?.choices.map(\.title),
-      ["Standalone Terminal", "Quick Terminal", "Servers", "New Terminal Group…"],
+      ["Standalone Terminal", "Quick Terminals", "Servers", "New Terminal Group…"],
       "the Quick Terminal right after Standalone (#661)")
     XCTAssertNil(groups.first?.header)
     XCTAssertEqual(
