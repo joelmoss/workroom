@@ -44,6 +44,7 @@ struct InspectorColumn: View {
       // AppKit inspector). 12pt hit area with a resize cursor.
       .overlay(alignment: .leading) {
         InspectorResizeHandle(
+          identity: .inspector,
           onDrag: { dx in
             // Handle is on the leading edge: dragging left (dx < 0) widens. Track in local @State so
             // the live drag re-renders only the inspector, not every AppStore observer.

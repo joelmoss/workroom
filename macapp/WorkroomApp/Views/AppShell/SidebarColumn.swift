@@ -61,6 +61,7 @@ struct SidebarColumn: View {
       // List reliably). 12pt hit area with a resize cursor.
       .overlay(alignment: .trailing) {
         InspectorResizeHandle(
+          identity: .sidebar,
           onDrag: { dx in
             // Handle is on the trailing edge: dragging right (dx > 0) widens. Track in local @State so
             // the live drag re-renders only the sidebar, not every AppStore observer.

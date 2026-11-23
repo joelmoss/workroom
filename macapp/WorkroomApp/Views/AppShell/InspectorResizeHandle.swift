@@ -1,10 +1,30 @@
 import AppKit
 import SwiftUI
 
-/// An AppKit drag handle for resizing the inspector. A SwiftUI `DragGesture` over the inspector
-/// (which is AppKit-backed — `NSSplitView` + `NSScrollView`s) doesn't reliably receive mouse events,
-/// so the handle is its own `NSView` that handles the drag directly and shows a resize cursor.
+/// An AppKit drag handle for resizing a column: the inspector, the Projects sidebar and the
+/// changeset file list all use it. A SwiftUI `DragGesture` over AppKit-backed content
+/// (`NSSplitView` + `NSScrollView`s) doesn't reliably receive mouse events, so the handle is its own
+/// `NSView` that handles the drag directly and shows a resize cursor.
 struct InspectorResizeHandle: NSViewRepresentable {
+  /// How the handle names itself to assistive tech, UI tests and the tooltip. Each caller passes
+  /// its own, so two handles on screen never share a label or an identifier.
+  struct Identity {
+    let label: String
+    let identifier: String
+    let tooltip: String
+
+    static let inspector = Identity(
+      label: "Resize Inspector", identifier: "inspector.resizeHandle",
+      tooltip: "Drag to resize the inspector")
+    static let sidebar = Identity(
+      label: "Resize Sidebar", identifier: "sidebar.resizeHandle",
+      tooltip: "Drag to resize the sidebar")
+    static let changesetFileList = Identity(
+      label: "Resize File List", identifier: "changeset.fileList.resizeHandle",
+      tooltip: "Drag to resize the file list")
+  }
+
+  let identity: Identity
   /// Incremental horizontal drag delta in points (positive = rightward), per mouse-moved event.
   let onDrag: (CGFloat) -> Void
   let onEnd: () -> Void
@@ -14,6 +34,9 @@ struct InspectorResizeHandle: NSViewRepresentable {
   func updateNSView(_ nsView: HandleView, context: Context) {
     nsView.onDrag = onDrag
     nsView.onEnd = onEnd
+    nsView.setAccessibilityLabel(identity.label)
+    nsView.setAccessibilityIdentifier(identity.identifier)
+    nsView.toolTip = identity.tooltip
   }
 
   final class HandleView: NSView {
@@ -24,12 +47,10 @@ struct InspectorResizeHandle: NSViewRepresentable {
     override init(frame: NSRect) {
       super.init(frame: frame)
       // Its own accessibility element: the handle is AppKit, so SwiftUI's modifiers can't name it,
-      // and without this assistive tech and UI tests can't find the resize edge at all.
+      // and without this assistive tech and UI tests can't find the resize edge at all. The label,
+      // identifier and tooltip come from the caller's `Identity` in `updateNSView`.
       setAccessibilityElement(true)
       setAccessibilityRole(.handle)
-      setAccessibilityLabel("Resize Inspector")
-      setAccessibilityIdentifier("inspector.resizeHandle")
-      toolTip = "Drag to resize the inspector"
     }
 
     @available(*, unavailable)
