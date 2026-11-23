@@ -336,6 +336,14 @@ wait TARGET --turn current`. Use `send` for keys, and to answer a program's own 
 - **Never answer for the user.** A coding agent whose `coding_agent.state` is `blocked` is \
 asking the user something, often permission to run a command. Don't press Enter or type into it \
 on the user's behalf: report what it asks, and wait for the user.
+- **Never approve or delete for the user.** Approving a project's setup and teardown scripts \
+(`workroom trust`) and deleting a workroom or project (`workroom delete`, `delete-project`) are \
+the user's to do. Run by a coding agent, each is refused with `NeedsTheUser` (exit 3) and changes \
+nothing, whatever its flags. When a create stops on a script nobody has approved \
+(`ScriptNotTrusted`), or a workroom should go, tell the user and ask them to do it in the \
+Workroom app, or to run the command themselves in their own terminal. Don't get around it, such \
+as by typing the command into another terminal with `send`: the refusal stops a mistake, not a \
+determined agent, so it is yours to respect.
 - **Wait on the daemon, never poll.** `wait`, `command` and `prompt --wait` answer the moment it \
 happens. Give each a `--timeout` (such as `30s`, `10m`).
 - **Use ids.** Once you know a session, name it by the `id` from `sessions --json`.
@@ -606,6 +614,11 @@ mod tests {
             "WORKROOM_BIN_DIR",
             "--timeout",
             "Never answer for the user",
+            // #793: the commands only a person may run, and what to do instead.
+            "Never approve or delete for the user",
+            "`NeedsTheUser` (exit 3)",
+            "in the Workroom app",
+            "in their own terminal",
             "a draft",
             "WORKROOM_DAEMON.bin/path/workroom",
             // Labels (#694): setting, clearing, the event, and that a label is a target.

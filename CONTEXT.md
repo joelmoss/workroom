@@ -43,7 +43,7 @@ _Avoid_: retry, restart (for an answered question)
 The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the CLI runs them locally, the app runs them on a remote workroom's host through `workroom run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
 
 **Trusted script**:
-A setup or teardown script whose exact contents this Mac has approved, recorded per project. Workroom runs no other script, except a root copy that git ignores, which never arrives by a pull. A changed script needs approving again.
+A setup or teardown script whose exact contents this Mac has approved, recorded per project. Workroom runs no other script, except a root copy that git ignores, which never arrives by a pull. A changed script needs approving again. Only a person approves one: `workroom trust` run under a coding agent (one of its parent processes is `claude` or `codex`) approves nothing and is `NeedsTheUser`, as are `delete` and `delete-project` (#793).
 _Avoid_: allowed script, whitelisted script
 
 **Include file**, **Included files**:

@@ -1540,8 +1540,14 @@ fn help(command: Option<(&Command, bool)>) -> String {
     let mark = |command: &Command| if command.mac_only { " (Mac only)" } else { "" };
     match command {
         Some((command, pretend)) => {
+            // `trust status` is named `status` here, so only the guarded command itself says it.
+            let guarded = if needs_the_user::guards(command.name) {
+                format!("\n\n{}", needs_the_user::SAYS)
+            } else {
+                String::new()
+            };
             let mut text = format!(
-                "{}{}\n\nUsage:\n  workroom {}\n",
+                "{}{}{guarded}\n\nUsage:\n  workroom {}\n",
                 command.long.unwrap_or(command.short),
                 mark(command),
                 command.usage
@@ -1824,6 +1830,20 @@ mod tests {
         for args in [&["delete", "--help"][..], &["help", "trust"], &["version"]] {
             let ((stdout, _), code) = run_with(Platform::Other, claude, args);
             assert_eq!(code, 0, "{args:?}: {stdout}");
+        }
+        // Their help says so; `trust status`'s doesn't.
+        for (args, says) in [
+            (&["trust", "--help"][..], true),
+            (&["delete", "--help"], true),
+            (&["trust", "status", "--help"], false),
+            (&["untrust", "--help"], false),
+        ] {
+            let ((stdout, _), _) = run_on(Platform::Mac, args);
+            assert_eq!(
+                stdout.contains(&format!("\n\n{}\n\nUsage:", needs_the_user::SAYS)),
+                says,
+                "{args:?}: {stdout}"
+            );
         }
         let ((stdout, _), code) = run_with(Platform::Other, claude, &["create", "--json"]);
         assert_eq!(code, 3);

@@ -169,6 +169,9 @@ fn page(command: &Command, parents: &[&Command]) -> String {
         }
         text += "Runs on a Mac only, and fails with `MacOnly` elsewhere.\n\n";
     }
+    if parents.is_empty() && super::needs_the_user::guards(command.name) {
+        text += &format!("Nightly only. {}\n\n", escaped(super::needs_the_user::SAYS));
+    }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     text += "## Options\n\n```text\n";
     text += &table(
@@ -598,6 +601,22 @@ mod tests {
         }
         for name in &rest {
             assert!(!pages[name].contains("Mac only"), "{name}");
+        }
+    }
+
+    /// The pages of the commands only a person may run (#793) say a coding agent is refused them,
+    /// Nightly only; a subcommand's page (`trust status`) and every other command's don't.
+    #[test]
+    fn a_guarded_commands_page_says_a_coding_agent_is_refused_it() {
+        let pages = pages();
+        let line = "\nNightly only. Only a person may run it. Under a coding agent";
+        for name in ["workroom-trust.md", "workroom-delete.md"] {
+            assert!(pages[name].contains(line), "{name}:\n{}", pages[name]);
+        }
+        for (name, page) in &pages {
+            if !["workroom-trust.md", "workroom-delete.md"].contains(&name.as_str()) {
+                assert!(!page.contains("Only a person may run it"), "{name}");
+            }
         }
     }
 

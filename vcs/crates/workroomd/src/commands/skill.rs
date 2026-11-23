@@ -310,7 +310,8 @@ pub(super) fn skill_text() -> String {
          exit code and output, wait for output or a coding agent's turn, type keys, prompt the \
          coding agent in another terminal, and open or close terminals. Use it in a Workroom \
          terminal (WORKROOM_PANE is set) whenever a task involves another terminal, a dev \
-         server, or another agent.\n---\n\n<!-- Installed by Workroom, from Settings > AI \
+         server, or another agent, and before approving a project's setup script or deleting a \
+         workroom, which are the user's to do.\n---\n\n<!-- Installed by Workroom, from Settings > AI \
          Agents. Workroom updates it and removes it when the setting is turned off; once you \
          edit this file, Workroom leaves it as it is. -->\n\n{}\nRun `workroom help agents` for \
          this guide as the `workroom` you have explains it.\n",
