@@ -396,6 +396,7 @@ struct ChangesetDetailView: View {
       .frame(maxHeight: .infinity)
       .overlay {
         InspectorResizeHandle(
+          identity: .changesetFileList,
           onDrag: { dx in
             liveWidth = min(
               max(effectiveListWidth + dx, Self.minListWidth), Self.maxListWidth)
