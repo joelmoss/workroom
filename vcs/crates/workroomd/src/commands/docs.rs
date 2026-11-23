@@ -18,6 +18,7 @@
 
 mod internal;
 mod kinds;
+mod source;
 mod terminal_api;
 
 use std::collections::BTreeMap;
@@ -257,7 +258,9 @@ fn reference(current: &dyn Fn(&str) -> Option<String>) -> BTreeMap<&'static str,
     pages.insert(internal::PAGE, internal::page());
     let json_output = current(kinds::PAGE)
         .unwrap_or_else(|| panic!("docs-site/pages/{} is missing", kinds::PAGE));
-    pages.insert(kinds::PAGE, kinds::spliced(&json_output));
+    // Refused before anything is written: the caller writes only once every page is made.
+    let json_output = kinds::spliced(&json_output).unwrap_or_else(|why| panic!("{why}"));
+    pages.insert(kinds::PAGE, json_output);
     pages
 }
 
@@ -449,6 +452,68 @@ mod tests {
             stale.is_empty(),
             "docs-site/pages is stale ({stale:?}); run `make docs-cli`"
         );
+    }
+
+    /// Every `workroom …` command line a generated page quotes, in a code block or a code span,
+    /// is one the CLI reads: its command and subcommand exist and it gives no flag they don't
+    /// take. The daemon's own subcommands and shell completion's `__complete` are the binary's
+    /// too. So a page can't document a command or a flag there is none of.
+    #[test]
+    fn every_quoted_command_line_parses() {
+        use super::super::{find_in, parse};
+        use source::shell_words;
+        let mut pages: Vec<(String, String)> = pages().into_iter().collect();
+        pages.push((terminal_api::PAGE.to_string(), terminal_api::page()));
+        pages.push((internal::PAGE.to_string(), internal::page()));
+        let daemon = internal::daemon_subcommands();
+        let span = regex::Regex::new(r"`(workroom [^`]*)`").unwrap();
+        let mut checked = 0;
+        for (name, text) in &pages {
+            let mut lines: Vec<String> = Vec::new();
+            let mut fenced = false;
+            for line in text.lines() {
+                if line.starts_with("```") {
+                    fenced = !fenced;
+                } else if fenced {
+                    if let Some(command) = line.trim_start().strip_prefix("workroom ") {
+                        lines.push(format!("workroom {command}"));
+                    }
+                } else {
+                    lines.extend(span.captures_iter(line).map(|found| found[1].to_string()));
+                }
+            }
+            for line in lines {
+                let words = shell_words(&line);
+                let Some(first) = words.get(1) else { continue };
+                // A usage line's placeholder (`workroom [command]`).
+                if first.starts_with('[') {
+                    continue;
+                }
+                checked += 1;
+                if daemon.contains(first) || first.starts_with("__complete") {
+                    continue;
+                }
+                // The CLI's own flags, with no command (`workroom --help`).
+                if first.starts_with('-') {
+                    let (_, error) = parse(&words[1..], &[]);
+                    assert_eq!(error, None, "{name} quotes `{line}`, which the CLI refuses");
+                    continue;
+                }
+                let mut command = find_in(COMMANDS, first)
+                    .unwrap_or_else(|| panic!("{name} quotes `{line}`: there is no `{first}`"));
+                let mut rest = &words[2..];
+                if let Some(sub) = rest
+                    .first()
+                    .and_then(|word| find_in(command.subcommands, word))
+                {
+                    command = sub;
+                    rest = &rest[1..];
+                }
+                let (_, error) = parse(rest, command.flags);
+                assert_eq!(error, None, "{name} quotes `{line}`, which the CLI refuses");
+            }
+        }
+        assert!(checked > 50, "{checked}");
     }
 
     /// One page per public command and subcommand, named after its command path, beside the CLI's

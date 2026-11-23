@@ -11,11 +11,12 @@ use serde_json::Value;
 
 use super::super::COMMANDS;
 use super::super::kind::Kind;
-use super::{HEADER, cell, escaped, front_matter};
+use super::{HEADER, cell, escaped, front_matter, kinds};
 use crate::terminal::api::{
-    METHODS, Method, REVISION, client_schema, error_schema, session_schema,
+    DISPATCH_ERRORS, METHODS, Method, REVISION, client_schema, error_schema, session_schema,
 };
 use crate::terminal::events::name;
+use wr_protocol::envelope::MIN_TERMINAL_API_VERSION;
 
 /// The page, under `docs-site/pages`.
 pub(super) const PAGE: &str = "reference/terminal-api.md";
@@ -118,6 +119,7 @@ const EVENTS: &[Event] = &[
             "cwd",
             "coding_agent",
             "run_state",
+            "exit_code",
             "clients",
             "opened",
         ],
@@ -311,12 +313,24 @@ fn kind(code: &str) -> Kind {
     kind
 }
 
-/// A kind, with its exit code, linked to its row.
+/// A kind, with its exit code, linked to the table of `json-output.md` its row is in.
 fn kind_link(code: &str) -> String {
+    let kind = kind(code);
+    let (table, _) = kind.documented();
     format!(
-        "[`{code}`](json-output.md#the-terminal-apis-kinds) ({})",
-        kind(code).exit_code()
+        "[`{code}`](json-output.md#{}) ({})",
+        kinds::anchor(table),
+        kind.exit_code()
     )
+}
+
+/// The kinds any method can reply with, linked, as `dispatch` replies with them.
+fn dispatch_errors() -> String {
+    DISPATCH_ERRORS
+        .iter()
+        .map(|code| kind_link(code))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// One method's section.
@@ -327,12 +341,17 @@ fn method_section(method: &Method) -> String {
     text += "\n**Result**\n\n";
     text += &fields_table(&(method.output)());
     text += "\n**Errors**: ";
-    let mut errors: Vec<String> = method.errors.iter().map(|code| kind_link(code)).collect();
-    errors.push(format!(
-        "{}, which any method can return",
-        kind_link("InvalidRequest")
-    ));
-    text += &errors.join(", ");
+    let own: Vec<String> = method
+        .errors
+        .iter()
+        .filter(|code| !DISPATCH_ERRORS.contains(code))
+        .map(|code| kind_link(code))
+        .collect();
+    if !own.is_empty() {
+        text += &own.join(", ");
+        text += ", and ";
+    }
+    text += &format!("{}, which any method can return", dispatch_errors());
     text += ".\n\n**Example**\n\n```sh\n";
     let params = (method.params_example)();
     text += &format!(
@@ -454,15 +473,21 @@ pub(super) fn page() -> String {
          The Mac app also uses [internal APIs](internal-apis.md), which carry no such \
          promise.\n\n"
     );
-    text += "## Calling it\n\n\
-             From a Workroom terminal, `workroom api call METHOD PARAMS` sends one request and \
-             prints its replies. PARAMS is a JSON object inline, `@FILE` or `-` for stdin, and \
-             `{}` when left out. `workroom api list` lists the methods the daemon you reach has, \
-             and `workroom api describe METHOD` prints one's schemas, as on this page.\n\n\
-             The daemon is the one `WORKROOM_DAEMON` names, which every Workroom terminal sets. \
-             On the wire, the API is service `0x08` of the daemon's socket, from protocol 12, one \
-             request per stream; the [internal APIs](internal-apis.md#the-socket) page shows the \
-             framing.\n\n";
+    text += &format!(
+        "## Calling it\n\n\
+         From a Workroom terminal, `workroom api call METHOD PARAMS` sends one request and \
+         prints its replies. PARAMS is a JSON object inline, `@FILE` or `-` for stdin, and \
+         `{{}}` when left out. `workroom api list` lists the methods the daemon you reach has, \
+         and `workroom api describe METHOD` prints one's schemas, as on this page.\n\n\
+         The daemon is the one `WORKROOM_DAEMON` names, which every Workroom terminal sets. \
+         On the wire, the API is service `{:#04x}` of the daemon's socket, from protocol \
+         {MIN_TERMINAL_API_VERSION}, one request per stream; the [internal \
+         APIs](internal-apis.md#the-socket) page shows the framing.\n\n\
+         Any method can fail with {}: a request the daemon can't read, a request or a reply \
+         over the limit, or a method that broke off.\n\n",
+        wr_protocol::envelope::Service::TerminalApi as u8,
+        dispatch_errors()
+    );
     text += "## Requests and replies\n\nA request:\n\n";
     text += &fields_table(&described["request"]);
     text += "\nA reply is one of:\n\n\
@@ -557,8 +582,312 @@ mod tests {
         }
     }
 
+    /// Where a method's parameter comes from on its command's line.
+    enum From {
+        /// The nth word that is no flag.
+        Word(usize),
+        /// The words from the nth on, joined with spaces (`command`'s COMMAND).
+        Rest(usize),
+        /// A flag's value, as the parameter's type reads it.
+        Flag(&'static str),
+        /// A duration flag, in milliseconds (`timeout_ms`).
+        Millis(&'static str),
+        /// A comma-separated flag, as a list (`events --type`).
+        List(&'static str),
+    }
+
+    /// How each command in [`CLI`] makes its method's parameters, for the test that holds each
+    /// example to the request it shows.
+    const PARAMS: &[(&str, &[(&str, From)])] = &[
+        ("api.describe", &[("method", From::Word(0))]),
+        (
+            "session.list",
+            &[
+                ("all", From::Flag("all")),
+                ("clients", From::Flag("clients")),
+            ],
+        ),
+        ("session.resolve", &[("target", From::Word(0))]),
+        (
+            "terminal.capture",
+            &[
+                ("target", From::Word(0)),
+                ("lines", From::Flag("lines")),
+                ("unwrap", From::Flag("unwrap")),
+            ],
+        ),
+        (
+            "terminal.send",
+            &[
+                ("target", From::Word(0)),
+                ("text", From::Word(1)),
+                ("enter", From::Flag("enter")),
+            ],
+        ),
+        (
+            "terminal.command",
+            &[
+                ("target", From::Word(0)),
+                ("command", From::Rest(1)),
+                ("timeout_ms", From::Millis("timeout")),
+            ],
+        ),
+        (
+            "terminal.wait",
+            &[
+                ("target", From::Word(0)),
+                ("regex", From::Flag("regex")),
+                ("timeout_ms", From::Millis("timeout")),
+            ],
+        ),
+        (
+            "terminal.prompt",
+            &[
+                ("target", From::Word(0)),
+                ("text", From::Word(1)),
+                ("wait", From::Flag("wait")),
+                ("timeout_ms", From::Millis("timeout")),
+            ],
+        ),
+        (
+            "session.new",
+            &[
+                ("title", From::Flag("title")),
+                ("run", From::Flag("run")),
+                ("split", From::Flag("split")),
+            ],
+        ),
+        (
+            "session.run_control",
+            &[("target", From::Word(0)), ("action", From::Word(1))],
+        ),
+        ("session.close", &[("target", From::Word(0))]),
+        ("events.subscribe", &[("types", From::List("type"))]),
+    ];
+
+    /// Each example's command, read as the CLI reads it, sends the parameters the `api call`
+    /// beside it shows: the two are one request.
+    #[test]
+    fn every_command_example_sends_its_methods_params() {
+        use super::super::super::{find_in, parse, wait::parse_duration};
+        use super::super::source::shell_words;
+        for (method_name, cli) in CLI {
+            let Some(cli) = cli else { continue };
+            let words = shell_words(cli);
+            let mut command = find_in(COMMANDS, &words[1]).expect("a command");
+            let mut rest = &words[2..];
+            if let Some(sub) = rest
+                .first()
+                .and_then(|word| find_in(command.subcommands, word))
+            {
+                command = sub;
+                rest = &rest[1..];
+            }
+            let (parsed, error) = parse(rest, command.flags);
+            assert_eq!(error, None, "{cli}");
+            let flag = |name: &str| {
+                parsed
+                    .values
+                    .iter()
+                    .find(|(flag, _)| *flag == name)
+                    .map(|(_, value)| value.clone())
+            };
+            let example = (method(method_name).params_example)();
+            let (_, map) = PARAMS
+                .iter()
+                .find(|(name, _)| name == method_name)
+                .unwrap_or_else(|| panic!("{method_name} needs its PARAMS"));
+            let mut sent = serde_json::Map::new();
+            for (param, from) in *map {
+                let text = match from {
+                    From::Word(at) => parsed.positional.get(*at).cloned(),
+                    From::Rest(at) => {
+                        (parsed.positional.len() > *at).then(|| parsed.positional[*at..].join(" "))
+                    }
+                    From::Flag(name) | From::Millis(name) | From::List(name) => flag(name),
+                };
+                let Some(text) = text else { continue };
+                let value = match (from, &example[*param]) {
+                    (From::Millis(_), _) => {
+                        Value::from(parse_duration(&text).expect("a duration").as_millis() as u64)
+                    }
+                    (From::List(_), _) => {
+                        Value::from(text.split(',').map(str::to_string).collect::<Vec<_>>())
+                    }
+                    (_, Value::Bool(_)) => Value::from(text == "true"),
+                    (_, Value::Number(_)) => Value::from(text.parse::<u64>().expect("a number")),
+                    _ => Value::from(text),
+                };
+                sent.insert(param.to_string(), value);
+            }
+            let mut asked = example.as_object().expect("params").clone();
+            // A false boolean is what leaving its flag out sends.
+            asked.retain(|_, value| *value != Value::Bool(false));
+            assert_eq!(
+                Value::Object(sent),
+                Value::Object(asked),
+                "{method_name}: `{cli}` and its `api call` example ask different things"
+            );
+        }
+    }
+
+    /// The source each method's handler is, for the test that holds its kinds to its declared
+    /// list: functions of a module, or all of it.
+    const HANDLERS: &[(&str, &str, &[&str])] = &[
+        ("api.describe", API_SOURCE, &["describe", "description"]),
+        ("session.list", API_SOURCE, &["listing", "in_scope_of"]),
+        ("session.resolve", API_SOURCE, &["resolve"]),
+        ("terminal.capture", API_SOURCE, &["capture"]),
+        (
+            "terminal.send",
+            include_str!("../../terminal/api/send.rs"),
+            &[],
+        ),
+        (
+            "terminal.command",
+            include_str!("../../terminal/api/command.rs"),
+            &[],
+        ),
+        (
+            "terminal.wait",
+            include_str!("../../terminal/api/wait.rs"),
+            &[],
+        ),
+        (
+            "terminal.prompt",
+            include_str!("../../terminal/api/prompt.rs"),
+            &[],
+        ),
+        ("session.new", LIFECYCLE_SOURCE, &["create"]),
+        ("session.run_control", LIFECYCLE_SOURCE, &["run_control"]),
+        ("session.close", LIFECYCLE_SOURCE, &["close"]),
+        ("session.label", LIFECYCLE_SOURCE, &["label"]),
+        ("events.subscribe", EVENTS_SOURCE, &[]),
+        ("events.unsubscribe", EVENTS_SOURCE, &["unsubscribe"]),
+    ];
+
+    const API_SOURCE: &str = include_str!("../../terminal/api.rs");
+    const LIFECYCLE_SOURCE: &str = include_str!("../../terminal/api/lifecycle.rs");
+    const EVENTS_SOURCE: &str = include_str!("../../terminal/api/events.rs");
+
+    /// The kinds `source` names, in `functions` of it or all of it.
+    fn kinds_of(source: &str, functions: &[&str]) -> Vec<String> {
+        use super::super::source::{function, kinds_in};
+        if functions.is_empty() {
+            return kinds_in(source);
+        }
+        functions
+            .iter()
+            .flat_map(|name| kinds_in(function(source, name)))
+            .collect()
+    }
+
+    /// Every kind a method's handler replies with is one it declares, or one any method can: so
+    /// `api.describe`, and this page, never leave out a kind it can return. A module that serves
+    /// several methods is held, as a whole, to what they declare together.
+    #[test]
+    fn every_kind_a_handler_replies_with_is_declared() {
+        let declared = |name: &str| -> Vec<&str> {
+            method(name)
+                .errors
+                .iter()
+                .chain(DISPATCH_ERRORS)
+                .copied()
+                .collect()
+        };
+        for method_entry in METHODS {
+            assert!(
+                HANDLERS
+                    .iter()
+                    .any(|(name, _, _)| *name == method_entry.name),
+                "{} needs its HANDLERS entry",
+                method_entry.name
+            );
+        }
+        for (name, source, functions) in HANDLERS {
+            for code in kinds_of(source, functions) {
+                kind(&code);
+                assert!(
+                    declared(name).contains(&code.as_str()),
+                    "{name}'s handler replies with {code}, which its errors don't list"
+                );
+            }
+        }
+        for module in [LIFECYCLE_SOURCE, EVENTS_SOURCE] {
+            let together: Vec<&str> = HANDLERS
+                .iter()
+                .filter(|(_, source, _)| *source == module)
+                .flat_map(|(name, _, _)| declared(name))
+                .collect();
+            for code in kinds_of(module, &[]) {
+                assert!(together.contains(&code.as_str()), "{code}");
+            }
+        }
+        assert!(method("session.new").errors.contains(&"SessionEnded"));
+    }
+
+    /// What `dispatch` itself replies with, whatever the method, is `DISPATCH_ERRORS`.
+    #[test]
+    fn the_kinds_any_method_can_return_are_dispatchs() {
+        let found = kinds_of(API_SOURCE, &["dispatch", "send", "stream"]);
+        assert!(found.contains(&"TooLarge".to_string()));
+        for code in found {
+            assert!(DISPATCH_ERRORS.contains(&code.as_str()), "{code}");
+        }
+    }
+
+    /// Every kind the page links goes to the table of `json-output.md` that has its row.
+    #[test]
+    fn every_kind_link_reaches_its_row() {
+        let path = super::super::site_pages_dir().join(kinds::PAGE);
+        let Ok(json_output) = std::fs::read_to_string(&path) else {
+            eprintln!(
+                "no {}, so the kind links aren't checked here",
+                path.display()
+            );
+            return;
+        };
+        let json_output = kinds::spliced(&json_output).expect("its markers");
+        let anchor = |heading: &str| -> String {
+            heading
+                .trim_start_matches('#')
+                .trim()
+                .trim_end_matches(" {nightly}")
+                .to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+                .collect::<String>()
+                .replace(' ', "-")
+        };
+        let link = regex::Regex::new(r"\[`([A-Za-z]+)`\]\(json-output\.md#([a-z-]+)\)").unwrap();
+        let page = page();
+        let mut seen = 0;
+        for found in link.captures_iter(&page) {
+            seen += 1;
+            let (code, target) = (&found[1], &found[2]);
+            let lines: Vec<&str> = json_output.lines().collect();
+            let start = lines
+                .iter()
+                .position(|line| line.starts_with('#') && anchor(line) == target)
+                .unwrap_or_else(|| panic!("json-output.md has no #{target}"));
+            // Up to the next heading of any level: the table directly under the one linked.
+            let section: Vec<&str> = lines[start + 1..]
+                .iter()
+                .take_while(|line| !line.starts_with('#'))
+                .copied()
+                .collect();
+            assert!(
+                section
+                    .iter()
+                    .any(|line| line.starts_with(&format!("| `{code}` |"))),
+                "{code}'s link goes to #{target}, which has no row for it"
+            );
+        }
+        assert!(seen > 20);
+    }
+
     /// Every event the schema names has a row, once, and every field a row lists is one the
-    /// schema has and says that event carries; every field of the schema is some event's.
+    /// schema has; every field of the schema is some event's.
     #[test]
     fn every_event_is_described_with_its_fields() {
         let output = (method("events.subscribe").output)();
@@ -577,20 +906,11 @@ mod tests {
             "EVENTS must list every event the schema names, once"
         );
         let fields = output["properties"].as_object().expect("fields");
-        // Every event about a session carries these, which their descriptions say so.
-        let about_a_session = ["session", "scope"];
         for event in EVENTS {
             for field in event.fields {
-                let schema = fields
-                    .get(*field)
-                    .unwrap_or_else(|| panic!("{}: the schema has no {field}", event.name));
-                if about_a_session.contains(field) {
-                    continue;
-                }
-                let says = schema["description"].as_str().unwrap_or_default();
                 assert!(
-                    says.contains(&format!("`{}`", event.name)),
-                    "{}'s {field}: its description doesn't say the event carries it: {says}",
+                    fields.contains_key(*field),
+                    "{}: the schema has no {field}",
                     event.name
                 );
             }
@@ -606,6 +926,110 @@ mod tests {
         }
         for live in name::LIVE {
             assert!(named.contains(&live), "{live}");
+        }
+    }
+
+    /// Each event's fields, as the code that sends it writes it: every live one through the hub
+    /// that publishes it, a snapshot's `session` through `session_event`, and the three the
+    /// subscription writes itself read from its `json!`. Each is exactly `EVERY_EVENT` and the
+    /// fields its row lists.
+    #[test]
+    fn every_event_carries_the_fields_its_row_lists() {
+        use crate::terminal::events::{Cursor, Hub, Next, Start, session_event};
+        use crate::terminal::session::SessionId;
+        use std::collections::BTreeSet;
+
+        let id = SessionId([7; 16]);
+        let listing = serde_json::json!({
+            "id": id.to_hyphenated(),
+            "label": "server",
+            "title": null,
+            "scope": {"kind": "workroom", "id": "wr-1"},
+            "run": true,
+            "cwd": "/tmp",
+            "coding_agent": null,
+        });
+        let client = serde_json::json!({
+            "id": 1, "kind": "pane", "hostname": "mac", "attached_at_ms": 1,
+        });
+        let hub = Hub::default();
+        let mut cursor = Cursor::new(Start::Fresh);
+        let Next::Snapshot { .. } = hub.next(&mut cursor, &|| false) else {
+            panic!("a snapshot first");
+        };
+        hub.created(id, listing.clone());
+        hub.client_attached(id, client);
+        hub.client_detached(1);
+        hub.program_status(
+            id,
+            serde_json::json!({"state": "working", "app": "claude", "message": "m",
+                               "waiting_on_user": false}),
+        );
+        hub.run(id, "running", None);
+        hub.rescoped(id, serde_json::json!({"kind": "workroom", "id": "wr-2"}));
+        hub.labelled(id, Some("web"));
+        assert!(hub.input(id, Value::Null, None, 3));
+        hub.ended(id, Some(0));
+
+        let mut sent: Vec<Value> = Vec::new();
+        match hub.next(&mut cursor, &|| false) {
+            Next::Events(events) => sent.extend(events.iter().map(|event| event.json.clone())),
+            other => panic!("not events: {other:?}"),
+        }
+        // A snapshot's session, with the hub's place stamped on it as the subscription does.
+        let snapshot_hub = Hub::default();
+        snapshot_hub.created(id, listing);
+        let mut cursor = Cursor::new(Start::Fresh);
+        let Next::Snapshot { sessions, .. } = snapshot_hub.next(&mut cursor, &|| false) else {
+            panic!("a snapshot");
+        };
+        let mut session = session_event(name::SESSION, id, &sessions[&id]);
+        session["boot"] = Value::Null;
+        session["revision"] = Value::Null;
+        sent.push(session);
+
+        let mut keys: Vec<(String, BTreeSet<String>)> = sent
+            .iter()
+            .map(|event| {
+                let keys = event
+                    .as_object()
+                    .expect("an object")
+                    .keys()
+                    .cloned()
+                    .collect();
+                (event["event"].as_str().expect("a name").to_string(), keys)
+            })
+            .collect();
+        // The subscription writes these itself: `snapshot-complete` where it sends a snapshot,
+        // `resumed` and `place` where it streams.
+        let subscription = include_str!("../../terminal/api/events.rs");
+        use super::super::source::{function, json_keys};
+        for (written, writer, constant) in [
+            (name::SNAPSHOT_COMPLETE, "snapshot", "SNAPSHOT_COMPLETE"),
+            (name::RESUMED, "start", "RESUMED"),
+            (name::PLACE, "start", "PLACE"),
+        ] {
+            let found = json_keys(
+                function(subscription, writer),
+                &format!("\"event\": name::{constant},"),
+            );
+            keys.push((written.to_string(), found.into_iter().collect()));
+        }
+        for event in EVENTS {
+            let want: BTreeSet<String> = EVERY_EVENT
+                .iter()
+                .chain(event.fields)
+                .map(|field| field.to_string())
+                .collect();
+            let have = keys
+                .iter()
+                .find(|(name, _)| name == event.name)
+                .unwrap_or_else(|| panic!("no {} was sent", event.name));
+            assert_eq!(
+                have.1, want,
+                "{}: its fields as sent, and as EVENTS lists them",
+                event.name
+            );
         }
     }
 

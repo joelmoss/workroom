@@ -58,7 +58,12 @@ pub const QUIT_GRACE: Duration = Duration::from_secs(7);
 /// it does once its traps are set, before it signals it.
 const SUPERVISOR_START: Duration = Duration::from_secs(5);
 
-pub const NEW_ERRORS: &[&str] = &[kind::NOT_A_DIRECTORY, kind::BUSY, kind::INTERNAL_ERROR];
+pub const NEW_ERRORS: &[&str] = &[
+    kind::NOT_A_DIRECTORY,
+    kind::SESSION_ENDED,
+    kind::BUSY,
+    kind::INTERNAL_ERROR,
+];
 
 pub const CLOSE_ERRORS: &[&str] = &[
     kind::TARGET_NOT_FOUND,
