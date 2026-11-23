@@ -20,6 +20,12 @@ use super::{ABOUT, COMMANDS, Command, Flag, global_flags, honours_pretend};
 /// The line under a page's front matter that makes it this generator's.
 const HEADER: &str = "<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->";
 
+/// Whether no stable release refuses the Mac-only commands off the Mac yet: the Go CLI in v3.1.0
+/// ran them on Linux, so the line saying they don't is marked Nightly only, as docs-site/README.md
+/// has prose mark what ships only in Nightly. The first stable release with the Rust binary sets it
+/// false (the curate-release skill's docs step).
+const MAC_ONLY_IS_NIGHTLY: bool = true;
+
 /// The CLI's one-line description, its page's and every link to it.
 const SHORT: &str = "Manage development workrooms";
 
@@ -148,7 +154,10 @@ fn page(command: &Command, parents: &[&Command]) -> String {
         text += "\n\n";
     }
     if command.mac_only {
-        text += "Mac only.\n\n";
+        if MAC_ONLY_IS_NIGHTLY {
+            text += "Nightly only. ";
+        }
+        text += "Runs on a Mac only, and fails with `MacOnly` elsewhere.\n\n";
     }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     text += "## Options\n\n```text\n";
@@ -399,6 +408,44 @@ mod tests {
             "workroom-completion-zsh.md",
         ] {
             assert!(!is_nightly(name), "{name}");
+        }
+    }
+
+    /// A Mac-only command's page says so, and while no stable release refuses it on Linux (the Go
+    /// CLI ran it there), says that the refusal is Nightly only, as docs-site/README.md has prose
+    /// mark it. Every page of a Mac-only command or subcommand carries the line; no other does.
+    #[test]
+    fn a_mac_only_page_says_its_refusal_elsewhere_is_nightly() {
+        fn walk(command: &Command, path: &str, mac_only: &mut Vec<String>, rest: &mut Vec<String>) {
+            if command.hidden {
+                return;
+            }
+            if command.mac_only {
+                mac_only.push(file_name(path));
+            } else {
+                rest.push(file_name(path));
+            }
+            for sub in command.subcommands {
+                walk(sub, &format!("{path} {}", sub.name), mac_only, rest);
+            }
+        }
+        let (mut mac_only, mut rest) = (Vec::new(), Vec::new());
+        for command in COMMANDS.iter().filter(|command| command.name != "help") {
+            walk(command, command.name, &mut mac_only, &mut rest);
+        }
+        assert!(mac_only.contains(&"workroom-create.md".to_string()));
+        let pages = pages();
+        let mark = if MAC_ONLY_IS_NIGHTLY {
+            "Nightly only. "
+        } else {
+            ""
+        };
+        let line = format!("\n{mark}Runs on a Mac only, and fails with `MacOnly` elsewhere.\n");
+        for name in &mac_only {
+            assert!(pages[name].contains(&line), "{name}:\n{}", pages[name]);
+        }
+        for name in &rest {
+            assert!(!pages[name].contains("Mac only"), "{name}");
         }
     }
 
