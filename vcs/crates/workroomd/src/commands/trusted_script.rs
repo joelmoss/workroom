@@ -287,11 +287,7 @@ impl Judge<'_> {
     /// the base it resolves and fetches as a create does, and the root's teardown copy. A script
     /// that is nowhere is left out. Returns them with the local work a create from that start
     /// leaves out, and the start. Go's `projectScripts`.
-    fn project_scripts(
-        &self,
-        base: &str,
-        global: bool,
-    ) -> Result<(Vec<Script>, LocalWork, String), CliError> {
+    fn project_scripts(&self, base: &str, global: bool) -> Result<NextScripts, CliError> {
         if !git::is_git_repo(Path::new(self.dir)) {
             return Err(CliError::unsupported_vcs());
         }
@@ -306,12 +302,19 @@ impl Judge<'_> {
         let mut scripts = Vec::new();
         scripts.extend(self.setup_script_at(&start)?);
         scripts.extend(self.root_script(TEARDOWN_SCRIPT)?);
-        Ok((scripts, work, start))
+        Ok(NextScripts {
+            scripts,
+            work,
+            start,
+            // A real run judges the start it fetched, or says nothing of a failed fetch, as Go's
+            // did; a dry run, which fetched nothing, says the start may be out of date.
+            unfetched: if self.fetch { String::new() } else { warning },
+        })
     }
 
     /// The scripts the project would run next, at the project's own base, else the global one.
     /// Go's `ProjectScripts`.
-    pub(super) fn scripts(&self) -> Result<(Vec<Script>, LocalWork), CliError> {
+    pub(super) fn scripts(&self) -> Result<NextScripts, CliError> {
         let data = self.config.read()?;
         let own = config::all_projects(&data)
             .get(self.dir)
@@ -322,32 +325,44 @@ impl Judge<'_> {
         } else {
             (own, false)
         };
-        let (scripts, work, _) = self.project_scripts(&base, global)?;
-        Ok((scripts, work))
+        self.project_scripts(&base, global)
     }
 
     /// [`Judge::scripts`] with new workrooms starting from `base` ("" is origin's default branch)
     /// rather than the project's: what a remote create checks out, which may differ. With
-    /// `devcontainer`, the devcontainer.json a container create would use is judged too. Returns
-    /// the commit the start names now, when it is a remote's ref, so a remote create checks out
-    /// exactly what was judged (#308); else "". Go's `ProjectScriptsFrom`.
+    /// `devcontainer`, the devcontainer.json a container create would use is judged too. Its
+    /// `start` is the commit the start names now, when it is a remote's ref, so a remote create
+    /// checks out exactly what was judged (#308); else "". Go's `ProjectScriptsFrom`.
     pub(super) fn scripts_from(
         &self,
         base: &str,
         devcontainer: bool,
-    ) -> Result<(Vec<Script>, LocalWork, String), CliError> {
-        let (mut scripts, work, start) = self.project_scripts(base, false)?;
+    ) -> Result<NextScripts, CliError> {
+        let mut next = self.project_scripts(base, false)?;
+        if devcontainer {
+            let found = self.devcontainer_at(&next.start)?;
+            next.scripts.extend(found);
+        }
         // Only a remote's ref: a local branch or HEAD can name a commit the remote clone lacks.
-        let commit = if start.starts_with("refs/remotes/") {
-            git::commit_at(Path::new(self.dir), &start).unwrap_or_default()
+        next.start = if next.start.starts_with("refs/remotes/") {
+            git::commit_at(Path::new(self.dir), &next.start).unwrap_or_default()
         } else {
             String::new()
         };
-        if devcontainer {
-            scripts.extend(self.devcontainer_at(&start)?);
-        }
-        Ok((scripts, work, commit))
+        Ok(next)
     }
+}
+
+/// The scripts a project would run next, as [`Judge`] judged them.
+pub(super) struct NextScripts {
+    pub(super) scripts: Vec<Script>,
+    /// The local work a create from that start leaves out.
+    pub(super) work: LocalWork,
+    /// The start ([`Judge::scripts_from`]: the commit it names, or "").
+    pub(super) start: String,
+    /// Under `--pretend`, which fetches nothing, the warning that the start may be out of date
+    /// (#798); else "".
+    pub(super) unfetched: String,
 }
 
 /// Go's `ErrScriptNotTrusted`, with why.

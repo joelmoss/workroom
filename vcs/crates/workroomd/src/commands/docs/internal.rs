@@ -732,11 +732,12 @@ fn hidden_section(command: &Command, path: &str, app: &str, sub: bool) -> String
         text += "\n\n";
     }
     // A command only a person may run says so first: under a coding agent its refusal comes
-    // before `MacOnly` (#793).
+    // before `MacOnly` (#793). Nightly only, as the CLI pages mark it.
     let says = (!sub)
         .then(|| super::super::needs_the_user::says(command.name))
         .flatten();
     if let Some(says) = &says {
+        text += "Nightly only. ";
         text += &escaped(says);
         text += "\n\n";
     }

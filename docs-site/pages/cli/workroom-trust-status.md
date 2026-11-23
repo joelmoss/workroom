@@ -7,7 +7,7 @@ description: "Say whether a project's setup and teardown scripts are approved."
 
 ## Synopsis
 
-Say whether the setup and teardown scripts a create or delete would run next are approved. Exits 0 when every script there is approved or ignored by git, 1 when one is not, and 2 when it cannot tell.
+Say whether the setup and teardown scripts a create or delete would run next are approved. Exits 0 when every script there is approved or ignored by git, 1 when one is not, and 2 when it cannot tell. With --pretend it fetches nothing, and warns that the start it judges may be out of date.
 
 Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
 

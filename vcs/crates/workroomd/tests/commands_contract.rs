@@ -1641,6 +1641,7 @@ fn include_archive_writes_each_included_file_with_its_mode() {
     ignore = "Mac only: here the Rust binary is MacOnly"
 )]
 fn include_archive_pretend_writes_no_tar() {
+    use std::os::unix::fs::PermissionsExt;
     let home = Home::new("include-archive-pretend");
     let (root, unreadable) = include_fixture(&home);
     let root_arg = root.to_string_lossy().into_owned();
@@ -1678,6 +1679,31 @@ fn include_archive_pretend_writes_no_tar() {
         format!("Would archive {count} files to {}\n", kept.display())
     );
     assert_eq!(std::fs::read_to_string(&kept).expect("read"), "keep");
+
+    // Where the real run couldn't open `--output` (no folder, a folder in its place, a folder it
+    // can't write in), the dry run fails as it does, and neither makes anything.
+    let locked = home.path("locked");
+    std::fs::create_dir(&locked).expect("folder");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    // SAFETY: geteuid has no preconditions.
+    let root_user = unsafe { libc::geteuid() } == 0;
+    let mut outputs = vec![home.path("nowhere/a.tar"), home.path("src")];
+    if !root_user {
+        outputs.push(locked.join("a.tar"));
+    }
+    for output in outputs {
+        let pretend = run(args(&output, &["--json", "--pretend"]));
+        pretend.assert_code(1).assert_quiet_stderr();
+        let real = run(args(&output, &["--json"]));
+        real.assert_code(1);
+        assert_eq!(pretend.stdout, real.stdout, "{}", output.display());
+        assert!(
+            !output.exists() || output.is_dir(),
+            "{}: made a tar",
+            output.display()
+        );
+    }
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 /// Without `--json`: the count and the tar's path on stdout, each file it couldn't read on stderr.
@@ -4726,7 +4752,8 @@ fn delete_cancelled_during_the_teardown_reports_it_failed_and_keeps_the_workroom
 /// `--json` needs a name and a `--confirm` that matches it. A name that isn't one (a path, `..`)
 /// is `InvalidName`, so no path outside the workrooms folder is ever reached. A workroom that
 /// isn't there, or a project folder that isn't one, is reported before a wrong `--confirm` is,
-/// as Go checks them first; `--pretend` checks no `--confirm` at all. Nothing is touched.
+/// as Go checks them first; `--pretend` checks `--confirm` as well (Go's checked none). Nothing
+/// is touched.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -4890,7 +4917,7 @@ fn delete_refuses_without_a_matching_confirmation() {
     );
     assert!(envelope.get("command").is_none(), "{envelope}");
 
-    // `--pretend` asks for no confirmation and changes nothing.
+    // `--pretend` checks the confirmation too, as the real run would (#798), and changes nothing.
     let run = home.run(
         &home.dir,
         &[
@@ -4899,6 +4926,21 @@ fn delete_refuses_without_a_matching_confirmation() {
             "--json",
             "--confirm",
             "nope",
+            "--pretend",
+            "--project",
+            p,
+        ],
+    );
+    run.assert_code(2).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfirmationMismatch");
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete",
+            "calm-river",
+            "--json",
+            "--confirm",
+            "calm-river",
             "--pretend",
             "--project",
             p,
@@ -5164,6 +5206,85 @@ fn delete_never_removes_a_folder_git_wont_remove_for_the_project() {
         "unsaved"
     );
     assert_eq!(config_text(&home), written);
+}
+
+/// `--pretend` fails where the real run would, with its envelope (#798), and changes nothing: a
+/// config entry git lists no worktree for (whose folder is another checkout), a locked worktree
+/// (which one `--force` doesn't remove), a `--confirm` that doesn't match and an unapproved
+/// teardown script; for `delete` and for `delete-project --with-workrooms`'s cascade.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_pretend_fails_where_the_real_delete_would() {
+    let unapproved = "0".repeat(64);
+    for (case, command) in [
+        ("unlisted", "delete"),
+        ("unlisted", "delete-project"),
+        ("locked", "delete"),
+        ("locked", "delete-project"),
+        ("confirm", "delete"),
+        ("unapproved", "delete"),
+        ("unapproved", "delete-project"),
+    ] {
+        let home = Home::new("delete-pretend-predicts");
+        let digest = if case == "unapproved" {
+            unapproved.as_str()
+        } else {
+            STOPPING_SHA256
+        };
+        let project = project_with_workroom(&home, "echo stopping\n", digest);
+        let p = project.to_string_lossy().into_owned();
+        let worktree = home.path("workrooms/calm-river");
+        let mut name = "calm-river";
+        match case {
+            "unlisted" => {
+                let other = home.repo("src/other");
+                home.write_config(&format!(
+                    "{{\"{p}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{}\"}}, \"ghost\": {{\"path\": \"{}\"}}}}}}}}",
+                    worktree.display(),
+                    other.display()
+                ));
+                name = "ghost";
+            }
+            "locked" => home.git(&project, &["worktree", "lock", &worktree.to_string_lossy()]),
+            _ => {}
+        }
+        let confirm = if case == "confirm" { "nope" } else { name };
+        let args: Vec<&str> = if command == "delete" {
+            vec![
+                "delete",
+                name,
+                "--json",
+                "--confirm",
+                confirm,
+                "--project",
+                &p,
+            ]
+        } else {
+            vec![
+                "delete-project",
+                &p,
+                "--json",
+                "--confirm",
+                &p,
+                "--with-workrooms",
+            ]
+        };
+        let before = config_text(&home);
+        let pretend = home.run(&home.dir, &[&args[..], &["--pretend"]].concat());
+        pretend.assert_quiet_stderr();
+        assert_ne!(pretend.code, 0, "{case} {command}: {}", pretend.stdout);
+        assert_eq!(config_text(&home), before, "{case} {command}");
+        assert!(worktree.join(".git").exists(), "{case} {command}");
+        let real = home.run(&home.dir, &args);
+        assert_eq!(
+            (pretend.code, &pretend.stdout),
+            (real.code, &real.stdout),
+            "{case} {command}"
+        );
+    }
 }
 
 /// `--pretend` says what the real delete does with a workroom it only forgets, a workroom Jujutsu
@@ -6346,16 +6467,46 @@ fn trust_pretend_fetches_nothing() {
     let refs = || git_output(&home, &project, &["for-each-ref", "refs/remotes"]);
     let before = refs();
     let p = project.to_string_lossy().into_owned();
+    let warning = "--pretend fetches nothing, so origin wasn't fetched. The workroom starts from \
+                   origin/main, which may be out of date.";
     for args in [
         &["trust", "--pretend", "--json", "--project", &p][..],
         &["trust", "status", "-p", "--json", "--project", &p],
     ] {
         let run = home.run(&home.dir, args);
         run.assert_quiet_stderr();
+        assert_eq!(run.envelope()["warning"], warning, "{args:?}");
         assert_eq!(refs(), before, "{args:?} fetched");
     }
-    home.run(&home.dir, &["trust", "status", "--json", "--project", &p])
-        .assert_quiet_stderr();
+    let human = home.run(&home.dir, &["trust", "status", "-p", "--project", &p]);
+    assert_eq!(human.stderr, format!("{warning}\n"));
+    assert_eq!(refs(), before);
+    // A base only origin has, which only a fetch would find: the dry run is refused, saying why.
+    let base = [
+        "trust",
+        "status",
+        "--json",
+        "--project",
+        &p,
+        "--base",
+        "late",
+    ];
+    home.git(&project, &["push", "-q", "origin", "HEAD:refs/heads/late"]);
+    home.git(&project, &["update-ref", "-d", "refs/remotes/origin/late"]);
+    let before = refs();
+    let run = home.run(&home.dir, &[&base[..], &["--pretend"]].concat());
+    run.assert_code(2).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "BaseBranchNotFound");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "the base branch exists neither on its remote nor locally: 'late' (--pretend fetches \
+         nothing, so origin wasn't fetched to look there)"
+    );
+    assert_eq!(refs(), before);
+
+    let run = home.run(&home.dir, &base);
+    run.assert_quiet_stderr();
+    assert!(run.envelope().get("warning").is_none(), "{}", run.stdout);
     assert_ne!(refs(), before, "the fixture shows no fetch");
     assert!(!refs().contains("refs/remotes/origin/gone"), "{}", refs());
 }

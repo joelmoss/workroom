@@ -50,7 +50,8 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
 
 /// As Go orders it: the project, then its included files, and only then the tar, so a failed
 /// listing leaves no tar behind. Under `--pretend` the tar goes nowhere (#798): every file is read
-/// as it would be archived, so the envelope is the real run's, and `--output` is left alone.
+/// as it would be archived, so the envelope is the real run's, and `--output` is only checked
+/// ([`writable`]), never made or truncated.
 fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, String> {
     // A `--project` that doesn't exist stays only made absolute; it has no include file, so it
     // archives nothing.
@@ -62,6 +63,8 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
     );
     let included = included_files(&root)?;
     let written = if context.pretend {
+        writable(Path::new(output))
+            .map_err(|error| format!("open {output}: {}", os_error(&error)))?;
         write_archive(&root, &included.files, io::sink())?
     } else {
         let file = File::options()
@@ -102,6 +105,38 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
         .map(|failure| format!("{failure}\n"))
         .collect();
     Ok(Outcome::PrintedWithWarnings { stdout, warnings })
+}
+
+/// Whether the tar could be written to `output`, as the real run's open (create, truncate) would
+/// find it, without making or truncating it: a file there must be writable and no folder, and
+/// where there is none its folder must be there and writable. The error is the one the open would
+/// give. What `--pretend` checks in place of the open (#798).
+fn writable(output: &Path) -> io::Result<()> {
+    let access = |path: &Path, mode: libc::c_int| {
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        // SAFETY: `name` is a NUL-terminated path that lives across the call.
+        if unsafe { libc::access(name.as_ptr(), mode) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    };
+    match std::fs::metadata(output) {
+        Ok(info) if info.is_dir() => Err(io::Error::from_raw_os_error(libc::EISDIR)),
+        Ok(_) => access(output, libc::W_OK),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let folder = match output.parent() {
+                Some(folder) if !folder.as_os_str().is_empty() => folder,
+                _ => Path::new("."),
+            };
+            if !std::fs::metadata(folder)?.is_dir() {
+                return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
+            }
+            access(folder, libc::W_OK | libc::X_OK)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// What the root's include file matches: the regular files to archive, and the symlinks that
