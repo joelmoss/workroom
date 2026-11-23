@@ -123,6 +123,71 @@ same "cargo no fixture" "$(verdict_of cargo 1 "$TMP/cargo-nofixture.log")" "FAIL
 # A command that failed after its tests passed fails the row.
 same "exit status wins" "$(bash "$DIR/remote-tests.sh" verdict 2 5 0 0)" "FAILED"
 
+# --- An app suite's rows when its run failed ---
+
+# The run exited 65 for one class's failure: that class's row fails, the others keep their counts
+# and pass, and a class the summary never counted takes the run's status.
+out="$(bash "$DIR/remote-tests.sh" rows ssh-host 65 "$TMP/xcode.log" RemoteHostIntegrationTests \
+  SSHHostIntegrationTests ContainerCreateLiveTests)"
+got=$?
+same "rows exit" "$got" 1
+case "$out" in
+*"ssh-host: RemoteHostIntegrationTests"*"12"*"0"*"0"*"PASS"*) ;;
+*) echo "FAIL: a class that passed keeps its counts and passes. Got:"; echo "$out"; fails=$((fails + 1)) ;;
+esac
+case "$out" in
+*"ssh-host: SSHHostIntegrationTests"*"FAILED"*) ;;
+*) echo "FAIL: the class that failed says so. Got:"; echo "$out"; fails=$((fails + 1)) ;;
+esac
+case "$out" in
+*"ContainerCreateLiveTests"*"FAILED (exit 65)"*) ;;
+*) echo "FAIL: an uncounted class takes the run's status. Got:"; echo "$out"; fails=$((fails + 1)) ;;
+esac
+case "$out" in
+*"its command"*) echo "FAIL: a failure a class explains needs no row of its own. Got:"; echo "$out"
+  fails=$((fails + 1)) ;;
+esac
+
+# A run that failed after every class passed (the fixture's teardown, say) still fails, on a row
+# of its own.
+out="$(bash "$DIR/remote-tests.sh" rows remote-host 1 "$TMP/xcode.log" RemoteHostIntegrationTests)"
+got=$?
+same "rows exit, every class passed" "$got" 1
+case "$out" in
+*"remote-host: its command"*"FAILED (exit 1)"*) ;;
+*) echo "FAIL: a failed run no class explains gets a row. Got:"; echo "$out"; fails=$((fails + 1)) ;;
+esac
+bash "$DIR/remote-tests.sh" rows remote-host 0 "$TMP/xcode.log" RemoteHostIntegrationTests >/dev/null
+same "rows exit, all passed" "$?" 0
+
+# --- What a run's cleanup removes: only what carries its own label ---
+
+run=remote-tests-123-456
+printf 'aaa111\t%s\nbbb222\t\nccc333\tremote-tests-999-456\nddd444\t%s\n' "$run" "$run" \
+  >"$TMP/docker.txt"
+same "docker: this run's only" "$(bash "$DIR/remote-tests.sh" ours docker "$run" <"$TMP/docker.txt" | tr '\n' ' ')" \
+  "aaa111 ddd444 "
+same "docker: no run, nothing" "$(bash "$DIR/remote-tests.sh" ours docker "" <"$TMP/docker.txt")" ""
+
+cat >"$TMP/apple-containers.json" <<EOF
+[{"id":"wr-1","configuration":{"id":"wr-1","labels":{"workroom.test-run":"$run","workroom.provisioner":"live-test"}}},
+ {"id":"wr-2","configuration":{"id":"wr-2","labels":{"workroom.provisioner":"live-test"}}},
+ {"id":"mine","configuration":{"id":"mine"}},
+ {"id":"wr-3","configuration":{"id":"wr-3","labels":{"workroom.test-run":"remote-tests-999-456"}}}]
+EOF
+same "apple containers: this run's only" \
+  "$(bash "$DIR/remote-tests.sh" ours apple-containers "$run" <"$TMP/apple-containers.json")" "wr-1"
+
+cat >"$TMP/apple-images.json" <<EOF
+[{"configuration":{"name":"workroom-test-git"},"variants":[{"config":{"config":{"Labels":{"workroom.test-run":"$run"}}}}]},
+ {"configuration":{"name":"debian:bookworm-slim"},"variants":[{"config":{"config":{}}}]},
+ {"configuration":{"name":"node:22"}}]
+EOF
+same "apple images: this run's only" \
+  "$(bash "$DIR/remote-tests.sh" ours apple-images "$run" <"$TMP/apple-images.json")" "workroom-test-git"
+same "apple: unreadable listing, nothing" \
+  "$(printf 'not json' | bash "$DIR/remote-tests.sh" ours apple-containers "$run")" ""
+
 # --- Suite names and runtimes, before anything is built ---
 
 mkdir -p "$TMP/bin"

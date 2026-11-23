@@ -23,7 +23,11 @@ final class ContainerHostDriverLiveTests: XCTestCase {
       provisioning: ContainerHostDriver.Provisioning(
         runtime: URL(fileURLWithPath: "/opt/homebrew/bin/container"), image: "unused", user: "",
         daemonSocket: DaemonInstall.defaultSocket,
-        labels: ["workroom.provisioner=live-test"], dialect: .apple,
+        // And the run's own label when the runner names it (macapp/Scripts/remote-tests.sh), for
+        // its cleanup after an interrupted run.
+        labels: ["workroom.provisioner=live-test"]
+          + (environment["WR_CONTAINER_TEST_RUN"].map { ["workroom.test-run=\($0)"] } ?? []),
+        dialect: .apple,
         daemon: { _ in daemon }, daemonFolder: directory.appendingPathComponent("daemon")))
 
     let host = try await driver.create(
