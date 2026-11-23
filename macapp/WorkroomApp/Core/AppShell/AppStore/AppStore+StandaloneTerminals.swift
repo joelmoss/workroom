@@ -34,7 +34,7 @@ extension AppStore: TerminalsSectionHolder {
   func revealQuickTerminal(newTerminal: Bool = false) {
     guard let panel = terminalsSection.quickTerminalHolder as? QuickTerminalHost else {
       // Not made yet: the summon makes it, with its first terminal.
-      NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+      QuickTerminalRequest.show.post()
       return
     }
     if newTerminal { panel.newTerminal(in: panel.target) }

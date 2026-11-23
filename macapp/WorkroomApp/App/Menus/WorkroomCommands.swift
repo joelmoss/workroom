@@ -318,14 +318,14 @@ struct WorkroomCommands: Commands {
       .shortcut(.newStandaloneTerminal)
       .disabled(!workroomCommandEnabled(modalPresented.map { !$0 }))
 
-      // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
-      // the toolbar button. Always enabled (needs no workroom). Shows the recorded global shortcut
+      // Quick terminal at ~/ in its own chrome-less window (issue #39): slides it in or out, as the
+      // global shortcut does. Always enabled (needs no workroom). Shows the recorded global shortcut
       // (⌥§ by default) as its equivalent: no double-fire, because the registered Carbon hotkey
       // consumes it system-wide before it reaches the menu (Release). In a Debug-only dev run (no
       // Release build owning the global hotkey), the menu equivalent is what makes the shortcut
-      // work — handy for QA.
+      // work, so it toggles too.
       Button("Quick Terminal") {
-        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+        QuickTerminalRequest.toggle.post()
       }
       .shortcut(.quickTerminal)
       // The shortcut may carry no ⌘ (⌥§ doesn't), and nothing else would stop it opening a whole new

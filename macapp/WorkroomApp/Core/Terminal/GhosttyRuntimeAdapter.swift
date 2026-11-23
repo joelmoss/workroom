@@ -421,7 +421,7 @@ final class GhosttyRuntimeAdapter {
         resolve(response == .alertFirstButtonReturn)
       }
       // Sheet it over the surface's own window so it is obvious WHICH terminal asked. The quick
-      // terminal is a plain titled `NSWindow` (`QuickTerminalWindow`), so it sheets like any other;
+      // terminal is a titled panel (`QuickTerminalWindow`), so it sheets like any other window;
       // only a surface with no window at all falls back to an app-modal alert.
       if let window = view?.window {
         alert.beginSheetModal(for: window, completionHandler: done)

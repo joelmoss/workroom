@@ -7,11 +7,19 @@ import WorkroomDomain
 /// route ⌘W to close it. (The app rebinds ⌘W to a "Close Tab" menu command that targets the
 /// main window's tabs and wins over a window's own `performKeyEquivalent`, so ⌘W is caught in the
 /// monitor — the same mechanism the app already uses for ⌘R / ⌘1–9.)
-final class QuickTerminalWindow: NSWindow {
+///
+/// A non-activating panel: summoned over another app, it takes key focus and keyboard input
+/// without activating Workroom, so the app's other windows stay where they are, behind whatever
+/// the user was working in, and the panel sits alongside that app.
+final class QuickTerminalWindow: NSPanel {
   // AppKit pulls a titled window back on-screen, so the slide could never start off-screen.
   override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
     frameRect
   }
+
+  // A panel closes on Esc (`cancelOperation`) that nothing before it took, which here would slide
+  // it away mid-typing. Behave as a window does: Esc is the terminal's and its views'.
+  override func cancelOperation(_ sender: Any?) {}
 }
 
 /// The screen edge the quick terminal slides in from (Settings ▸ Terminal).
@@ -110,8 +118,8 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
 /// so they look and behave the same — over its own `QuickTerminalHost`, which is never registered
 /// with `WindowRegistry` as a window (ADR 0064) but is a holder of the Terminals section. Its panes
 /// can be popped out into windows of their own.
-/// The window is an AppKit `NSWindow`, not a SwiftUI scene, for exact chrome control, and follows
-/// live theme switches, which `ThemeService` only takes to registered stores.
+/// The window is a non-activating AppKit `NSPanel`, not a SwiftUI scene, for exact chrome control,
+/// and follows live theme switches, which `ThemeService` only takes to registered stores.
 @MainActor
 final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var window: NSWindow?
@@ -150,8 +158,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var sessionService: PersistentSessionService { sessionServiceOverride ?? .shared }
   /// Set while a slide-out runs; a summon during it clears it, cancelling the pending `orderOut`.
   private var hiding = false
-  /// Set while a summon from another app waits for the activation to land (`frontOnceActive`).
-  private var activationObserver: NSObjectProtocol?
+  /// Slides the panel away as the app hides (⌘H), which it doesn't by itself (`canHide`).
+  private var appHideObserver: NSObjectProtocol?
+  /// Answers `QuickTerminalRequest`s for the controller's life (`observeRequests`).
+  private var requestObserver: NSObjectProtocol?
 
   /// Nonisolated so `AppDelegate` can construct it as a stored-property default (a nonisolated
   /// context); it only assigns nil/closure defaults — no main-actor work runs here. Every method
@@ -209,6 +219,24 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
   }
 
+  /// Answer the views' `QuickTerminalRequest`s from now on. `center` is the app's, or a test's own.
+  func observeRequests(in center: NotificationCenter = .default) {
+    if let requestObserver { center.removeObserver(requestObserver) }
+    requestObserver = center.addObserver(
+      forName: QuickTerminalRequest.notification, object: nil, queue: .main
+    ) { [weak self] notification in
+      guard let request = QuickTerminalRequest(notification) else { return }
+      MainActor.assumeIsolated { self?.handle(request) }
+    }
+  }
+
+  func handle(_ request: QuickTerminalRequest) {
+    switch request {
+    case .show: show()
+    case .toggle: toggle()
+    }
+  }
+
   /// Button / summon semantics: never hides — create if ABSENT, then slide in + focus. Called
   /// for the toolbar button and as the second half of `toggle()` from ABSENT/HIDDEN.
   func show() {
@@ -235,10 +263,9 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
     if window == nil { createWindow(host) }
     guard let window, let surface = currentSurface else { return }
-    // The hotkey can fire while another app is frontmost (or while Workroom is hidden), so pull the
-    // app forward — mirrors `AppDelegate.toggleAppVisibility`.
-    if !NSApp.isActive { frontOnceActive(window) }
-    NSApp.activate(ignoringOtherApps: true)
+    // No `NSApp.activate`: that would bring every Workroom window forward with it. The panel is
+    // non-activating, so it takes focus over whatever app is frontmost (or while Workroom is
+    // hidden: it doesn't hide with the app) and leaves the rest of Workroom where it was.
     hiding = false
     // Dock on every summon: to the edge the setting names now, on the screen under the pointer
     // (the hotkey fires from any app, so the key window's screen may not be where the user is).
@@ -252,10 +279,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       if !window.isVisible {
         window.setFrame(edge.hiddenFrame(docked: docked, screen: screen.frame), display: false)
       }
-      window.makeKeyAndOrderFront(nil)
+      bringForward(window)
       slide(window, to: docked)
     } else {
-      window.makeKeyAndOrderFront(nil)
+      bringForward(window)
     }
     window.makeFirstResponder(surface)
   }
@@ -271,30 +298,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     show()
   }
 
-  /// The activation lands later and fronts the app's last key window, a workroom's, over this one,
-  /// which an inactive app can't make key: once it has, make this key and front again.
-  private func frontOnceActive(_ window: NSWindow) {
-    if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
-    activationObserver = NotificationCenter.default.addObserver(
-      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        guard let self else { return }
-        if let observer = self.activationObserver {
-          NotificationCenter.default.removeObserver(observer)
-        }
-        self.activationObserver = nil
-        // A turn later, after AppKit's own activation ordering.
-        DispatchQueue.main.async {
-          MainActor.assumeIsolated {
-            guard self.window === window, self.isVisible, let surface = self.currentSurface
-            else { return }
-            window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(surface)
-          }
-        }
-      }
-    }
+  /// Front and key, over the frontmost app's windows when Workroom isn't active.
+  private func bringForward(_ window: NSWindow) {
+    window.orderFrontRegardless()
+    window.makeKey()
   }
 
   /// Slide out, then hide without destroying: the surface keeps running so a re-summon restores
@@ -431,9 +438,22 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     watchPresses()
     let window = QuickTerminalWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
-      styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+      styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
       backing: .buffered, defer: false)
     window.title = "Quick Terminal"
+    // A panel hides when its app deactivates by default; this one shows over other apps, and
+    // `hidesWhenUnfocused` decides whether losing focus slides it away.
+    window.hidesOnDeactivate = false
+    // Summoned on whichever Space is current, a full-screen app's included, rather than switching
+    // to the Space it was last on.
+    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+    // Shown while Workroom is hidden without unhiding its windows; ⌘H slides it away instead.
+    window.canHide = false
+    appHideObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.willHideNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.hide() }
+    }
     // Chrome-less: hide the title text, the toolbar and the traffic lights, and make the titlebar
     // transparent; the tab bar sits where it was. Still `.titled` + `.closable`, so it takes key
     // focus and the edges resize. Not movable: every summon docks it to its edge, and a drag of the
@@ -600,7 +620,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// focus back and stays; anywhere else, it slides away as focus moving would have had it.
   private func mouseCameUp() {
     guard let window, isVisible, NSApp.keyWindow !== window else { return }
-    if window.frame.contains(NSEvent.mouseLocation) { return window.makeKeyAndOrderFront(nil) }
+    if window.frame.contains(NSEvent.mouseLocation) { return bringForward(window) }
     focusMoved(to: NSApp.keyWindow)
   }
 
@@ -619,6 +639,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     mouseUpWait = nil
     if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
     pressMonitor = nil
+    if let appHideObserver { NotificationCenter.default.removeObserver(appHideObserver) }
+    appHideObserver = nil
     hiding = false
     host?.hostWindow = nil
     window?.delegate = nil
@@ -627,12 +649,28 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 }
 
-/// Posted by the main-toolbar Quick-Terminal button; `AppDelegate` observes it and calls `show()`
-/// (the controller lives on the delegate, out of reach of the SwiftUI view). Same decoupled pattern
-/// as `.showThemePicker`. The Quick Terminal's global shortcut calls the controller
-/// directly (it's registered in the delegate), so it doesn't go through this.
-extension Notification.Name {
-  static let showQuickTerminal = Notification.Name("workroom.showQuickTerminal")
+/// What a view asks of the Quick Terminal, out of reach of its controller (which lives on the
+/// `AppDelegate`): posted as one notification carrying the request, which the controller answers
+/// (`observeRequests`). Same decoupled pattern as `.showThemePicker`. The global shortcut calls the
+/// controller directly (it's registered in the delegate), so it doesn't go through this.
+enum QuickTerminalRequest: String {
+  /// Slide in and focus, never hide: the toolbar button, its sidebar row.
+  case show
+  /// Slide in, or out while it shows: the menu item, which answers the shortcut where no global
+  /// hotkey holds it (a Debug build), as the hotkey does.
+  case toggle
+
+  static let notification = Notification.Name("workroom.quickTerminal")
+  private static let key = "request"
+
+  func post(in center: NotificationCenter = .default) {
+    center.post(name: Self.notification, object: nil, userInfo: [Self.key: rawValue])
+  }
+
+  init?(_ notification: Notification) {
+    guard let raw = notification.userInfo?[Self.key] as? String else { return nil }
+    self.init(rawValue: raw)
+  }
 }
 
 /// The keys the Quick Terminal answers while its window is key, as a workroom window's menu does

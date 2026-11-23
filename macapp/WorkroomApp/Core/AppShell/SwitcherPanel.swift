@@ -3,8 +3,8 @@ import SwiftUI
 
 /// The quick-switcher rail's window (issue #132, T11) — the app's first `NSPanel`.
 ///
-/// `QuickTerminalWindow` is **not** a precedent for this: it's a plain `.titled NSWindow` that
-/// deliberately *does* become key. This one must never take key focus, because the whole gesture
+/// `QuickTerminalWindow` is **not** a precedent for this: it's a `.titled` non-activating panel
+/// that deliberately *does* become key. This one must never take key focus, because the whole gesture
 /// depends on the workroom window keeping it — the `AppDelegate` monitor resolves its store from the
 /// key window, and release detection ends the session, not a focus change.
 final class SwitcherPanel: NSPanel {

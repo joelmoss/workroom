@@ -42,8 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// The quick terminal (issue #39) — a ~/ shell in its own chrome-less window. One persistent
   /// controller; its window/surface come and go as it's summoned/closed.
   private let quickTerminal = QuickTerminalController()
-  /// Retains the `.showQuickTerminal` observer (posted by the toolbar button) for the app's lifetime.
-  private var quickTerminalObserver: NSObjectProtocol?
   /// Re-registers the global hotkeys when one is rebound, or recording starts or stops.
   private var globalsObservation: Task<Void, Never>?
   /// The system menu-bar item (issue #33) — an `NSStatusItem` owned here so a click can branch on the
@@ -412,15 +410,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         })
     }
 
-    // The main-toolbar Quick-Terminal button (issue #39) posts this; the controller lives here, out
-    // of the SwiftUI view's reach. The ⌥§ hotkey calls the controller directly (see updateGlobalHotkey).
-    quickTerminalObserver = NotificationCenter.default.addObserver(
-      forName: .showQuickTerminal, object: nil, queue: .main
-    ) { [quickTerminal] _ in
-      // The controller, not `self`: it is main-actor-isolated, so the `Sendable` handler can hold it,
-      // and it lives exactly as long as the app delegate that owns it.
-      MainActor.assumeIsolated { quickTerminal.show() }
-    }
+    // The toolbar button, the menu item and the sidebar row (issue #39) post `QuickTerminalRequest`s;
+    // the controller lives here, out of the SwiftUI views' reach. The global shortcut calls the
+    // controller directly (see updateGlobalShortcuts).
+    quickTerminal.observeRequests()
     // Its terminals share the app's notification list, and opening one of theirs slides it in.
     WindowRegistry.shared.quickTerminal = quickTerminal
     // Its panel's saved layout comes back, hidden, so its sessions reattach and notify (ADR 0077).
@@ -541,8 +534,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if let targetID = (info["targetID"] as? String).flatMap(TargetID.init(encoded:)) {
       let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
       let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
+      // `open` activates the app for a window's terminal, not for the Quick Terminal's: that panel
+      // slides in over the frontmost app without bringing the rest of Workroom forward.
       Task { @MainActor in
-        NSApp.activate(ignoringOtherApps: true)
         WindowRegistry.shared.open(targetID: targetID, tabID: tabID, notifID: notifID)
       }
     }

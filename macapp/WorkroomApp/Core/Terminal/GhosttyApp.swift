@@ -56,6 +56,8 @@ final class GhosttyApp {
   private var reportedConfigWriteFailure = false
   /// NSApplication active/inactive observers that drive app-level focus (see `observeAppFocus`).
   private var appFocusObservers: [NSObjectProtocol] = []
+  /// What libghostty was last told of app focus, so key-window churn doesn't repeat it.
+  private var appFocused: Bool?
   /// Watches the preferences the generated config is written from (`observeTerminalSettings`).
   private var terminalSettingsWatch: Task<Void, Never>?
   /// How long a burst of those changes settles before the config is rebuilt.
@@ -183,20 +185,35 @@ final class GhosttyApp {
   /// Ghostty's macOS app does the same from `applicationDid{Become,Resign}Active`; the surface's
   /// per-focus `ghostty_surface_set_focus` (driven by first-responder changes) is not enough on its
   /// own — the app-level flag is what unblocks focus-event delivery.
+  ///
+  /// The Quick Terminal is a non-activating panel: it takes key focus while another app stays
+  /// frontmost, so the app is focused for libghostty while any of its windows is key, too.
   private func observeAppFocus(for app: ghostty_app_t) {
-    ghostty_app_set_focus(app, NSApp.isActive)
+    let focused = Self.hasAppFocus
+    appFocused = focused
+    ghostty_app_set_focus(app, focused)
     let center = NotificationCenter.default
-    let onActive = center.addObserver(
-      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-    ) { [weak self] _ in MainActor.assumeIsolated { self?.setAppFocus(true) } }
-    let onResign = center.addObserver(
-      forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
-    ) { [weak self] _ in MainActor.assumeIsolated { self?.setAppFocus(false) } }
-    appFocusObservers = [onActive, onResign]
+    let names: [Notification.Name] = [
+      NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+      NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+    ]
+    appFocusObservers = names.map { name in
+      center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        // A turn later: as a window resigns key, the next one isn't key yet.
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated { self?.setAppFocus(Self.hasAppFocus) }
+        }
+      }
+    }
+  }
+
+  private static var hasAppFocus: Bool {
+    NSApp.isActive || NSApp.windows.contains { $0.isKeyWindow }
   }
 
   private func setAppFocus(_ focused: Bool) {
-    guard let app else { return }
+    guard let app, focused != appFocused else { return }
+    appFocused = focused
     ghostty_app_set_focus(app, focused)
   }
 
@@ -651,6 +668,7 @@ final class GhosttyApp {
     pendingSettingsReload?.cancel()
     for observer in appFocusObservers { NotificationCenter.default.removeObserver(observer) }
     appFocusObservers.removeAll()
+    appFocused = nil
     if let app {
       ghostty_app_free(app)
       self.app = nil
