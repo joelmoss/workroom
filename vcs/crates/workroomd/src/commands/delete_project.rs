@@ -10,8 +10,10 @@
 //! project with any host descriptor, its own or a workroom's, is refused in every mode: it is the
 //! only record of a remote machine.
 //!
-//! `--pretend` skips only the teardowns and the worktrees' removal; the project is still dropped
-//! from config, as Go's is.
+//! `--pretend` changes nothing, in every mode (#798): no teardown runs, no worktree is removed and
+//! the project stays in config. Everything that would stop the real run is still checked, and it
+//! answers with the envelope the real run would, `trash_paths` and all. (Go's dropped the project
+//! anyway.)
 
 use std::path::Path;
 
@@ -112,7 +114,9 @@ fn delete_project(context: &Context, args: &Args) -> Result<Outcome, CliError> {
             refuse_remote_project(&config, &canon)?;
             delete.run_teardown(&canon, name)?;
         }
-        config.remove_project(&canon)?;
+        if !context.pretend {
+            config.remove_project(&canon)?;
+        }
         return Ok(Outcome::Success(envelope::success(
             "delete-project",
             &FromDiskPayload {
@@ -135,7 +139,9 @@ fn delete_project(context: &Context, args: &Args) -> Result<Outcome, CliError> {
             delete.delete(&canon, name, Confirm::Value(name))?;
         }
     }
-    config.remove_project(&canon)?;
+    if !context.pretend {
+        config.remove_project(&canon)?;
+    }
     Ok(Outcome::Success(envelope::success(
         "delete-project",
         &Payload {

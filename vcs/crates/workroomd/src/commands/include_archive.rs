@@ -49,7 +49,8 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
 }
 
 /// As Go orders it: the project, then its included files, and only then the tar, so a failed
-/// listing leaves no tar behind.
+/// listing leaves no tar behind. Under `--pretend` the tar goes nowhere (#798): every file is read
+/// as it would be archived, so the envelope is the real run's, and `--output` is left alone.
 fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, String> {
     // A `--project` that doesn't exist stays only made absolute; it has no include file, so it
     // archives nothing.
@@ -60,14 +61,18 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
         },
     );
     let included = included_files(&root)?;
-    let file = File::options()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(output)
-        .map_err(|error| format!("open {output}: {}", os_error(&error)))?;
-    let written = write_archive(&root, &included.files, file)?;
+    let written = if context.pretend {
+        write_archive(&root, &included.files, io::sink())?
+    } else {
+        let file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(output)
+            .map_err(|error| format!("open {output}: {}", os_error(&error)))?;
+        write_archive(&root, &included.files, file)?
+    };
     if context.json {
         let payload = Payload {
             bytes: written.bytes,
@@ -85,7 +90,12 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
             &payload,
         )));
     }
-    let stdout = format!("Archived {} files to {output}\n", written.archived.len());
+    let done = if context.pretend {
+        "Would archive"
+    } else {
+        "Archived"
+    };
+    let stdout = format!("{done} {} files to {output}\n", written.archived.len());
     let warnings: String = written
         .failures
         .iter()
@@ -246,7 +256,7 @@ struct Written {
 /// and the rest are still written, so one unreadable key never costs the others; a path that would
 /// land outside the checkout it is extracted into is refused. An error is one that leaves the tar
 /// itself unusable.
-fn write_archive(root: &Path, files: &[Vec<u8>], out: File) -> Result<Written, String> {
+fn write_archive<W: Write>(root: &Path, files: &[Vec<u8>], out: W) -> Result<Written, String> {
     let mut written = Written {
         archived: Vec::new(),
         bytes: 0,
@@ -287,8 +297,8 @@ fn write_archive(root: &Path, files: &[Vec<u8>], out: File) -> Result<Written, S
 /// Appends `source` as the member `name`, with its permission bits, size and mtime, and returns
 /// the size. Exactly the size the header gives is written: a file that grew since is cut there,
 /// and one that shrank fails the tar rather than writing a short member.
-fn append_file(
-    builder: &mut tar::Builder<BufWriter<File>>,
+fn append_file<W: Write>(
+    builder: &mut tar::Builder<BufWriter<W>>,
     name: &[u8],
     path: &Path,
     source: File,

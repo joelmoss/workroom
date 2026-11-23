@@ -103,7 +103,9 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   teardown, drops the project from config, and returns `trash_paths` (project root first, then
   workrooms) — it does NOT delete anything itself, the macOS app moves those dirs to the Bin via
   `FileManager.trashItem` (recoverable). `--from-disk` refuses unsafe targets (`UnsafeDeletePath`:
-  root, `$HOME`, the workrooms dir, or an ancestor of another registered project).
+  root, `$HOME`, the workrooms dir, or an ancestor of another registered project). With
+  `--pretend` it changes nothing in any mode (#798): no teardown, no worktree removed, the
+  project kept in config, and the same envelope the real run returns.
 
 ### Flags
 

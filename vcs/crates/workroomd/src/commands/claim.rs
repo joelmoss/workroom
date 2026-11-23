@@ -7,7 +7,8 @@
 //! This config is written before the shared one is changed, so a crash in between leaves an entry
 //! in both, which the next claim takes out of the shared one, and never in neither: an entry is the
 //! only record of a machine that is still running. Neither file is touched when there is nothing
-//! to claim. `--pretend` is no dry run here, as in Go.
+//! to claim. `--pretend` touches neither, and says how many entries a real run would move (#798;
+//! Go's moved them anyway).
 
 use serde::Serialize;
 
@@ -38,26 +39,25 @@ fn claim(context: &Context, args: &Args) -> Result<usize, CliError> {
     if provisioner.is_empty() || shared.path() == mine.path() {
         return Ok(0);
     }
-    let from = shared.read_locked()?;
+    // A plain read under `--pretend`, since taking the lock makes its file.
+    let from = if context.pretend {
+        shared.read()?
+    } else {
+        shared.read_locked()?
+    };
     let claims = provisioned(&from, provisioner);
     if claims.is_empty() {
         return Ok(0);
     }
+    if context.pretend {
+        // The claim made on copies of both, so the count is the real run's and nothing is written.
+        let mut held = mine.read()?;
+        take(&mut held, &claims, &from);
+        return Ok(remove_claimed(&mut from.clone(), &held, provisioner));
+    }
     let mut held = Json::Null;
     mine.update(|data| {
-        // Go's map: a `null` config reads as an empty one here.
-        if !matches!(data, Json::Object(_)) {
-            *data = Json::Object(Object::new());
-        }
-        let top = data.as_object_mut().expect("just made an object");
-        for claim in &claims {
-            claim.add_to(top);
-        }
-        // One workrooms directory for both, as before: a name is never given to two worktrees.
-        if let Some(dir) = from.as_object().and_then(|from| from.get("workrooms_dir")) {
-            top.entry("workrooms_dir".to_string())
-                .or_insert_with(|| dir.clone());
-        }
+        take(data, &claims, &from);
         held = data.clone();
         Ok(true)
     })?;
@@ -67,6 +67,24 @@ fn claim(context: &Context, args: &Args) -> Result<usize, CliError> {
         Ok(moved > 0)
     })?;
     Ok(moved)
+}
+
+/// Puts `claims` into `data`, this config, with the workrooms directory of `from`, the shared one,
+/// when `data` names none.
+fn take(data: &mut Json, claims: &[Claim], from: &Json) {
+    // Go's map: a `null` config reads as an empty one here.
+    if !matches!(data, Json::Object(_)) {
+        *data = Json::Object(Object::new());
+    }
+    let top = data.as_object_mut().expect("just made an object");
+    for claim in claims {
+        claim.add_to(top);
+    }
+    // One workrooms directory for both, as before: a name is never given to two worktrees.
+    if let Some(dir) = from.as_object().and_then(|from| from.get("workrooms_dir")) {
+        top.entry("workrooms_dir".to_string())
+            .or_insert_with(|| dir.clone());
+    }
 }
 
 /// What one project holds that the provisioner made.

@@ -1139,7 +1139,8 @@ fn config_global_base_refuses_a_bad_name_and_pretends() {
 
 /// `list` at the default `--warnings fast` detects each project's type from disk and heals a
 /// stale one in config (a `jj` from before Jujutsu support was removed): a write, which keeps the
-/// rest of the file as Go keeps it. `--warnings none` reads config alone and writes nothing.
+/// rest of the file as Go keeps it. `--warnings none` reads config alone and writes nothing, and
+/// `--pretend` reports the type from disk but heals nothing (#798).
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -1163,6 +1164,17 @@ fn list_json_heals_a_stale_vcs_keeping_the_rest_of_the_file() {
         std::fs::read_to_string(home.config_path()).expect("read"),
         before
     );
+
+    let config_dir = home.path(".config/workroom");
+    let files = entries(&config_dir);
+    let pretend = home.run(&home.dir, &["list", "--json", "--pretend"]);
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(pretend.envelope()["projects"][0]["vcs"], "git");
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        before
+    );
+    assert_eq!(entries(&config_dir), files, "--pretend made a lock file");
 
     let fast = home.run(&home.dir, &["list", "--json"]);
     fast.assert_code(0).assert_quiet_stderr();
@@ -1618,6 +1630,54 @@ fn include_archive_writes_each_included_file_with_its_mode() {
         assert!(warnings.is_empty(), "{envelope}");
     }
     assert_eq!(tar_members(&archive), members);
+}
+
+/// `--pretend` writes no tar (#798): the envelope is the real run's, every file read as the tar
+/// would be, but `--output` is neither made nor, when it is there, truncated. Without `--json` it
+/// says what it would archive.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn include_archive_pretend_writes_no_tar() {
+    let home = Home::new("include-archive-pretend");
+    let (root, unreadable) = include_fixture(&home);
+    let root_arg = root.to_string_lossy().into_owned();
+    let real = home.path("real.tar");
+    let args = |output: &Path, extra: &[&'static str]| {
+        let mut args = vec![
+            "include-archive".to_string(),
+            "--project".to_string(),
+            root_arg.clone(),
+            "--output".to_string(),
+            output.to_string_lossy().into_owned(),
+        ];
+        args.extend(extra.iter().map(|arg| arg.to_string()));
+        args
+    };
+    let run = |args: Vec<String>| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        home.run(&home.dir, &args)
+    };
+    let wanted = run(args(&real, &["--json"]));
+    wanted.assert_code(0).assert_quiet_stderr();
+    let missing = home.path("missing.tar");
+    let pretend = run(args(&missing, &["--json", "--pretend"]));
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(pretend.stdout, wanted.stdout);
+    assert!(!missing.exists(), "--pretend wrote the tar");
+
+    let kept = home.path("kept.tar");
+    std::fs::write(&kept, "keep").expect("write");
+    let pretend = run(args(&kept, &["-p"]));
+    pretend.assert_code(0);
+    let count = if unreadable { 6 } else { 7 };
+    assert_eq!(
+        pretend.stdout,
+        format!("Would archive {count} files to {}\n", kept.display())
+    );
+    assert_eq!(std::fs::read_to_string(&kept).expect("read"), "keep");
 }
 
 /// Without `--json`: the count and the tar's path on stdout, each file it couldn't read on stderr.
@@ -3538,17 +3598,26 @@ fn delete_project_json_matches_the_goldens() {
     }
 }
 
-/// `--pretend` skips only the teardown and the worktree's removal: each mode still drops the
-/// project from config, as Go's `delete-project` does.
+/// `--pretend` changes nothing in any mode (#798): config.json is left byte for byte, with no lock
+/// file beside it, no teardown runs (its output would be on stderr), and the worktree, its branch
+/// and the project's folder stay. It says what the real run would, in the same envelope: the
+/// mode's golden. A project that isn't registered, with no config file at all, gets none.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
 )]
-fn delete_project_pretend_still_drops_the_project_as_go_does() {
-    for flags in [&[][..], &["--with-workrooms"], &["--from-disk"]] {
+fn delete_project_pretend_changes_nothing_in_any_mode() {
+    for (file, flags) in [
+        ("delete-project.json", &[][..]),
+        ("delete-project-with-workrooms.json", &["--with-workrooms"]),
+        ("delete-project-from-disk.json", &["--from-disk"]),
+    ] {
         let home = Home::new("delete-project-pretend");
         let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+        let before = config_text(&home);
+        let config_dir = home.path(".config/workroom");
+        let files = entries(&config_dir);
         let project_arg = project.to_string_lossy().into_owned();
         let mut args = vec![
             "delete-project",
@@ -3561,9 +3630,43 @@ fn delete_project_pretend_still_drops_the_project_as_go_does() {
         args.extend_from_slice(flags);
         let run = home.run(&home.dir, &args);
         run.assert_code(0).assert_quiet_stderr();
-        assert_eq!(run.envelope()["ok"], true);
-        assert_eq!(config_text(&home), "{}", "{flags:?}");
-        assert!(home.path("workrooms/calm-river").exists(), "{flags:?}");
+        check_golden(
+            Owner::AppContract,
+            file,
+            &home.normalize(&normalize_version(&run.stdout)),
+        );
+        assert_eq!(config_text(&home), before, "{flags:?}");
+        assert_eq!(entries(&config_dir), files, "{flags:?}");
+        assert!(home.path("workrooms/calm-river/.git").exists(), "{flags:?}");
+        assert!(project.join("scripts").exists(), "{flags:?}");
+        assert_eq!(
+            git_output(&home, &project, &["branch", "--format=%(refname:short)"]),
+            "main\nworkroom/calm-river\n",
+            "{flags:?}"
+        );
+        assert_eq!(
+            git_output(&home, &project, &["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            2,
+            "{flags:?}"
+        );
+
+        let home = Home::new("delete-project-pretend-unregistered");
+        let project = home.repo("src/app");
+        let project_arg = project.to_string_lossy().into_owned();
+        let mut args = vec![
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+            "--pretend",
+        ];
+        args.extend_from_slice(flags);
+        let run = home.run(&home.dir, &args);
+        run.assert_code(0).assert_quiet_stderr();
+        assert!(!home.path(".config").exists(), "{flags:?}: wrote config");
     }
 }
 
@@ -5406,7 +5509,8 @@ const CLAIM_MINE_AFTER: &str = r#"{
 /// Moves what the `dev` build made out of the shared config into this one, counting each entry
 /// that left, even one this config already had by that name. A second run finds nothing and
 /// rewrites neither file; nor does a run with no provisioner or one naming this config itself.
-/// `--pretend` is no dry run here, as in Go. Without `--json` a success prints nothing.
+/// `--pretend` changes neither, saying what it would move (Go's moved them anyway). Without
+/// `--json` a success prints nothing.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -5497,23 +5601,39 @@ fn claim_provisioned_moves_a_builds_entries_between_configs() {
     }
     assert_eq!(entries(&config_dir), before);
 
-    let run = home.run(
-        &home.dir,
-        &[
-            "claim-provisioned",
-            "--from",
-            &shared_arg,
-            "--provisioner",
-            "rel",
-            "--pretend",
-        ],
+    // `--pretend` moves nothing (#798): it counts what a real run would move, and leaves both files,
+    // and their folders, as they were, with no lock file made beside either.
+    let shared_dir = shared.parent().expect("folder").to_path_buf();
+    let (shared_before, shared_files) = (
+        std::fs::read_to_string(&shared).expect("shared"),
+        entries(&shared_dir),
     );
+    let (mine_before, mine_files) = (config_text(&home), entries(&config_dir));
+    let claim = [
+        "claim-provisioned",
+        "--from",
+        &shared_arg,
+        "--provisioner",
+        "rel",
+        "--json",
+    ];
+    let pretend = home.run(&home.dir, &[&claim[..], &["--pretend"]].concat());
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        std::fs::read_to_string(&shared).expect("shared"),
+        shared_before
+    );
+    assert_eq!(entries(&shared_dir), shared_files);
+    assert_eq!(config_text(&home), mine_before);
+    assert_eq!(entries(&config_dir), mine_files);
+    let run = home.run(&home.dir, &claim);
     run.assert_code(0).assert_quiet_stderr();
-    assert_eq!(run.stdout, "");
+    assert_eq!(pretend.stdout, run.stdout);
+    assert_ne!(run.envelope()["moved"], 0);
     let shared_now = std::fs::read_to_string(&shared).expect("shared");
     assert!(
         !shared_now.contains("\"rel\""),
-        "--pretend kept rel's entries: {shared_now}"
+        "kept rel's entries: {shared_now}"
     );
     assert!(
         config_text(&home).contains("\"B3\""),
@@ -8464,8 +8584,8 @@ fn needs_the_user_trust_under_a_coding_agent_approves_nothing() {
 
 /// Under a coding agent `delete` and `delete-project` delete nothing, in the app's own forms
 /// (`--json --confirm`) and a person's, and run no teardown; on a host too, ahead of `MacOnly`.
-/// Read-only commands and `create --skip-setup` still run. Without the agent the app's forms
-/// delete, as before.
+/// Their dry runs (`--pretend`), read-only commands and `create --skip-setup` still run. Without
+/// the agent the app's forms delete, as before.
 #[test]
 fn needs_the_user_delete_and_delete_project_under_a_coding_agent_delete_nothing() {
     let home = Home::new("needs-the-user-delete");
@@ -8495,8 +8615,6 @@ fn needs_the_user_delete_and_delete_project_under_a_coding_agent_delete_nothing(
                 p,
                 "--with-workrooms",
             ],
-            // Its `--pretend` still drops the project from config, as Go's does.
-            &["delete-project", p, "--json", "--confirm", p, "--pretend"],
         ] {
             assert_needs_the_user(&under(args), agent);
             assert_eq!(config_text(&home), before, "{agent}: {args:?}");
@@ -8513,6 +8631,22 @@ fn needs_the_user_delete_and_delete_project_under_a_coding_agent_delete_nothing(
         }
         assert_eq!(config_text(&home), before, "{agent}: --pretend");
         assert!(home.path("workrooms/calm-river/.git").exists());
+
+        // Nor does `delete-project --pretend`, in any mode (#798): it runs, and no delete under
+        // it reaches the refusal behind the command's own (`Config::remove_project`).
+        for mode in [None, Some("--with-workrooms"), Some("--from-disk")] {
+            let mut args = vec!["delete-project", p, "--json", "--confirm", p, "--pretend"];
+            args.extend(mode);
+            let dry_run = under(&args);
+            if cfg!(target_os = "macos") {
+                dry_run.assert_code(0).assert_quiet_stderr();
+                assert_eq!(dry_run.envelope()["path"], p, "{mode:?}");
+            } else {
+                assert_mac_only(&dry_run);
+            }
+            assert_eq!(config_text(&home), before, "{agent}: {mode:?}");
+            assert!(home.path("workrooms/calm-river/.git").exists(), "{mode:?}");
+        }
 
         let list = under(&["list", "--json"]);
         if cfg!(target_os = "macos") {
