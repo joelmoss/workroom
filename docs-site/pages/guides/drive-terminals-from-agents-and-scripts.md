@@ -122,11 +122,13 @@ In fish, use `set -e WORKROOM_BIN_DIR` in `config.fish`. You can always run the 
 
 ## What a coding agent leaves to you
 
-Two things in Workroom are yours to do, not a coding agent's: approving a project's setup and teardown scripts, and deleting a workroom or a project. So `workroom trust`, `workroom delete` and `workroom delete-project` refuse to run under a coding agent such as Claude Code or Codex, whatever their flags. They approve and delete nothing, exit `3` with `NeedsTheUser`, and say what to ask you: to approve or delete it in the Workroom app, or to run the command yourself in your own terminal. `workroom help agents` and the skill tell agents to ask you instead.
+Two things in Workroom are yours to do, not a coding agent's: approving a project's setup and teardown scripts, and deleting a workroom or a project. So `workroom trust`, `workroom delete` and `workroom delete-project` refuse to run under a coding agent such as Claude Code or Codex, whatever their flags, and so does a `workroom create` that would run a setup script you haven't approved. They approve and delete nothing, exit `3` with `NeedsTheUser`, and say what to ask you: to approve or delete it in the Workroom app, or to run the command yourself in your own terminal. That holds even when the agent gives the command a terminal of its own, where you'd otherwise be asked. `workroom help agents` and the skill tell agents to ask you instead.
 
-A command counts as run under a coding agent when one of the processes it was started from is one: the agent itself, or a shell the agent started. The app, your own terminals, your scripts and cron jobs aren't, so they run these commands as before. Commands that only read, such as `workroom trust status` and `workroom list`, and `workroom create --skip-setup`, run under a coding agent as anywhere.
+A command counts as run under a coding agent when one of the processes it was started from is one: the agent itself, or a shell the agent started. That includes a command you type into Claude Code with `!`: run it in your own terminal instead. The app, your own terminals, your scripts and cron jobs aren't under an agent, so they run these commands as before. Commands that only read, such as `workroom trust status` and `workroom list`, `workroom create --skip-setup`, and `workroom delete --pretend`, which shows what a delete would remove without removing it, run under a coding agent as anywhere.
 
-This stops a confused coding agent, not a determined one. An agent that sets out to get around it can, for example by typing the command into another terminal with `workroom send`.
+Workroom recognises Claude Code (its native install, its npm package and the Agent SDK), Codex, and the Claude app's tools. It can't recognise an agent built into an editor, such as Cursor's or GitHub Copilot's, which runs commands in the editor's own terminal: those commands look like yours.
+
+This stops a confused coding agent, not a determined one. An agent that sets out to get around it can: by typing the command into another terminal with `workroom send`, by running it in a tmux session started outside the agent, or by running it over `ssh localhost`. None of those starts the command from the agent's own processes.
 
 ## Who can use it
 

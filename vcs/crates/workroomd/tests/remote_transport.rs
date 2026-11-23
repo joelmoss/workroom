@@ -2724,6 +2724,17 @@ fn over_ssh_a_coding_agent_on_a_host_is_refused_what_only_a_person_may_do() {
          printf '#!/bin/sh\\n/bin/sh -c '\\''\"$@\"; status=$?; exit $status'\\'' sh \"$@\"\\nexit $?\\n' > {dir}/nested/codex && \
          chmod +x {dir}/claude {dir}/nested/codex"
     ));
+    // Claude Code's native install as it renames itself: a file named for its version, run as
+    // that version, so neither its name nor its arguments say `claude`; only its file's folder.
+    fixture.run(&format!(
+        "mkdir -p {dir}/share/claude/versions && \
+         cp /bin/bash {dir}/share/claude/versions/2.1.232 && \
+         cat > {dir}/native <<'EOF'\n\
+         #!/bin/bash\n\
+         exec -a 2.1.232 {dir}/share/claude/versions/2.1.232 -c '\"$@\"; status=$?; exit $status' sh \"$@\"\n\
+         EOF\n\
+         chmod +x {dir}/native"
+    ));
     let said = |prefix: &str, command: &str| {
         let output = fixture
             .ssh()
@@ -2740,6 +2751,7 @@ fn over_ssh_a_coding_agent_on_a_host_is_refused_what_only_a_person_may_do() {
         for (agent, prefix) in [
             ("claude", format!("{dir}/claude ")),
             ("codex", format!("{dir}/nested/codex ")),
+            ("claude", format!("{dir}/native ")),
         ] {
             let refused = said(&prefix, command);
             assert!(

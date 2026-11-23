@@ -208,36 +208,97 @@ fn rejects_invalid_pids() {
     assert_eq!(working_directory(0), None);
 }
 
+/// Every path a file: the tests of which argument is the script, apart from which exist.
+fn any(_: &str) -> bool {
+    true
+}
+
+fn argv(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| word.to_string()).collect()
+}
+
 #[test]
 fn prefers_the_script_over_its_interpreter() {
-    let argv = vec![
-        "/usr/bin/python3".to_string(),
-        "/home/u/fakecli".to_string(),
-    ];
-    assert_eq!(name_from_argv(&argv).as_deref(), Some("fakecli"));
+    let argv = argv(&["/usr/bin/python3", "/home/u/fakecli"]);
+    assert_eq!(name_from_argv(&argv, &any).as_deref(), Some("fakecli"));
 }
 
 #[test]
 fn skips_interpreter_flags_when_finding_the_script() {
-    let argv = vec![
-        "/usr/bin/node".to_string(),
-        "--enable-source-maps".to_string(),
-        "/opt/claude/cli.js".to_string(),
-    ];
-    assert_eq!(name_from_argv(&argv).as_deref(), Some("cli.js"));
+    let argv = argv(&[
+        "/usr/bin/node",
+        "--enable-source-maps",
+        "/opt/claude/cli.js",
+    ]);
+    assert_eq!(name_from_argv(&argv, &any).as_deref(), Some("cli.js"));
 }
 
 #[test]
 fn keeps_a_plain_command_as_itself() {
-    let argv = vec!["/opt/homebrew/bin/vim".to_string(), "file.txt".to_string()];
-    assert_eq!(name_from_argv(&argv).as_deref(), Some("vim"));
+    let argv = argv(&["/opt/homebrew/bin/vim", "file.txt"]);
+    assert_eq!(name_from_argv(&argv, &any).as_deref(), Some("vim"));
 }
 
 /// An interpreter with no script (a bare REPL) is its own answer — there is nothing better.
 #[test]
 fn bare_interpreter_reports_itself() {
-    let argv = vec!["/usr/bin/python3".to_string()];
-    assert_eq!(name_from_argv(&argv).as_deref(), Some("python3"));
+    let argv = argv(&["/usr/bin/python3"]);
+    assert_eq!(name_from_argv(&argv, &any).as_deref(), Some("python3"));
+}
+
+/// The review's repro (#793): a shell's `-c` string is code, never a script's path, though it
+/// ends in a path to a coding agent; nor is any flag's code for the interpreters that take it.
+#[test]
+fn an_inline_program_is_never_a_script() {
+    for words in [
+        &["sh", "-c", "echo hi; ls /Users/u/.local/bin/codex"][..],
+        &["/bin/bash", "-lc", "cd /tmp && /opt/homebrew/bin/claude"],
+        &["zsh", "-ec", "claude"],
+        &["fish", "--command", "codex"],
+        &["python3", "-c", "import os; os.system('claude')"],
+        &["python3", "-m", "claude"],
+        &["node", "-e", "require('/opt/claude/cli.js')"],
+        &["node", "--eval", "x", "/opt/claude/cli.js"],
+        &["perl", "-e", "exec 'claude'"],
+    ] {
+        let name = basename(words[0]).map(str::to_string);
+        assert_eq!(name_from_argv(&argv(words), &any), name, "{words:?}");
+    }
+}
+
+/// An interpreter's script is the first argument past its flags only when that is a file, as
+/// the process would find it; a flag's value or any other word is not.
+#[test]
+fn an_interpreters_script_is_a_file_that_exists() {
+    let dir = std::env::temp_dir().join(format!("workroom-process-script-{}", std::process::id()));
+    std::fs::create_dir(&dir).expect("a folder of this test's own");
+    let script = dir.join("claude");
+    std::fs::write(&script, "#!/bin/sh\n").expect("script");
+    let script = script.to_string_lossy().into_owned();
+    let gone = dir.join("codex").to_string_lossy().into_owned();
+    let is_file = |path: &str| std::path::Path::new(path).is_file();
+    let name = |words: &[&str]| name_from_argv(&argv(words), &is_file);
+    assert_eq!(name(&["/bin/sh", &script, "x"]).as_deref(), Some("claude"));
+    assert_eq!(name(&["/bin/sh", "-e", &script]).as_deref(), Some("claude"));
+    assert_eq!(name(&["/bin/sh", &gone]).as_deref(), Some("sh"));
+    assert_eq!(
+        name(&["python3", "-W", "ignore", &script]).as_deref(),
+        Some("python3")
+    );
+    assert_eq!(
+        name(&["/bin/sh", &dir.to_string_lossy()]).as_deref(),
+        Some("sh")
+    );
+    // A relative path is the process's, against its own folder: this one's here.
+    let here = std::env::current_dir().expect("cwd");
+    let pid = std::process::id() as i32;
+    assert!(names_a_file(pid, &script));
+    assert!(!names_a_file(pid, "no-such-file-here"));
+    let manifest = here.join("Cargo.toml");
+    if manifest.is_file() {
+        assert!(names_a_file(pid, "Cargo.toml"));
+    }
+    std::fs::remove_dir_all(&dir).expect("remove the folder");
 }
 
 #[test]

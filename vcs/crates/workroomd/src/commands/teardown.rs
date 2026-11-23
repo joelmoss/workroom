@@ -106,6 +106,19 @@ impl Delete<'_> {
         self.context.pretend
     }
 
+    /// Refuses every delete under a coding agent but a `--pretend`, which changes nothing, whatever
+    /// command got here (#793): `delete` and `delete-project` are refused before they start, so
+    /// this is the second line, at the deletes themselves.
+    fn refused_under_a_coding_agent(&self) -> Result<(), CliError> {
+        if self.pretend() {
+            return Ok(());
+        }
+        match super::needs_the_user::deletion_refusal(false, self.context.coding_agent_above) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// One `--verbose` step, as Go's `Service.Status` prints it: only to a person.
     fn say(&self, status: &str, message: &str) {
         if self.context.verbose && !self.context.json {
@@ -172,6 +185,7 @@ impl Delete<'_> {
         name: &str,
         confirm: Confirm<'_>,
     ) -> Result<Deleted, CliError> {
+        self.refused_under_a_coding_agent()?;
         self.check_not_in_workroom(dir)?;
         check_name(name)?;
         let destroyed = self.destroyed_remote(dir, name)?;
@@ -234,6 +248,7 @@ impl Delete<'_> {
         ask: Ask<'_>,
         report: &mut dyn FnMut(&str, &Deleted),
     ) -> Result<Picked, CliError> {
+        self.refused_under_a_coding_agent()?;
         self.check_not_in_workroom(dir)?;
         // Go reads a config it can't parse as naming no project here.
         let data = self.data().unwrap_or(Json::Null);
@@ -367,6 +382,7 @@ impl Delete<'_> {
     /// skips it. It runs in `<workrooms folder>/<name>`, so only when git registers that folder
     /// for the project ([`Delete::teardown_folder`]), under `--pretend` as for real.
     pub(super) fn run_teardown(&self, dir: &str, name: &str) -> Result<(), CliError> {
+        self.refused_under_a_coding_agent()?;
         let data = self.data()?;
         let projects = config::all_projects(&data);
         if projects
@@ -495,6 +511,12 @@ impl Delete<'_> {
         };
         if script.trusted {
             return Ok(());
+        }
+        // A terminal a coding agent holds is no person to ask (#793): refused before the prompt.
+        if let Some(error) =
+            super::needs_the_user::approval_refusal(self.context.coding_agent_above)
+        {
+            return Err(error);
         }
         let Watcher::Person {
             approve: Some(approve),
@@ -833,6 +855,82 @@ mod tests {
         let (result, asked) = gated(&config, &project, Some(Ok(false)));
         result.unwrap();
         assert_eq!(asked, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Under a coding agent (#793) a delete, its picks and a teardown are refused before anything
+    /// is read or run, and a person's yes at the teardown's prompt records no approval: the second
+    /// line behind `delete` and `delete-project`'s own refusal. A `--pretend` goes on.
+    #[test]
+    fn under_a_coding_agent_nothing_is_deleted_or_approved() {
+        let dir = scratch("under-an-agent");
+        let project = dir.join("src/app");
+        std::fs::create_dir_all(project.join("scripts")).unwrap();
+        std::fs::write(
+            project.join("scripts/workroom_teardown"),
+            "#!/bin/sh\necho hi\n",
+        )
+        .unwrap();
+        let registered = format!(
+            "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{}}}}}}",
+            project.display()
+        );
+        let path = dir.join("config.json");
+        std::fs::write(&path, &registered).unwrap();
+        let mut context = context();
+        context.coding_agent_above = || Some("codex".to_string());
+        // The run's config, which carries the run's coding agent as every one a command opens.
+        let agents = Config::named(path.to_str().unwrap(), &context).unwrap();
+        let approve = |_: &Script| -> Result<bool, CliError> { panic!("a coding agent was asked") };
+        let delete = Delete {
+            context: &context,
+            config: &agents,
+            skip_teardown: false,
+            watcher: Watcher::Person {
+                paint: Paint(false),
+                approve: Some(&approve as Approve<'_>),
+            },
+        };
+        let p = project.to_str().unwrap();
+        let refused = |result: Result<(), CliError>| {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind, Kind::NeedsTheUser);
+            assert!(
+                error.message.contains("coding agent (codex)"),
+                "{}",
+                error.message
+            );
+        };
+        refused(
+            delete
+                .delete(p, "w", super::Confirm::Value("w"))
+                .map(|_| ()),
+        );
+        refused(delete.run_teardown(p, "w"));
+        refused(
+            delete
+                .delete_picks(
+                    p,
+                    &|_, _| panic!("picked"),
+                    &|_| panic!("asked"),
+                    &mut |_, _| {},
+                )
+                .map(|_| ()),
+        );
+        let workroom = project.join("../../workrooms/w");
+        let script = project.join("scripts/workroom_teardown");
+        refused(delete.gate(p, &workroom, &script));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), registered);
+
+        context.pretend = true;
+        let pretend = Delete {
+            context: &context,
+            config: &agents,
+            skip_teardown: false,
+            watcher: Watcher::App,
+        };
+        let went_on = pretend.run_teardown(p, "w").map_err(|error| error.kind);
+        assert_ne!(went_on, Err(Kind::NeedsTheUser));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -192,19 +192,45 @@ impl Home {
     /// so a coding agent running the tests is none of its parents, and `delete` asks as it asks a
     /// person (#793).
     fn run_typing(&self, cwd: &Path, args: &[&str], typed: &str) -> (i32, String, String) {
-        let (primary, secondary) = pty();
-        let mut keyboard = std::fs::File::from(primary);
-        keyboard.write_all(typed.as_bytes()).expect("type");
         let mut command = self.command(env!("CARGO_BIN_EXE_workroom"), cwd);
-        command.args(args).stdin(Stdio::from(secondary));
-        let output = outside::spawn(command, None).wait_with_output();
-        drop(keyboard);
-        (
-            output.status.code().expect("exited"),
-            String::from_utf8(output.stdout).expect("UTF-8"),
-            String::from_utf8(output.stderr).expect("UTF-8"),
-        )
+        command.args(args);
+        typing(command, typed)
     }
+
+    /// [`Home::run_typing`] under a stand-in coding agent, a `#!/bin/sh` script named `agent`
+    /// that runs the binary and stays its parent, so a pty an agent holds is its stdin (#793).
+    fn run_typing_under(
+        &self,
+        agent: &str,
+        cwd: &Path,
+        args: &[&str],
+        typed: &str,
+    ) -> (i32, String, String) {
+        let folder = self.path("agents");
+        std::fs::create_dir_all(&folder).expect("agents folder");
+        let script = folder.join(agent);
+        std::fs::write(&script, "#!/bin/sh\n\"$@\"\nexit $?\n").expect("stand-in agent");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let mut command = self.command(&script, cwd);
+        command.arg(env!("CARGO_BIN_EXE_workroom")).args(args);
+        typing(command, typed)
+    }
+}
+
+/// Runs `command` outside this test's process tree with a pty as its stdin, `typed` already typed
+/// into it: (exit code, stdout, stderr).
+fn typing(mut command: Command, typed: &str) -> (i32, String, String) {
+    let (primary, secondary) = pty();
+    let mut keyboard = std::fs::File::from(primary);
+    keyboard.write_all(typed.as_bytes()).expect("type");
+    command.stdin(Stdio::from(secondary));
+    let output = outside::spawn(command, None).wait_with_output();
+    drop(keyboard);
+    (
+        output.status.code().expect("exited"),
+        String::from_utf8(output.stdout).expect("UTF-8"),
+        String::from_utf8(output.stderr).expect("UTF-8"),
+    )
 }
 
 impl Drop for Home {
@@ -492,6 +518,46 @@ fn create_asks_about_an_unapproved_setup_script() {
         "{}",
         home.config()
     );
+}
+
+/// Under a coding agent (#793) a terminal it holds is no person: a create with an unapproved
+/// setup script asks nothing and approves nothing, though a yes is typed, and says to ask the
+/// user; `trust` and a delete with an unapproved teardown are refused as they are with no
+/// terminal. Without the agent the same yes approves (the tests above).
+#[test]
+fn under_a_coding_agent_a_terminal_approves_and_deletes_nothing() {
+    let home = Home::new("agent-create");
+    let project = setup_project(&home, "echo installing\n");
+    let before = home.config();
+    let (code, stdout, stderr) = home.run_typing_under("claude", &project, &["create"], "y\n");
+    assert_eq!((code, stdout.as_str()), (3, ""), "{stderr}");
+    assert!(
+        stderr.starts_with(
+            "Error: `workroom create` would run scripts/workroom_setup, which this Mac hasn't \
+             approved, and only the user may approve it: it ran under a coding agent (claude)."
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--skip-setup"), "{stderr}");
+    assert_eq!(home.config(), before);
+    assert_eq!(home.workroom(), None);
+    let (code, _, stderr) = home.run_typing_under("codex", &project, &["trust"], "y\n");
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stderr.contains("coding agent (codex)"), "{stderr}");
+    assert_eq!(home.config(), before);
+
+    let home = Home::new("agent-delete");
+    let project = home.project(&["calm-river"], "deadbeef");
+    let before = home.config();
+    let args = ["delete", "calm-river", "--confirm", "calm-river"];
+    let (code, stdout, stderr) = home.run_typing_under("claude", &project, &args, "y\n");
+    assert_eq!((code, stdout.as_str()), (3, ""), "{stderr}");
+    assert!(
+        stderr.starts_with("Error: `workroom delete` deletes"),
+        "{stderr}"
+    );
+    assert_eq!(home.config(), before);
+    assert!(home.path("workrooms/calm-river/.git").exists());
 }
 
 /// Input that ends before the answer gives up, as Go's prompt reports Ctrl-C: nothing is made or

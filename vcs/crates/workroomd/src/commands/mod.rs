@@ -1368,9 +1368,12 @@ fn run(args: &[String], mut context: Context) -> Output {
     }
     // A command only a person may run, under a coding agent, is refused first: on a host too, so
     // an agent there is told the same, and before anything is read (#793).
-    let outcome = if let Some(error) =
-        needs_the_user::refusal(command.name, leaf.name, context.coding_agent_above)
-    {
+    let outcome = if let Some(error) = needs_the_user::refusal(
+        command.name,
+        leaf.name,
+        context.pretend,
+        context.coding_agent_above,
+    ) {
         Outcome::Failed(error)
     } else if command.mac_only && context.platform != Platform::Mac {
         Outcome::Failed(CliError::new(
@@ -1541,11 +1544,9 @@ fn help(command: Option<(&Command, bool)>) -> String {
     match command {
         Some((command, pretend)) => {
             // `trust status` is named `status` here, so only the guarded command itself says it.
-            let guarded = if needs_the_user::guards(command.name) {
-                format!("\n\n{}", needs_the_user::SAYS)
-            } else {
-                String::new()
-            };
+            let guarded = needs_the_user::says(command.name)
+                .map(|says| format!("\n\n{says}"))
+                .unwrap_or_default();
             let mut text = format!(
                 "{}{}{guarded}\n\nUsage:\n  workroom {}\n",
                 command.long.unwrap_or(command.short),
@@ -1783,13 +1784,21 @@ mod tests {
                     "calm-river",
                 ],
                 &["d", "calm-river", "--json", "--confirm", "calm-river"],
-                &["delete", "calm-river", "--json", "--pretend"],
                 &[
                     "delete-project",
                     "/nonexistent/x",
                     "--json",
                     "--confirm",
                     "/nonexistent/x",
+                ],
+                // Its `--pretend` still drops the project from config, as Go's does.
+                &[
+                    "delete-project",
+                    "/nonexistent/x",
+                    "--json",
+                    "--confirm",
+                    "/nonexistent/x",
+                    "--pretend",
                 ],
                 &[
                     "delete-project",
@@ -1831,20 +1840,48 @@ mod tests {
             let ((stdout, _), code) = run_with(Platform::Other, claude, args);
             assert_eq!(code, 0, "{args:?}: {stdout}");
         }
-        // Their help says so; `trust status`'s doesn't.
-        for (args, says) in [
-            (&["trust", "--help"][..], true),
-            (&["delete", "--help"], true),
-            (&["trust", "status", "--help"], false),
-            (&["untrust", "--help"], false),
+        // A `delete --pretend`, which changes nothing, goes on as without an agent: here, to
+        // `MacOnly`.
+        for args in [
+            &["delete", "calm-river", "--json", "--pretend"][..],
+            &[
+                "delete",
+                "calm-river",
+                "--json",
+                "--confirm",
+                "calm-river",
+                "-p",
+            ],
         ] {
-            let ((stdout, _), _) = run_on(Platform::Mac, args);
-            assert_eq!(
-                stdout.contains(&format!("\n\n{}\n\nUsage:", needs_the_user::SAYS)),
-                says,
+            let ((stdout, _), code) = run_with(Platform::Other, claude, args);
+            assert_eq!(code, 3, "{args:?}");
+            assert!(
+                stdout.contains("\"kind\":\"MacOnly\""),
                 "{args:?}: {stdout}"
             );
         }
+        // Their help says so, `delete`'s that its dry run runs; `trust status`'s doesn't.
+        for (args, says) in [
+            (&["trust", "--help"][..], Some("trust")),
+            (&["delete", "--help"], Some("delete")),
+            (&["trust", "status", "--help"], None),
+            (&["untrust", "--help"], None),
+        ] {
+            let ((stdout, _), _) = run_on(Platform::Mac, args);
+            let said =
+                |command| format!("\n\n{}\n\nUsage:", needs_the_user::says(command).unwrap());
+            assert_eq!(
+                ["trust", "delete"].map(|command| stdout.contains(&said(command))),
+                [says == Some("trust"), says == Some("delete")],
+                "{args:?}: {stdout}"
+            );
+        }
+        assert!(
+            needs_the_user::says("delete")
+                .unwrap()
+                .contains("--pretend")
+        );
+        assert!(!needs_the_user::says("trust").unwrap().contains("--pretend"));
         let ((stdout, _), code) = run_with(Platform::Other, claude, &["create", "--json"]);
         assert_eq!(code, 3);
         assert!(stdout.contains("\"kind\":\"MacOnly\""), "{stdout}");

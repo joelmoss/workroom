@@ -885,10 +885,16 @@ impl Plan<'_> {
 
     /// Lets a trusted script through. An untrusted one is shown to a person at a terminal, whose
     /// yes records the approval and whose no cancels; anyone else is refused, with the script for
-    /// the app to show.
+    /// the app to show. Under a coding agent it is `NeedsTheUser`, terminal or not: a pty an agent
+    /// holds is no person (#793).
     fn gate(&self, script: &Script) -> Result<(), CliError> {
         if script.trusted {
             return Ok(());
+        }
+        if let Some(error) =
+            super::needs_the_user::create_refusal(&script.file, self.context.coding_agent_above)
+        {
+            return Err(error);
         }
         if !self.ask {
             return Err(script.untrusted());

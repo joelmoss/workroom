@@ -48,21 +48,27 @@ const LOCK_RETRY: Duration = Duration::from_millis(10);
 /// The config file one run reads and writes.
 pub(crate) struct Config {
     path: PathBuf,
+    /// The run's coding agent above it (`Context::coding_agent_above`): under one, no approval is
+    /// recorded and no project removed, whatever command asks (#793).
+    coding_agent_above: fn() -> Option<String>,
 }
 
 impl Config {
     /// `$WORKROOM_CONFIG` when set, else `~/.config/workroom/config.json`, as Go's `config.New("")`
     /// finds it.
     pub(crate) fn new(context: &Context) -> Result<Config, CliError> {
+        let coding_agent_above = context.coding_agent_above;
         if let Some(path) = context.env(CONFIG_ENV).filter(|path| !path.is_empty()) {
             return Ok(Config {
                 path: PathBuf::from(path),
+                coding_agent_above,
             });
         }
         let home = home_dir(context)
             .map_err(|error| CliError::internal(format!("determine home directory: {error}")))?;
         Ok(Config {
             path: Path::new(&home).join(".config/workroom/config.json"),
+            coding_agent_above,
         })
     }
 
@@ -73,13 +79,17 @@ impl Config {
         }
         Ok(Config {
             path: PathBuf::from(path),
+            coding_agent_above: context.coding_agent_above,
         })
     }
 
-    /// The config file at `path`, for a test that keeps its own.
+    /// The config file at `path`, for a test that keeps its own, with no coding agent above.
     #[cfg(test)]
     pub(crate) fn at(path: PathBuf) -> Config {
-        Config { path }
+        Config {
+            path,
+            coding_agent_above: || None,
+        }
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -255,6 +265,10 @@ impl Config {
     /// under the lock: a descriptor written since the caller looked is the only record of a
     /// remote machine.
     pub(crate) fn remove_project(&self, project: &str) -> Result<(), CliError> {
+        if let Some(error) = super::needs_the_user::deletion_refusal(true, self.coding_agent_above)
+        {
+            return Err(error);
+        }
         self.update(|data| {
             if is_reserved(project) {
                 return Ok(false);
@@ -448,6 +462,13 @@ impl Config {
         name: &str,
         digest: &str,
     ) -> Result<(), CliError> {
+        // Every approval comes through here (`trust`, a create's or a delete's prompt): none is
+        // recorded under a coding agent. Forgetting one ("") is anyone's.
+        if !digest.is_empty()
+            && let Some(error) = super::needs_the_user::approval_refusal(self.coding_agent_above)
+        {
+            return Err(error);
+        }
         self.forget_or_trust(project, &[(name, digest)])
     }
 
