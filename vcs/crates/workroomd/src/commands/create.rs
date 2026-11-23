@@ -880,6 +880,7 @@ impl Plan<'_> {
             config: self.config,
             dir: &self.dir,
             say: &|_, _| {},
+            fetch: !self.context.pretend,
         }
     }
 

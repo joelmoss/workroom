@@ -505,6 +505,7 @@ impl Delete<'_> {
             config: self.config,
             dir,
             say: &|_, _| {},
+            fetch: !self.pretend(),
         };
         let Some(script) = judge.found_script(TEARDOWN_SCRIPT, workroom, path)? else {
             return Ok(());
