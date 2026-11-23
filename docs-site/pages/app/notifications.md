@@ -38,10 +38,12 @@ A program in a terminal can tell Workroom what it is doing: working, waiting on 
 | --- | --- |
 | A raised hand | The program is waiting on you: a permission, a question or a sign-in |
 | A red line under the tab, a red exclamation mark in the sidebar row | The program failed |
-| A moving line under the tab, a spinner in the sidebar row | The program is working |
+| A moving line under the tab, a busy mark in the sidebar row | The program is working | <!-- stable -->
 | A check mark | The program finished its turn |
 
 The marks show on the terminal's tab and its row in the sidebar. The hand also shows on a workroom's row with a count, on a collapsed project, and on the switcher. Only one mark shows in each place. The order is waiting, then failed, then working, then finished.
+
+Nightly only: the sidebar's busy mark is three dots that light up in turn. The hand shows no count; hover it to read how many terminals are waiting. A row whose terminals are listed under it shows no marks of its own, as each terminal's row shows its own. A standalone terminal's row shows the check mark too.
 
 Hover a mark to read what the program said. A finished or failed mark clears when you move focus into that terminal.
 
@@ -49,7 +51,7 @@ A terminal with no mark is not reporting. That is not the same as not waiting. P
 
 ### Go to the terminal that needs you
 
-Click the hand on a workroom row or on a collapsed project to go to the terminal that has waited longest. The switcher shows the hand too, as a mark only. Or press <kbd>⇧⌘M</kbd> (**Go ▸ Go to Terminal That Needs You**), which looks across every window. Press it again to step through the others.
+Click the hand on a workroom row or on a collapsed project to go to the terminal that has waited longest. Nightly only: while every waiting terminal is on a host Workroom has lost its link to, there is nothing to answer, so the row shows the disconnected mark instead (see [Remote hosts](#remote-hosts)). The switcher shows the hand too, as a mark only. Or press <kbd>⇧⌘M</kbd> (**Go ▸ Go to Terminal That Needs You**), which looks across every window. Press it again to step through the others.
 
 ### The alert
 
@@ -77,6 +79,8 @@ If a program left a request behind, for example because it crashed in the middle
 ### Remote hosts
 
 Marks work in terminals on remote hosts too. When Workroom loses its link to a host, the marks stay with a small clock beside them, and the tooltip says they may be out of date until Workroom reconnects. **Clear Status** waits for the link as well.
+
+Nightly only: a terminal's waiting or finished mark gives way to a grey cloud with a line through it instead. Hover it to read that the connection was lost and Workroom is reconnecting, then what the terminal last showed. A workroom's row shows the cloud only when every terminal waiting in it is cut off: while one can still be answered, the row keeps the hand. The cloud can't be clicked. The menu bar list says how many requests are disconnected.
 
 Panes that do not run under Workroom's background helper, such as Investigate tabs, never show program status. A run tab runs under the helper, so it shows program status too.
 
