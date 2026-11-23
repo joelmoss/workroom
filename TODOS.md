@@ -22,9 +22,9 @@ first, so PR and CI status no longer read a base).
   retired. Only Nightly and Dev builds call any of it; no stable release does (v2.1.0 has no remote
   workrooms), so it can go now.
 - **The legacy field:** `HostDescriptor.bases` and `BaseRetirement` itself, once no build that made
-  bases is in use; with them, the Go side's base handling (`internal/config/claim.go`'s bases,
-  `cmd/claim.go`, `refuseRemoteProject`'s project-host case) and the Delete Project sheet's "base
-  machine" text.
+  bases is in use; with them, the CLI's base handling (`bases` in
+  `vcs/crates/workroomd/src/commands/claim.rs`, and the remote-project refusal's project-host case)
+  and the Delete Project sheet's "base machine" text.
 - **Release note (claim 3.2):** the first release with #395 says new remote workrooms clone their own
   repository, and that the app removes old base machines at launch.
 
@@ -316,7 +316,7 @@ as a backstop; it is not the plan.
 
 *Filed, not planned:* bundling our own `git` the way `dugite` does would delete all of
 `Core/VersionControl/VCSToolVersions.swift` — floor, probe, notification, per-VCS scoping. Real cost (universal
-binary, notarization, ~40MB, and the Go CLI would want the same binary), so revisit only if the
+binary, notarization, ~40MB, and the CLI would want the same binary), so revisit only if the
 version floor actually bites a user.
 
 **Why:** This is a roadmap phase, not a tactical follow-up. The authoritative scope + sequencing live
@@ -337,8 +337,8 @@ toolbar). Spans `Packages/WorkroomGit` (`CLIVCSWriter`), possibly `vcs/` (Rust),
 segment or the ⌘O picker.
 
 **Why:** Branch *switching* was deliberately cut from the VCS toolbar. A workroom's identity IS its
-branch — `internal/vcs/git.go` creates it with `git worktree add -b`, and there is no `branch` field
-anywhere in `internal/config` — so switching a workroom's branch makes its directory name permanently
+branch — `workroom create` makes it with `git worktree add -b` (`commands/create.rs`), and there is no
+`branch` field anywhere in the config — so switching a workroom's branch makes its directory name permanently
 wrong, with nothing to reconcile the two.
 
 But the underlying need — "I want to work on that other branch" — is real, and creating a workroom is
@@ -354,7 +354,7 @@ starting point instead of requiring a manual create-then-checkout.
 cut), and a naming policy for the new workroom.
 
 **Context / how to start:** `Views/AppShell/OpenWorkroomDialog.swift` is the searchable, project-grouped picker
-to clone; the Go CLI's `create` already accepts a branch. `CLIVCSWriter.gitRemoteRefsArgs` shows how to
+to clone; `workroom create` takes no branch yet (the retired Go CLI's took one), so it needs a flag. `CLIVCSWriter.gitRemoteRefsArgs` shows how to
 enumerate remote refs cheaply, and its doc explains why the symref row must be dropped.
 
 **Depends on:** the VCS toolbar (shipped).

@@ -2,13 +2,12 @@
 
 ## Project Structure & Module Organization
 
-Workroom is a native macOS app. It bundles one Rust binary, `workroom` (ADR 0078), at `Contents/Resources/workroom`: the CLI it shells out to for every project and workroom operation, and the daemon (`workroom serve`). The Go CLI at the repository root still builds the standalone release until #682. Most work lands in `macapp/`.
+Workroom is a native macOS app. It bundles one Rust binary, `workroom` (ADR 0078), at `Contents/Resources/workroom`: the CLI it shells out to for every project and workroom operation, and the daemon (`workroom serve`). The same binary is the standalone CLI a release ships for macOS and Linux. Most work lands in `macapp/`.
 
 - `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Both are grouped into one folder per `CONTEXT.md` context: `AppShell`, `WorkroomManagement`, `VersionControl`, `Terminal`, `RemoteHosts`, `DaemonConnection` (Core only) and `CodingAgents`, plus `Core/Testing` for the UI-test fixture. Assets and bundled resources live under `macapp/WorkroomApp/`.
 - `macapp/Packages/` holds local Swift packages the app imports: `WorkroomDomain` (models such as `HostDescriptor`, and the CLI's `--json` envelopes with their `WorkroomCLIError` mapping), `WorkroomVCS` (VCS values, `RepositoryLocation` and the `VCSProviding`/`VCSWriting`/`FileProviding` interfaces), `WorkroomGit` (the local git engine: `GitProvider`, libgit2, `UnifiedDiff`, `CLIVCSWriter`), `WorkroomWire`, `WorkroomSystem`, `DaemonConnection` (the daemon connection and its port-forward pumps, plus the `DaemonConnectionTestSupport` fixtures for tests), `HostDrivers` (container, boxd, exe.dev and SSH drivers, and `DaemonBootstrap`; the app hands both the scripts it bundles), `DevContainer` (devcontainer.json, its features and the container spec they make), `DesignSystem` (`ThemeTokens` and shared UI), `SyntaxHighlighting` (its JavaScript, Python, CSS and YAML grammars are vendored under `Grammars/` by `macapp/Scripts/vendor-tree-sitter-grammars.sh`), `TreeSitter` (the tree-sitter C runtime, vendored by `macapp/Scripts/vendor-tree-sitter.sh`) and `TerminalModel` (`PaneState` and its rules, the `TargetPanes` layout, `TabRecords`, `TerminalLaunch`). Search there too when a type is missing from `Core/`; `make app-package-test` runs their tests.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
-- `cmd/` contains the CLI's Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`. The Go module root is the repository root (`go.mod`, `main.go`).
-- `vcs/` is the Rust workspace for the `workroomd` daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus services) and its git read crates.
+- `vcs/` is the Rust workspace. `vcs/crates/workroomd` (its folder keeps the daemon's old name) is the `workroom` crate: the CLI's commands (`src/commands/`, one table that `--help`, shell completion and the docs' CLI pages all read), the daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus services) and the terminal API. Beside it are its git read crates. Fixtures shared across languages live in `testdata/`.
 - `docs/` contains supporting documentation.
 - `docs-site/` is the user documentation, served by Codaset at `codaset.dev/workroom/docs`. Its format contract is `docs-site/README.md`; `make docs-check` checks it.
 
@@ -27,26 +26,24 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-test-scripts`: check packaging/helper shell scripts.
 - `make app-scripts-lint`: run shellcheck over `macapp/Scripts/*.sh`.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting. `make app-check` runs both, in that order.
-- `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
-- `make contract-test`: run the CLI's black-box contract suite (`vcs/crates/workroomd/tests/commands_contract.rs`) against the Go CLI it builds, or against `WORKROOM_BIN=<binary>`. It checks `--json` envelopes, `kind` and exit codes, and config.json writes against `testdata/contracts`; `WORKROOM_CONTRACT_UPDATE=1` rewrites the goldens it owns.
-- `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
+- `make contract-test`: run the CLI's black-box contract suite (`vcs/crates/workroomd/tests/commands_contract.rs`) against this checkout's `workroom`, or against `WORKROOM_BIN=<binary>`; its Mac-only groups run only on a Mac. It checks `--json` envelopes, `kind` and exit codes, and config.json writes against `testdata/contracts`; `WORKROOM_CONTRACT_UPDATE=1` rewrites the goldens it owns.
 - `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `workroomd` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p workroom --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.99.1. For Linux-only code from a Mac, use `make vcs-lint-linux` (container prerequisites in `CONTRIBUTING.md`).
 - `make notices`, `make notices-check`: regenerate, or check, the third-party notices the binary embeds and the app bundles, after a change to `Cargo.lock`, a Swift package or a vendored dependency (`docs/contributing/releasing.md`). Needs cargo-about 0.9.3 (`cargo install --locked --features cli cargo-about@0.9.3`; no mise needed).
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
-- `make pre-push`: before every push, run CI's cheap gates (scripts, docs, Go, Rust on macOS and Linux, the third-party notices, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.
+- `make pre-push`: before every push, run CI's cheap gates (scripts, docs, Rust on macOS and Linux, the third-party notices, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.
 
 Use `macapp/project.yml` for project configuration; do not edit generated `.xcodeproj` files.
 
 ## Coding Style & Naming Conventions
 
-Use gofmt/goimports for Go. Swift uses two-space indentation and a 100-column limit from `macapp/.swift-format`; name types in UpperCamelCase and members in lowerCamelCase. Follow adjacent Rust conventions and rustfmt. Keep changes focused and preserve established abstractions.
+Swift uses two-space indentation and a 100-column limit from `macapp/.swift-format`; name types in UpperCamelCase and members in lowerCamelCase. Follow adjacent Rust conventions and rustfmt. Keep changes focused and preserve established abstractions.
 
 Edit source files with your agent's file-editing tool, not with shell rewrites such as Python heredocs or `sed -i`. Those edits show no reviewable diff, and agents tend to run them with the command sandbox off.
 
 ## Testing Guidelines
 
-Go uses `testing` with `*_test.go` files and `Test…` functions. Swift uses XCTest/XCUITest with `*Tests.swift` files and `test…` methods. Run relevant tests and linters before submitting; cover changed behavior and regressions. Use temporary repositories for VCS tests. Declare app preference keys with `suite: .app` to preserve test isolation.
+Rust tests sit beside their code (`#[cfg(test)] mod tests`) or under a crate's `tests/`. Swift uses XCTest/XCUITest with `*Tests.swift` files and `test…` methods. Run relevant tests and linters before submitting; cover changed behavior and regressions. Use temporary repositories for VCS tests. Declare app preference keys with `suite: .app` to preserve test isolation.
 
 ## Commit & Pull Request Guidelines
 
@@ -75,7 +72,7 @@ These apply when reviewing a pull request. Raise a finding only when it passes t
 
 ## Architecture & Configuration
 
-Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md`, [the architecture](docs/contributing/architecture.md) and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
+Preserve the CLI `--json` contract; breaking changes require a `SCHEMA_VERSION` bump in `vcs/crates/workroomd/src/commands/envelope.rs`. Read `CONTRIBUTING.md`, [the architecture](docs/contributing/architecture.md) and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
 
 ## Agent skills
 

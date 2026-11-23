@@ -57,8 +57,8 @@ local. See [Remote workrooms](../remote/overview.md).
 
 The Mac app is the product. It bundles the `workroom` command-line tool and drives it for every project
 and workroom operation, so you never need to install the CLI separately. If you want the command in
-your own shell too, the app can put it on your `PATH`. The CLI also runs on its own on macOS, Linux and
-Windows. See [Install](install.md).
+your own shell too, the app can put it on your `PATH`. The CLI also runs on its own on macOS and Linux.
+See [Install](install.md).
 
 ## Where to go next
 

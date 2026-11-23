@@ -46,30 +46,16 @@ Each package builds and tests alone with `swift test --package-path macapp/Packa
 | `macapp/Packages/SyntaxHighlighting/` | tree-sitter highlighting | `joelmoss` |
 | `macapp/Packages/TerminalModel/` | `PaneState` and its rules, `TargetPanes`, `TerminalLaunch` | `joelmoss` |
 
-## Go CLI
+## Rust: the CLI and the daemon
 
-Gate: `make cli-lint` and `make cli-test`, or `go test ./<path>/` for one package. A change to a
-command or flag also runs `make docs-cli`.
-
-| Path | What it holds | Owner |
-| --- | --- | --- |
-| `cmd/` | Cobra commands and the `--json` envelopes | `joelmoss` |
-| `internal/workroom/` | Create, delete and list orchestration | `joelmoss` |
-| `internal/vcs/` | The VCS interface and its Git implementation | `joelmoss` |
-| `internal/config/` | The config file, its atomic writes and lock | `joelmoss` |
-| `internal/script/` | The setup and teardown script runner | `joelmoss` |
-| `internal/channel/` | Release channels (twinned in Swift and shell) | `joelmoss` |
-| `internal/updater/` | `workroom update` | `joelmoss` |
-| `internal/ui/`, `internal/errs/`, `internal/namegen/` | Output, errors and exit codes, name generation | `joelmoss` |
-| `internal/docsite/` | The `docs-site/` format check | `joelmoss` |
-
-## Rust daemon
-
-Gate: `make vcs-lint`, and `make vcs-test VCS_TEST_FLAGS="-p <crate>"` for one crate.
+Gate: `make vcs-lint`, and `make vcs-test VCS_TEST_FLAGS="-p <crate>"` for one crate. A change to the
+CLI also runs `make contract-test`, and a change to a command or flag `make docs-cli`.
 
 | Path | What it holds | Owner |
 | --- | --- | --- |
-| `vcs/crates/workroomd/` | The daemon: terminal sessions and its services | `joelmoss` |
+| `vcs/crates/workroomd/src/commands/` | The CLI's commands, its `--json` envelopes, config, channels and `update` | `joelmoss` |
+| `vcs/crates/workroomd/` | The rest of the `workroom` binary: the daemon, its terminal sessions and services | `joelmoss` |
+| `vcs/crates/workroomd/tests/docs_site.rs` | The `docs-site/` format check | `joelmoss` |
 | `vcs/crates/wr-protocol/` | The wire envelope and per-service frames | `joelmoss` |
 | `vcs/crates/wr-vcs-git/` | Daemon-side git reads | `joelmoss` |
 | `vcs/crates/wr-vcs-model/` | VCS domain types served as JSON | `joelmoss` |
@@ -82,9 +68,9 @@ A change here can break more than one area, so it needs the gates of each area t
 
 | Path | Read by | Owner |
 | --- | --- | --- |
-| `testdata/contracts/` | The Go `--json` goldens, decoded by the app's tests | `joelmoss` |
-| `testdata/twins/` | The cross-language twin fixtures (Go, Swift and Rust tests) | `joelmoss` |
+| `testdata/contracts/` | The CLI's `--json` goldens (the contract suite), decoded by the app's tests | `joelmoss` |
+| `testdata/twins/`, `testdata/channel_cases.tsv` | The cross-language twin fixtures (Swift, Rust and shell tests) | `joelmoss` |
 | `macapp/project.yml`, `macapp/Scripts/` | The app build and its packaging | `joelmoss` |
 | `Makefile`, `mk/` | Every local gate | `joelmoss` |
 | `.github/` | CI, release and nightly workflows | `joelmoss` |
-| `docs-site/` | The user docs; read by Go and app tests | `joelmoss` |
+| `docs-site/` | The user docs; read by Rust and app tests | `joelmoss` |

@@ -87,7 +87,7 @@ apart.
 
 ## Which terminals support it
 
-Every terminal whose shell runs under `workroomd`, which is every workroom terminal, on this Mac and
+Every terminal whose shell runs under the daemon (`workroom serve`), which is every workroom terminal, on this Mac and
 on remote hosts, once the host's daemon speaks protocol 8 or later. The daemon, not the terminal you
 see, keeps the status, so it survives closing the window, relaunching Workroom, an app update and a
 second Mac attaching to the same session.
@@ -114,7 +114,7 @@ keeps the last result; the next long command replaces it.
 - Whichever came last shows. If a program reports after the command ended, the older command
   result is hidden; a command that ends after a program's finished or failed mark hides that mark.
   A program's waiting or working mark always stays.
-- Only terminals whose shell runs under `workroomd` show it. Run tabs and fallback panes don't
+- Only terminals whose shell runs under the daemon show it. Run tabs and fallback panes don't
   (#476).
 - A command still running when Workroom hands its daemon off on an update leaves no result.
 
@@ -223,7 +223,7 @@ sends only OSC 9;4.
   OSC 133, another program's notification in that pane (a build's, say) is dropped too.
 
 - **Run commands and other non-daemon panes** never show program status: only a terminal whose
-  shell runs under `workroomd` has a daemon to keep it (see `TODOS.md`).
+  shell runs under the daemon has one to keep it (see `TODOS.md`).
 - **A long-running program can relay someone else's request.** A program that never probed alerts
   once it stays running in the foreground, and that cannot tell a relay (`ssh`, `mosh`, `tmux`,
   which is how Codex on another machine reaches you) from `tail -f` on a raw recording, or a `cat`
@@ -261,7 +261,7 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 | Answering the probe | `vcs/crates/workroomd/src/terminal/vt.rs` (`PROBE_REPLY`): the shadow terminal answers it |
 | Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/terminal/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
 | The service: subscribe, `seen`, `clear` | `program_status.rs`: `Hub` publishes, `dispatch` answers |
-| `workroomd program-status` | `vcs/crates/workroomd/src/cli/program_status.rs` |
+| `workroom program-status` | `vcs/crates/workroomd/src/cli/program_status.rs` |
 | Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonClient.swift`; shared fixtures in `testdata/program-status/` |
 | Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/Terminal/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
 | Which mark a tab shows | `WorkroomApp/Core/Terminal/TerminalPanes.swift` (`programStatus`, the tab's `indicator`) |
@@ -279,11 +279,11 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 
 ## Troubleshooting
 
-`workroomd program-status` prints what the daemon holds for every session: whether its program is
+`workroom program-status` prints what the daemon holds for every session: whether its program is
 reporting, its records, whether this daemon keeps terminal state at all, and how many probe replies
 it could not deliver. `--json` prints the same with a `schema_version`. Run it on the host the
 terminal runs on (on this Mac it is inside the app bundle, `Contents/Resources/workroom`; on a host,
-`<daemon dir>/workroomd`).
+`<daemon dir>/workroom`, a link to the binary, whose file there keeps the old name `workroomd`).
 
 The daemon logs subscribers, dropped replies, evictions and truncations to the log beside its
 socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/workroomd.log`, on a remote host

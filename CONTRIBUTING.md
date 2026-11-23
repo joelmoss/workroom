@@ -9,11 +9,12 @@ use it, see the [user docs](https://codaset.dev/workroom/docs), written in [`doc
 
 Before opening a PR:
 
-- Run the linters on everything you touched: `make cli-lint` (Go), `make app-lint` (Swift),
-  `make vcs-lint` (Rust) and `make actions-lint` (GitHub workflows).
-- Run the relevant tests: `make cli-test` and/or `make app-test`.
+- Run the linters on everything you touched: `make app-lint` (Swift), `make vcs-lint` (Rust) and
+  `make actions-lint` (GitHub workflows).
+- Run the relevant tests: `make vcs-test` and `make contract-test` (Rust, the CLI included) and/or
+  `make app-test`.
 - Keep the `--json` contract stable — it's the boundary between the CLI and the app. Breaking changes
-  bump `schema_version` (`cmd/json.go`). See
+  bump `SCHEMA_VERSION` (`vcs/crates/workroomd/src/commands/envelope.rs`). See
   [the contract](docs-site/pages/reference/json-output.md).
 - Workroom supports Git repos only, so contribute through Git.
 - Report security vulnerabilities privately, as [`SECURITY.md`](SECURITY.md) describes. Do not file
@@ -31,7 +32,7 @@ maintainer follows.
 - [Architecture Overview](#architecture-overview)
 - [Local Development](#local-development)
   - [Working on the macOS app](#working-on-the-macos-app)
-  - [Working on the Go CLI (engine)](#working-on-the-go-cli-engine)
+  - [Working on the CLI](#working-on-the-cli)
   - [Available commands (`make`)](#available-commands-make)
 - [Testing](#testing)
 - [Deployment & Releases](#deployment--releases)
@@ -48,23 +49,16 @@ maintainer follows.
   is generated from `macapp/project.yml`, not checked in.
 - **Rust 1.99.1** through rustup (`rustup toolchain install 1.99.1`, then `rustup target add
   --toolchain 1.99.1` the darwin and `*-unknown-linux-musl` targets you build) — the app build compiles
-  the embedded `workroomd` from the `vcs/` workspace (`macapp/Scripts/build-daemon.sh`) on
+  the embedded `workroom` from the `vcs/` workspace (`macapp/Scripts/build-daemon.sh`) on
   `mk/vcs.mk`'s `VCS_RUST`, the Rust its third-party notices describe; a Release or Nightly build
   refuses any other.
 - **Zig 0.17.1** (installed through mise when it is available) — `xcodegen generate` builds the pinned
   Ghostty on its first run, which also needs Xcode's Metal toolchain (the build downloads it, about
   840 MB, if it is missing).
-- **Go 1.27+** (the module targets `go 1.27.3`, which CI builds with) — the app
-  embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
 
-**To develop the CLI engine only:** Go 1.27+, and **`golangci-lint` v2.x** for `make cli-lint`
-(`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0` — note the `/v2` in the
-module path). Install it with `go install`, not a prebuilt binary: a golangci-lint built against an
-older Go cannot read the current toolchain's export data. v1 is not an option here — its vendored
-`go/types` caps out at export-data version 2, so it cannot analyze a Go 1.27 stdlib, and it rejects
-the v2-format `.golangci.yml`.
+Those are the only toolchains: Rust and Swift (Xcode's). The Go CLI retired with #682.
 
-**To change the Rust workspace (`vcs/`):** Rust **1.99.1** with rustfmt and clippy for `make vcs-lint`
+**To change the CLI or the rest of the Rust workspace (`vcs/`):** Rust **1.99.1** with rustfmt and clippy for `make vcs-lint`
 (`rustup toolchain install 1.99.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
 `terminal-state` half also needs Zig 0.17.1 (installed through mise when it is available) and builds a
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
@@ -89,8 +83,8 @@ that version; no mise needed). Run `make notices` after the change and commit th
 it rewrites; CI's `rust` job fails while they are stale.
 
 **To change a GitHub workflow:** **`jactionlint` 2.5.0** for `make actions-lint`
-(`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.5.0`, or
-`mise use -g github:jdx/jactionlint@2.5.0`), with `shellcheck` on `PATH` so `run:` blocks are
+(`mise use -g github:jdx/jactionlint@2.5.0`, or the release archive from
+[jdx/jactionlint](https://github.com/jdx/jactionlint/releases/tag/v2.5.0)), with `shellcheck` on `PATH` so `run:` blocks are
 checked too. It runs every actionlint check plus security rules: pinned action SHAs, job-level
 `permissions`, `timeout-minutes` on every job, no restored caches in publishing jobs. CI's
 `workflows` job (`ci-actions.yml`) runs the same version, checked by the release archive's sha256: bump the version
@@ -108,30 +102,30 @@ Runtime requirements for *using* Workroom are in the docs'
 
 ## Tech Stack
 
-The macOS app is the product; the Go CLI is the bundled engine (and an optional standalone addon).
+The macOS app is the product; the Rust `workroom` binary is the bundled engine and daemon (and an
+optional standalone CLI).
 
 | Component | Technology |
 | --- | --- |
 | **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+, Apple silicon only) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (stock upstream built from source, Metal-rendered) |
-| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); daemon-routed reads and writes via the Rust `workroomd` |
+| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); daemon-routed reads and writes via the `workroom` daemon |
 | **Syntax highlighting** | [tree-sitter](https://github.com/tree-sitter/tree-sitter) C runtime (vendored in `macapp/Packages/TreeSitter`) + grammars (four vendored in `macapp/Packages/SyntaxHighlighting/Grammars`) |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.10 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
 | **App build tooling** | [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`project.yml` → `.xcodeproj`) |
 | **VCS backend** | Git worktrees |
 | **Config store** | JSON at `~/.config/workroom/config.json` |
-| **CLI engine language** | Go 1.27+ (built and tested on Go 1.27.3) |
-| **CLI framework** | [Cobra](https://github.com/spf13/cobra) for commands |
-| **CLI prompts / output** | [charmbracelet/huh](https://github.com/charmbracelet/huh) · [fatih/color](https://github.com/fatih/color) |
-| **CLI release tooling** | `macapp/Scripts/cli-archives.sh` (the Rust binary, under GoReleaser's archive names) |
+| **CLI and daemon language** | Rust 1.99.1 (the `vcs/` workspace; one binary, `workroom`, ADR 0078) |
+| **CLI commands** | One table in `vcs/crates/workroomd/src/commands/mod.rs`, which `--help`, shell completion (cobra's scripts and protocol) and the docs' CLI pages read |
+| **CLI release tooling** | `macapp/Scripts/cli-archives.sh` (the Rust binary, under the archive names the retired Go CLI's GoReleaser used) |
 | **CI/CD** | GitHub Actions (CI on push/PR, release on `v*` tags) |
 
 ---
 
 ## Architecture Overview
 
-How the app and the Go CLI engine fit together, the repository layout, the create and delete
+How the app and the `workroom` binary fit together, the repository layout, the create and delete
 lifecycles, the VCS abstraction and the config file are in
 [`docs/contributing/architecture.md`](docs/contributing/architecture.md).
 
@@ -139,8 +133,9 @@ lifecycles, the VCS abstraction and the config file are in
 
 ## Local Development
 
-Dev tasks run through the **repo-root `Makefile`**, namespaced `app-*` (macOS app) and `cli-*` (Go
-engine), plus `vcs-lint` for the Rust workspace. Run `make` with no target to list everything.
+Dev tasks run through the **repo-root `Makefile`**, namespaced `app-*` (macOS app) and `vcs-*` (the
+Rust workspace, the CLI included), plus `contract-test` for the CLI's contract suite. Run `make` with
+no target to list everything.
 
 ### Working on the macOS app
 
@@ -176,45 +171,44 @@ install.
 
 The Xcode build runs `macapp/Scripts/build-daemon.sh` as a phase, which compiles the one Rust
 `workroom` binary (the CLI and the daemon, ADR 0078) and embeds it in the app bundle, so a Rust
-toolchain must be on `PATH` when building the app; the app no longer builds the Go CLI. See
+toolchain must be on `PATH` when building the app. See
 [`macapp/README.md`](macapp/README.md) for setup and signing, the
 [app instructions](macapp/AGENTS.md) for working rules and reference navigation, and
 [VCS and sessions](docs/macapp/vcs-and-sessions.md) for their architecture.
 The [runtime reference](docs/macapp/runtime.md) links the libghostty integration and pin procedure.
 
-### Working on the Go CLI (engine)
+### Working on the CLI
+
+The CLI is the `workroom` crate in `vcs/crates/workroomd` (the folder keeps the daemon's old name),
+built and tested with the rest of the Rust workspace:
 
 ```bash
-# Build the binary (version injected from git tags via ldflags)
-make cli-build              # → bin/workroom
+# Build the binary: vcs/target/debug/workroom, version `dev` (which disables `workroom update`)
+cargo build --manifest-path vcs/Cargo.toml -p workroom
 
-# Run the full test suite
-make cli-test               # go test ./...
-go test ./internal/workroom/ -v   # one package, verbose
+# Test the workspace on CI's toolchain, then the daemon with terminal-state
+make vcs-test
+make vcs-test VCS_TEST_FLAGS="-p workroom --lib commands::create"   # narrowed
 
-# Lint (golangci-lint v2.x — see Prerequisites)
-make cli-lint
+# The CLI's black-box contract suite, against this checkout's binary
+make contract-test
 
-# Install into $GOBIN
-make cli-install
+# Lint: rustfmt, clippy and rustdoc
+make vcs-lint
 
-# Remove the built binary
-make cli-clean
+# After changing a command or flag, regenerate the CLI reference pages
+make docs-cli
 ```
-
-Raw Go also works: `go build -o bin/workroom .`, `go test ./...`. The version string defaults to `dev`
-when built without ldflags (which disables `workroom update`).
 
 **Where to make changes:**
 
-- A new subcommand → add a file under `cmd/` and register it in its `init()`.
-- New orchestration logic → `internal/workroom/`.
-- A new VCS operation → extend the `vcs.VCS` interface and `git.go`.
-- A new config field → `internal/config/config.go`.
-- A new error class → add a sentinel in `internal/errs/errs.go` and map it in `Code`/`ExitCode`.
-
-Because all shell-outs go through `vcs.CommandExecutor`, orchestration is testable with a mock
-executor and a temp config — no real repo required.
+- A new command or flag → its entry in `COMMANDS` (`vcs/crates/workroomd/src/commands/mod.rs`) and a
+  module beside it; `--help`, shell completion and `docs-site/pages/cli/` all read the table.
+- A new error class → a `Kind` in `commands/kind.rs`, with its code and exit code, which never change
+  once shipped.
+- A config field → `commands/config.rs`.
+- A `--json` payload change → `commands/envelope.rs`, and the goldens in `testdata/contracts`
+  (`WORKROOM_CONTRACT_UPDATE=1 make contract-test` rewrites the ones the suite owns).
 
 ### Available commands (`make`)
 
@@ -236,12 +230,9 @@ executor and a temp config — no real repo required.
 | `app-release` | Build → sign → notarize → staple → DMG (full release) |
 | `app-icon` | Regenerate the AppIcon PNGs |
 | `app-clean` | Remove `DerivedData` + the `.xcodeproj` |
-| `cli-build` | Build `bin/workroom` with version injected |
-| `cli-test` | `go test ./...` |
-| `contract-test` | Run the CLI's black-box contract suite against the Go CLI it builds, or `WORKROOM_BIN=<binary>` |
-| `cli-install` | `go install` into `$GOBIN` |
-| `cli-lint` | `golangci-lint run` |
-| `cli-clean` | Remove the built binary |
+| `contract-test` | Run the CLI's black-box contract suite against this checkout's `workroom`, or `WORKROOM_BIN=<binary>` |
+| `vcs-test` | The Rust workspace's tests, then the daemon's with `terminal-state`, on CI's Rust 1.99.1 |
+| `docs-cli` / `docs-check` | Regenerate the CLI reference pages / check `docs-site/` |
 | `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.99.1 |
 | `vcs-lint-linux` | The same pinned lint gate on Linux, including Linux-only code; uses the first working Docker, Podman or Apple `container` runtime on macOS (`WR_LINT_RUNTIME` names one) |
 
@@ -249,15 +240,15 @@ executor and a temp config — no real repo required.
 
 ## Testing
 
-**Go CLI** — standard `go test`. Coverage spans config CRUD, name generation, the VCS Git parsers
-(with a mock `CommandExecutor`), the script runner (using `testdata/fixtures/{setup,failed_setup,failed_teardown}`),
-the updater's version comparison, and the full create/delete/list/`list_data` orchestration plus the
-`delete-project` command (unit + integration).
+**CLI and daemon** — `cargo test`: unit tests beside the code, integration tests under
+`vcs/crates/workroomd/tests/`, and the black-box contract suite (`tests/commands_contract.rs`), which
+checks each command's `--json` envelope, `kind`, exit code and config writes against
+`testdata/contracts`. Its Mac-only groups run only on a Mac.
 
 ```bash
-make cli-test                       # everything
-go test ./internal/workroom/ -v     # one package, verbose
-go test -run TestCreate ./...       # a single test by name
+make vcs-test                                                  # everything, as CI runs it
+make vcs-test VCS_TEST_FLAGS="-p workroom --test run_script"   # one test target
+make contract-test                                             # the contract suite
 ```
 
 **macOS app** — two suites:
@@ -286,7 +277,7 @@ release artifacts, the macOS app release pipeline and the Sparkle appcast are in
 ## Troubleshooting a build
 
 **App build fails** — most app build failures trace to a stale generated project or a missing tool.
-Run `make app-generate` (or `make app-clean` then `make app-build`), confirm `xcodegen` and a Go
-toolchain are on `PATH`, and remember adding/removing Swift files requires regenerating the project.
+Run `make app-generate` (or `make app-clean` then `make app-build`), confirm `xcodegen` and Rust 1.99.1
+are on `PATH`, and remember adding/removing Swift files requires regenerating the project.
 
 See the docs' [Troubleshooting page](docs-site/pages/help/troubleshooting.md) for runtime issues.

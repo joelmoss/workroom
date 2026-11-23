@@ -1,17 +1,18 @@
 # Workroom
 
-Workroom is a native macOS app for working on several branches of a git project at once. Each branch gets its own workroom, a git worktree with its own terminals, history and diffs. A Go CLI is the engine under the app, and a Rust daemon, workroomd, keeps terminal sessions alive and serves version control and file reads, on this Mac or on a remote host.
+Workroom is a native macOS app for working on several branches of a git project at once. Each branch gets its own workroom, a git worktree with its own terminals, history and diffs. One Rust binary, `workroom`, is the engine under the app: its commands do every project and workroom operation, and run as the daemon (`workroom serve`) it keeps terminal sessions alive and serves version control and file reads, on this Mac or on a remote host (ADR 0078).
 
 ## Naming rules
 
-- **Daemon** means workroomd, the Workroom daemon, and nothing else (renamed from "the agent" by #525, ADR 0057). Claude and Codex are **coding agents**; names for them say `CodingAgent` (`CodingAgentRunner`, `TerminalCodingAgentManager`). Bare "agent" names nothing: say daemon or coding agent. The retired Swift `workroom-session` is the **legacy session helper**, never a daemon.
+- **workroom** names the binary, the CLI the app bundles and a host runs; a **command** is `workroom <command>` (`workroom create`, `workroom sessions`). "workroomd" (the Rust daemon's binary before ADR 0078) and "Go CLI" (the CLI before it, retired by #682) survive only as old names: in older code and history, the crate's folder `vcs/crates/workroomd`, and the daemon's file on a host.
+- **Daemon** means the Workroom daemon, the `workroom serve` role, and nothing else (renamed from "the agent" by #525, ADR 0057). Claude and Codex are **coding agents**; names for them say `CodingAgent` (`CodingAgentRunner`, `TerminalCodingAgentManager`). Bare "agent" names nothing: say daemon or coding agent. The retired Swift `workroom-session` is the **legacy session helper**, never a daemon.
 - **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs, Railway calls its sandboxes) and older code keep their words; new names say host.
 - **Base** means a base branch only. It no longer names a machine that remote workrooms are derived from.
 - Use the terms below in code, issues, tests and docs. A name that is not here either belongs to one of the contexts below or is a gap to add.
 
 ## Workroom management
 
-Owns projects, workrooms, setup and teardown, and the labels the sidebar shows. The Go CLI is the engine; the app is a client of its `--json` contract.
+Owns projects, workrooms, setup and teardown, and the labels the sidebar shows. The `workroom` binary's commands are the engine; the app is a client of their `--json` contract.
 
 **Project**:
 A git repository registered with Workroom, identified by its canonical path.
@@ -39,7 +40,7 @@ A create that stops to ask the user something before anything exists: whether to
 _Avoid_: retry, restart (for an answered question)
 
 **Setup script**, **Teardown script**:
-The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the Go CLI runs them locally, the app runs them on a remote workroom's host through `workroomd run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
+The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted, on every kind of workroom: the CLI runs them locally, the app runs them on a remote workroom's host through `workroom run-script`. A failed teardown stops the delete; **Delete Anyway** deletes without it.
 
 **Trusted script**:
 A setup or teardown script whose exact contents this Mac has approved, recorded per project. Workroom runs no other script, except a root copy that git ignores, which never arrives by a pull. A changed script needs approving again.
@@ -101,10 +102,10 @@ _Avoid_: Status bar, terminal footer
 What a pane asks about where it is shown, and acts through: the workroom window it belongs to (also when the pane is popped out into a window of its own), or the Quick Terminal (`PaneHost`). A pane reaches no further into either than its host offers.
 
 **Session**:
-A persistent pseudo-terminal held by workroomd, so a pane's shell outlives the pane, the window and the app.
+A persistent pseudo-terminal held by the daemon, so a pane's shell outlives the pane, the window and the app.
 
 **Saved layout**:
-The tabs, splits and windows a Mac restores on its next launch: `session.json` for this Mac's targets (`SavedLayout.swift`, `SavedLayoutStore`), and the host layout for a remote workroom's (ADR 0044). Not a session: restoring a layout reattaches its panes' sessions, which workroomd kept alive.
+The tabs, splits and windows a Mac restores on its next launch: `session.json` for this Mac's targets (`SavedLayout.swift`, `SavedLayoutStore`), and the host layout for a remote workroom's (ADR 0044). Not a session: restoring a layout reattaches its panes' sessions, which the daemon kept alive.
 _Avoid_: Session (for the saved layout), session snapshot
 
 **Surface**:
@@ -117,10 +118,10 @@ Reconnecting a pane to a session that is still running and repainting its screen
 A command the user sets to run in a workroom, such as `npm start`, started in a tab. It runs where the workroom lives, this Mac or its host, and its tab survives quit like any terminal (ADR 0058). The daemon runs it as a **run session**, under the run supervisor.
 
 **Program status**:
-What the program in a session (Claude Code, say) reports about itself over OSC 7501: working, waiting on the user, finished or failed. workroomd keeps it per session and the app shows it as a mark; not progress (OSC 9;4), which only says a command is busy.
+What the program in a session (Claude Code, say) reports about itself over OSC 7501: working, waiting on the user, finished or failed. The daemon keeps it per session and the app shows it as a mark; not progress (OSC 9;4), which only says a command is busy.
 
 **Command result**:
-How the last long shell command in a session ended, passed or failed, as the shell reports it. workroomd keeps it beside program status and the app shows it with the same finished and failed marks; not program status, which the program reports about itself.
+How the last long shell command in a session ended, passed or failed, as the shell reports it. The daemon keeps it beside program status and the app shows it with the same finished and failed marks; not program status, which the program reports about itself.
 
 ## Remote hosts
 
@@ -159,17 +160,17 @@ A loopback port on the host of a container workroom, or of a workroom on an SSH 
 
 ## Daemon connection
 
-Owns the workroomd wire protocol, its transport and its hand-off. The Mac's end of the connection is the app; the far end is workroomd.
+Owns the daemon's wire protocol, its transport and its hand-off. The Mac's end of the connection is the app; the far end is the daemon.
 
-**Daemon**, **workroomd**:
-The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream, on this Mac or a host.
-_Avoid_: Agent, Server (an SSH host and a run command's dev server are both called servers)
+**Daemon**:
+The `workroom` binary run as `workroom serve`, which holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream, on this Mac or a host.
+_Avoid_: Agent, Server (an SSH host and a run command's dev server are both called servers), workroomd (its old name)
 
 **Service**:
-One capability a workroomd serves over its stream, such as terminal sessions, version control or file reads.
+One capability the daemon serves over its stream, such as terminal sessions, version control or file reads.
 
 **Hand-off**:
-Replacing a running workroomd's program with a newer binary in place, keeping its process and every session.
+Replacing a running daemon's program with a newer binary in place, keeping its process and every session.
 
 **Bin folder**:
 The daemon's folder holding one link, `workroom`, to its copy of the binary it runs, re-pointed after every hand-off. It is first on every session's PATH, and its path is `WORKROOM_BIN_DIR` (#695).
@@ -209,7 +210,7 @@ _Avoid_: Spawn, create (a workroom is created; a terminal is opened)
 What one prompt sets a coding agent doing: from the `working` it reports, to the first program status after it that isn't `working` (done, blocked, idle or error). `prompt --wait` and `wait --turn` wait for one to end, never taking the status the last turn left for this one's end (ADR 0079).
 
 **Bootstrap**:
-Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
+Putting the bundled Linux `workroom`, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
 
 ## Coding agents
 
@@ -238,7 +239,7 @@ _Avoid_: cswap account, slot (for the account itself)
 
 **Claude profile**:
 The config directory a running Claude Code uses, the default one or one cswap made; it decides which Claude account that Claude bills.
-_Avoid_: Config dir, session (workroomd's term)
+_Avoid_: Config dir, session (the daemon's term)
 
 ## App shell
 

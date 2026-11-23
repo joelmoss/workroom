@@ -4,10 +4,11 @@ Part of the [contributor guide](../../CONTRIBUTING.md). Who owns each area is in
 [Ownership](ownership.md).
 
 The product is the **macOS app** (`macapp/`). For workroom management (create/delete/list) it's a
-SwiftUI client over **one shared engine** — the Go CLI, which it bundles and drives over a stable
-`--json` contract (no cgo, no duplicated lifecycle logic). The same engine is usable standalone as
-the CLI addon. VCS **reading** (history, diffs, working-copy status) is done natively in the app
-through a structured core — git via SwiftGitX (libgit2) — not by scraping CLI output.
+SwiftUI client over **one shared engine**: the Rust `workroom` binary (ADR 0078), which it bundles and
+drives over a stable `--json` contract (no duplicated lifecycle logic). The same binary is the daemon
+(`workroom serve`) that holds terminal sessions on this Mac and on every host, and it is usable
+standalone as the CLI. VCS **reading** (history, diffs, working-copy status) is done natively in the
+app through a structured core — git via SwiftGitX (libgit2) — not by scraping CLI output.
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -18,12 +19,13 @@ through a structured core — git via SwiftGitX (libgit2) — not by scraping CL
                 │  `workroom … --json`                   │  `workroom …`
                 ▼                                         ▼
         ┌────────────────────────────────────────────────────────┐
-        │                  The workroom Go engine                 │
-        │  cmd/  (Cobra commands)                                 │
-        │  internal/workroom/  (create / delete / list orchestr.) │
-        │  internal/vcs/  ──►  Git worktrees                       │
-        │  internal/config/  ──►  ~/.config/workroom/config.json   │
-        │  internal/script/  ──►  setup / teardown hooks           │
+        │        The workroom binary (vcs/crates/workroomd)       │
+        │  src/commands/  the CLI's commands, one table           │
+        │    create / delete / list / trust / base / update …     │
+        │    config  ──►  ~/.config/workroom/config.json           │
+        │    git, start  ──►  Git worktrees                        │
+        │  src/script.rs  ──►  setup / teardown hooks              │
+        │  src/daemon/, src/terminal/  `workroom serve`: sessions  │
         └────────────────────────────────────────────────────────┘
 ```
 
@@ -31,44 +33,31 @@ through a structured core — git via SwiftGitX (libgit2) — not by scraping CL
 
 ```
 workroom/
-├── main.go                  # Entry point; injects version via ldflags, calls cmd.Execute()
-├── cmd/                     # Cobra command definitions
-│   ├── root.go              # Root command, global flags, Service construction
-│   ├── create.go            # `workroom create` (alias c)
-│   ├── list.go              # `workroom list` (aliases ls, l)
-│   ├── delete.go            # `workroom delete` (alias d)
-│   ├── base.go              # `workroom base set|clear` (the branch new workrooms start from)
-│   ├── update.go            # `workroom update` (alias u) — CLI self-update
-│   ├── version.go           # `workroom version`
-│   ├── add_project.go       # Hidden; --json only; used by the app to register a project (Service.AddProject)
-│   ├── delete_project.go    # Hidden; --json only; used by the app to drop a project (Service.DeleteProject)
-│   ├── claim.go             # Hidden; `claim-provisioned`; used by a Dev build of the app to move its remote entries into its own config
-│   ├── include_archive.go   # Hidden; `include-archive --output`; used by the app to tar a root's included files (.worktreeinclude) for a remote workroom
-│   ├── json.go              # --json success/error envelope writers
-│   ├── payload.go           # One typed struct per --json payload and NDJSON event; nested fields in key order, as the goldens
-│   ├── jsonlog.go           # NDJSON streaming of setup/teardown output (stderr)
-│   └── helpers.go           # cwd / --project resolution
-├── internal/
-│   ├── config/              # JSON config CRUD (atomic writes + advisory lock)
-│   ├── namegen/             # Adjective-noun name generation (120 × 210)
-│   ├── vcs/                 # VCS interface + Git impl + CommandExecutor (testable); Included lists a root's .worktreeinclude matches
-│   ├── workroom/            # Core orchestration, prints nothing: Service.{CreateNamed,Delete,InteractiveDelete,Listing,ListData,AddProject,DeleteProject}; IncludedFiles, CopyIncluded, ArchiveIncluded
-│   ├── script/              # Setup/teardown script runner (env vars + live streaming)
-│   ├── ui/                  # Colored output, tables, log panels, interactive prompts (huh)
-│   ├── updater/             # `workroom update`: GitHub release check + binary swap
-│   └── errs/                # Shared error sentinels + machine codes + exit codes
 ├── macapp/                  # ★ The macOS app (SwiftUI) — the product; see macapp/AGENTS.md & macapp/README.md
-├── vcs/                     # Rust workspace: the workroomd daemon + git read crates
+├── vcs/                     # Rust workspace
+│   └── crates/
+│       ├── workroomd/       # The `workroom` crate (the folder keeps the daemon's old name): CLI + daemon
+│       │   ├── src/commands/    # Every `workroom <command>`: COMMANDS in mod.rs, one module per command
+│       │   ├── src/cli/         # The daemon's own subcommands: serve, attach, relay, run-script, …
+│       │   ├── src/daemon/      # The daemon: its services, hand-off and bin folder
+│       │   ├── src/terminal/    # Sessions, program status and the terminal API
+│       │   └── tests/           # Integration tests, the CLI contract suite and the docs-site check
+│       ├── wr-protocol/     # The daemon's wire protocol
+│       ├── wr-exec/         # Child processes and their trees
+│       ├── wr-vcs-git/, wr-vcs-model/   # The daemon's git reads
+│       └── ghostty-vt/      # libghostty-vt, for the daemon's shadow screens (terminal-state)
 ├── scripts/workroom_setup   # This repo's own example setup hook
-├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
-├── testdata/contracts/      # Golden --json envelopes, checked by cmd's Go tests and decoded by the app's tests
+├── testdata/contracts/      # Golden --json envelopes, checked by the contract suite and decoded by the app's tests
+├── testdata/                # Other fixtures shared across languages (channel cases, twin tables, script env)
+├── docs-site/               # The user docs; docs-site/pages/cli/ is generated by `make docs-cli`
 ├── .github/workflows/       # CI + release + appcast automation
-├── .goreleaser.yml          # The Go CLI's former release config; no workflow runs it since #681
-├── .golangci.yml            # Linter config
-├── install.sh / install.ps1 # Standalone CLI installer; install.ps1 only says Windows has ended
-├── Makefile                 # Dev tasks: app-* (macOS app), cli-* (Go engine) and vcs-lint (Rust)
-└── mk/                      # The Makefile's targets, one file per area (cli, docs, actions, vcs, app)
+├── install.sh               # Standalone CLI installer (macOS and Linux)
+├── Makefile                 # Dev tasks: app-* (macOS app), vcs-* (Rust), docs-*, contract-test
+└── mk/                      # The Makefile's targets, one file per area (docs, actions, vcs, notices, app)
 ```
+
+The CLI was a Go program at the repository root (`cmd/`, `internal/`) until #682 retired it; the
+Rust binary keeps its `--json` contract, exit codes and config format byte for byte.
 
 ## The macOS app architecture
 
@@ -82,11 +71,11 @@ SwiftUI app. The core loop:
    target persists for the session.
 3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
    (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,
-   the inspector, and desktop banners. Program status (OSC 7501) is the exception: `workroomd` keeps
+   the inspector, and desktop banners. Program status (OSC 7501) is the exception: the daemon keeps
    it and the app subscribes to it per host ([docs/program-status.md](../program-status.md),
    [ADR 0050](../adr/0050-program-status-service.md)).
 4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
-   goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `workroomd` for
+   goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and the daemon for
    daemon-routed projects — both mapped to app-native models, no CLI text parsing.
 5. **Mutations** (create/delete workroom, add/remove project) call the bundled `workroom` CLI via
    `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
@@ -111,136 +100,107 @@ registers a global `⌘§` hotkey via Carbon. The app bundles one binary (ADR 00
 builds beside it as `workroom-linux-<arch>`. Until #681 the app bundled the Go CLI there and the
 daemon as `Contents/MacOS/workroomd`.
 
-## The Go CLI engine
+## The CLI's commands
 
-This is the shared workroom-management engine the app drives (and the standalone CLI addon).
-Everything routes through `cmd.Execute()` (called from `main.go`). The root command sets up the
-persistent flags (`--verbose`, `--pretend`, `--json`) and `SilenceUsage`/`SilenceErrors` so Workroom
-renders its own error format. Each subcommand builds a `workroom.Service` via `newService()`:
+This is the shared workroom-management engine the app drives (and the standalone CLI).
+`main.rs` hands every command line that isn't one of the daemon's own subcommands to
+`commands::run_cli`. It reads the global flags (`--verbose`, `--pretend`, `--json`) and finds the
+command in `COMMANDS` (`src/commands/mod.rs`), the one table that `--help`, shell completion and the
+docs' CLI pages (`make docs-cli`) are made from. Each command is a function of a `Context` (the
+global flags, the platform, the environment) and its `Args`, which returns an `Outcome`.
 
-```go
-// internal/workroom/workroom.go
-type Service struct {
-    Config          *config.Config
-    VCS             vcs.VCS
-    Pretend         bool
-    PromptFn        PromptFunc   // interactive multi-select (huh)
-    ConfirmFn       ConfirmFunc  // interactive yes/no (huh)
-    Status          func(status, msg string)                       // progress steps; --verbose prints them
-    ScriptOutput    func(title string) (io.Writer, func(ok bool))  // the human teardown log panel
-    ScriptLogWriter io.Writer                                      // --json: NDJSON script output on stderr
-    // ... plus test-injection hooks and --json wiring (OnReady)
-}
-```
+A command prints nothing itself: its `Outcome` is a human text, a `--json` success envelope
+(`commands::envelope`), or a `CliError` with a stable `kind` and exit code (`commands::kind`), and
+`report` writes it. Prompts go to the terminal (stdin when it is one, else the controlling terminal);
+under `--json` or with no terminal a command that would have to ask fails instead, so the same code
+serves both the interactive terminal and the GUI. Setup and teardown output streams as NDJSON on
+stderr (`commands::log`).
 
-`internal/workroom` prints nothing. Its methods return results, and `cmd/` renders them: the
-`--json` envelope, or the human output (tables, log panels, success lines). Prompts reach the
-user through the `PromptFn`/`ConfirmFn` hooks. In `--json` mode, `newService()` makes the interactive prompt/confirm hooks return
-errors rather than block. This is how the same `Service` serves both the interactive terminal and
-the GUI.
-
-`Service` methods (`CreateNamed`, `Delete`, `InteractiveDelete`, `Listing`, `ListData`,
-`AddProject`, `DeleteProject`) hold the orchestration logic and delegate VCS work to the `vcs.VCS`
-interface, persistence to `config.Config`, and hook execution to `script.Run`. The human commands
-wrap them in `cmd/`: `createWorkroom` in `cmd/create.go` adds the setup log panel, the success line
-and the `$EDITOR` prompt; `cmd/list.go` renders `Listing`; `runDeleteHuman` in `cmd/delete.go`
-renders each `DeleteResult`.
+The commands that read or write the Mac's config are Mac-only: listed in `--help` everywhere,
+marked "(Mac only)", and failing with `MacOnly` on Linux. The terminal API's commands (`sessions`,
+`send`, `wait` and the rest, ADR 0079) run anywhere, as thin clients of the daemon they run under.
 
 ## How a workroom is created (lifecycle)
 
-`Service.CreateNamed` (both paths; the human `workroom create` wraps it in `createWorkroom`):
+`commands::create`, for `workroom create` and the app's `create --json` alike:
 
 1. **Guard:** reject if the cwd is already a workroom (presence of a `.Workroom` marker).
-2. **Detect VCS:** `vcs.Detect(dir)` looks for `.git` and returns the `Git` impl, or `ErrUnsupportedVCS`
-   (a `.jj`-only directory is unsupported; a colocated `.jj` + `.git` repo is plain Git).
-3. **Generate a unique name:** try `namegen.Generate()` up to 5 times; on persistent collision,
+2. **Detect VCS:** a directory without `.git` fails with `UnsupportedVCS` (a `.jj`-only directory is
+   unsupported; a colocated `.jj` + `.git` repo is plain Git).
+3. **Generate a unique name:** try `namegen::generate` up to 5 times; on persistent collision,
    append a random 2-digit suffix (up to 10 more tries).
 4. **Collision checks:** ensure the VCS workspace and the target directory don't already exist.
-5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch --prune <remote>`, then
-   `git worktree add --no-track -b workroom/<name> <path> <start>`. The base is the project's
-   `base_branch`, else the global `base_branch` (`workroom base set [--global]`). `vcs.SplitBase`
-   reads it as `<remote>/<branch>` when the part before the first `/` is a remote, else a branch on
-   `origin`. The start is `refs/remotes/<remote>/<branch>` then `refs/heads/<branch>`, and an
+5. **Create the workspace** (`commands::start`): `mkdir -p ~/workrooms`, then
+   `git fetch --prune <remote>`, then `git worktree add --no-track -b workroom/<name> <path> <start>`.
+   The base is the project's `base_branch`, else the global `base_branch` (`workroom base set
+   [--global]`). `split_base` reads it as `<remote>/<branch>` when the part before the first `/` is a
+   remote, else a branch on `origin` (`testdata/twins/split_base.tsv` holds its cases, which the app's
+   twin shares). The start is `refs/remotes/<remote>/<branch>` then `refs/heads/<branch>`, and an
    unresolvable base fails with `BaseBranchNotFound`. A global base that the fetched remote and the
    local branches both lack falls back to `refs/remotes/origin/HEAD` with a warning, fetching origin
    only if it was not the remote already fetched. A base that could not be fetched never falls back. Without a base, the remote is `origin`,
    `git remote set-head origin --auto` runs after the fetch, and the start is
    `refs/remotes/origin/HEAD`.
-   A failed fetch keeps the last fetched refs and returns a warning in `CreateResult.Warning`, and so
+   A failed fetch keeps the last fetched refs and returns a warning in the envelope, and so
    does a base that origin lacks when the local branch is used instead.
    With no usable start, the command has no start point and no `--no-track`, so git uses `HEAD`, or
    makes an orphan branch in a repository with no commits.
-   `Git.Create` reports this as two steps through `vcs.Progress` (`Service.OnStep`, and each
-   `$ git …` line and its output to `ScriptLogWriter`), which `create --json` streams as `step` and
-   `log` events for the app's creation checklist. `fetch` owns the start point: it ends `skipped`
-   with no remote, `warning` with the warning above, and `failed` when the base is found nowhere;
-   `worktree` covers `git worktree add`.
-   Between the two, `vcs.Progress.BeforeWorktree` hands the start point to the **trust check**
-   (#363, ADR 0054): `Service.SetupScriptAt` reads the base commit's `scripts/workroom_setup` with
-   `git cat-file --filters` (else the root's copy) and `gate` lets it through when its SHA-256 is the
-   project's `trusted_scripts` entry, or the root's copy is gitignored. Otherwise `ApproveScriptFn`
-   (a terminal's y/n) is asked, and without one the create ends with `ScriptNotTrusted` (exit 3)
-   before anything exists. A create stopped there by a question (`ScriptNotTrusted`, or
-   `LocalWorkLeftOut` from `--start ask`) is a `vcs.QuestionError`, and its `--json` envelope reports
-   `start_commit`, the commit its start point resolved to. The app answers by running `create` again
-   with the hidden `--start-commit <sha>` (`Service.StartCommit`, ADR 0059): that create fetches
-   nothing, emits no `fetch` step and starts from the pinned commit, or fails with
-   `StartCommitUnusable` (exit 3) when the commit is no longer on the start point's ref.
-6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
-   with the VCS type.
-7. **Signal readiness:** fire `OnReady` (the `created` event: the app gives the creation pane it
-   opened on the click the workroom's name, and keeps showing its checklist) before the potentially
-   slow setup script runs.
+   This is reported as two steps, which `create --json` streams as `step` and `log` events (each
+   `$ git …` line and its output) for the app's creation checklist. `fetch` owns the start point: it
+   ends `skipped` with no remote, `warning` with the warning above, and `failed` when the base is
+   found nowhere; `worktree` covers `git worktree add`.
+   Between the two comes the **trust check** (#363, ADR 0054, `commands::trusted_script`): the base
+   commit's `scripts/workroom_setup` is read with `git cat-file --filters` (else the root's copy),
+   and it passes when its SHA-256 is the project's `trusted_scripts` entry, or the root's copy is
+   gitignored. Otherwise a terminal is asked y/n, and without one the create ends with
+   `ScriptNotTrusted` (exit 3) before anything exists. A create stopped there by a question
+   (`ScriptNotTrusted`, or `LocalWorkLeftOut` from `--start ask`) reports `start_commit` in its
+   `--json` envelope, the commit its start point resolved to. The app answers by running `create`
+   again with the hidden `--start-commit <sha>` (ADR 0059): that create fetches nothing, emits no
+   `fetch` step and starts from the pinned commit, or fails with `StartCommitUnusable` (exit 3) when
+   the commit is no longer on the start point's ref.
+6. **Persist:** the workroom's `{path}` is recorded under the project (`commands::config`), keyed by
+   project path, with the VCS type.
+7. **Signal readiness:** emit the `created` event (the app gives the creation pane it opened on the
+   click the workroom's name, and keeps showing its checklist) before the potentially slow setup
+   script runs.
 8. **Run setup:** if `scripts/workroom_setup` exists in the new workroom, else in the root project,
-   `script.Run("setup", …)` executes it inside the new workroom with the
+   the one script runner (`src/script.rs`) executes it inside the new workroom with the
    [environment variables](../../docs-site/pages/reference/environment-variables.md), streaming combined
    stdout/stderr live, as the `script` step (`skipped` when there is no script). The file is hashed
    and gated again first, where it is, so bytes that changed since step 5 never run.
 
 Creation is **not transactional**: if setup fails, the workspace and config entry already exist, so
-the returned `CreateResult` is populated even on error — callers can report "created, but setup
+the error envelope still reports the workroom as `created` — callers can report "created, but setup
 failed" and offer cleanup.
 
 ## How a workroom is deleted (lifecycle)
 
-`Service.Delete` → `deleteByName`:
+`commands::delete`, through `commands::teardown`:
 
 1. **Guard + validate** the name against `^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$`.
 2. **Confirm** (interactively, or via a matching `--confirm <name>` value).
 3. **Run teardown:** if `scripts/workroom_teardown` exists in the workroom, else in the root project,
    run it inside the workroom (streaming). A teardown that fails, or can't be started, stops the
    delete there (exit 5, `TeardownScriptFailed`), leaving the workroom and its config entry.
-   `--skip-teardown` (`Service.SkipTeardown`, the app's Delete Anyway) skips the script and says so.
+   `--skip-teardown` (the app's Delete Anyway) skips the script and says so.
    Before it runs, the file is gated as setup is (#363): an unapproved one stops the delete with
    nothing removed (`ScriptNotTrusted`, exit 3) unless a terminal approves it. On a remote workroom
    the app reads the host's copy and asks the CLI to judge it (`trust status --stdin`) before
-   `workroomd run-script`, for setup and teardown alike. That is the only check a remote create's
-   setup script gets: an unapproved one pauses the create there, its machine up, until it is
+   `workroom run-script` on the host, for setup and teardown alike. That is the only check a remote
+   create's setup script gets: an unapproved one pauses the create there, its machine up, until it is
    approved, skipped or the create cancelled (ADR 0054's amendment).
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. The project stays registered even with no
    workrooms left: the config is shared with the app, whose sidebar keeps empty projects.
 
-## VCS abstraction
+## Git
 
-`internal/vcs` hides the VCS behind one interface (Git is the only implementation):
-
-```go
-type VCS interface {
-    Type() Type                                  // "git"
-    Label() string                               // human label
-    WorkroomExists(dir, name string) (bool, error)
-    Create(dir, vcsName, path string) (string, error)
-    Delete(dir, vcsName, path string) (string, error)
-    ListWorkrooms(dir string) ([]string, error)
-}
-```
-
-All shell-outs go through a `CommandExecutor` (`RealExecutor` in production, a mock in tests), which
-makes the orchestration fully unit-testable without touching a real repo. `vcs.Detect` is used when
-creating/deleting (it touches the filesystem); `vcs.New(type)` reconstructs a VCS from the stored
-config type string for listing, without requiring the project directory to exist.
+Git is the only VCS. Every command runs git through `commands::git`, with the environment the
+retired Go CLI gave it (its `childEnvironment`): no prompts for credentials it can't answer, and
+nothing from the caller's environment that would point git at another repository. Listing reads the
+VCS type stored in the config, so a project directory that no longer exists can still be listed.
 
 ## The config file
 
@@ -265,16 +225,15 @@ config. Shape:
   a symlink or trailing slash maps to one entry). `workrooms_dir` is a reserved key.
 - A project or workroom entry can also carry a **`host`** object, which marks a workroom as living
   on another machine. The app owns its schema. The CLI only checks whether a workroom has one and
-  whether its `state` is `"destroyed"` (`Workroom.IsRemote` and `Workroom.HostDestroyed` in
-  `internal/config/config.go`), and every config write must keep it. ADR 0032 (no remote project)
-  and ADR 0040 (deleting a remote workroom is app-only) record the rules the CLI enforces.
+  whether its `state` is `"destroyed"` (`commands::config`), and every config write keeps it, and
+  every key the CLI doesn't know, exactly as written. ADR 0032 (no remote project) and ADR 0040
+  (deleting a remote workroom is app-only) record the rules the CLI enforces.
 - Writes are **atomic** (write to a temp file, `fsync`, then `rename`) so a concurrent reader never
   sees a partial file.
 - Read-modify-write cycles are guarded by a **best-effort cross-process advisory lock**
-  (`config.json.lock`) so the standalone CLI and the app's bundled binary don't clobber each other;
-  it is an OS advisory lock (`gofrs/flock`: `flock(2)` on Unix, `LockFileEx` on Windows) that the kernel releases when its holder dies, so nothing is
-  stolen on a timer, and it degrades to running unlocked on any lock trouble or after a 30s backstop
-  rather than failing.
+  (`config.json.lock`, `flock(2)`) so the standalone CLI and the app's bundled binary don't clobber
+  each other; the kernel releases it when its holder dies, so nothing is stolen on a timer, and it
+  degrades to running unlocked on any lock trouble or after a 30s backstop rather than failing.
 
 The CLI's machine-readable `--json` envelope — the contract the app drives the engine over — is
 documented in the docs' [JSON output page](../../docs-site/pages/reference/json-output.md).

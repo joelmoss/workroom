@@ -20,7 +20,7 @@ something on a host: a connect, an exec, a script, a delete.
   connection dropped and its remote panes attach again, rather than wait the minute ssh's keepalive
   takes to notice a dead link; a pane's attach reconnects the host. One that answers keeps its links.
   A container's link is loopback and is left alone.
-- **While the Mac is away** (asleep, or off the network): its panes' `workroomd attach` relays on
+- **While the Mac is away** (asleep, or off the network): its panes' `workroom attach` relays on
   the host stay connected until sshd notices, up to about 2 h on stock Linux. Each remote pane's
   attach asks the host's daemon to probe it (`WORKROOM_SESSION_KEEPALIVE=1`, #593, ADR 0070): every
   15 s the daemon sends the pane a mode query its libghostty answers, and a client that leaves three
@@ -56,7 +56,7 @@ something on a host: a connect, an exec, a script, a delete.
 | Unreachable | the connect threw | `ensureConnected` logs the cause and throws `.unavailable`, whose text is "Repository service unavailable." Say what failed in your feature's own words (`runScript`: "couldn't reach the host") |
 | Older or newer daemon | `DaemonBootstrap.Outcome.Daemon` | An older daemon's file is replaced with this build's. A daemon of the same daemon build (`daemon-build` in `protocol`, #680: only the CLI commands differ) keeps running (`.current`); one of another daemon build is handed off to this build's (`.handedOff`) unless it refuses (`.keptOlder`). A daemon from before #680 states no daemon build and compares the file's bytes instead, so it hands off to any new file. A newer one is never downgraded (`.keptNewer`). A kept daemon may lack a subcommand this build added |
 | Older Nightly's host | a host from before the daemon's rename, #525 (`DaemonBootstrap.Error.olderLayout`), or a container made before #308, whose record has an ssh host key (`HostDriverError.olderContainer`) | `ensureConnected` throws `RepositoryRoutingError.olderLayout`, also through the backoff, which says to delete the workroom and create it again. A pre-#308 container is adopted only so its delete can take it down; every other reach of it throws |
-| Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `workroomd run-script` and the daemon's cached environment for remote git give the login-shell probe 10 s, then fall back to the daemon's own environment and log why |
+| Fresh host | first login on a new machine | No cached login environment, and a cold first login (nvm, conda) can be slow. `workroom run-script` and the daemon's cached environment for remote git give the login-shell probe 10 s, then fall back to the daemon's own environment and log why |
 | Mid-create or failed delete | `HostDescriptor.state` is `creating` or `failed` | The host may not be whole. `RemoteWorkrooms.delete` runs a teardown only when `state` is nil, and otherwise just finishes taking it down |
 | Another build's host | its key and labels aren't this build's | `RemoteWorkrooms.checkDeletable` refuses (`Failure.anotherBuildsHost`) |
 | Unknown SSH host key | strict ssh refuses a host absent from `known_hosts` | Create captures the key through the user's ssh into a scratch known_hosts, shows its fingerprint, then appends that exact key only after Trust. A jump host that also needs trust is handled in Terminal first |
@@ -83,8 +83,8 @@ daemon. An unused private SSH master expires after 60 seconds.
   host not answering. `test -e` exits 1 for a missing file; reading 255 as "missing" would skip a
   teardown and then destroy the host.
 - A daemon subcommand's own codes (`run-script`'s 124 timeout, 126 not started) count as its
-  report only when its stderr line says so (`workroomd run-script: ...`): a script can exit 124 or
-  126 itself.
+  report only when its stderr line says so (`workroomd run-script: ...`, a prefix that keeps the old
+  name because older apps parse it): a script can exit 124 or 126 itself.
 - `communicate`'s `timeout` bounds silence, not the exchange. A process the command left in the
   background holds its output open, and one that keeps printing is never silent. When the local
   equivalent has an overall timeout, bound the whole exchange too (`withTimeout`).

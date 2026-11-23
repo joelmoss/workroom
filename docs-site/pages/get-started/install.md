@@ -45,7 +45,8 @@ This links the app's own copy of the command into your `PATH`, so the app keeps 
 ## Install the CLI on its own
 
 The CLI runs without the app, on macOS and Linux, on Apple silicon, Intel, ARM64 and x86-64. It needs
-[Git](https://git-scm.com/) on your `PATH`. There are no Windows builds any more.
+[Git](https://git-scm.com/) on your `PATH`. Windows builds of the CLI have ended; installed copies keep
+working but get no updates.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
