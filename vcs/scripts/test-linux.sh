@@ -11,8 +11,10 @@
 #
 # **This is a convenience, not the gate.** CI runs these same tests natively on `ubuntu-latest`,
 # which is what actually blocks a merge. If this script cannot run — no runtime installed, no
-# cross-compilation toolchain — it says so and exits 0, because a developer without a Linux runtime
-# on their Mac should not be stopped by a check CI already performs.
+# cargo-zigbuild or Zig — it says so and exits 0, because a developer without a Linux runtime
+# on their Mac should not be stopped by a check CI already performs. It builds with CI's pinned
+# Rust whatever RUSTUP_TOOLCHAIN says, and fails, naming the fix, when that toolchain or its musl
+# target is missing.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -85,9 +87,22 @@ if ! command -v cargo-zigbuild >/dev/null 2>&1; then
   echo "test-linux: SKIP — cargo-zigbuild not installed ('cargo install cargo-zigbuild')." >&2
   exit 0
 fi
-if ! rustup target list --installed --toolchain stable 2>/dev/null | grep -qx "$TARGET"; then
-  echo "test-linux: SKIP — rust target $TARGET not installed ('rustup target add $TARGET')." >&2
-  exit 0
+# CI's Rust, from the one place the repo pins it (mk/vcs.mk's VCS_RUST, read through make as the
+# workflows read it), over any RUSTUP_TOOLCHAIN the caller's shell sets: another toolchain may lack
+# the musl target, and then every crate fails with "can't find crate for `core`".
+TOOLCHAIN="$(make -s -C .. print-VCS_RUST 2>/dev/null || true)"
+if [ -z "$TOOLCHAIN" ]; then
+  echo "error: could not read VCS_RUST from mk/vcs.mk (make -s print-VCS_RUST)." >&2
+  exit 1
+fi
+export RUSTUP_TOOLCHAIN="$TOOLCHAIN"
+if ! rustup which --toolchain "$TOOLCHAIN" cargo >/dev/null 2>&1; then
+  echo "error: Rust $TOOLCHAIN, the toolchain CI pins (mk/vcs.mk), is not installed: rustup toolchain install $TOOLCHAIN" >&2
+  exit 1
+fi
+if ! rustup target list --installed --toolchain "$TOOLCHAIN" 2>/dev/null | grep -qx "$TARGET"; then
+  echo "error: Rust $TOOLCHAIN has no $TARGET target: rustup target add --toolchain $TOOLCHAIN $TARGET" >&2
+  exit 1
 fi
 
 # Put RUSTUP's shims ahead of Homebrew's rust on PATH.
