@@ -12,6 +12,8 @@ for interface changes, follow native macOS interaction conventions.
 - `make app-test` does not run local package tests; use `make app-package-test` for package changes.
   For test infrastructure or benchmark helpers, start with `make app-test-preflight`; the full
   packaging/helper gate is `make app-test-scripts`.
+- After a daemon, bootstrap, CLI or remote-host change, run `make app-test-remote`: `make app-test`
+  passes the remote-host and container suites by skipping them.
 - Read app/UI test verdicts from the canonical `Tests:` summary and its `FAIL` lines, including
   skipped counts. Use `Scripts/test-summary.sh` for downloaded bundles; do not query xcresult by hand.
 - Run builds, formatting and tests with the command sandbox disabled when they need Xcode/system

@@ -101,6 +101,35 @@ case "$out" in
   ;;
 esac
 
+case "$out" in
+*"CLASS "*)
+  echo "FAIL: per-class lines print only with TEST_SUMMARY_CLASSES=1. Got:"
+  echo "$out"
+  fails=$((fails + 1))
+  ;;
+esac
+
+# TEST_SUMMARY_CLASSES=1 counts each class on its own, so one class that skipped whole shows beside
+# one that ran; a retried pass counts as passed.
+cat >"$TMP/classes.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Plan","name":"WorkroomApp","children":[
+ {"nodeType":"Unit test bundle","name":"WorkroomAppTests","children":[
+  {"nodeType":"Test Suite","name":"RanTests","children":[
+   {"nodeType":"Test Case","name":"testA()","result":"Passed"},
+   {"nodeType":"Test Case","name":"testB()","result":"Passed","children":[
+    {"nodeType":"Repetition","name":"First Run","result":"Failed"},
+    {"nodeType":"Repetition","name":"Retry 1","result":"Passed"}]},
+   {"nodeType":"Test Case","name":"testC()","result":"Skipped"},
+   {"nodeType":"Test Case","name":"testD()","result":"Failed"}]},
+  {"nodeType":"Test Suite","name":"SkippedTests","children":[
+   {"nodeType":"Test Case","name":"testE()","result":"Skipped"},
+   {"nodeType":"Test Case","name":"testF()","result":"Skipped"}]}]}]}]}
+EOF
+out="$(PATH="$TMP/bin:$PATH" STUB_JSON="$TMP/failed.json" STUB_TESTS="$TMP/classes.json" \
+  TEST_SUMMARY_CLASSES=1 sh "$DIR/test-summary.sh" "$TMP/ci.xcresult")"
+check "class that ran" "$out" "CLASS WorkroomAppTests/RanTests: 2 passed, 1 failed, 1 skipped"
+check "class that skipped" "$out" "CLASS WorkroomAppTests/SkippedTests: 0 passed, 0 failed, 2 skipped"
+
 if [ "$fails" -ne 0 ]; then
   echo "test-summary_test: $fails failure(s)" >&2
   exit 1

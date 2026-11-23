@@ -25,7 +25,9 @@ tools-check: ## Compare this machine's tools with the versions the repo pins (re
 # fails, then a summary. CI tests the PR merged with master, so a branch behind origin/master is
 # called out first: merge it, or a gate that depends on master (the docs' Nightly markers, which
 # compare against the latest stable tag) passes here and fails there. vcs-lint-linux needs a
-# container runtime (CONTRIBUTING.md). The VM UI tests and the full app-test are not in it.
+# container runtime (CONTRIBUTING.md). The VM UI tests and the full app-test are not in it, nor is
+# app-test-remote (Docker, Apple's `container` and the GUI test host): run that one by hand after a
+# daemon, bootstrap, CLI or remote-host change.
 PRE_PUSH_GATES := app-test-scripts docs-check vcs-lint vcs-lint-linux vcs-test notices-check \
   app-lint app-package-test
 pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master)

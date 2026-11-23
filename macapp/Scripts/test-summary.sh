@@ -61,18 +61,31 @@ for f in d.get("testFailures", []):
 # A test that failed and then passed on a retry (`make app-test` retries a failure once) counts as
 # passed above. Name each one, so a flake stays visible instead of turning a run red: the per-test
 # tree lists every run of a test case as a "Repetition" child.
+#
+# TEST_SUMMARY_CLASSES=1 also prints each class's counts, as `CLASS <bundle>/<class>: N passed, N
+# failed, N skipped`, for a run of several opt-in classes where one of them skipping whole hides in
+# the total (macapp/Scripts/remote-tests.sh). A class with no test that ran has no line.
 if tests="$(xcrun xcresulttool get test-results tests --compact --path "$bundle" 2>/dev/null)"; then
-  printf '%s' "$tests" | python3 -c '
-import json, sys
+  printf '%s' "$tests" | TEST_SUMMARY_CLASSES="${TEST_SUMMARY_CLASSES:-}" python3 -c '
+import json, os, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
     sys.exit(0)
+classes = {}
 def walk(node, path):
     kind = node.get("nodeType")
     name = node.get("name", "?")
     children = node.get("children", [])
     if kind == "Test Case":
+        counts = classes.setdefault("/".join(path), {"passed": 0, "failed": 0, "skipped": 0})
+        result = node.get("result")
+        if result in ("Passed", "Expected Failure"):
+            counts["passed"] += 1
+        elif result == "Skipped":
+            counts["skipped"] += 1
+        else:
+            counts["failed"] += 1
         runs = [c for c in children if c.get("nodeType") == "Repetition"]
         if node.get("result") == "Passed" and any(r.get("result") == "Failed" for r in runs):
             first = next((m.get("name", "") for r in runs if r.get("result") == "Failed"
@@ -86,6 +99,10 @@ def walk(node, path):
         walk(child, path)
 for node in d.get("testNodes", []):
     walk(node, [])
+if os.environ.get("TEST_SUMMARY_CLASSES") == "1":
+    for name, counts in sorted(classes.items()):
+        print("  CLASS %s: %d passed, %d failed, %d skipped" % (
+            name, counts["passed"], counts["failed"], counts["skipped"]))
 '
 fi
 echo "Result bundle: ${bundle}"
