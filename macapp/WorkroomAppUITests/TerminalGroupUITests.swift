@@ -542,8 +542,7 @@ final class TerminalGroupUITests: XCTestCase {
     row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
   }
 
-  /// Drags `from` to `to`, let go at normalized height `dy` of `to`'s row. No hold before letting
-  /// go (`thenHoldForDuration`): in the VM a held drop never reaches `SidebarRowDrag`.
+  /// Drags `from` to `to`, let go at normalized height `dy` of `to`'s row.
   private func drag(_ from: XCUIElement, to: XCUIElement, dy: CGFloat) {
     from.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
       forDuration: 0.6,
