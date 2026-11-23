@@ -27,16 +27,21 @@ use super::{Args, Context, Outcome};
 pub(super) const LONG: &str = "Approve the setup and teardown scripts a create or delete would \
     run next, by their exact contents. In a terminal each one is shown first and you are asked. \
     A changed script needs approving again. A script git ignores in the project's root needs no \
-    approval.";
+    approval. With --pretend it fetches nothing, and warns that the start it judges may be out \
+    of date.";
 
 pub(super) const STATUS_LONG: &str = "Say whether the setup and teardown scripts a create or \
     delete would run next are approved. Exits 0 when every script there is approved or ignored \
-    by git, 1 when one is not, and 2 when it cannot tell.";
+    by git, 1 when one is not, and 2 when it cannot tell. With --pretend it fetches nothing, and \
+    warns that the start it judges may be out of date.";
 
 /// `trust`'s payload: the scripts judged, with what was approved.
 #[derive(Serialize)]
-struct TrustPayload {
+struct TrustPayload<'a> {
     scripts: Vec<ScriptPayload>,
+    /// Under `--pretend`, which fetches nothing, that the start judged may be out of date (#798).
+    #[serde(skip_serializing_if = "str::is_empty")]
+    warning: &'a str,
 }
 
 /// `trust status`'s. `local_work` is what a create from that start leaves out, for a remote create
@@ -49,6 +54,9 @@ struct StatusPayload<'a> {
     #[serde(skip_serializing_if = "str::is_empty")]
     start: &'a str,
     trusted: bool,
+    /// As [`TrustPayload`]'s.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    warning: &'a str,
 }
 
 /// `untrust`'s.
@@ -81,6 +89,8 @@ struct Judged {
     scripts: Vec<Script>,
     work: LocalWork,
     start: String,
+    /// Under `--pretend`, which fetches nothing, that the start may be out of date; else "".
+    unfetched: String,
 }
 
 /// The project the trust commands name, judged: the one script read from stdin with `--stdin`,
@@ -97,25 +107,24 @@ fn judged(context: &Context, args: &Args) -> Result<Judged, CliError> {
     };
     let mut work = LocalWork::default();
     let mut start = String::new();
+    let mut unfetched = String::new();
     let stdin = args.value("stdin").unwrap_or_default();
     let scripts = if stdin.is_empty() {
-        match args.value("base") {
+        let next = match args.value("base") {
             Some(base) => {
-                let judged = judge.scripts_from(base, args.is_set("devcontainer"))?;
-                (work, start) = (judged.1, judged.2);
-                judged.0
+                let mut next = judge.scripts_from(base, args.is_set("devcontainer"))?;
+                start = std::mem::take(&mut next.start);
+                next
             }
             None if args.is_set("devcontainer") => {
                 return Err(CliError::internal(
                     "--devcontainer judges a container create's file, so it needs --base",
                 ));
             }
-            None => {
-                let judged = judge.scripts()?;
-                work = judged.1;
-                judged.0
-            }
-        }
+            None => judge.scripts()?,
+        };
+        (work, unfetched) = (next.work, next.unfetched);
+        next.scripts
     } else {
         let Some(name) = trusted_script::known_name(stdin) else {
             return Err(CliError::internal(format!(
@@ -137,7 +146,19 @@ fn judged(context: &Context, args: &Args) -> Result<Judged, CliError> {
         scripts,
         work,
         start,
+        unfetched,
     })
+}
+
+/// `text`, a person's, with `warning` (`--pretend`'s unfetched start, or "") after it on stderr.
+fn printed(text: String, warning: &str) -> Outcome {
+    if warning.is_empty() {
+        return Outcome::Printed(text);
+    }
+    Outcome::PrintedWithWarnings {
+        stdout: text,
+        warnings: format!("{warning}\n"),
+    }
 }
 
 /// The project the trust commands act on: `--project` or the current directory, or, inside one
@@ -169,6 +190,7 @@ fn trust(context: &Context, args: &Args) -> Outcome {
         config,
         dir,
         mut scripts,
+        unfetched,
         ..
     } = match judged(context, args) {
         Ok(judged) => judged,
@@ -209,13 +231,14 @@ fn trust(context: &Context, args: &Args) -> Outcome {
     if context.json {
         let payload = TrustPayload {
             scripts: scripts.iter().map(Script::payload).collect(),
+            warning: &unfetched,
         };
         return Outcome::Success(super::envelope::success("trust", &payload));
     }
     if !from_stdin {
         lines.extend(absent(&scripts));
     }
-    Outcome::Printed(lines.join("\n") + "\n")
+    printed(lines.join("\n") + "\n", &unfetched)
 }
 
 /// Records `sc`'s bytes as approved for the project at `dir`, registering the project if it is
@@ -254,6 +277,7 @@ fn status(context: &Context, args: &Args) -> Outcome {
             scripts: judged.scripts.iter().map(Script::payload).collect(),
             start: &judged.start,
             trusted,
+            warning: &judged.unfetched,
         };
         Outcome::Success(super::envelope::success("trust status", &payload))
     } else {
@@ -275,7 +299,7 @@ fn status(context: &Context, args: &Args) -> Outcome {
                 text.push('\n');
             }
         }
-        Outcome::Printed(text)
+        printed(text, &judged.unfetched)
     };
     if trusted {
         outcome

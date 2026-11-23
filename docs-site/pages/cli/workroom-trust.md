@@ -7,7 +7,7 @@ description: "Approve a project's setup and teardown scripts so Workroom runs th
 
 ## Synopsis
 
-Approve the setup and teardown scripts a create or delete would run next, by their exact contents. In a terminal each one is shown first and you are asked. A changed script needs approving again. A script git ignores in the project's root needs no approval.
+Approve the setup and teardown scripts a create or delete would run next, by their exact contents. In a terminal each one is shown first and you are asked. A changed script needs approving again. A script git ignores in the project's root needs no approval. With --pretend it fetches nothing, and warns that the start it judges may be out of date.
 
 Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
 

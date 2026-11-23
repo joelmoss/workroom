@@ -177,8 +177,8 @@ impl Delete<'_> {
     /// Deletes workroom `name` of project `dir`, once `confirm` says to: Go's `Delete`. What
     /// stops it is checked first, in Go's order: the project being a workroom, the name, a live
     /// remote workroom, the project being no repository, and the workroom being neither a worktree
-    /// git lists nor an entry whose folder holds no checkout. `--pretend` skips the last, and
-    /// asks for no confirmation.
+    /// git lists nor an entry whose folder holds no checkout, then the confirmation. `--pretend`
+    /// checks each as the real run does (#798), but asks no question.
     pub(super) fn delete(
         &self,
         dir: &str,
@@ -195,40 +195,35 @@ impl Delete<'_> {
             self.detect_vcs(dir)?;
         }
         let mut orphan = None;
-        if !self.pretend() {
-            if !destroyed && !self.listed(dir, name)? {
-                orphan = self.non_git_workroom_path(dir, name)?;
-                if orphan.is_none() {
-                    return Err(CliError::new(
-                        Kind::WorkspaceNotFound,
-                        format!(
-                            "git worktree does not exist: Git worktree '{name}' does not exist"
-                        ),
-                    ));
+        if !destroyed && !self.listed(dir, name)? {
+            orphan = self.non_git_workroom_path(dir, name)?;
+            if orphan.is_none() {
+                return Err(CliError::new(
+                    Kind::WorkspaceNotFound,
+                    format!("git worktree does not exist: Git worktree '{name}' does not exist"),
+                ));
+            }
+        }
+        match confirm {
+            Confirm::Value(value) if value != name => {
+                return Err(CliError::new(
+                    Kind::ConfirmationMismatch,
+                    format!(
+                        "confirmation value does not match the workroom name: --confirm value \
+                         '{value}' does not match workroom name '{name}'"
+                    ),
+                ));
+            }
+            Confirm::Value(_) => {}
+            // A dry run asks nothing: it goes on as a yes would.
+            Confirm::Ask(_) if self.pretend() => {}
+            Confirm::Ask(ask) => {
+                if !ask(&format!(
+                    "Are you sure you want to delete workroom '{name}'?"
+                ))? {
+                    return Ok(Deleted::Declined);
                 }
             }
-            match confirm {
-                Confirm::Value(value) if value != name => {
-                    return Err(CliError::new(
-                        Kind::ConfirmationMismatch,
-                        format!(
-                            "confirmation value does not match the workroom name: --confirm value \
-                             '{value}' does not match workroom name '{name}'"
-                        ),
-                    ));
-                }
-                Confirm::Value(_) => {}
-                Confirm::Ask(ask) => {
-                    if !ask(&format!(
-                        "Are you sure you want to delete workroom '{name}'?"
-                    ))? {
-                        return Ok(Deleted::Declined);
-                    }
-                }
-            }
-        } else if !destroyed {
-            // `--pretend` says what the real run would do with a workroom it only forgets.
-            orphan = self.legacy_workroom_path(dir, name)?;
         }
         if let Some(path) = orphan {
             return self.forget_non_git(dir, name, path);
@@ -301,7 +296,12 @@ impl Delete<'_> {
         }
         let path = self.workroom_path(name)?;
         self.run_teardown(dir, name)?;
-        if !self.pretend() {
+        if self.pretend() {
+            // What would stop `git worktree remove --force`, judged without it (#798).
+            if !removable(dir, &path)? {
+                return Err(CliError::vcs_failed("exit status 128"));
+            }
+        } else {
             let output = git::command(Path::new(dir))
                 .arg("worktree")
                 .arg("remove")
@@ -378,7 +378,8 @@ impl Delete<'_> {
 
     /// Runs workroom `name`'s teardown script, if it has one, as Go's `RunTeardown`: the
     /// workroom's own copy, else the project root's, once this Mac has approved its bytes, with its
-    /// output streamed to whoever watches. Under `--pretend` nothing runs, and `--skip-teardown`
+    /// output streamed to whoever watches. Under `--pretend` nothing runs, though its approval is
+    /// checked as for real (nobody is asked), and `--skip-teardown`
     /// skips it. It runs in `<workrooms folder>/<name>`, so only when git registers that folder
     /// for the project ([`Delete::teardown_folder`]), under `--pretend` as for real.
     pub(super) fn run_teardown(&self, dir: &str, name: &str) -> Result<(), CliError> {
@@ -414,10 +415,11 @@ impl Delete<'_> {
                 super::envelope::encode(&path.to_string_lossy(), false)
             ),
         );
+        // Under `--pretend` too, so an unapproved script stops it as it would stop the real run.
+        self.gate(dir, &path, &script)?;
         if self.pretend() {
             return Ok(());
         }
-        self.gate(dir, &path, &script)?;
         let variables = crate::script::local_variables(name, &path, Path::new(dir));
         let mut runner = crate::script::Script::new(&script, &path, &variables, None);
         runner.kill_grace = KILL_GRACE;
@@ -526,13 +528,17 @@ impl Delete<'_> {
         else {
             return Err(script.untrusted());
         };
+        // A dry run asks nothing and records nothing: the person would be asked.
+        if self.pretend() {
+            return Ok(());
+        }
         if !approve(&script)? {
             return Err(CliError::new(
                 Kind::Cancelled,
                 format!("operation cancelled: {} was not approved", script.file),
             ));
         }
-        // Go's `Trust`: the project is registered if it is not yet. `--pretend` never gets here.
+        // Go's `Trust`: the project is registered if it is not yet. `--pretend` stopped above.
         self.config.add_project(dir, "git")?;
         self.config
             .set_trusted_script(dir, script.name, &script.sha256)?;
@@ -561,6 +567,34 @@ fn registered(dir: &str, path: &Path) -> Result<bool, CliError> {
     Ok(listed
         .iter()
         .any(|listed| resolved(Path::new(listed)) == want))
+}
+
+/// Whether `git worktree remove --force` would remove `path` from the project at `dir`: git lists
+/// it as a linked worktree (its folder may be gone) and it isn't locked, which one `--force`
+/// doesn't override. Anything else git refuses with exit status 128. What `--pretend` checks in
+/// place of the removal (#798).
+fn removable(dir: &str, path: &Path) -> Result<bool, CliError> {
+    let output = git::command(Path::new(dir))
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|error| CliError::vcs_failed(&error.to_string()))?;
+    if !output.status.success() {
+        return Err(CliError::vcs_failed(&go_exit(&output.status)));
+    }
+    let want = resolved(path);
+    if want == resolved(Path::new(dir)) {
+        return Ok(false);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // One block per worktree, the main checkout's first: `worktree <path>`, then its fields.
+    Ok(text.split("\n\n").skip(1).any(|block| {
+        let mut lines = block.lines();
+        lines
+            .next()
+            .and_then(|line| line.strip_prefix("worktree "))
+            .is_some_and(|listed| resolved(Path::new(listed)) == want)
+            && !lines.any(|line| line == "locked" || line.starts_with("locked "))
+    }))
 }
 
 /// `path` with its symlinks resolved; when it is gone, its parent's resolved with its name joined

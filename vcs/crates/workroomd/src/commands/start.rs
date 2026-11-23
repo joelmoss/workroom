@@ -56,6 +56,9 @@ pub(super) struct FetchStep<'a> {
     /// The fetch was tried and failed.
     pub(super) failed: bool,
     pinned: bool,
+    /// A dry run's (`--pretend`, #798): nothing is fetched, and the start is found as a failed
+    /// fetch finds it, among the refs as last fetched, saying so.
+    dry: bool,
 }
 
 impl<'a> FetchStep<'a> {
@@ -66,6 +69,16 @@ impl<'a> FetchStep<'a> {
             attempted: false,
             failed: false,
             pinned,
+            dry: false,
+        }
+    }
+
+    /// Why `remote` wasn't fetched: the fetch failed, or a dry run fetches nothing.
+    fn not_fetched(&self, remote: &str) -> String {
+        if self.dry {
+            format!("--pretend fetches nothing, so {remote} wasn't fetched")
+        } else {
+            format!("could not fetch {remote}")
         }
     }
 
@@ -94,6 +107,9 @@ impl<'a> FetchStep<'a> {
     fn fetch(&mut self, dir: &Path, remote: &str, set_head: bool) -> bool {
         if self.pinned {
             return true;
+        }
+        if self.dry {
+            return false;
         }
         if !self.attempted {
             self.progress.step("fetch", "running", "");
@@ -131,7 +147,8 @@ fn split_base<'a>(base: &'a str, remotes: &[&str]) -> (&'a str, &'a str) {
 /// branches both lack gives way to origin's default branch, with a warning. With no base and no
 /// origin/HEAD the start is "", which is HEAD. Returns the start's ref and the warning, or "".
 /// Without `fetch` (`--pretend`) nothing is fetched: the start is found among the refs as last
-/// fetched, with no warning that they may be out of date.
+/// fetched, as a failed fetch finds it, and the warning or the refusal says `--pretend` fetched
+/// nothing.
 pub(super) fn start_point(
     dir: &Path,
     base: &str,
@@ -139,7 +156,8 @@ pub(super) fn start_point(
     fetch: bool,
 ) -> Result<(String, String), CliError> {
     let mut silent = Silent;
-    let mut step = FetchStep::new(&mut silent, !fetch);
+    let mut step = FetchStep::new(&mut silent, false);
+    step.dry = !fetch;
     resolve(dir, base, fallback, &mut step)
 }
 
@@ -172,7 +190,8 @@ pub(super) fn resolve(
     if start.is_empty() && !branch.is_empty() {
         if has_remote && !fetched {
             return Err(base_not_found(format!(
-                "'{base}' (could not fetch {remote} to look there)"
+                "'{base}' ({} to look there)",
+                fs.not_fetched(remote)
             )));
         }
         if !fallback {
@@ -188,7 +207,8 @@ pub(super) fn resolve(
     }
     let warning = if has_remote && !fetched {
         format!(
-            "Could not fetch {remote}. The workroom starts from {}, which may be out of date.",
+            "{}. The workroom starts from {}, which may be out of date.",
+            capitalized(&fs.not_fetched(remote)),
             ref_name(dir, &start)
         )
     } else if has_remote && start.starts_with("refs/heads/") {
@@ -242,9 +262,20 @@ fn origin_default(
         ref_name(dir, &start)
     );
     if has_origin && !origin_fetched {
-        warning += " Could not fetch origin, so it may be out of date.";
+        warning += &format!(
+            " {}, so it may be out of date.",
+            capitalized(&fs.not_fetched("origin"))
+        );
     }
     (start, warning)
+}
+
+/// `text` with its first letter upper case.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// The first of `refs` that names a commit, or "".
