@@ -62,6 +62,18 @@ pub(super) fn below(n: usize) -> usize {
 mod tests {
     use super::*;
 
+    /// The word lists are frozen: they are the Go CLI's (its `internal/namegen`, hashed the same
+    /// way before #682 removed it), so names stay the ones Workroom has always made. A change here
+    /// is deliberate and updates the hash.
+    #[test]
+    fn the_word_lists_are_the_ones_workroom_has_always_used() {
+        let joined = format!("{}\n--\n{}", ADJECTIVES.join("\n"), NOUNS.join("\n"));
+        assert_eq!(
+            crate::util::sha256_hex(joined.as_bytes()),
+            "04f783d8ab597dba899e77a8b368cdc327a9aa7d660c124d9bea3ac66804b470"
+        );
+    }
+
     #[test]
     fn a_name_is_an_adjective_and_a_noun() {
         let name = generate();
