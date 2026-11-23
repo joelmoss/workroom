@@ -237,7 +237,10 @@ fn run_signal(signal: RunSignal) -> &'static str {
 
 /// One entry an Attach can carry, and what it says.
 const ATTACH_ENTRIES: &[(&str, &str)] = &[
-    ("SHELL", "The shell to start, when the attach creates the session."),
+    (
+        "SHELL",
+        "The shell to start, when the attach creates the session.",
+    ),
     ("COMMAND", "The command to run in place of a login shell."),
     ("CWD", "The folder it starts in."),
     (
@@ -260,7 +263,10 @@ const ATTACH_ENTRIES: &[(&str, &str)] = &[
         "CLIENT",
         "The client's kind, `pane`, `app` or `cli`, as `sessions --clients` reports it.",
     ),
-    ("HOSTNAME", "The machine the client is on: for a pane, the Mac showing it."),
+    (
+        "HOSTNAME",
+        "The machine the client is on: for a pane, the Mac showing it.",
+    ),
     (
         "ENV:NAME",
         "One variable for the session's environment, the client's own, not the daemon's.",
@@ -383,7 +389,7 @@ const SERVICES: &[JsonService] = &[
             Request {
                 method: "list",
                 shape: "`root` → the repository's files, from a fixed `git` listing.",
-                app: "The file browser and Open Quickly in a remote workroom.",
+                app: "Listing a remote workroom's files.",
             },
             Request {
                 method: "read",
@@ -394,12 +400,12 @@ const SERVICES: &[JsonService] = &[
                 method: "resolve",
                 shape: "`root`, `path` → the repository path a path with `..` or links names on \
                         the host.",
-                app: "Following a path a terminal printed.",
+                app: "Opening a file path clicked in a remote terminal.",
             },
             Request {
                 method: "watch",
                 shape: "`root`, `subscription` → changes, sent on stream 0 until `unwatch`.",
-                app: "Refreshing the file browser and the Changes tab when files change.",
+                app: "Refreshing what the app shows of a remote workroom when its files change.",
             },
             Request {
                 method: "unwatch",
@@ -517,18 +523,42 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
         "attach",
         "What every pane runs, which libghostty forks; with `--dial`, a remote pane's.",
     ),
-    ("relay", "What a host driver runs on the far side of ssh or a container's exec."),
-    ("list", "Checks a host's daemon and its sessions during bootstrap."),
-    ("program-status", "Not run by the app: a way to see what it is told."),
-    ("hand-off", "Updates a running daemon in place, on the Mac and on hosts."),
+    (
+        "relay",
+        "What a host driver runs on the far side of ssh or a container's exec.",
+    ),
+    (
+        "list",
+        "Checks a host's daemon and its sessions during bootstrap.",
+    ),
+    (
+        "program-status",
+        "Not run by the app: a way to see what it is told.",
+    ),
+    (
+        "hand-off",
+        "Updates a running daemon in place, on the Mac and on hosts.",
+    ),
     (
         "handoff-check",
         "Run by the daemon handing off, against the binary it would become.",
     ),
-    ("credential", "A local container's Git credential helper, and its relay."),
-    ("run-script", "Runs a remote workroom's setup and teardown scripts."),
-    ("run-supervisor", "What a run session's pty runs around its command."),
-    ("protocol", "Asks a binary which protocol it speaks before using it."),
+    (
+        "credential",
+        "A local container's Git credential helper, and its relay.",
+    ),
+    (
+        "run-script",
+        "Runs a remote workroom's setup and teardown scripts.",
+    ),
+    (
+        "run-supervisor",
+        "What a run session's pty runs around its command.",
+    ),
+    (
+        "protocol",
+        "Asks a binary which protocol it speaks before using it.",
+    ),
 ];
 
 /// When the app runs each hidden command.
@@ -593,8 +623,9 @@ fn flags_table(flags: &[Flag]) -> String {
     if flags.is_empty() {
         return "No flags.\n".to_string();
     }
-    let mut text =
-        String::from("| Flag | Takes a value | Required | Usage |\n| ---- | ---- | ---- | ---- |\n");
+    let mut text = String::from(
+        "| Flag | Takes a value | Required | Usage |\n| ---- | ---- | ---- | ---- |\n",
+    );
     for flag in flags {
         text += &format!(
             "| `--{}` | {} | {} | {} |\n",
@@ -703,7 +734,11 @@ pub(super) fn page() -> String {
              | ---- | ------- | -------------- | -------------- |\n";
     for each in services() {
         let (name, since, what) = service(each);
-        text += &format!("| `{:#04x}` | {name} | {since} | {} |\n", each as u8, cell(what));
+        text += &format!(
+            "| `{:#04x}` | {name} | {since} | {} |\n",
+            each as u8,
+            cell(what)
+        );
     }
 
     text += "\n## Terminal and Control frames\n\n\
@@ -808,10 +843,7 @@ mod tests {
             .find(&format!("fn {name}("))
             .unwrap_or_else(|| panic!("no fn {name}: the test reads its requests from it"));
         let start = source[..head].rfind('\n').map_or(0, |newline| newline + 1);
-        let indent: String = source[start..]
-            .chars()
-            .take_while(|c| *c == ' ')
-            .collect();
+        let indent: String = source[start..].chars().take_while(|c| *c == ' ').collect();
         let end = source[start..]
             .find(&format!("\n{indent}}}\n"))
             .map_or(source.len(), |end| start + end);
@@ -988,8 +1020,10 @@ mod tests {
             .collect();
         assert!(decode.contains("strip_prefix(b\"ENV:\")"));
         read.insert("ENV:NAME".to_string());
-        let documented: BTreeSet<String> =
-            ATTACH_ENTRIES.iter().map(|(key, _)| key.to_string()).collect();
+        let documented: BTreeSet<String> = ATTACH_ENTRIES
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect();
         assert_eq!(read, documented);
     }
 
@@ -1023,8 +1057,10 @@ mod tests {
                 "{name} isn't in main.rs's usage text"
             );
         }
-        let documented: BTreeSet<String> =
-            SUBCOMMANDS.iter().map(|(name, _)| name.to_string()).collect();
+        let documented: BTreeSet<String> = SUBCOMMANDS
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
         assert_eq!(names, documented);
     }
 
@@ -1038,18 +1074,34 @@ mod tests {
             .filter(|command| command.hidden)
             .map(|command| command.name)
             .collect();
-        for name in ["add-project", "delete-project", "host", "include-archive", "skill"] {
+        for name in [
+            "add-project",
+            "delete-project",
+            "host",
+            "include-archive",
+            "skill",
+        ] {
             assert!(hidden.contains(name), "{name}");
         }
         let documented: BTreeSet<&str> = HIDDEN.iter().map(|(name, _)| *name).collect();
-        assert_eq!(hidden, documented, "HIDDEN must say when the app runs each one");
+        assert_eq!(
+            hidden, documented,
+            "HIDDEN must say when the app runs each one"
+        );
         for command in COMMANDS.iter().filter(|command| command.hidden) {
             assert!(page.contains(&format!("\n### `workroom {}`\n", command.name)));
             for flag in command.flags {
-                assert!(page.contains(&format!("| `--{}` |", flag.name)), "{}", flag.name);
+                assert!(
+                    page.contains(&format!("| `--{}` |", flag.name)),
+                    "{}",
+                    flag.name
+                );
             }
             for sub in command.subcommands {
-                assert!(page.contains(&format!("\n#### `workroom {} {}`\n", command.name, sub.name)));
+                assert!(page.contains(&format!(
+                    "\n#### `workroom {} {}`\n",
+                    command.name, sub.name
+                )));
             }
         }
         let flags = hidden_flags();

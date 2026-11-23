@@ -250,10 +250,9 @@ impl Kind {
                  workroom's folder isn't a worktree Git registers for the project, so its \
                  teardown script won't run there.",
             ),
-            Kind::ConfirmationMismatch => (
-                Workroom,
-                "`--confirm` didn't match the workroom's name.",
-            ),
+            Kind::ConfirmationMismatch => {
+                (Workroom, "`--confirm` didn't match the workroom's name.")
+            }
             Kind::UnsafeDeletePath => (
                 Workroom,
                 "Workroom refused to delete an unsafe or reserved path.",
@@ -261,10 +260,7 @@ impl Kind {
             Kind::Cancelled => (Workroom, "The user aborted, or there was nothing to do."),
             Kind::SetupScriptFailed => (Workroom, "The setup script returned non-zero."),
             Kind::TeardownScriptFailed => (Workroom, "The teardown script returned non-zero."),
-            Kind::ConfigReadFailed => (
-                Workroom,
-                "The config file could not be read or parsed.",
-            ),
+            Kind::ConfigReadFailed => (Workroom, "The config file could not be read or parsed."),
             Kind::ConfigWriteFailed => (
                 Workroom,
                 "The config file could not be written. After `add-project --clone`, the message \
@@ -281,14 +277,8 @@ impl Kind {
             ),
             Kind::ProjectNotFound => (Workroom, "The project is not registered."),
             Kind::WorkroomNotFound => (Workroom, "The workroom is not registered."),
-            Kind::InvalidHostDescriptor => (
-                Workroom,
-                "A host descriptor must be a JSON object.",
-            ),
-            Kind::WorkroomExists => (
-                Workroom,
-                "A workroom of that name is already registered.",
-            ),
+            Kind::InvalidHostDescriptor => (Workroom, "A host descriptor must be a JSON object."),
+            Kind::WorkroomExists => (Workroom, "A workroom of that name is already registered."),
             Kind::BaseBranchNotFound => (
                 Workroom,
                 "A base branch exists neither on its remote nor locally, or the fetch that \
@@ -374,10 +364,7 @@ impl Kind {
                 TerminalApi,
                 "The terminal ended before or while it was asked.",
             ),
-            Kind::AlternateScreen => (
-                TerminalApi,
-                "A full-screen program is up in the terminal.",
-            ),
+            Kind::AlternateScreen => (TerminalApi, "A full-screen program is up in the terminal."),
             Kind::NoShellIntegration => (
                 TerminalApi,
                 "The terminal's shell sends no shell integration marks, so a command's end can't \

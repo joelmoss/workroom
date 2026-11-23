@@ -119,10 +119,10 @@ JSON on the VCS service's chunked envelope, one envelope per request. Paths are 
 | Request | Takes and answers | When the app sends it |
 | ------- | ----------------- | --------------------- |
 | `capabilities` | → the service's version and limits. | Before the first file request on a connection. |
-| `list` | `root` → the repository's files, from a fixed `git` listing. | The file browser and Open Quickly in a remote workroom. |
+| `list` | `root` → the repository's files, from a fixed `git` listing. | Listing a remote workroom's files. |
 | `read` | `root`, `path` → one file's bytes, base64. | Opening a file in a remote workroom. |
-| `resolve` | `root`, `path` → the repository path a path with `..` or links names on the host. | Following a path a terminal printed. |
-| `watch` | `root`, `subscription` → changes, sent on stream 0 until `unwatch`. | Refreshing the file browser and the Changes tab when files change. |
+| `resolve` | `root`, `path` → the repository path a path with `..` or links names on the host. | Opening a file path clicked in a remote terminal. |
+| `watch` | `root`, `subscription` → changes, sent on stream 0 until `unwatch`. | Refreshing what the app shows of a remote workroom when its files change. |
 | `unwatch` | `subscription` → stops it. | Closing what watched. |
 
 ### Layout
