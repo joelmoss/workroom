@@ -410,19 +410,26 @@ mod tests {
         let versions = scratch.0.join("share/claude/versions");
         std::fs::create_dir_all(&versions).expect("versions folder");
         let native = versions.join("2.1.232");
-        std::fs::copy(shell, &native).expect("copy the shell");
+        // Its bytes only. `fs::copy` (copyfile) carries a system binary's HFS compression over, as
+        // a `com.apple.decmpfs` attribute codesign then fails on ("Attribute not found") when the
+        // machine is busy.
+        std::fs::write(&native, std::fs::read(shell).expect("read the shell")).expect("copy it");
+        std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         // macOS kills a copy of a system binary signed as Apple's; signed afresh it runs.
         #[cfg(target_os = "macos")]
-        assert!(
-            Command::new("/usr/bin/codesign")
+        {
+            let signed = Command::new("/usr/bin/codesign")
                 .args(["--sign", "-", "--force"])
                 .arg(&native)
-                .stderr(Stdio::null())
-                .status()
-                .expect("run codesign")
-                .success(),
-            "sign the copy"
-        );
+                .output()
+                .expect("run codesign");
+            assert!(
+                signed.status.success(),
+                "sign the copy: {}: {}",
+                signed.status,
+                String::from_utf8_lossy(&signed.stderr)
+            );
+        }
         let mut command = Command::new(&native);
         command.arg0("2.1.232").arg("-c").arg(SLEEP);
         let tree = Tree::of(command);
