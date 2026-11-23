@@ -72,12 +72,18 @@ jobs:
       # because the daemon's pty, /proc introspection and socket code are the parts most likely to
       # differ between Darwin and Linux, and a bug that only shows up on one of them has already
       # happened once (an output pump that never noticed a closed socket, which macOS hid). It
-      # also checks docs-site/: the CLI pages (commands::docs) and the site's format and Nightly
-      # markers (tests/docs_site.rs), which fails here without the tags the checkout fetched.
+      # also checks docs-site/: the CLI pages (commands::docs) and the site's format
+      # (tests/docs_site.rs).
       - name: Test
+        run: cargo test --manifest-path vcs/Cargo.toml
+
+      # The site's Nightly markers again, now required to compare with a stable tag (the checkout
+      # fetched them). A step of its own: WORKROOM_DOCS_NIGHTLY_CHECK set for `Test` would reach
+      # the daemons the integration tests start, and every session's shell they spawn.
+      - name: Docs site Nightly markers
         env:
           WORKROOM_DOCS_NIGHTLY_CHECK: "1"
-        run: cargo test --manifest-path vcs/Cargo.toml
+        run: cargo test --manifest-path vcs/Cargo.toml -p workroom --test docs_site
 
   # The shadow terminal, which is what makes a reattaching client see its screen. Separate from
   # `rust` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
