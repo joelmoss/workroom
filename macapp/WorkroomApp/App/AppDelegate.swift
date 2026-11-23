@@ -203,6 +203,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           || KeyChord.functionKeyCodes.contains(Int(event.keyCode))
         ? KeyChord(event) : nil
       let match = chord.flatMap { Shortcuts.current.match($0) }
+      // ⌘D and ⌘F inside a theme list (the ⌘⇧K picker, Settings ▸ Themes): star the highlighted
+      // theme, and the favourites filter. Ahead of every registry shortcut, since both keys are
+      // other commands' (Split Right, Find) everywhere else; `ThemeListKeys` takes them only while
+      // a theme list is up in the window they're headed for.
+      if let command = chord.flatMap(ThemeListKeys.Command.init),
+        MainActor.assumeIsolated({
+          ThemeListKeys.shared.handle(command, in: event.window ?? NSApp.keyWindow)
+        })
+      {
+        return nil
+      }
       // The Quick Terminal's own keys (issue #39) when its window is key: Close Tab closes a pane,
       // New Terminal opens a tab, Split Right/Down split, Focus Terminal Tab 1–9 its tabs, Focus Pane
       // its panes, on whatever keys those are bound to. The menu's items for those target the main

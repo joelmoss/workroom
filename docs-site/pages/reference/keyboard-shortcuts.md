@@ -166,4 +166,6 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 | Theme… | <kbd>⇧⌘K</kbd> |
 | Toggle Light/Dark Mode | <kbd>⇧⌘L</kbd> |
 
+Nightly only: in a theme list, the <kbd>⇧⌘K</kbd> picker or Settings ▸ Themes, <kbd>⌘D</kbd> stars or unstars the theme you're on and <kbd>⌘F</kbd> lists only your favourites. Everywhere else they keep their usual commands, Split Right and Find. See [Favourite themes](../app/settings.md#favourite-themes).
+
 The last-used switchers switch to where you were last, not to the next one in position. See [Details and ports](../app/details-and-ports.md) for the inspector's Details.

@@ -61,6 +61,13 @@ private enum ThemePickerEntry: Identifiable, Equatable {
     case .theme(let theme): return theme.name
     }
   }
+
+  var favourite: ThemeFavourite {
+    switch self {
+    case .family(let family): return .family(family.name)
+    case .theme(let theme): return .theme(theme.name)
+    }
+  }
 }
 
 /// Theme chooser (issues #36, #733, #735). A **Family | Light | Dark** tab control over one search
@@ -103,6 +110,8 @@ struct ThemePicker: View {
   @State private var settle = ThemeListSettle()
   /// Keeps the keyboard highlight wholly on screen.
   @State private var keepVisible = ThemeListReveal()
+  /// The favourites, the filter (shared with Settings ▸ Themes), and the rows a filtered list keeps.
+  @State private var favourites = ThemeListFavourites()
 
   init(tab: ThemePickerTab = .family) {
     _tab = State(initialValue: tab)
@@ -120,14 +129,29 @@ struct ThemePicker: View {
     return ThemeService.showingSide()
   }
 
-  /// The current tab's rows, filtered by the shared search.
-  private var entries: [ThemePickerEntry] {
-    let all: [ThemePickerEntry]
+  /// Every row of the current tab, before the search and the favourites filter.
+  private var allEntries: [ThemePickerEntry] {
     switch tab.side {
-    case nil: all = lists.availableFamilies().map { .family($0) }
-    case let side?: all = lists.themes(on: side).map { .theme($0) }
+    case nil: return lists.availableFamilies().map { .family($0) }
+    case let side?: return lists.themes(on: side).map { .theme($0) }
     }
-    return ThemeLists.filtered(all, by: query, name: \.name)
+  }
+
+  /// The current tab's rows, filtered by the shared search and the favourites filter.
+  private var entries: [ThemePickerEntry] {
+    favourites.shown(allEntries, ThemeFavourite.Kind(tab), query: query, name: \.name)
+  }
+
+  /// What the list says when it's empty.
+  private var emptyState: ThemeListEmptyState {
+    favourites.emptyState(on: tab, query: query, from: allEntries.map(\.name))
+  }
+
+  /// Stars or unstars the highlighted row (⌘D).
+  private func toggleHighlightedFavourite() {
+    let rows = entries
+    guard rows.indices.contains(highlighted) else { return }
+    ThemeFavourites.toggle(rows[highlighted].favourite)
   }
 
   private func isActive(_ entry: ThemePickerEntry) -> Bool {
@@ -151,6 +175,7 @@ struct ThemePicker: View {
   @ViewBuilder
   private func row(_ entry: ThemePickerEntry, highlighted: Bool) -> some View {
     let active = isActive(entry)
+    let favourite = favourites.contains(entry.favourite)
     Group {
       switch entry {
       case .family(let family):
@@ -163,8 +188,11 @@ struct ThemePicker: View {
           activeHelp: "\(family.name) is your theme family: your light theme and your dark theme "
             + "are both from it",
           activeLabel: "Your theme family",
-          identifier: "theme-family-\(family.name)"
+          identifier: "theme-family-\(family.name)",
+          favourite: entry.favourite,
+          isFavourite: favourite
         )
+        .equatable()
       case .theme(let theme):
         let sideName = theme.side.title.lowercased()
         ThemePickerRow(
@@ -176,12 +204,16 @@ struct ThemePicker: View {
           activeLabel: "Your \(sideName) theme",
           // The side in the identifier is what lets `ThemePickerUITests` tell which tab opened.
           identifier: "theme-\(theme.side.rawValue)-\(theme.name)",
+          favourite: entry.favourite,
+          isFavourite: favourite,
           isUserTheme: theme.isUserTheme
         )
+        .equatable()
       }
     }
     .contentShape(Rectangle())
     .onTapGesture { choose(entry) }
+    .contextMenu { FavouriteMenuItem(favourite: entry.favourite, isFavourite: favourite) }
   }
 
   /// Move the highlight by `delta` (clamped) and apply that row live — ↑/↓ change the theme
@@ -203,11 +235,10 @@ struct ThemePicker: View {
           LazyVStack(spacing: 2) {
             let rows = entries
             if rows.isEmpty {
-              Text("No themes match “\(query)”")
-                .font(.footnote)
-                .foregroundStyle(tokens.fgMuted)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
+              ThemeListEmptyView(
+                state: emptyState, favourites: favourites, identifier: "theme-picker.empty"
+              ) { searchFocused = true }
+              .padding(.top, 24)
             } else {
               ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
                 row(entry, highlighted: index == highlighted)
@@ -243,6 +274,9 @@ struct ThemePicker: View {
           if let first = entries.first { proxy.scrollTo(first.id, anchor: .top) }
         }
         .onChange(of: tab) { _, _ in highlightActive(proxy) }
+        // The filter changes which rows there are: start again on the current choice, else the
+        // first favourite, highlighted but not applied.
+        .onChange(of: favourites.favouritesOnly) { _, _ in highlightActive(proxy) }
       }
 
       // A footer, not a line above the list, so the list starts in the same place on every tab.
@@ -275,6 +309,7 @@ struct ThemePicker: View {
     // content on each presentation, so `searchFocused` starts false every time and this can't no-op
     // on a reused view.
     .task { searchFocused = true }
+    .themeListKeys(favourites, toggleFavourite: toggleHighlightedFavourite)
   }
 
   /// Brings the highlighted row wholly on screen (`ThemeListReveal`).
@@ -301,6 +336,7 @@ struct ThemePicker: View {
       ForEach(ThemePickerTab.allCases) { candidate in
         let selected = candidate == tab
         Button {
+          if candidate != tab { favourites.rebuild() }
           tab = candidate
           searchFocused = true
         } label: {
@@ -355,7 +391,7 @@ struct ThemePicker: View {
   private var searchField: some View {
     HStack(spacing: 6) {
       Image(systemName: "magnifyingglass").foregroundStyle(tokens.fgDim)
-      TextField("Search themes", text: $query)
+      TextField("Search themes", text: favourites.search($query))
         .textFieldStyle(.plain)
         .focused($searchFocused)
         .multilineTextAlignment(.leading)
@@ -369,6 +405,9 @@ struct ThemePicker: View {
         .buttonStyle(.plain).foregroundStyle(tokens.fgDim)
         .help("Clear search")
       }
+      FavouritesFilterButton(
+        favourites: favourites, outlineColor: tokens.fgDim, identifier: "theme-picker.favourites"
+      ) { searchFocused = true }
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
@@ -401,6 +440,9 @@ struct ThemePickerRow: View {
   let activeHelp: String
   let activeLabel: String
   let identifier: String
+  /// What the row's star stars, and whether it's starred.
+  let favourite: ThemeFavourite
+  let isFavourite: Bool
   var isUserTheme = false
   @State private var hovered = false
 
@@ -424,6 +466,9 @@ struct ThemePickerRow: View {
           .help(name)
         if isUserTheme { yoursLabel }
         Spacer(minLength: 0)
+        FavouriteStar(
+          favourite: favourite, isFavourite: isFavourite, revealed: hovered, size: 11,
+          outlineColor: tokens.fgDim, keyTarget: .highlighted, identifier: identifier)
         if isActive {
           Image(systemName: "checkmark.circle.fill")
             .font(.system(size: 12, weight: .bold))
@@ -471,6 +516,22 @@ struct ThemePickerRow: View {
       .help("Your own theme, from ~/.config/ghostty/themes")
       .accessibilityLabel("Your own theme")
       .accessibilityIdentifier("\(identifier)-yours")
+  }
+}
+
+/// A row's inputs, compared by value: the picker hands every materialised row its inputs again
+/// whenever it re-renders (a star, an arrow press), and SwiftUI can't compare the swatches' preview
+/// tuples itself, so without this every row rebuilt for a change to one
+/// (`ThemePickerInvalidationTests.testStarringARowRebuildsOnlyThatRow`). The theme tokens the row
+/// reads are an environment dependency, which still re-renders every row when the theme changes.
+extension ThemePickerRow: Equatable {
+  nonisolated static func == (lhs: ThemePickerRow, rhs: ThemePickerRow) -> Bool {
+    lhs.name == rhs.name && lhs.isActive == rhs.isActive && lhs.isHighlighted == rhs.isHighlighted
+      && lhs.isFavourite == rhs.isFavourite && lhs.favourite == rhs.favourite
+      && lhs.isUserTheme == rhs.isUserTheme && lhs.identifier == rhs.identifier
+      && lhs.activeHelp == rhs.activeHelp && lhs.activeLabel == rhs.activeLabel
+      && lhs.swatches.map(\.file) == rhs.swatches.map(\.file)
+      && lhs.swatches.map(\.preview) == rhs.swatches.map(\.preview)
   }
 }
 

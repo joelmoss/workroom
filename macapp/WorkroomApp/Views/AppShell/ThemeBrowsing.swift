@@ -164,3 +164,204 @@ struct TerminalSnippet: View {
     .background(preview.map { Color(nsColor: $0.background) } ?? Color.primary.opacity(0.06))
   }
 }
+
+// MARK: - Favourites
+
+/// Which theme ⌘D stars in a list, for the tooltips that mention it: the ⌘⇧K picker's highlighted
+/// row, or the theme chosen in Settings ▸ Themes.
+enum FavouriteKeyTarget: String {
+  case highlighted
+  case selected
+}
+
+/// "Add to Favourites" or "Remove from Favourites", in a theme's context menu.
+struct FavouriteMenuItem: View {
+  let favourite: ThemeFavourite
+  let isFavourite: Bool
+
+  var body: some View {
+    Button(isFavourite ? "Remove from Favourites" : "Add to Favourites") {
+      ThemeFavourites.toggle(favourite)
+    }
+  }
+}
+
+/// The star on a theme row or tile: filled in the accent on a favourite, always; an outline in
+/// `outlineColor`, the host's muted text colour, while `revealed` (the row is hovered) on any other.
+/// Clicking it stars or unstars the theme without choosing it.
+struct FavouriteStar: View {
+  @Environment(\.themeTokens) private var tokens
+  let favourite: ThemeFavourite
+  let isFavourite: Bool
+  let revealed: Bool
+  let size: CGFloat
+  let outlineColor: Color
+  let keyTarget: FavouriteKeyTarget
+  let identifier: String
+
+  /// The width the star takes in its row, whether it shows or not, so a row's name doesn't shift as
+  /// the star comes and goes.
+  static func footprint(_ size: CGFloat) -> CGFloat { size + 5 }
+
+  private var tooltip: String {
+    let name = favourite.name
+    let action =
+      isFavourite ? "Remove \(name) from your favourites" : "Add \(name) to your favourites"
+    return "\(action). ⌘D does the same for the \(keyTarget.rawValue) theme."
+  }
+
+  var body: some View {
+    let shows = isFavourite || revealed
+    Button {
+      ThemeFavourites.toggle(favourite)
+    } label: {
+      Image(systemName: isFavourite ? "star.fill" : "star")
+        .font(.system(size: size, weight: .semibold))
+        .foregroundStyle(isFavourite ? tokens.accent : outlineColor)
+        .contentTransition(.symbolEffect(.replace))
+        .frame(width: Self.footprint(size), height: size + 3)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    // Only the fade is animated, so a star never slides with a tile that a filter moved.
+    .animation(.easeOut(duration: 0.12)) { $0.opacity(shows ? 1 : 0) }
+    // A hidden star leaves the click to the row, which chooses the theme.
+    .allowsHitTesting(shows)
+    .help(tooltip)
+    .accessibilityLabel(isFavourite ? "Favourite" : "Add to favourites")
+    .accessibilityAddTraits(isFavourite ? .isSelected : [])
+    .accessibilityIdentifier("\(identifier)-star")
+  }
+}
+
+/// The favourites filter, at the trailing end of a theme search field: an outline star while every
+/// theme is listed, a filled one in the accent while only favourites are. One setting for every theme
+/// list (`themeFavouritesOnly`), flipped through the host's list so the list rebuilds.
+struct FavouritesFilterButton: View {
+  @Environment(\.themeTokens) private var tokens
+  let favourites: ThemeListFavourites
+  let outlineColor: Color
+  let identifier: String
+  var onToggle: () -> Void = {}
+
+  var body: some View {
+    let on = favourites.favouritesOnly
+    Button {
+      favourites.toggleFilter()
+      onToggle()
+    } label: {
+      Image(systemName: on ? "star.fill" : "star")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(on ? tokens.accent : outlineColor)
+        .contentTransition(.symbolEffect(.replace))
+        .frame(width: 20, height: 18)
+        .background(
+          RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
+            .fill(on ? tokens.accent.opacity(0.16) : .clear)
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .animation(.easeOut(duration: 0.12), value: on)
+    .help(on ? "Show all themes (⌘F)" : "Show only favourites (⌘F)")
+    .accessibilityLabel("Favourites only")
+    .accessibilityAddTraits(.isToggle)
+    .accessibilityAddTraits(on ? .isSelected : [])
+    .accessibilityValue(on ? "On" : "Off")
+    .accessibilityIdentifier(identifier)
+  }
+}
+
+/// An empty theme list (`ThemeListEmptyState`), laid out alike in the ⌘⇧K picker and in Settings ▸
+/// Themes. A tab with no favourites says how to star one and offers every theme back, through the
+/// host's list so the list rebuilds.
+struct ThemeListEmptyView: View {
+  @Environment(\.themeTokens) private var tokens
+  let state: ThemeListEmptyState
+  let favourites: ThemeListFavourites
+  let identifier: String
+  var onShowAll: () -> Void = {}
+
+  var body: some View {
+    VStack(spacing: Spacing.s) {
+      Image(systemName: icon)
+        .font(.system(size: 18, weight: .regular))
+        .foregroundStyle(tokens.fgDim)
+        .accessibilityHidden(true)
+      Text(state.title)
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(tokens.fgMuted)
+        .multilineTextAlignment(.center)
+        .accessibilityIdentifier("\(identifier).title")
+      if case .noFavourites = state {
+        Text("Star one with \(Image(systemName: "star")) or ⌘D")
+          .font(.system(size: 11))
+          .foregroundStyle(tokens.fgDim)
+        Button("Show All Themes") {
+          favourites.toggleFilter()
+          onShowAll()
+        }
+        .controlSize(.small)
+        .padding(.top, Spacing.xxs)
+        .help("Turn off the favourites filter (⌘F)")
+        .accessibilityIdentifier("\(identifier).showAll")
+      }
+    }
+    .frame(maxWidth: .infinity, minHeight: 120)
+    .padding(.horizontal, Spacing.l)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier(identifier)
+  }
+
+  private var icon: String {
+    if case .noFavourites = state { return "star" }
+    return "magnifyingglass"
+  }
+}
+
+extension View {
+  /// Hands this theme list ⌘D (`toggleFavourite`) and ⌘F (the favourites filter, through
+  /// `favourites`, then `filterToggled`) while it's on screen in its window (`ThemeListKeys`).
+  func themeListKeys(
+    _ favourites: ThemeListFavourites, toggleFavourite: @escaping () -> Void,
+    filterToggled: @escaping () -> Void = {}
+  ) -> some View {
+    modifier(
+      ThemeListKeysModifier { command in
+        switch command {
+        case .toggleFavourite: toggleFavourite()
+        case .toggleFilter:
+          favourites.toggleFilter()
+          filterToggled()
+        }
+      })
+  }
+}
+
+private struct ThemeListKeysModifier: ViewModifier {
+  let perform: (ThemeListKeys.Command) -> Void
+  @State private var registration: UUID?
+  @State private var window: NSWindow?
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        WindowAccessor { resolved in
+          guard window !== resolved else { return }
+          window = resolved
+          register()
+        }
+      )
+      .onAppear { register() }
+      .onDisappear {
+        if let registration { ThemeListKeys.shared.unregister(registration) }
+        registration = nil
+      }
+  }
+
+  private func register() {
+    guard let window else { return }
+    if let registration { ThemeListKeys.shared.unregister(registration) }
+    registration = ThemeListKeys.shared.register(window: window, perform: perform)
+  }
+}

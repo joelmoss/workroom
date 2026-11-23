@@ -20,18 +20,22 @@ final class ThemePickerInvalidationTests: XCTestCase {
   private var savedLight: String!
   private var savedDark: String!
   private var savedAppearance: AppearanceMode!
+  private var savedFavouriteFamilies: Set<String>!
 
   override func setUp() async throws {
     try await super.setUp()
     savedLight = Defaults[.lightTheme]
     savedDark = Defaults[.darkTheme]
     savedAppearance = Defaults[.appearance]
+    savedFavouriteFamilies = Defaults[.favouriteFamilies]
+    Defaults[.favouriteFamilies] = []
   }
 
   override func tearDown() async throws {
     Defaults[.lightTheme] = savedLight
     Defaults[.darkTheme] = savedDark
     Defaults[.appearance] = savedAppearance
+    Defaults[.favouriteFamilies] = savedFavouriteFamilies
     try await super.tearDown()
   }
 
@@ -100,5 +104,29 @@ final class ThemePickerInvalidationTests: XCTestCase {
       "re-rendering the picker's visible rows after one arrow-key apply took at best "
         + "\(String(format: "%.3f", fastest.elapsed))s (\(fastest.passes) row passes; all: \(all)) "
         + "— perceptible as a keypress stall")
+  }
+
+  /// Starring a row rebuilds that row alone. The picker reads the favourites, so a star re-renders
+  /// it, and every row it has materialised is handed its inputs again: only the starred one's change,
+  /// so only that one's body runs.
+  func testStarringARowRebuildsOnlyThatRow() throws {
+    let workroom = ThemeCatalog.defaultFamily
+    Defaults[.lightTheme] = workroom.light
+    Defaults[.darkTheme] = workroom.dark
+    let (window, view) = host()
+    defer { window.close() }
+    view.layoutSubtreeIfNeeded()
+    settle(view, seconds: 0.5)
+    let materialised = ThemePickerRow.bodyPasses
+    XCTAssertGreaterThan(materialised, 2, "the fixture must render several family rows")
+
+    ThemePickerRow.bodyPasses = 0
+    ThemeFavourites.toggle(.family(workroom.name))
+    settle(view, seconds: 0.5)
+    XCTAssertGreaterThan(ThemePickerRow.bodyPasses, 0, "the starred row didn't re-render")
+    XCTAssertLessThanOrEqual(
+      ThemePickerRow.bodyPasses, 2,
+      "starring one row rebuilt \(ThemePickerRow.bodyPasses) row bodies, of \(materialised) "
+        + "materialised")
   }
 }
