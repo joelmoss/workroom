@@ -152,6 +152,9 @@ pub(super) struct Judge<'a> {
     pub(super) dir: &'a str,
     /// Says what the judging found, as Go's `Service.Status` does under `--verbose`.
     pub(super) say: &'a dyn Fn(&str, &str),
+    /// Whether finding the start a create would take fetches the remote first, as a create does.
+    /// Not under `--pretend`, which judges what was last fetched (#798).
+    pub(super) fetch: bool,
 }
 
 impl Judge<'_> {
@@ -293,7 +296,7 @@ impl Judge<'_> {
             return Err(CliError::unsupported_vcs());
         }
         (self.say)("repo", "Detected Git worktree");
-        let (start, warning) = start::start_point(Path::new(self.dir), base, global)?;
+        let (start, warning) = start::start_point(Path::new(self.dir), base, global, self.fetch)?;
         // As a create does: not against a start that already warns.
         let work = if warning.is_empty() {
             start::local_work(Path::new(self.dir), &start)

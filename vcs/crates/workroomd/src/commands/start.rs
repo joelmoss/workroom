@@ -130,14 +130,17 @@ fn split_base<'a>(base: &'a str, remotes: &[&str]) -> (&'a str, &'a str) {
 /// failed. With `fallback` (the app-wide default), a base the fetched remote and the local
 /// branches both lack gives way to origin's default branch, with a warning. With no base and no
 /// origin/HEAD the start is "", which is HEAD. Returns the start's ref and the warning, or "".
+/// Without `fetch` (`--pretend`) nothing is fetched: the start is found among the refs as last
+/// fetched, with no warning that they may be out of date.
 pub(super) fn start_point(
     dir: &Path,
     base: &str,
     fallback: bool,
+    fetch: bool,
 ) -> Result<(String, String), CliError> {
     let mut silent = Silent;
-    let mut fetch = FetchStep::new(&mut silent, false);
-    resolve(dir, base, fallback, &mut fetch)
+    let mut step = FetchStep::new(&mut silent, !fetch);
+    resolve(dir, base, fallback, &mut step)
 }
 
 /// [`start_point`], fetching through `fs`, which the caller finishes once the start is settled.

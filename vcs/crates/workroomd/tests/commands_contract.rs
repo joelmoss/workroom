@@ -6322,6 +6322,44 @@ fn trust_stdin_judges_and_records_the_bytes_given() {
     assert_eq!(run.stdout, "scripts/workroom_teardown as given: approved\n");
 }
 
+/// `--pretend` fetches nothing (#798): `trust` and `trust status` judge the start a create would
+/// take from what was last fetched, so the remote-tracking refs stay as they were. Without it they
+/// fetch, as a create does: origin's moved branch is brought in and the one gone from it pruned.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn trust_pretend_fetches_nothing() {
+    let home = Home::new("trust-pretend-fetch");
+    let project = origin_project(&home);
+    let old = git_output(&home, &project, &["rev-parse", "HEAD"]);
+    let old = old.trim();
+    write_file(&project, "moved.txt", "moved\n", 0o644);
+    home.git(&project, &["add", "moved.txt"]);
+    commit(&home, &project, "moved");
+    home.git(&project, &["push", "-q", "origin", "main"]);
+    // origin's main has moved on since the last fetch, and a branch gone from origin is still
+    // tracked: a fetch would move the one and prune the other.
+    home.git(&project, &["update-ref", "refs/remotes/origin/main", old]);
+    home.git(&project, &["update-ref", "refs/remotes/origin/gone", old]);
+    let refs = || git_output(&home, &project, &["for-each-ref", "refs/remotes"]);
+    let before = refs();
+    let p = project.to_string_lossy().into_owned();
+    for args in [
+        &["trust", "--pretend", "--json", "--project", &p][..],
+        &["trust", "status", "-p", "--json", "--project", &p],
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_quiet_stderr();
+        assert_eq!(refs(), before, "{args:?} fetched");
+    }
+    home.run(&home.dir, &["trust", "status", "--json", "--project", &p])
+        .assert_quiet_stderr();
+    assert_ne!(refs(), before, "the fixture shows no fetch");
+    assert!(!refs().contains("refs/remotes/origin/gone"), "{}", refs());
+}
+
 /// Approvals are the project's: run in one of its workrooms (where every app terminal opens),
 /// `trust` approves for the project and never registers the workroom. `--pretend` changes no
 /// approval, either way. `untrust` needs the project registered. `--verbose` says which VCS it

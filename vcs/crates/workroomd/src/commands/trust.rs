@@ -93,6 +93,7 @@ fn judged(context: &Context, args: &Args) -> Result<Judged, CliError> {
         config: &config,
         dir: &dir,
         say: &say,
+        fetch: !context.pretend,
     };
     let mut work = LocalWork::default();
     let mut start = String::new();
