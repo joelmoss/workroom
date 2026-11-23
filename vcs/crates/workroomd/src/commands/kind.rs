@@ -345,35 +345,36 @@ mod tests {
                 "Go's {entry:?} is missing or differs here"
             );
         }
-        // Everything here that Go doesn't have is one of the Rust binary's own kinds.
-        let extra: Vec<&str> = ours
+        // Everything here that Go doesn't have is one of the Rust binary's own kinds, each with the
+        // exit code it shipped with, frozen as Go's are.
+        let extra: Vec<(&str, u8)> = ours
             .iter()
             .filter(|entry| !go.contains(entry))
-            .map(|(code, _)| code.as_str())
+            .map(|(code, exit)| (code.as_str(), *exit))
             .collect();
         assert_eq!(
             extra,
             [
-                "MacOnly",
-                "ManagedInstall",
-                "TargetAmbiguous",
-                "TargetNotFound",
-                "DaemonUnreachable",
-                "DaemonTooOld",
-                "WaitTimeout",
-                "AgentBusy",
-                "NotAnAgent",
-                "NotARun",
-                "SessionEnded",
-                "AlternateScreen",
-                "NoShellIntegration",
-                "ExitCodeMismatch",
-                "WaitInterrupted",
-                "TooLarge",
-                "Busy",
-                "RefusedSelf",
-                "InvalidRequest",
-                "InternalError"
+                ("MacOnly", 3),
+                ("ManagedInstall", 3),
+                ("TargetAmbiguous", 3),
+                ("TargetNotFound", 3),
+                ("DaemonUnreachable", 7),
+                ("DaemonTooOld", 7),
+                ("WaitTimeout", 8),
+                ("AgentBusy", 3),
+                ("NotAnAgent", 3),
+                ("NotARun", 3),
+                ("SessionEnded", 3),
+                ("AlternateScreen", 3),
+                ("NoShellIntegration", 3),
+                ("ExitCodeMismatch", 3),
+                ("WaitInterrupted", 3),
+                ("TooLarge", 2),
+                ("Busy", 3),
+                ("RefusedSelf", 3),
+                ("InvalidRequest", 2),
+                ("InternalError", 1),
             ]
         );
     }
