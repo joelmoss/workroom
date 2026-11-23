@@ -55,14 +55,13 @@ fn service(service: Service) -> (&'static str, String, &'static str) {
         Service::Vcs => (
             "VCS",
             MIN_VCS_VERSION.to_string(),
-            "A remote workroom's repository: Git reads (history, changes, diffs, file \
-             contents), `git` runs for writes, and file stats.",
+            "A workroom's repository, read and written where its files are: Git reads \
+             (history, changes, diffs, file contents), `git` runs for writes, and file stats.",
         ),
         Service::File => (
             "File",
             MIN_FILE_VERSION.to_string(),
-            "A remote workroom's files: listing, reading, resolving paths and watching for \
-             changes.",
+            "A workroom's files: listing, reading, resolving paths and watching for changes.",
         ),
         Service::Status => (
             "Status",
@@ -303,19 +302,20 @@ const SERVICES: &[JsonService] = &[
                `{\"version\": 1, \"root\", \"backend\": \"git\", \"method\", …}` with `limit`, \
                `revision`, `path` and `base` as it needs them; a write or a stat names its \
                `kind` instead. A reply is `{\"version\": 1, \"result\": …}` or `{\"version\": 1, \
-               \"error\": …}`. The app sends it for remote workrooms; a local workroom's \
-               repository is read on the Mac.",
+               \"error\": …}`. The app sends it to the daemon where a workroom's files are: \
+               this Mac's for a local workroom, which falls back to the Mac's own Git when that \
+               daemon can't answer, and its host's for a remote one.",
         requests: &[
             Request {
                 method: "capabilities",
                 shape: "→ `{version, reads, exec}`: the read version, how many reads, and the \
                         exec service's version.",
-                app: "Before anything else on a connection to a host.",
+                app: "Before anything else on a connection.",
             },
             Request {
                 method: "log",
-                shape: "`limit` → a page of history.",
-                app: "The History tab.",
+                shape: "`limit` (at most 10000) → a page of history.",
+                app: "Showing a workroom's history.",
             },
             Request {
                 method: "changeset",
@@ -330,7 +330,7 @@ const SERVICES: &[JsonService] = &[
             Request {
                 method: "working_status",
                 shape: "→ uncommitted changes.",
-                app: "The Changes tab.",
+                app: "Showing a workroom's changes.",
             },
             Request {
                 method: "file_diff",
@@ -362,14 +362,15 @@ const SERVICES: &[JsonService] = &[
                 shape: "`kind: exec`, `executable: git`, `args`, `dir`, `timeout_ms`, and \
                         optional `stdin`, `env` and `host_environment` → `stdout`, `stderr`, \
                         `exit_code`, `timed_out`, `signaled`.",
-                app: "Every Git write on a remote workroom (commit, push, pull and the rest), \
-                      which the app classifies as it would a local `git`.",
+                app: "Git writes (commit, push, pull and the rest), whose output the app reads \
+                      as it would a `git` it ran itself.",
             },
             Request {
                 method: "stat",
                 shape: "`kind: stat`, `paths` (at most 64), `read` → each path's `exists`, \
-                        `is_dir`, `modified_at` and, for a small file in `read`, its `text`.",
-                app: "Checking files on a host, such as a project's scripts.",
+                        `is_dir`, `modified_at` and, for a file of at most 4 KiB in `read`, its \
+                        `text`.",
+                app: "Checking whether paths exist on a host, and reading small files there.",
             },
         ],
         source: include_str!("../../vcs/service.rs"),
@@ -378,34 +379,40 @@ const SERVICES: &[JsonService] = &[
     },
     JsonService {
         name: "File",
-        wire: "JSON on the VCS service's chunked envelope, one envelope per request. Paths are \
-               relative to the repository and resolved on the host.",
+        wire: "JSON on the VCS service's chunked envelope, one envelope per request: \
+               `{\"version\": 1, \"method\", \"root\", …}` with `path`, `symlinks`, `max_bytes` \
+               and `subscription` as it needs them. Paths are relative to the repository and \
+               resolved where its files are. The app sends it as it sends VCS requests, falling \
+               back to reading a local workroom's files itself.",
         requests: &[
             Request {
                 method: "capabilities",
-                shape: "→ the service's version and limits.",
+                shape: "→ the service's `version`, `max_read_bytes` and `max_subscriptions`.",
                 app: "Before the first file request on a connection.",
             },
             Request {
                 method: "list",
                 shape: "`root` → the repository's files, from a fixed `git` listing.",
-                app: "Listing a remote workroom's files.",
+                app: "Listing a workroom's files.",
             },
             Request {
                 method: "read",
-                shape: "`root`, `path` → one file's bytes, base64.",
-                app: "Opening a file in a remote workroom.",
+                shape: "`root`, `path`, optional `max_bytes`, and `symlinks`: \
+                        `follow_within_root` (the file viewer: a link is followed only to a \
+                        target inside the root) or `refuse` (a diff, where a link is its target's \
+                        path) → one file's bytes, base64.",
+                app: "Opening a file, and the files of a diff.",
             },
             Request {
                 method: "resolve",
-                shape: "`root`, `path` → the repository path a path with `..` or links names on \
-                        the host.",
-                app: "Opening a file path clicked in a remote terminal.",
+                shape: "`root`, `path` → the repository path a path with `..` or links names, \
+                        resolved where the files are.",
+                app: "Opening a file path clicked in a terminal.",
             },
             Request {
                 method: "watch",
                 shape: "`root`, `subscription` → changes, sent on stream 0 until `unwatch`.",
-                app: "Refreshing what the app shows of a remote workroom when its files change.",
+                app: "Refreshing what the app shows of a workroom when its files change.",
             },
             Request {
                 method: "unwatch",
@@ -513,55 +520,58 @@ const SERVICES: &[JsonService] = &[
     },
 ];
 
-/// When the app runs each of the daemon's subcommands.
+/// Who runs each of the daemon's subcommands, and when.
 const SUBCOMMANDS: &[(&str, &str)] = &[
     (
         "serve",
-        "Starts the daemon: on the Mac when it first needs one, on a host from its supervisor.",
+        "The app, on the Mac when it first needs a daemon; a host's supervisor, on a host. A \
+         hand-off starts the next program as `serve --handoff <table>`.",
     ),
     (
         "attach",
-        "What every pane runs, which libghostty forks; with `--dial`, a remote pane's.",
+        "Every pane: it is what libghostty forks; with `--dial`, a remote pane's.",
     ),
     (
         "relay",
-        "What a host driver runs on the far side of ssh or a container's exec.",
+        "A host driver, on the far side of ssh or a container's exec.",
     ),
     (
         "list",
-        "Checks a host's daemon and its sessions during bootstrap.",
+        "The app's host bootstrap, to check a host's daemon and its sessions.",
     ),
     (
         "program-status",
-        "Not run by the app: a way to see what it is told.",
+        "Nobody: it is for a person, to see what the app is told.",
     ),
     (
         "hand-off",
-        "Updates a running daemon in place, on the Mac and on hosts.",
+        "The app, to update a running daemon in place, on the Mac and on hosts.",
     ),
     (
         "handoff-check",
-        "Run by the daemon handing off, against the binary it would become.",
+        "The daemon handing off, against the binary it would become, before it replaces \
+         itself.",
     ),
     (
         "credential",
-        "A local container's Git credential helper, and its relay.",
+        "Git, as a local container workroom's credential helper; `credential relay` is set up \
+         when the container is.",
     ),
     (
         "run-script",
-        "Runs a remote workroom's setup and teardown scripts.",
+        "The app, to run a remote workroom's setup and teardown scripts on its host.",
     ),
     (
         "run-supervisor",
-        "What a run session's pty runs around its command.",
+        "The daemon: it is what a run session's pty runs around its command.",
     ),
     (
         "protocol",
-        "Asks a binary which protocol it speaks before using it.",
+        "The app, to ask a binary which protocol it speaks before using it.",
     ),
 ];
 
-/// When the app runs each hidden command.
+/// When the app runs each hidden command, by its command path (`hidden_commands`).
 const HIDDEN: &[(&str, &str)] = &[
     (
         "add-project",
@@ -638,13 +648,29 @@ fn flags_table(flags: &[Flag]) -> String {
     text
 }
 
-/// A hidden command's section, and its subcommands'.
-fn hidden_section(command: &Command, parent: Option<&Command>, app: &str) -> String {
-    let path = match parent {
-        Some(parent) => format!("{} {}", parent.name, command.name),
-        None => command.name.to_string(),
-    };
-    let level = if parent.is_some() { "####" } else { "###" };
+/// Every hidden command, at any depth, by command path (`host`, or a hidden subcommand under a
+/// public command): the outermost hidden one of each branch, whose section holds those under it.
+fn hidden_commands() -> Vec<(String, &'static Command)> {
+    fn walk(command: &'static Command, path: String, out: &mut Vec<(String, &'static Command)>) {
+        if command.hidden {
+            out.push((path, command));
+            return;
+        }
+        for sub in command.subcommands {
+            walk(sub, format!("{path} {}", sub.name), out);
+        }
+    }
+    let mut out = Vec::new();
+    for command in COMMANDS {
+        walk(command, command.name.to_string(), &mut out);
+    }
+    out
+}
+
+/// A hidden command's section at `path`, with `app` saying when the app runs it, and its
+/// subcommands' below it.
+fn hidden_section(command: &Command, path: &str, app: &str, sub: bool) -> String {
+    let level = if sub { "####" } else { "###" };
     let mut text = format!("{level} `workroom {path}`\n\n{}.", escaped(command.short));
     if !app.is_empty() {
         text += &format!(" The app runs it for: {}", escaped(app));
@@ -654,7 +680,7 @@ fn hidden_section(command: &Command, parent: Option<&Command>, app: &str) -> Str
         text += &escaped(long);
         text += "\n\n";
     }
-    if parent.is_none() && command.mac_only {
+    if !sub && command.mac_only {
         text += "Runs on a Mac only.\n\n";
     }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
@@ -664,8 +690,8 @@ fn hidden_section(command: &Command, parent: Option<&Command>, app: &str) -> Str
         text += &flags_table(command.flags);
         text += "\n";
     }
-    for sub in command.subcommands {
-        text += &hidden_section(sub, Some(command), "");
+    for each in command.subcommands {
+        text += &hidden_section(each, &format!("{path} {}", each.name), "", true);
     }
     text
 }
@@ -798,7 +824,10 @@ pub(super) fn page() -> String {
              commands, and `list` is the daemon's only with `--socket`. On a host the binary is \
              installed as `workroomd`, the name this text uses:\n\n";
     text += &format!("```text\n{}\n```\n\n", usage());
-    text += "| Subcommand | When the app runs it |\n| ---------- | -------------------- |\n";
+    text += "A hand-off starts the daemon's next program in place as `serve --socket <path> \
+             --handoff <table>`, the table naming the sessions it takes over; nothing else passes \
+             `--handoff`.\n\n";
+    text += "| Subcommand | Who runs it |\n| ---------- | ----------- |\n";
     for (name, app) in SUBCOMMANDS {
         text += &format!("| `{name}` | {} |\n", cell(app));
     }
@@ -809,12 +838,12 @@ pub(super) fn page() -> String {
              contract](json-output.md) like every other command, and their kinds are in its \
              tables. Shell completion runs one more, `workroom __complete ARGS… WORD` (and \
              `__completeNoDesc`), which prints what to complete.\n\n";
-    for command in COMMANDS.iter().filter(|command| command.hidden) {
+    for (path, command) in hidden_commands() {
         let app = HIDDEN
             .iter()
-            .find(|(name, _)| *name == command.name)
+            .find(|(name, _)| *name == path)
             .map_or("", |(_, app)| *app);
-        text += &hidden_section(command, None, app);
+        text += &hidden_section(command, &path, app, false);
     }
     text += "## Hidden flags\n\n\
              Flags of public commands that `--help` doesn't list, because the app passes them.\n\n\
@@ -1009,6 +1038,50 @@ mod tests {
         }
     }
 
+    /// How each service's requests are documented. A match with no wildcard, so a new service
+    /// can't be added without saying where its requests are.
+    enum Covered {
+        /// The Terminal and Control frames, from `FrameKind`.
+        Frames,
+        /// A JSON service, by its name in [`SERVICES`].
+        Json(&'static str),
+        /// Retired: it answers every request alike.
+        Retired,
+        /// The terminal API, on its own page.
+        Public,
+    }
+
+    fn covered(service: Service) -> Covered {
+        match service {
+            Service::Control | Service::Terminal => Covered::Frames,
+            Service::Vcs => Covered::Json("VCS"),
+            Service::File => Covered::Json("File"),
+            Service::Status => Covered::Retired,
+            Service::Forward => Covered::Json("Forward"),
+            Service::Layout => Covered::Json("Layout"),
+            Service::ProgramStatus => Covered::Json("ProgramStatus"),
+            Service::TerminalApi => Covered::Public,
+        }
+    }
+
+    /// Every service's requests are on a page: each JSON service has its rows in [`SERVICES`],
+    /// and every entry there is one.
+    #[test]
+    fn every_services_requests_are_documented() {
+        let mut json: Vec<&str> = Vec::new();
+        for each in services() {
+            match covered(each) {
+                Covered::Json(name) => json.push(name),
+                Covered::Frames => assert!(!frames().is_empty()),
+                Covered::Retired | Covered::Public => {}
+            }
+        }
+        let mut documented: Vec<&str> = SERVICES.iter().map(|each| each.name).collect();
+        json.sort_unstable();
+        documented.sort_unstable();
+        assert_eq!(json, documented);
+    }
+
     /// Every entry an Attach is read for is documented, and only those.
     #[test]
     fn every_attach_entry_is_documented() {
@@ -1068,11 +1141,31 @@ mod tests {
     /// app runs it; every hidden flag of a public command has a row.
     #[test]
     fn every_hidden_command_and_flag_is_documented() {
+        // Every command and subcommand the table holds that is hidden, or under a hidden one,
+        // walked here on its own rather than through `hidden_commands`.
+        fn walk(command: &Command, path: String, hidden: bool, out: &mut Vec<String>) {
+            let hidden = hidden || command.hidden;
+            if hidden {
+                out.push(path.clone());
+            }
+            for sub in command.subcommands {
+                walk(sub, format!("{path} {}", sub.name), hidden, out);
+            }
+        }
         let page = page();
-        let hidden: BTreeSet<&str> = COMMANDS
-            .iter()
-            .filter(|command| command.hidden)
-            .map(|command| command.name)
+        let mut every = Vec::new();
+        for command in COMMANDS {
+            walk(command, command.name.to_string(), false, &mut every);
+        }
+        for path in &every {
+            assert!(
+                page.contains(&format!("### `workroom {path}`\n")),
+                "the hidden `workroom {path}` has no section"
+            );
+        }
+        let outermost: BTreeSet<String> = hidden_commands()
+            .into_iter()
+            .map(|(path, _)| path)
             .collect();
         for name in [
             "add-project",
@@ -1081,27 +1174,25 @@ mod tests {
             "include-archive",
             "skill",
         ] {
-            assert!(hidden.contains(name), "{name}");
+            assert!(outermost.contains(name), "{name}");
         }
-        let documented: BTreeSet<&str> = HIDDEN.iter().map(|(name, _)| *name).collect();
+        let documented: BTreeSet<String> =
+            HIDDEN.iter().map(|(name, _)| name.to_string()).collect();
         assert_eq!(
-            hidden, documented,
+            outermost, documented,
             "HIDDEN must say when the app runs each one"
         );
-        for command in COMMANDS.iter().filter(|command| command.hidden) {
-            assert!(page.contains(&format!("\n### `workroom {}`\n", command.name)));
-            for flag in command.flags {
+        for (_, command) in hidden_commands() {
+            for flag in command
+                .flags
+                .iter()
+                .chain(command.subcommands.iter().flat_map(|sub| sub.flags))
+            {
                 assert!(
                     page.contains(&format!("| `--{}` |", flag.name)),
                     "{}",
                     flag.name
                 );
-            }
-            for sub in command.subcommands {
-                assert!(page.contains(&format!(
-                    "\n#### `workroom {} {}`\n",
-                    command.name, sub.name
-                )));
             }
         }
         let flags = hidden_flags();

@@ -30,8 +30,8 @@ Integers are big-endian, and a payload is at most 1048576 bytes. Both sides spea
 | ---- | ------- | -------------- | -------------- |
 | `0x00` | Control | 1 | Session control not tied to one attach: list, kill, hand off, signal a run, retag, and say the connection pings. Its frames are the Terminal service's framing. |
 | `0x01` | Terminal | 1 | One attach to a session's pty: the session's output, and the client's typing and size. `workroom attach`, which every pane runs, speaks it. |
-| `0x02` | VCS | 2 | A remote workroom's repository: Git reads (history, changes, diffs, file contents), `git` runs for writes, and file stats. |
-| `0x03` | File | 3 | A remote workroom's files: listing, reading, resolving paths and watching for changes. |
+| `0x02` | VCS | 2 | A workroom's repository, read and written where its files are: Git reads (history, changes, diffs, file contents), `git` runs for writes, and file stats. |
+| `0x03` | File | 3 | A workroom's files: listing, reading, resolving paths and watching for changes. |
 | `0x04` | Status | 4, retired | Retired. Every request is answered `{"unsupported": …}` for apps that still ask. |
 | `0x05` | Forward | 5 | Port forwarding: one loopback TCP connection on the daemon's machine per stream, or a listener whose connections the client claims. |
 | `0x06` | Layout | 7 | Each remote workroom's tabs and splits, kept on its host so every Mac opens the same ones. |
@@ -95,34 +95,34 @@ The byte a `Signal` frame carries.
 
 ### VCS
 
-JSON on the chunked envelope: each payload starts with one byte, `0` for a continuation and `1` for the last, and a reply is at most 16 MiB. A read is `{"version": 1, "root", "backend": "git", "method", …}` with `limit`, `revision`, `path` and `base` as it needs them; a write or a stat names its `kind` instead. A reply is `{"version": 1, "result": …}` or `{"version": 1, "error": …}`. The app sends it for remote workrooms; a local workroom's repository is read on the Mac.
+JSON on the chunked envelope: each payload starts with one byte, `0` for a continuation and `1` for the last, and a reply is at most 16 MiB. A read is `{"version": 1, "root", "backend": "git", "method", …}` with `limit`, `revision`, `path` and `base` as it needs them; a write or a stat names its `kind` instead. A reply is `{"version": 1, "result": …}` or `{"version": 1, "error": …}`. The app sends it to the daemon where a workroom's files are: this Mac's for a local workroom, which falls back to the Mac's own Git when that daemon can't answer, and its host's for a remote one.
 
 | Request | Takes and answers | When the app sends it |
 | ------- | ----------------- | --------------------- |
-| `capabilities` | → `{version, reads, exec}`: the read version, how many reads, and the exec service's version. | Before anything else on a connection to a host. |
-| `log` | `limit` → a page of history. | The History tab. |
+| `capabilities` | → `{version, reads, exec}`: the read version, how many reads, and the exec service's version. | Before anything else on a connection. |
+| `log` | `limit` (at most 10000) → a page of history. | Showing a workroom's history. |
 | `changeset` | `revision` → one commit's files and stats. | Selecting a commit. |
 | `current_ref` | → the branch and commit checked out. | The branch shown for the workroom. |
-| `working_status` | → uncommitted changes. | The Changes tab. |
+| `working_status` | → uncommitted changes. | Showing a workroom's changes. |
 | `file_diff` | `revision`, `path` → one file's diff in a commit. | A file's diff in a commit. |
 | `working_file_diff` | `path`, `base: working_copy` → one file's uncommitted diff. | A changed file's diff. |
 | `file_content` | `revision`, `path` → a file's contents at a commit. | Showing a file as it was. |
 | `commit_parent_file_content` | `revision`, `path` → the file in the commit's parent. | The left side of a commit's diff. |
 | `working_base_file_content` | `path`, `base: working_copy` → the file at `HEAD`. | The left side of an uncommitted diff. |
-| `exec` | `kind: exec`, `executable: git`, `args`, `dir`, `timeout_ms`, and optional `stdin`, `env` and `host_environment` → `stdout`, `stderr`, `exit_code`, `timed_out`, `signaled`. | Every Git write on a remote workroom (commit, push, pull and the rest), which the app classifies as it would a local `git`. |
-| `stat` | `kind: stat`, `paths` (at most 64), `read` → each path's `exists`, `is_dir`, `modified_at` and, for a small file in `read`, its `text`. | Checking files on a host, such as a project's scripts. |
+| `exec` | `kind: exec`, `executable: git`, `args`, `dir`, `timeout_ms`, and optional `stdin`, `env` and `host_environment` → `stdout`, `stderr`, `exit_code`, `timed_out`, `signaled`. | Git writes (commit, push, pull and the rest), whose output the app reads as it would a `git` it ran itself. |
+| `stat` | `kind: stat`, `paths` (at most 64), `read` → each path's `exists`, `is_dir`, `modified_at` and, for a file of at most 4 KiB in `read`, its `text`. | Checking whether paths exist on a host, and reading small files there. |
 
 ### File
 
-JSON on the VCS service's chunked envelope, one envelope per request. Paths are relative to the repository and resolved on the host.
+JSON on the VCS service's chunked envelope, one envelope per request: `{"version": 1, "method", "root", …}` with `path`, `symlinks`, `max_bytes` and `subscription` as it needs them. Paths are relative to the repository and resolved where its files are. The app sends it as it sends VCS requests, falling back to reading a local workroom's files itself.
 
 | Request | Takes and answers | When the app sends it |
 | ------- | ----------------- | --------------------- |
-| `capabilities` | → the service's version and limits. | Before the first file request on a connection. |
-| `list` | `root` → the repository's files, from a fixed `git` listing. | Listing a remote workroom's files. |
-| `read` | `root`, `path` → one file's bytes, base64. | Opening a file in a remote workroom. |
-| `resolve` | `root`, `path` → the repository path a path with `..` or links names on the host. | Opening a file path clicked in a remote terminal. |
-| `watch` | `root`, `subscription` → changes, sent on stream 0 until `unwatch`. | Refreshing what the app shows of a remote workroom when its files change. |
+| `capabilities` | → the service's `version`, `max_read_bytes` and `max_subscriptions`. | Before the first file request on a connection. |
+| `list` | `root` → the repository's files, from a fixed `git` listing. | Listing a workroom's files. |
+| `read` | `root`, `path`, optional `max_bytes`, and `symlinks`: `follow_within_root` (the file viewer: a link is followed only to a target inside the root) or `refuse` (a diff, where a link is its target's path) → one file's bytes, base64. | Opening a file, and the files of a diff. |
+| `resolve` | `root`, `path` → the repository path a path with `..` or links names, resolved where the files are. | Opening a file path clicked in a terminal. |
+| `watch` | `root`, `subscription` → changes, sent on stream 0 until `unwatch`. | Refreshing what the app shows of a workroom when its files change. |
 | `unwatch` | `subscription` → stops it. | Closing what watched. |
 
 ### Layout
@@ -218,19 +218,21 @@ The same binary is the daemon. These subcommands are its own, never the CLI's co
         print the protocol version this build speaks
 ```
 
-| Subcommand | When the app runs it |
-| ---------- | -------------------- |
-| `serve` | Starts the daemon: on the Mac when it first needs one, on a host from its supervisor. |
-| `attach` | What every pane runs, which libghostty forks; with `--dial`, a remote pane's. |
-| `relay` | What a host driver runs on the far side of ssh or a container's exec. |
-| `list` | Checks a host's daemon and its sessions during bootstrap. |
-| `program-status` | Not run by the app: a way to see what it is told. |
-| `hand-off` | Updates a running daemon in place, on the Mac and on hosts. |
-| `handoff-check` | Run by the daemon handing off, against the binary it would become. |
-| `credential` | A local container's Git credential helper, and its relay. |
-| `run-script` | Runs a remote workroom's setup and teardown scripts. |
-| `run-supervisor` | What a run session's pty runs around its command. |
-| `protocol` | Asks a binary which protocol it speaks before using it. |
+A hand-off starts the daemon's next program in place as `serve --socket <path> --handoff <table>`, the table naming the sessions it takes over; nothing else passes `--handoff`.
+
+| Subcommand | Who runs it |
+| ---------- | ----------- |
+| `serve` | The app, on the Mac when it first needs a daemon; a host's supervisor, on a host. A hand-off starts the next program as `serve --handoff <table>`. |
+| `attach` | Every pane: it is what libghostty forks; with `--dial`, a remote pane's. |
+| `relay` | A host driver, on the far side of ssh or a container's exec. |
+| `list` | The app's host bootstrap, to check a host's daemon and its sessions. |
+| `program-status` | Nobody: it is for a person, to see what the app is told. |
+| `hand-off` | The app, to update a running daemon in place, on the Mac and on hosts. |
+| `handoff-check` | The daemon handing off, against the binary it would become, before it replaces itself. |
+| `credential` | Git, as a local container workroom's credential helper; `credential relay` is set up when the container is. |
+| `run-script` | The app, to run a remote workroom's setup and teardown scripts on its host. |
+| `run-supervisor` | The daemon: it is what a run session's pty runs around its command. |
+| `protocol` | The app, to ask a binary which protocol it speaks before using it. |
 
 ## Hidden commands
 

@@ -347,8 +347,23 @@ fn method_section(method: &Method) -> String {
     {
         text += &format!("The same request as a command:\n\n```sh\n{cli}\n```\n\n");
     }
-    text += "Its `result`:\n\n";
-    text += &json_block(&(method.result_example)());
+    let mut result = (method.result_example)();
+    if method.name == "api.describe" {
+        // The schemas it holds are this page's sections, so they are left out here.
+        text += "Its `result`, with the schemas it holds left out (`…`): they are what this \
+                 page shows for each method, for the error and for a request.\n\n";
+        for key in ["error_schema", "request"] {
+            result[key] = Value::from("…");
+        }
+        for each in result["methods"].as_array_mut().into_iter().flatten() {
+            for key in ["input", "output"] {
+                each[key] = Value::from("…");
+            }
+        }
+    } else {
+        text += "Its `result`:\n\n";
+    }
+    text += &json_block(&result);
     text += "\n";
     text
 }
