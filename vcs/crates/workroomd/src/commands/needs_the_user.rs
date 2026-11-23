@@ -14,8 +14,8 @@
 //! are never refused.
 //!
 //! It stops a confused coding agent, not a determined one: a program can start a command outside
-//! its own process tree (`nohup`, `launchctl`), or type it into another terminal (`workroom send`,
-//! #792). Nothing turns it off: the binary always walks its parents. The tests run the binary
+//! its own process tree (a double fork, `launchctl submit`), or type it into another terminal
+//! (`workroom send`, #792). Nothing turns it off: the binary always walks its parents. The tests run the binary
 //! outside their own process tree instead (`tests/outside`), so a test run by a coding agent
 //! passes.
 
