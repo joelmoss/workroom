@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Show METHOD's parameter and result schemas, with examples
-
 ```text
 workroom api describe METHOD
 ```

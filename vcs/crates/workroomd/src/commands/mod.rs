@@ -1520,6 +1520,9 @@ fn flag_table(own: &[Flag], pretend: bool) -> String {
         .collect()
 }
 
+/// What the CLI's own `--help` says first, and its docs page.
+const ABOUT: &str = "Create and manage local development workrooms using Git worktrees.";
+
 /// `--help` for the CLI, or for one command, with whether its command honours `--pretend`.
 fn help(command: Option<(&Command, bool)>) -> String {
     let mark = |command: &Command| if command.mac_only { " (Mac only)" } else { "" };
@@ -1572,10 +1575,8 @@ fn help(command: Option<(&Command, bool)>) -> String {
                 .max()
                 .unwrap_or(0)
                 .max(11);
-            let mut text = String::from(
-                "Create and manage local development workrooms using Git worktrees.\n\n\
-                 Usage:\n  workroom [command]\n\nAvailable Commands:\n",
-            );
+            let mut text =
+                format!("{ABOUT}\n\nUsage:\n  workroom [command]\n\nAvailable Commands:\n");
             for (name, short) in shown {
                 text += &format!("  {name:width$} {short}\n");
             }

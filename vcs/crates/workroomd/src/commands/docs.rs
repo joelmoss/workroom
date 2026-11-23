@@ -1,109 +1,194 @@
-//! The docs site's CLI reference pages for the commands only this binary has, the terminal API's
-//! (#697), and `help agents`. The Go CLI's cobra commands generate the rest (`cmd/docs_test.go`);
-//! the two split `docs-site/pages/cli` by the line under each page's front matter: these carry
-//! [`HEADER`], and each generator writes, checks and removes only its own pages.
+//! The docs site's CLI reference, `docs-site/pages/cli`: one page per public command and
+//! subcommand, named after its command path (`workroom base set` is `workroom-base-set.md`), the
+//! CLI's own page (`workroom.md`) and `help agents`', all from the commands table that `--help` and
+//! shell completion read (#682). `nav.yml` lists each in its CLI group.
 //!
 //! `make docs-cli` rewrites them (`WORKROOM_DOCS_UPDATE=1`); without it, the test fails when they
-//! are stale, so the reference can't drift from the commands. Each is marked Nightly: no stable
-//! release has the terminal API yet. Cutting one that does drops the mark here, as the Go side's
-//! `cliNightly` is.
+//! are stale, so the reference can't drift from the commands. Every page carries [`HEADER`] under
+//! its front matter, and the test removes only pages that do: a page without it is someone's own
+//! file, which the test reports and leaves alone.
+//!
+//! The terminal API's commands (those `help agents` guides) and `help agents` are marked Nightly:
+//! no stable release has them yet. Cutting one that does drops the mark ([`nightly`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::agents::GUIDED;
-use super::{Command, Flag, find, global_flags, honours_pretend};
+use super::{ABOUT, COMMANDS, Command, Flag, global_flags, honours_pretend};
 
 /// The line under a page's front matter that makes it this generator's.
 const HEADER: &str = "<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->";
 
-/// Whether no stable release has the terminal API yet, so every page is Nightly.
-const NIGHTLY: bool = true;
+/// The CLI's one-line description, its page's and every link to it.
+const SHORT: &str = "Manage development workrooms";
 
 fn pages_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs-site/pages/cli")
 }
 
+/// Whether the top-level command `name`'s pages are Nightly: no stable release has the terminal
+/// API, whose commands are the ones `help agents` guides.
+fn nightly(name: &str) -> bool {
+    GUIDED.iter().any(|guided| guided.command == name)
+}
+
+/// What `help agents` says of the top-level command `name`, for its page.
+fn says(name: &str) -> Option<&'static str> {
+    GUIDED
+        .iter()
+        .find(|guided| guided.command == name)
+        .map(|guided| guided.says)
+}
+
+/// The commands a page lists: public ones only, as `--help` shows them. `help` has no page of its
+/// own; its one topic, `agents`, does.
+fn public(commands: &'static [Command]) -> impl Iterator<Item = &'static Command> {
+    commands
+        .iter()
+        .filter(|command| !command.hidden && command.name != "help")
+}
+
 /// Every page, by file name.
 fn pages() -> BTreeMap<String, String> {
     let mut pages = BTreeMap::new();
-    for guided in GUIDED {
-        let command = find(guided.command).expect("a guided command");
-        pages.insert(
-            file_name(command.name),
-            page(command, None, Some(guided.says)),
-        );
-        for sub in command.subcommands.iter().filter(|sub| !sub.hidden) {
-            let path = format!("{} {}", command.name, sub.name);
-            pages.insert(file_name(&path), page(sub, Some(command), None));
-        }
+    pages.insert("workroom.md".to_string(), root());
+    for command in public(COMMANDS) {
+        add(&mut pages, command, &[]);
     }
     pages.insert(file_name("help agents"), help_agents());
     pages
+}
+
+/// `command`'s page, under `parents` (outermost first), and its subcommands'.
+fn add(pages: &mut BTreeMap<String, String>, command: &Command, parents: &[&Command]) {
+    pages.insert(
+        file_name(&command_path(parents, command)),
+        page(command, parents),
+    );
+    let mut path = parents.to_vec();
+    path.push(command);
+    for sub in public(command.subcommands) {
+        add(pages, sub, &path);
+    }
+}
+
+/// `base set` for `set` under `base`: the words after `workroom`.
+fn command_path(parents: &[&Command], command: &Command) -> String {
+    parents
+        .iter()
+        .chain(std::iter::once(&command))
+        .map(|command| command.name)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn file_name(path: &str) -> String {
     format!("workroom-{}.md", path.replace(' ', "-"))
 }
 
-fn front_matter(title: &str, description: &str) -> String {
-    let nightly = if NIGHTLY { "nightly: true\n" } else { "" };
+fn front_matter(title: &str, description: &str, nightly: bool) -> String {
+    let nightly = if nightly { "nightly: true\n" } else { "" };
     // Quoted, as JSON quotes it, which YAML reads the same: a description can hold ": ".
     let description = serde_json::to_string(description).expect("a string is JSON");
     format!("---\ntitle: {title}\ndescription: {description}\n{nightly}---\n\n{HEADER}\n\n")
 }
 
-/// A command's page, laid out as cobra's are on the Go side: its synopsis, usage, options,
-/// inherited options and links, then what `help agents` says of it.
-fn page(command: &Command, parent: Option<&Command>, says: Option<&str>) -> String {
-    let path = match parent {
-        Some(parent) => format!("workroom {} {}", parent.name, command.name),
-        None => format!("workroom {}", command.name),
-    };
-    let mut text = front_matter(&path, &format!("{}.", command.short.trim_end_matches('.')));
+/// A link to another page, in a "See also" list.
+fn see(title: &str, file: &str, short: &str) -> String {
+    format!("* [{title}]({file})\t - {short}\n")
+}
+
+/// The CLI's own page: what `workroom --help` says, its flags, and a link to every command.
+fn root() -> String {
+    let mut text = front_matter("workroom", &format!("{SHORT}."), false);
     text += "## Synopsis\n\n";
-    text += &escaped(command.long.unwrap_or(command.short));
-    text += &format!("\n\n```text\nworkroom {}\n```\n\n", command.usage);
-    let own: Vec<&Flag> = command.flags.iter().filter(|flag| !flag.hidden).collect();
+    text += &escaped(ABOUT);
+    text += "\n\n```text\nworkroom [command]\n```\n\n## Options\n\n```text\n";
+    text += &table(std::iter::once(help_row("workroom")).chain(global_flags(true).map(row)));
+    text += "```\n\n## See also\n\n";
+    let mut commands: Vec<&Command> = public(COMMANDS).collect();
+    commands.sort_by_key(|command| command.name);
+    for command in commands {
+        text += &see(
+            &format!("workroom {}", command.name),
+            &file_name(command.name),
+            command.short,
+        );
+    }
+    text += &see(
+        "workroom help agents",
+        "workroom-help-agents.md",
+        "The terminal API, for coding agents",
+    );
+    text
+}
+
+/// A command's page: its synopsis and usage, its own options, the global ones it takes, what
+/// `help agents` says of it, and links to its parent, its subcommands and `help agents`.
+fn page(command: &Command, parents: &[&Command]) -> String {
+    let top = parents.first().copied().unwrap_or(command);
+    let path = format!("workroom {}", command_path(parents, command));
+    let mut text = front_matter(
+        &path,
+        &format!("{}.", command.short.trim_end_matches('.')),
+        nightly(top.name),
+    );
+    // A synopsis only when `--help` says more than the description does, as cobra wrote these
+    // pages: a heading new to a stable command's page would need a Nightly marker.
+    if let Some(long) = command.long {
+        text += "## Synopsis\n\n";
+        text += &escaped(long);
+        text += "\n\n";
+    }
+    if command.mac_only {
+        text += "Mac only.\n\n";
+    }
+    text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     text += "## Options\n\n```text\n";
     text += &table(
-        std::iter::once((
-            "-h, --help[=true|false]".to_string(),
-            format!("help for {}", command.name),
-        ))
-        .chain(own.iter().map(|flag| row(flag))),
+        std::iter::once(help_row(command.name))
+            .chain(command.flags.iter().filter(|flag| !flag.hidden).map(row)),
     );
     text += "```\n\n## Options inherited from parent commands\n\n```text\n";
-    let top = parent.unwrap_or(command).name;
-    text += &table(global_flags(honours_pretend(top)).map(row));
+    text += &table(global_flags(honours_pretend(top.name)).map(row));
     text += "```\n\n";
-    if let Some(says) = says {
+    if parents.is_empty()
+        && let Some(says) = says(command.name)
+    {
         text += "## How to use it\n\n";
         text += &escaped(says);
         text += "\n\n";
     }
     text += "## See also\n\n";
-    match parent {
-        Some(parent) => {
-            text += &format!(
-                "* [workroom {}]({})\t - {}\n",
-                parent.name,
-                file_name(parent.name),
-                parent.short
+    match parents.split_last() {
+        Some((parent, above)) => {
+            let parent_path = command_path(above, parent);
+            text += &see(
+                &format!("workroom {parent_path}"),
+                &file_name(&parent_path),
+                parent.short,
             );
         }
-        None => text += "* [workroom](workroom.md)\t - Manage development workrooms\n",
+        None => text += &see("workroom", "workroom.md", SHORT),
     }
-    for sub in command.subcommands.iter().filter(|sub| !sub.hidden) {
-        text += &format!(
-            "* [workroom {} {}]({})\t - {}\n",
-            command.name,
-            sub.name,
-            file_name(&format!("{} {}", command.name, sub.name)),
-            sub.short
+    let mut own = parents.to_vec();
+    own.push(command);
+    for sub in public(command.subcommands) {
+        let sub_path = command_path(&own, sub);
+        text += &see(
+            &format!("workroom {sub_path}"),
+            &file_name(&sub_path),
+            sub.short,
         );
     }
-    text += "* [workroom help agents](workroom-help-agents.md)\t - The terminal API, for coding agents\n";
+    if nightly(top.name) {
+        text += &see(
+            "workroom help agents",
+            "workroom-help-agents.md",
+            "The terminal API, for coding agents",
+        );
+    }
     text
 }
 
@@ -118,12 +203,22 @@ fn help_agents() -> String {
         "workroom help agents",
         "How a coding agent drives Workroom's terminals with the terminal API's commands, as \
          `workroom help agents` and the Workroom skill explain it.",
+        true,
     );
     page += "## Synopsis\n\nWhat `workroom help agents` prints, and the Workroom skill for Claude \
              Code and Codex holds.\n\n```text\nworkroom help agents\n```\n\n";
     page += &escaped_markdown(body);
-    page += "\n## See also\n\n* [workroom](workroom.md)\t - Manage development workrooms\n";
+    page += "\n## See also\n\n";
+    page += &see("workroom", "workroom.md", SHORT);
     page
+}
+
+/// `--help`'s row, as cobra's docs list it.
+fn help_row(name: &str) -> (String, String) {
+    (
+        "-h, --help[=true|false]".to_string(),
+        format!("help for {name}"),
+    )
 }
 
 /// A flag as cobra's docs list it: `-c, --check[=true|false]` or `    --lines string`.
@@ -154,7 +249,7 @@ fn table(rows: impl Iterator<Item = (String, String)>) -> String {
 }
 
 /// Markdown whose prose can't be read as raw HTML (docs-site/README.md): each `<` outside a code
-/// span is written `&lt;`, as the Go side writes it.
+/// span is written `&lt;`.
 fn escaped(prose: &str) -> String {
     prose
         .split('`')
@@ -191,27 +286,31 @@ fn escaped_markdown(text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The pages this generator owns, by file name: those that carry its header.
-    fn ours_on_disk() -> BTreeMap<String, String> {
+    /// The Markdown pages on disk, by file name, split into this generator's (those that carry
+    /// its header) and any others.
+    fn on_disk() -> (BTreeMap<String, String>, Vec<String>) {
         let mut ours = BTreeMap::new();
+        let mut others = Vec::new();
         for entry in std::fs::read_dir(pages_dir()).expect("docs-site/pages/cli") {
             let path = entry.expect("an entry").path();
             if path.extension().is_none_or(|extension| extension != "md") {
                 continue;
             }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let text = std::fs::read_to_string(&path).expect("a page");
             if text.contains(HEADER) {
-                ours.insert(
-                    path.file_name().unwrap().to_string_lossy().into_owned(),
-                    text,
-                );
+                ours.insert(name, text);
+            } else {
+                others.push(name);
             }
         }
-        ours
+        others.sort();
+        (ours, others)
     }
 
     /// Fails when docs-site/pages/cli doesn't match the commands; `WORKROOM_DOCS_UPDATE=1` (`make
-    /// docs-cli`) rewrites them instead.
+    /// docs-cli`) rewrites them instead. A page without [`HEADER`] fails it either way: this
+    /// generator didn't write it, so it neither removes nor overwrites it.
     #[test]
     fn the_cli_reference_pages_are_current() {
         let want = pages();
@@ -222,21 +321,21 @@ mod tests {
             eprintln!("no {}, so the CLI pages aren't checked here", dir.display());
             return;
         }
+        let (have, others) = on_disk();
+        assert!(
+            others.is_empty(),
+            "docs-site/pages/cli holds pages `make docs-cli` didn't write ({others:?}): the CLI \
+             reference is generated from the commands, so remove them or move them elsewhere"
+        );
         if std::env::var_os("WORKROOM_DOCS_UPDATE").is_some_and(|value| value == "1") {
-            for name in ours_on_disk().keys() {
+            for name in have.keys() {
                 std::fs::remove_file(dir.join(name)).expect("remove a page of ours");
             }
             for (name, text) in &want {
-                let path = dir.join(name);
-                assert!(
-                    !path.exists(),
-                    "{name} is the Go CLI's page, and a command here has its name"
-                );
-                std::fs::write(path, text).expect("write a page");
+                std::fs::write(dir.join(name), text).expect("write a page");
             }
             return;
         }
-        let have = ours_on_disk();
         let mut stale: Vec<&String> = want
             .keys()
             .chain(have.keys())
@@ -248,6 +347,53 @@ mod tests {
             stale.is_empty(),
             "docs-site/pages/cli is stale ({stale:?}); run `make docs-cli`"
         );
+    }
+
+    /// One page per public command and subcommand, named after its command path, beside the CLI's
+    /// own page and `help agents`'; none for `help`, a hidden command or a hidden subcommand.
+    #[test]
+    fn every_public_command_has_a_page() {
+        fn expect(command: &Command, path: &str, names: &mut Vec<String>) {
+            if command.hidden {
+                return;
+            }
+            names.push(file_name(path));
+            for sub in command.subcommands {
+                expect(sub, &format!("{path} {}", sub.name), names);
+            }
+        }
+        let mut names = vec!["workroom.md".to_string(), file_name("help agents")];
+        for command in COMMANDS.iter().filter(|command| command.name != "help") {
+            expect(command, command.name, &mut names);
+        }
+        names.sort();
+        let generated: Vec<String> = pages().into_keys().collect();
+        assert_eq!(generated, names);
+        assert!(generated.contains(&"workroom-create.md".to_string()));
+        assert!(!generated.contains(&"workroom-help.md".to_string()));
+        assert!(!generated.contains(&"workroom-add-project.md".to_string()));
+    }
+
+    /// The terminal API's pages and `help agents` are Nightly; the rest describe stable commands.
+    #[test]
+    fn only_the_terminal_apis_pages_are_nightly() {
+        let pages = pages();
+        let is_nightly = |name: &str| pages[name].contains("\nnightly: true\n");
+        for name in [
+            "workroom-sessions.md",
+            "workroom-api-call.md",
+            "workroom-help-agents.md",
+        ] {
+            assert!(is_nightly(name), "{name}");
+        }
+        for name in [
+            "workroom.md",
+            "workroom-create.md",
+            "workroom-base-set.md",
+            "workroom-completion-zsh.md",
+        ] {
+            assert!(!is_nightly(name), "{name}");
+        }
     }
 
     #[test]

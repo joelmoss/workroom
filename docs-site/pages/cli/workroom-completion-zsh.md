@@ -1,9 +1,9 @@
 ---
 title: workroom completion zsh
-description: Generate the autocompletion script for zsh.
+description: "Generate the autocompletion script for zsh."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ## Synopsis
 
@@ -29,7 +29,6 @@ To load completions for every new session, execute once:
 	workroom completion zsh > $(brew --prefix)/share/zsh/site-functions/_workroom
 
 You will need to start a new shell for this setup to take effect.
-
 
 ```text
 workroom completion zsh [flags]

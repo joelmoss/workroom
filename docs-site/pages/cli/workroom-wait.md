@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Wait for something to happen in a terminal session
-
 ```text
 workroom wait TARGET [flags]
 ```

@@ -1,12 +1,12 @@
 ---
 title: workroom version
-description: Print the version.
+description: "Print the version."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ```text
-workroom version [flags]
+workroom version
 ```
 
 ## Options

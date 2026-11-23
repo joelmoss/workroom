@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Restart or stop the command of a run session
-
 ```text
 workroom run-control TARGET restart|stop
 ```

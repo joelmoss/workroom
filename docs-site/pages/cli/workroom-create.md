@@ -1,16 +1,14 @@
 ---
 title: workroom create
-description: Create a new workroom.
+description: "Create a new workroom."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Create a new workroom at the same level as your main project directory, using a git worktree. A random friendly name is auto-generated.
+Mac only.
 
 ```text
-workroom create [flags]
+workroom create
 ```
 
 ## Options

@@ -1,9 +1,9 @@
 ---
 title: workroom completion powershell
-description: Generate the autocompletion script for powershell.
+description: "Generate the autocompletion script for powershell."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ## Synopsis
 
@@ -15,7 +15,6 @@ To load completions in your current shell session:
 
 To load completions for every new session, add the output of the above command
 to your powershell profile.
-
 
 ```text
 workroom completion powershell [flags]

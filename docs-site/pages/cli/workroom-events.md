@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Stream terminal sessions' events as JSON lines: a snapshot, then live changes
-
 ```text
 workroom events
 ```

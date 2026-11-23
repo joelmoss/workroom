@@ -1,12 +1,14 @@
 ---
 title: workroom list
-description: List all workrooms for the current project.
+description: "List all workrooms for the current project."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
+
+Mac only.
 
 ```text
-workroom list [flags]
+workroom list
 ```
 
 ## Options
