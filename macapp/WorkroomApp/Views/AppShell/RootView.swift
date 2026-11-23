@@ -176,7 +176,7 @@ struct RootView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         if inspectorVisible {
           InspectorColumn()
-            .transition(.move(edge: .trailing))
+            .transition(.inspectorSlide)
         }
         // The activity bar is ALWAYS present, flush to the window's trailing edge — the inspector
         // content pane (above) slides in/out beside it. Placed inside the detail-only

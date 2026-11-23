@@ -63,3 +63,46 @@ struct InspectorColumn: View {
       }
   }
 }
+
+extension AnyTransition {
+  /// The docked inspector's open/close slide: `.move(edge: .trailing)` clipped at the column's own
+  /// trailing edge. A bare `.move` offsets the card by its width, past its slot and into the activity
+  /// bar beside it. The card is AppKit chrome (`NSVisualEffectView`, the inspector's `NSSplitView`), so
+  /// it composites over the bar's SwiftUI fill but under its icons, and mid-slide the inspector showed
+  /// through the right-hand rail. Clipped here, it slides out from under the bar instead.
+  static var inspectorSlide: AnyTransition {
+    .modifier(
+      active: InspectorSlideModifier(fraction: 1), identity: InspectorSlideModifier(fraction: 0))
+  }
+}
+
+/// Offsets the column right by `fraction` of its own width and clips it to its own bounds. The clip
+/// stays in place when the slide ends, so the view structure never changes around the AppKit views
+/// inside.
+private struct InspectorSlideModifier: ViewModifier, Animatable {
+  var fraction: CGFloat
+
+  nonisolated var animatableData: CGFloat {
+    get { fraction }
+    set { fraction = newValue }
+  }
+
+  func body(content: Content) -> some View {
+    // A plain bounds clip, deliberately. At rest it is pixel-identical to no clip: the card's soft
+    // shadow stays inside its margins. A clip grown past the leading/top/bottom edges with padding
+    // (to spare the shadow) broke the resize handle: drags on it stopped resizing.
+    content
+      .modifier(TrailingSlideEffect(fraction: fraction))
+      .clipped()
+  }
+}
+
+/// Moves the view right by `fraction` of its width. Not animatable itself: `InspectorSlideModifier`
+/// interpolates `fraction` and rebuilds this each frame.
+private struct TrailingSlideEffect: GeometryEffect {
+  let fraction: CGFloat
+
+  func effectValue(size: CGSize) -> ProjectionTransform {
+    ProjectionTransform(CGAffineTransform(translationX: size.width * fraction, y: 0))
+  }
+}
