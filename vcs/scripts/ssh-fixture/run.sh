@@ -260,7 +260,9 @@ done
 # take it as their bundled daemon. CONTAINER,
 # RUNTIME and SCREENS: for the test that reboots the box (#232). IMAGE, RUNTIME_PATH, PUBLIC_KEY
 # and LABEL: for the app's tests that provision containers of their own from the image (#252),
-# and CLONE_TOKEN for the image's GitHub (fake-github.py).
+# and CLONE_TOKEN for the image's GitHub (fake-github.py). REQUIRED: this run picked the tests for
+# this fixture, so a Rust test that finds the wrong one fails rather than passing untested
+# (remote_transport.rs, `fits`), which `make app-test-remote` would count as a pass.
 CLONE_TOKEN=""
 if [ "$SYSTEMD" != 1 ]; then
   CLONE_TOKEN="$("$RUNTIME" exec "$NAME" cat /etc/workroom-fixture/clone-token)"
@@ -269,7 +271,8 @@ for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=$ADDRESS" "PORT
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "DAEMON=$STAGE/workroomd" \
   "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
   "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
-  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN" "SUPERVISOR=$SUPERVISOR" "SYSTEMD=$SYSTEMD"; do
+  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN" "SUPERVISOR=$SUPERVISOR" "SYSTEMD=$SYSTEMD" \
+  "REQUIRED=1"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 

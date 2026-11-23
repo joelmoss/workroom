@@ -1483,11 +1483,47 @@ fn fixture() -> Fixture {
 /// The plain fixture, or `None` (and the test passes untested) on the systemd variant (#665),
 /// which has none of the supervisor or fake GitHub these tests rely on.
 fn plain_fixture() -> Option<Fixture> {
-    if std::env::var("WR_SSH_FIXTURE_SYSTEMD").as_deref() == Ok("1") {
-        eprintln!("skipped: needs the plain fixture, not WR_FIXTURE_SYSTEMD=1");
-        return None;
+    let plain = std::env::var("WR_SSH_FIXTURE_SYSTEMD").as_deref() != Ok("1");
+    fits(
+        plain,
+        "needs the plain fixture, not WR_FIXTURE_SYSTEMD=1",
+        fixture_required(),
+    )
+    .then(fixture)
+}
+
+/// Whether run.sh started this run, which sets `WR_SSH_FIXTURE_REQUIRED=1`: it selects the tests
+/// for the fixture it started, so one that finds the wrong fixture there is a wrong selection.
+fn fixture_required() -> bool {
+    std::env::var("WR_SSH_FIXTURE_REQUIRED").as_deref() == Ok("1")
+}
+
+/// Whether a test fits the fixture it found: when it doesn't, it passes untested, as cargo counts
+/// it, unless run.sh started the run (`required`), where that fails it instead, so a run that
+/// skipped its tests can't pass as one that ran them (`make app-test-remote` counts on it).
+fn fits(fits: bool, why: &str, required: bool) -> bool {
+    if fits {
+        return true;
     }
-    Some(fixture())
+    assert!(
+        !required,
+        "{why}, but run.sh selected this test for the fixture it started"
+    );
+    eprintln!("skipped: {why}");
+    false
+}
+
+#[test]
+fn a_test_that_doesnt_fit_its_fixture_passes_untested_outside_run_sh() {
+    assert!(fits(true, "unused", true));
+    assert!(fits(true, "unused", false));
+    assert!(!fits(false, "needs another fixture", false));
+}
+
+#[test]
+#[should_panic(expected = "needs another fixture, but run.sh selected this test")]
+fn a_test_that_doesnt_fit_the_fixture_run_sh_started_fails() {
+    fits(false, "needs another fixture", true);
 }
 
 impl Fixture {
@@ -4530,11 +4566,13 @@ const SYSTEMD_SCREENS: &str = "/home/workroom/.local/state/workroom/screens";
 
 /// The systemd fixture, or `None` (and the test passes untested) on any other.
 fn systemd_fixture() -> Option<Fixture> {
-    if std::env::var("WR_SSH_FIXTURE_SYSTEMD").as_deref() != Ok("1") {
-        eprintln!("skipped: needs WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh");
-        return None;
-    }
-    Some(fixture())
+    let systemd = std::env::var("WR_SSH_FIXTURE_SYSTEMD").as_deref() == Ok("1");
+    fits(
+        systemd,
+        "needs WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh",
+        fixture_required(),
+    )
+    .then(fixture)
 }
 
 impl Fixture {
