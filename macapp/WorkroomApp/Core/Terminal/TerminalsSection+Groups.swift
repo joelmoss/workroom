@@ -13,8 +13,12 @@ struct TerminalGroup: Hashable, Sendable {
   /// Whether its row is folded, hiding its terminals' rows. Kept in the section's file.
   var isFolded = false
 
-  /// A group's symbol on its row and title-bar tab: terminals stacked together.
-  static let glyph = "square.on.square"
+  /// A group's symbol on its row and title-bar tab: terminals stacked together. Its "new" form,
+  /// `newGlyph`, adds a plus badge.
+  static let glyph = "rectangle.stack"
+
+  /// The New Terminal Group… symbol, on the Terminals heading and the move menu.
+  static let newGlyph = "rectangle.stack.badge.plus"
 
   /// A standalone terminal's symbol on its row, title-bar tab, picker row and move menu.
   static let standaloneGlyph = "terminal"

@@ -260,7 +260,7 @@ struct SidebarTerminalsHeader: View {
       id: "sidebar.terminals"
     ) {
       SidebarIconButton(
-        systemImage: "rectangle.stack.badge.plus", help: "New Terminal Group…",
+        systemImage: TerminalGroup.newGlyph, help: "New Terminal Group…",
         label: "New Terminal Group", id: "sidebar.terminals.newGroup"
       ) {
         TerminalGroupNamePrompt.present { [store] name in _ = store.newTerminalGroup(named: name) }

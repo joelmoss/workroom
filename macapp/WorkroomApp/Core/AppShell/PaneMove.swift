@@ -119,7 +119,7 @@ enum PaneMove {
     }
     choices.append(
       PaneWorkroomChoice(
-        title: "New Terminal Group…", glyph: "plus.square.on.square", enabled: stuck == nil,
+        title: "New Terminal Group…", glyph: TerminalGroup.newGlyph, enabled: stuck == nil,
         help: stuck ?? "Name a new group and move this terminal into it"
       ) { [weak source, weak notifications, weak home] in
         TerminalGroupNamePrompt.present { name in
