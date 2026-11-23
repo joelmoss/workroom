@@ -9,11 +9,13 @@ nightly: true
 > [!WARNING]
 > These are what the Workroom app uses to talk to its daemons and its CLI. They are documented for anyone who finds them useful, but they are not covered by the terminal API's compatibility promise, and may change in any release, without notice. For anything a script or a coding agent relies on, use the [terminal API](terminal-api.md), which only ever adds.
 
-To notice a change, compare the daemon's protocol version (`workroom protocol` prints it) and `workroom --version` with the ones you built against, and the terminal API's `revision`, which `workroom api describe` shows. This page is generated from the `workroom` binary's source, so it describes the build it came with.
+To notice a change, compare the protocol version and the version you built against: `workroom protocol` prints the protocol that `workroom` binary speaks (a daemon says its own in its greeting, below), and `workroom version` prints its version. Compare the terminal API's `revision` too, which `workroom api describe` shows. This page is generated from the `workroom` binary's source, so it describes the build it came with.
 
 ## The socket
 
-Every daemon listens on one Unix socket: on the Mac, the one the app starts in its Application Support folder; on a host, the one its supervisor starts. A Workroom terminal names it in `WORKROOM_DAEMON`. The socket is the only security boundary: anything that can reach it can do what its user can.
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
+
+Every daemon listens on one Unix socket. On the Mac, it is the one the app starts in its Application Support folder (`<bundle>/sessions/workroomd`), or, when that path is too long for a socket's name, in a folder of its own under `/tmp` (`/tmp/workroom-<uid>-<bundle>`). On a host, it is the one its supervisor starts. A Workroom terminal names it in `WORKROOM_DAEMON`. The socket is the only security boundary: anything that can reach it can do what its user can.
 
 Both sides first send a greeting, then every message is an envelope that names its service and stream:
 
@@ -22,9 +24,11 @@ Hello:     "WRA1" | protocol_version: u16 | build_len: u8 | build: [u8]
 Envelope:  service: u8 | stream: u32 | length: u32 | payload: [u8]
 ```
 
-Integers are big-endian, and a payload is at most 1048576 bytes. Both sides speak the lower of their two versions, and a client checks the daemon's own version before it uses a service that arrived later, since an older daemon drops what it doesn't know. This build speaks protocol 12. Each request opens a stream of its own; a service's events, where it has any, come on stream 0.
+Integers are big-endian, and a payload is at most 1 MiB. Both sides speak the lower of their two versions, and a client checks the daemon's own version before it uses a service that arrived later, since an older daemon drops what it doesn't know. This build speaks protocol 12. Each request opens a stream of its own; a service's events, where it has any, come on stream 0.
 
 ## Services
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
 
 | Byte | Service | Since protocol | What it is for |
 | ---- | ------- | -------------- | -------------- |
@@ -39,6 +43,8 @@ Integers are big-endian, and a payload is at most 1048576 bytes. Both sides spea
 | `0x08` | Terminal API | 12 | The public terminal API. Not internal: see the [terminal API reference](terminal-api.md). |
 
 ## Terminal and Control frames
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
 
 The Terminal and Control services carry frames: one byte of kind, a big-endian `u32` length, then the payload, at most 1 MiB. A pane's `workroom attach` sends `Attach` and then the user's typing and size; the app's own connection to each daemon sends the Control frames, to list the sessions it shows as detached, close one, hand the daemon off to a newer build, restart or stop a Run tab, and move a session to another workroom.
 
@@ -92,6 +98,8 @@ The byte a `Signal` frame carries.
 | `3` | `SIGTERM`: stop the command, then end the session. |
 
 ## JSON services
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
 
 ### VCS
 
@@ -147,7 +155,7 @@ Each payload is one opcode byte, then a body: `0x01` OPEN (the JSON request, onc
 
 ### ProgramStatus
 
-JSON, one envelope per request, each answered `{"version": 1, "result" | "error"}`. Events go to stream 0: one `status` per session, `snapshot-complete`, then each change. What programs send is OSC 7501, described in the repository's `docs/program-status.md`.
+JSON, one envelope per request, each answered `{"version": 1, "result" | "error"}`. Events go to stream 0, as the next section shows. What programs send is OSC 7501, described in the repository's [docs/program-status.md](https://github.com/joelmoss/workroom/blob/master/docs/program-status.md).
 
 | Request | Takes and answers | When the app sends it |
 | ------- | ----------------- | --------------------- |
@@ -156,11 +164,91 @@ JSON, one envelope per request, each answered `{"version": 1, "result" | "error"
 | `seen` | `session`, `revision`, optional `states` → drops the `done` and `error` reports shown as of `revision`. | You looked at the pane. |
 | `clear` | `session` → drops every report. | Clear Status. |
 
+## Events on stream 0
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
+
+The ProgramStatus service sends its events to every subscribed connection, and the File service its watches' changes. Each table lists an event's fields as the daemon writes them.
+
+### ProgramStatus `status`
+
+A session's records, as they are now: one per session in the snapshot that follows `subscribe`, then one each time they change.
+
+| Field | What it says |
+| ----- | ------------ |
+| `event` | `status`. |
+| `boot` | Names the daemon's numbering of these events. |
+| `session` | The session's id. |
+| `revision` | The session's revision of its records, which `seen` names. |
+| `reporting` | Whether a program run in the session is reporting now, until its prompt, a reset or its end. |
+| `records` | Its records, each as the next table says. |
+| `run` | Only on a run session: what its supervisor last wrote, such as `running` or `exited 3`. |
+
+### ProgramStatus `status` records
+
+One record of a `status` event's `records`: what one program said through OSC 7501, or how the shell's last long command ended.
+
+| Field | What it says |
+| ----- | ------------ |
+| `id` | The record's id, as the program gave it; empty for its main one. |
+| `state` | `idle`, `working`, `done`, `blocked` or `error`. |
+| `kind` | What a blocked program needs: `none`, `permission`, `question` or `auth`. |
+| `progress` | Its progress in percent, or -1 for none. |
+| `app` | The program, such as `claude-code`. |
+| `title` | Its title. |
+| `message` | Its message. |
+| `episode` | Which time this record blocked, counted across the session; 0 until it first does. |
+| `notify` | Whether the app may alert for it. |
+| `exitCode` | Only on the shell command's record: the command's exit code. |
+
+### ProgramStatus `snapshot-complete`
+
+The snapshot's end. Live `status` events follow.
+
+| Field | What it says |
+| ----- | ------------ |
+| `event` | `snapshot-complete`. |
+| `boot` | As `status` gives it. |
+| `sessions` | The ids of the snapshot's sessions. |
+
+### ProgramStatus `ended`
+
+A session ended, and its records with it.
+
+| Field | What it says |
+| ----- | ------------ |
+| `event` | `ended`. |
+| `boot` | As `status` gives it. |
+| `session` | The session's id. |
+
+### File `changed`
+
+Files under a watched root changed.
+
+| Field | What it says |
+| ----- | ------------ |
+| `event` | `changed`. |
+| `subscription` | The `watch` it belongs to. |
+| `paths` | The absolute paths that changed. |
+| `overflow` | Whether more changed than were listed, so the app reads everything again. |
+
+### File `ended`
+
+A watch ended without an `unwatch`.
+
+| Field | What it says |
+| ----- | ------------ |
+| `event` | `ended`. |
+| `subscription` | The `watch` that ended. |
+| `reason` | Why, such as `root_removed`. |
+
 ### The terminal API, as the app uses it
 
 The app makes one subscription to each daemon's [terminal API](terminal-api.md): `events.subscribe` with `all: true` for `session.input` (the typing marker on a pane another session types into), `session.created` and `session.ended` (what `workroom new` and `workroom close` ask of the app) and `session.labelled` (tab names), and `events.unsubscribe` when it stops listening. It calls `session.label` when you rename a tab, and `api.describe` to learn which event types an older daemon has. Those are public, and described there.
 
 ## The daemon's subcommands
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
 
 The same binary is the daemon. These subcommands are its own, never the CLI's commands, and `list` is the daemon's only with `--socket`. On a host the binary is installed as `workroomd`, the name this text uses:
 
@@ -235,6 +323,8 @@ A hand-off starts the daemon's next program in place as `serve --socket <path> -
 | `protocol` | The app, to ask a binary which protocol it speaks before using it. |
 
 ## Hidden commands
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
 
 The CLI has commands that `workroom --help` doesn't list, because the app runs them, not people. They take `--json` and keep the [JSON output contract](json-output.md) like every other command, and their kinds are in its tables. Shell completion runs one more, `workroom __complete ARGS… WORD` (and `__completeNoDesc`), which prints what to complete.
 
@@ -369,6 +459,8 @@ workroom skill remove
 | `--login-environment` |  |  | Read CLAUDE_CONFIG_DIR and CODEX_HOME from the login shell's environment |
 
 ## Hidden flags
+
+*Internal: not covered by ADR 0079's compatibility promise, and may change in any release.*
 
 Flags of public commands that `--help` doesn't list, because the app passes them.
 

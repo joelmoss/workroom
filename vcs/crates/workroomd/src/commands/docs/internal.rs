@@ -7,9 +7,11 @@
 //! and the hidden commands and flags from the commands table. The JSON services' methods have no
 //! registry, only the `match` each service dispatches with, so their rows are written here and a
 //! test reads those matches from the daemon's source and fails when a method is in one and not
-//! the other ([`SERVICES`]).
+//! the other ([`SERVICES`]). Every name a row quotes is checked against the fields, keys and
+//! variants in that service's source, and every number is a constant read from it ([`render`]).
 
 use super::super::{COMMANDS, Command, Flag};
+use super::source::{constant, json_keys, literals, struct_fields};
 use super::{HEADER, cell, escaped, front_matter};
 use wr_protocol::envelope::{
     self, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION, MIN_HOST_ATTACH_VERSION,
@@ -30,6 +32,60 @@ const ROUTE: &str = include_str!("../../cli/route.rs");
 
 /// The Terminal service's payloads, whose Attach entries are read in `AttachRequest::decode`.
 const TERMINAL_PAYLOADS: &str = include_str!("../../../../wr-protocol/src/terminal.rs");
+
+/// The VCS service, whose limits are its own constants.
+const VCS_SOURCE: &str = include_str!("../../vcs/service.rs");
+
+/// The ProgramStatus service, whose events are its `Serialize` structs.
+const PROGRAM_STATUS_SOURCE: &str = include_str!("../../terminal/program_status.rs");
+
+/// The File service's watches, whose events are written in `json!`.
+const WATCH_SOURCE: &str = include_str!("../../vcs/watch.rs");
+
+/// The line under every section: what this page promises.
+const UNSTABLE: &str = "Internal: not covered by ADR 0079's compatibility promise, and may change in \
+                        any release.";
+
+/// A number the page quotes, by the name of the constant it is: `$n{NAME}` writes it as a number,
+/// `$size{NAME}` as bytes (`4 KiB`, `16 MiB`) and `$s{NAME}` as seconds.
+fn quoted_constant(name: &str) -> u64 {
+    match name {
+        "MAX_RESPONSE" => crate::daemon::rpc::MAX_RESPONSE as u64,
+        "MAX_PAYLOAD_SIZE" => wr_protocol::frame::MAX_PAYLOAD_SIZE as u64,
+        "MAX_ENVELOPE_PAYLOAD" => envelope::MAX_ENVELOPE_PAYLOAD as u64,
+        "SERVICE_DEADLINE" => crate::daemon::serve::SERVICE_DEADLINE.as_secs(),
+        // The app pings four times in each deadline (ADR 0075).
+        "PING_INTERVAL" => crate::daemon::serve::SERVICE_DEADLINE.as_secs() / 4,
+        "PROTOCOL_VERSION" => PROTOCOL_VERSION.into(),
+        "MIN_TERMINAL_API_VERSION" => MIN_TERMINAL_API_VERSION.into(),
+        other => constant(VCS_SOURCE, other),
+    }
+}
+
+/// `text` with each `$n{…}`, `$size{…}` and `$s{…}` written as the constant it names.
+fn render(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        out += &rest[..at];
+        let after = &rest[at + 1..];
+        let (form, name, tail) = after
+            .split_once('{')
+            .and_then(|(form, more)| more.split_once('}').map(|(name, tail)| (form, name, tail)))
+            .unwrap_or_else(|| panic!("a $ with no {{NAME}} in {text:?}"));
+        let value = quoted_constant(name);
+        out += &match form {
+            "n" => value.to_string(),
+            "s" => format!("{value} s"),
+            "size" if value.is_multiple_of(1 << 20) => format!("{} MiB", value >> 20),
+            "size" if value.is_multiple_of(1 << 10) => format!("{} KiB", value >> 10),
+            "size" => format!("{value} bytes"),
+            other => panic!("no ${other}{{…}} in {text:?}"),
+        };
+        rest = tail;
+    }
+    out + rest
+}
 
 /// Every service, by its byte.
 fn services() -> Vec<Service> {
@@ -199,8 +255,9 @@ fn frame(kind: FrameKind) -> (&'static str, u16, &'static str, &'static str) {
             TO_DAEMON,
             MIN_PINGS_VERSION,
             "None.",
-            "Says the client sends something at least every 15 s, so the daemon may close the \
-             connection after 60 s of silence. Answered `Acknowledged`.",
+            "Says the client sends something at least every $s{PING_INTERVAL}, so the daemon \
+             may close the connection after $s{SERVICE_DEADLINE} of silence. Answered \
+             `Acknowledged`.",
         ),
         FrameKind::Peer => (
             TO_DAEMON,
@@ -287,6 +344,8 @@ struct JsonService {
     /// What every request and reply looks like.
     wire: &'static str,
     requests: &'static [Request],
+    /// The structs the service reads its requests into, each of whose fields a row names.
+    request_types: &'static [&'static str],
     /// The daemon's source, the function that dispatches, and each expression it matches the
     /// method on: the test reads every method from those.
     source: &'static str,
@@ -298,7 +357,7 @@ const SERVICES: &[JsonService] = &[
     JsonService {
         name: "VCS",
         wire: "JSON on the chunked envelope: each payload starts with one byte, `0` for a \
-               continuation and `1` for the last, and a reply is at most 16 MiB. A read is \
+               continuation and `1` for the last, and a reply is at most $size{MAX_RESPONSE}. A read is \
                `{\"version\": 1, \"root\", \"backend\": \"git\", \"method\", …}` with `limit`, \
                `revision`, `path` and `base` as it needs them; a write or a stat names its \
                `kind` instead. A reply is `{\"version\": 1, \"result\": …}` or `{\"version\": 1, \
@@ -314,7 +373,7 @@ const SERVICES: &[JsonService] = &[
             },
             Request {
                 method: "log",
-                shape: "`limit` (at most 10000) → a page of history.",
+                shape: "`limit` (at most $n{MAX_HISTORY_LIMIT}) → a page of history.",
                 app: "Showing a workroom's history.",
             },
             Request {
@@ -367,13 +426,14 @@ const SERVICES: &[JsonService] = &[
             },
             Request {
                 method: "stat",
-                shape: "`kind: stat`, `paths` (at most 64), `read` → each path's `exists`, \
-                        `is_dir`, `modified_at` and, for a file of at most 4 KiB in `read`, its \
-                        `text`.",
+                shape: "`kind: stat`, `paths` (at most $n{MAX_STAT_PATHS}), `read` → each \
+                        path's `exists`, `is_dir`, `modified_at` and, for a file of at most \
+                        $size{MAX_STAT_TEXT} in `read`, its `text`.",
                 app: "Checking whether paths exist on a host, and reading small files there.",
             },
         ],
-        source: include_str!("../../vcs/service.rs"),
+        request_types: &["Request", "ExecRequest", "StatRequest"],
+        source: VCS_SOURCE,
         function: None,
         scrutinees: &["request.method.as_str()", "value.get(\"kind\")"],
     },
@@ -420,6 +480,7 @@ const SERVICES: &[JsonService] = &[
                 app: "Closing what watched.",
             },
         ],
+        request_types: &["Request"],
         source: include_str!("../../vcs/file.rs"),
         function: None,
         scrutinees: &["request.method.as_str()"],
@@ -448,6 +509,7 @@ const SERVICES: &[JsonService] = &[
                 app: "Saving a remote workroom's tabs and splits when they change.",
             },
         ],
+        request_types: &[],
         source: include_str!("../../host/layout.rs"),
         function: Some("handle"),
         scrutinees: &["method"],
@@ -480,6 +542,7 @@ const SERVICES: &[JsonService] = &[
                 app: "Each ACCEPTED connection.",
             },
         ],
+        request_types: &["Request"],
         source: include_str!("../../host/forward.rs"),
         function: Some("request"),
         scrutinees: &["request.method.as_str()"],
@@ -487,9 +550,9 @@ const SERVICES: &[JsonService] = &[
     JsonService {
         name: "ProgramStatus",
         wire: "JSON, one envelope per request, each answered `{\"version\": 1, \"result\" | \
-               \"error\"}`. Events go to stream 0: one `status` per session, \
-               `snapshot-complete`, then each change. What programs send is OSC 7501, \
-               described in the repository's `docs/program-status.md`.",
+               \"error\"}`. Events go to stream 0, as the next section shows. What programs \
+               send is OSC 7501, described in the repository's \
+               [docs/program-status.md](https://github.com/joelmoss/workroom/blob/master/docs/program-status.md).",
         requests: &[
             Request {
                 method: "subscribe",
@@ -514,7 +577,8 @@ const SERVICES: &[JsonService] = &[
                 app: "Clear Status.",
             },
         ],
-        source: include_str!("../../terminal/program_status.rs"),
+        request_types: &[],
+        source: PROGRAM_STATUS_SOURCE,
         function: Some("dispatch"),
         scrutinees: &["request.get(\"method\").and_then(Value::as_str)"],
     },
@@ -605,7 +669,7 @@ fn usage() -> &'static str {
 
 /// The daemon's subcommands, as `cli::route` lists them, and `list`, which is the daemon's with
 /// `--socket`.
-fn daemon_subcommands() -> Vec<String> {
+pub(super) fn daemon_subcommands() -> Vec<String> {
     let start = ROUTE
         .find("const DAEMON_SUBCOMMANDS: &[&str] = &[")
         .expect("cli::route's DAEMON_SUBCOMMANDS");
@@ -613,19 +677,6 @@ fn daemon_subcommands() -> Vec<String> {
     let mut names = literals(&ROUTE[start..end]);
     names.push("list".to_string());
     names
-}
-
-/// Every double-quoted string in `text`.
-fn literals(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find('"') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('"') else { break };
-        out.push(after[..close].to_string());
-        rest = &after[close + 1..];
-    }
-    out
 }
 
 /// A hidden command's flags, hidden ones included, as a table.
@@ -716,6 +767,125 @@ fn hidden_flags() -> Vec<(String, &'static Flag)> {
     out
 }
 
+/// One kind of event a service sends on stream 0, and what each of its fields says. Its fields
+/// are read from the code that writes it (`read`), and each needs a line here.
+struct StreamEvent {
+    /// Its section's heading.
+    heading: &'static str,
+    says: &'static str,
+    read: fn() -> Vec<String>,
+    fields: &'static [(&'static str, &'static str)],
+}
+
+const STREAM_EVENTS: &[StreamEvent] = &[
+    StreamEvent {
+        heading: "ProgramStatus `status`",
+        says: "A session's records, as they are now: one per session in the snapshot that \
+               follows `subscribe`, then one each time they change.",
+        read: || struct_fields(PROGRAM_STATUS_SOURCE, "StatusEvent"),
+        fields: &[
+            ("event", "`status`."),
+            ("boot", "Names the daemon's numbering of these events."),
+            ("session", "The session's id."),
+            (
+                "revision",
+                "The session's revision of its records, which `seen` names.",
+            ),
+            (
+                "reporting",
+                "Whether a program run in the session is reporting now, until its prompt, a \
+                 reset or its end.",
+            ),
+            ("records", "Its records, each as the next table says."),
+            (
+                "run",
+                "Only on a run session: what its supervisor last wrote, such as `running` or \
+                 `exited 3`.",
+            ),
+        ],
+    },
+    StreamEvent {
+        heading: "ProgramStatus `status` records",
+        says: "One record of a `status` event's `records`: what one program said through OSC \
+               7501, or how the shell's last long command ended.",
+        read: || struct_fields(PROGRAM_STATUS_SOURCE, "WireRecord"),
+        fields: &[
+            (
+                "id",
+                "The record's id, as the program gave it; empty for its main one.",
+            ),
+            ("state", "`idle`, `working`, `done`, `blocked` or `error`."),
+            (
+                "kind",
+                "What a blocked program needs: `none`, `permission`, `question` or `auth`.",
+            ),
+            ("progress", "Its progress in percent, or -1 for none."),
+            ("app", "The program, such as `claude-code`."),
+            ("title", "Its title."),
+            ("message", "Its message."),
+            (
+                "episode",
+                "Which time this record blocked, counted across the session; 0 until it first \
+                 does.",
+            ),
+            ("notify", "Whether the app may alert for it."),
+            (
+                "exitCode",
+                "Only on the shell command's record: the command's exit code.",
+            ),
+        ],
+    },
+    StreamEvent {
+        heading: "ProgramStatus `snapshot-complete`",
+        says: "The snapshot's end. Live `status` events follow.",
+        read: || struct_fields(PROGRAM_STATUS_SOURCE, "SnapshotComplete"),
+        fields: &[
+            ("event", "`snapshot-complete`."),
+            ("boot", "As `status` gives it."),
+            ("sessions", "The ids of the snapshot's sessions."),
+        ],
+    },
+    StreamEvent {
+        heading: "ProgramStatus `ended`",
+        says: "A session ended, and its records with it.",
+        read: || struct_fields(PROGRAM_STATUS_SOURCE, "EndedEvent"),
+        fields: &[
+            ("event", "`ended`."),
+            ("boot", "As `status` gives it."),
+            ("session", "The session's id."),
+        ],
+    },
+    StreamEvent {
+        heading: "File `changed`",
+        says: "Files under a watched root changed.",
+        read: || json_keys(WATCH_SOURCE, "\"event\": \"changed\""),
+        fields: &[
+            ("event", "`changed`."),
+            ("subscription", "The `watch` it belongs to."),
+            ("paths", "The absolute paths that changed."),
+            (
+                "overflow",
+                "Whether more changed than were listed, so the app reads everything again.",
+            ),
+        ],
+    },
+    StreamEvent {
+        heading: "File `ended`",
+        says: "A watch ended without an `unwatch`.",
+        read: || json_keys(WATCH_SOURCE, "\"event\": \"ended\""),
+        fields: &[
+            ("event", "`ended`."),
+            ("subscription", "The `watch` that ended."),
+            ("reason", "Why, such as `root_removed`."),
+        ],
+    },
+];
+
+/// A `##` section's heading, and the line every section of this page starts with.
+fn section(title: &str) -> String {
+    format!("## {title}\n\n*{UNSTABLE}*\n\n")
+}
+
 /// The whole page.
 pub(super) fn page() -> String {
     let mut text = front_matter(
@@ -731,32 +901,35 @@ pub(super) fn page() -> String {
              terminal API's compatibility promise, and may change in any release, without \
              notice. For anything a script or a coding agent relies on, use the [terminal \
              API](terminal-api.md), which only ever adds.\n\n\
-             To notice a change, compare the daemon's protocol version (`workroom protocol` \
-             prints it) and `workroom --version` with the ones you built against, and the \
-             terminal API's `revision`, which `workroom api describe` shows. This page is \
-             generated from the `workroom` binary's source, so it describes the build it came \
-             with.\n\n";
+             To notice a change, compare the protocol version and the version you built \
+             against: `workroom protocol` prints the protocol that `workroom` binary speaks (a \
+             daemon says its own in its greeting, below), and `workroom version` prints its \
+             version. Compare the terminal API's `revision` too, which `workroom api describe` \
+             shows. This page is generated from the `workroom` binary's source, so it describes \
+             the build it came with.\n\n";
 
-    text += "## The socket\n\n\
-             Every daemon listens on one Unix socket: on the Mac, the one the app starts in its \
-             Application Support folder; on a host, the one its supervisor starts. A Workroom \
-             terminal names it in `WORKROOM_DAEMON`. The socket is the only security boundary: \
-             anything that can reach it can do what its user can.\n\n\
+    text += &section("The socket");
+    text += "Every daemon listens on one Unix socket. On the Mac, it is the one the app starts in \
+             its Application Support folder (`<bundle>/sessions/workroomd`), or, when that path \
+             is too long for a socket's name, in a folder of its own under `/tmp` \
+             (`/tmp/workroom-<uid>-<bundle>`). On a host, it is the one its supervisor starts. A \
+             Workroom terminal names it in `WORKROOM_DAEMON`. The socket is the only security \
+             boundary: anything that can reach it can do what its user can.\n\n\
              Both sides first send a greeting, then every message is an envelope that names its \
              service and stream:\n\n\
              ```text\n\
              Hello:     \"WRA1\" | protocol_version: u16 | build_len: u8 | build: [u8]\n\
              Envelope:  service: u8 | stream: u32 | length: u32 | payload: [u8]\n\
              ```\n\n";
-    text += &format!(
-        "Integers are big-endian, and a payload is at most {} bytes. Both sides speak the lower \
-         of their two versions, and a client checks the daemon's own version before it uses a \
-         service that arrived later, since an older daemon drops what it doesn't know. This \
-         build speaks protocol {PROTOCOL_VERSION}. Each request opens a stream of its own; a \
-         service's events, where it has any, come on stream 0.\n\n",
-        envelope::MAX_ENVELOPE_PAYLOAD
+    text += &render(
+        "Integers are big-endian, and a payload is at most $size{MAX_ENVELOPE_PAYLOAD}. Both \
+         sides speak the lower of their two versions, and a client checks the daemon's own \
+         version before it uses a service that arrived later, since an older daemon drops what \
+         it doesn't know. This build speaks protocol $n{PROTOCOL_VERSION}. Each request opens a \
+         stream of its own; a service's events, where it has any, come on stream 0.\n\n",
     );
-    text += "## Services\n\n| Byte | Service | Since protocol | What it is for |\n\
+    text += &section("Services");
+    text += "| Byte | Service | Since protocol | What it is for |\n\
              | ---- | ------- | -------------- | -------------- |\n";
     for each in services() {
         let (name, since, what) = service(each);
@@ -767,22 +940,25 @@ pub(super) fn page() -> String {
         );
     }
 
-    text += "\n## Terminal and Control frames\n\n\
-             The Terminal and Control services carry frames: one byte of kind, a big-endian \
-             `u32` length, then the payload, at most 1 MiB. A pane's `workroom attach` sends \
+    text += "\n";
+    text += &section("Terminal and Control frames");
+    text += &render(
+        "The Terminal and Control services carry frames: one byte of kind, a big-endian \
+             `u32` length, then the payload, at most $size{MAX_PAYLOAD_SIZE}. A pane's `workroom attach` sends \
              `Attach` and then the user's typing and size; the app's own connection to each \
              daemon sends the Control frames, to list the sessions it shows as detached, close \
              one, hand the daemon off to a newer build, restart or stop a Run tab, and move a \
              session to another workroom.\n\n\
              | Byte | Frame | Direction | Since protocol | Payload | What it does |\n\
-             | ---- | ----- | --------- | -------------- | ------- | ------------ |\n";
+             | ---- | ----- | --------- | -------------- | ------- | ------------ |\n",
+    );
     for kind in frames() {
         let (direction, since, payload, what) = frame(kind);
         text += &format!(
             "| `{:#04x}` | `{kind:?}` | {direction} | {since} | {} | {} |\n",
             kind as u8,
             cell(payload),
-            cell(what)
+            cell(&render(what))
         );
     }
     text += "\n### Attach entries\n\n| Entry | What it says |\n| ----- | ------------ |\n";
@@ -795,18 +971,45 @@ pub(super) fn page() -> String {
         text += &format!("| `{}` | {} |\n", signal as u8, cell(run_signal(signal)));
     }
 
-    text += "\n## JSON services\n\n";
+    text += "\n";
+    text += &section("JSON services");
     for each in SERVICES {
-        text += &format!("### {}\n\n{}\n\n", each.name, escaped(each.wire));
+        text += &format!("### {}\n\n{}\n\n", each.name, escaped(&render(each.wire)));
         text += "| Request | Takes and answers | When the app sends it |\n\
                  | ------- | ----------------- | --------------------- |\n";
         for request in each.requests {
             text += &format!(
                 "| `{}` | {} | {} |\n",
                 request.method,
-                cell(request.shape),
+                cell(&render(request.shape)),
                 cell(request.app)
             );
+        }
+        text += "\n";
+    }
+    text += &section("Events on stream 0");
+    text += "The ProgramStatus service sends its events to every subscribed connection, and the \
+             File service its watches' changes. Each table lists an event's fields as the \
+             daemon writes them.\n\n";
+    for each in STREAM_EVENTS {
+        text += &format!(
+            "### {}\n\n{}\n\n| Field | What it says |\n| ----- | ------------ |\n",
+            each.heading,
+            escaped(each.says)
+        );
+        for field in (each.read)() {
+            let says = each
+                .fields
+                .iter()
+                .find(|(name, _)| *name == field)
+                .map(|(_, says)| *says)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} has a field `{field}` STREAM_EVENTS doesn't describe",
+                        each.heading
+                    )
+                });
+            text += &format!("| `{field}` | {} |\n", cell(says));
         }
         text += "\n";
     }
@@ -819,8 +1022,8 @@ pub(super) fn page() -> String {
              rename a tab, and `api.describe` to learn which event types an older daemon has. \
              Those are public, and described there.\n\n";
 
-    text += "## The daemon's subcommands\n\n\
-             The same binary is the daemon. These subcommands are its own, never the CLI's \
+    text += &section("The daemon's subcommands");
+    text += "The same binary is the daemon. These subcommands are its own, never the CLI's \
              commands, and `list` is the daemon's only with `--socket`. On a host the binary is \
              installed as `workroomd`, the name this text uses:\n\n";
     text += &format!("```text\n{}\n```\n\n", usage());
@@ -832,8 +1035,9 @@ pub(super) fn page() -> String {
         text += &format!("| `{name}` | {} |\n", cell(app));
     }
 
-    text += "\n## Hidden commands\n\n\
-             The CLI has commands that `workroom --help` doesn't list, because the app runs \
+    text += "\n";
+    text += &section("Hidden commands");
+    text += "The CLI has commands that `workroom --help` doesn't list, because the app runs \
              them, not people. They take `--json` and keep the [JSON output \
              contract](json-output.md) like every other command, and their kinds are in its \
              tables. Shell completion runs one more, `workroom __complete ARGS… WORD` (and \
@@ -845,8 +1049,8 @@ pub(super) fn page() -> String {
             .map_or("", |(_, app)| *app);
         text += &hidden_section(command, &path, app, false);
     }
-    text += "## Hidden flags\n\n\
-             Flags of public commands that `--help` doesn't list, because the app passes them.\n\n\
+    text += &section("Hidden flags");
+    text += "Flags of public commands that `--help` doesn't list, because the app passes them.\n\n\
              | Command | Flag | Takes a value | Usage |\n| ------- | ---- | ---- | ----- |\n";
     for (path, flag) in hidden_flags() {
         text += &format!(
@@ -863,134 +1067,8 @@ pub(super) fn page() -> String {
 mod tests {
     use std::collections::BTreeSet;
 
+    use super::super::source::{arm_methods, function, match_blocks};
     use super::*;
-
-    /// The text of the first `fn name` in `source`: from its line to the `}` that closes it, the
-    /// next one indented as its line is.
-    fn function<'a>(source: &'a str, name: &str) -> &'a str {
-        let head = source
-            .find(&format!("fn {name}("))
-            .unwrap_or_else(|| panic!("no fn {name}: the test reads its requests from it"));
-        let start = source[..head].rfind('\n').map_or(0, |newline| newline + 1);
-        let indent: String = source[start..].chars().take_while(|c| *c == ' ').collect();
-        let end = source[start..]
-            .find(&format!("\n{indent}}}\n"))
-            .map_or(source.len(), |end| start + end);
-        &source[start..end]
-    }
-
-    /// `source` with what is no code blanked out, byte for byte, so offsets and lines stay: the
-    /// insides of strings, raw strings and char literals, comments, and anything not ASCII.
-    fn blanked(source: &str) -> Vec<u8> {
-        let bytes = source.as_bytes();
-        let mut out = bytes.to_vec();
-        let blank = |out: &mut Vec<u8>, range: std::ops::Range<usize>| {
-            for byte in &mut out[range] {
-                if *byte != b'\n' {
-                    *byte = b' ';
-                }
-            }
-        };
-        let mut index = 0;
-        while index < bytes.len() {
-            let rest = &source.as_bytes()[index..];
-            if rest.starts_with(b"//") {
-                let end = source[index..]
-                    .find('\n')
-                    .map_or(bytes.len(), |end| index + end);
-                blank(&mut out, index..end);
-                index = end;
-            } else if rest.starts_with(b"r#\"") {
-                let end = source[index + 3..]
-                    .find("\"#")
-                    .map_or(bytes.len(), |end| index + 3 + end);
-                blank(&mut out, index + 3..end);
-                index = end + 2;
-            } else if rest[0] == b'"' {
-                let mut end = index + 1;
-                while end < bytes.len() && bytes[end] != b'"' {
-                    end += if bytes[end] == b'\\' { 2 } else { 1 };
-                }
-                blank(&mut out, index + 1..end.min(bytes.len()));
-                index = end + 1;
-            } else if rest[0] == b'\'' && rest.get(2) == Some(&b'\'') {
-                blank(&mut out, index + 1..index + 2);
-                index += 3;
-            } else {
-                if !rest[0].is_ascii() {
-                    out[index] = b' ';
-                }
-                index += 1;
-            }
-        }
-        out
-    }
-
-    /// Each `match` on `scrutinee` in `source`: the text inside its braces.
-    fn match_blocks<'a>(source: &'a str, scrutinee: &str) -> Vec<&'a str> {
-        let code = blanked(source);
-        let head = format!("match {scrutinee}");
-        let mut blocks = Vec::new();
-        let mut from = 0;
-        while let Some(found) = source[from..].find(&head) {
-            let at = from + found + head.len();
-            from = at;
-            // The scrutinee may go on (`.and_then(…)`): the block is the brace that ends its line.
-            let line_end = source[at..].find('\n').map_or(source.len(), |end| at + end);
-            let Some(open) = code[at..line_end]
-                .iter()
-                .rposition(|byte| *byte == b'{')
-                .map(|brace| at + brace)
-            else {
-                continue;
-            };
-            let mut depth = 0usize;
-            let end = (open..code.len())
-                .find(|&index| {
-                    match code[index] {
-                        b'{' => depth += 1,
-                        b'}' => depth -= 1,
-                        _ => return false,
-                    }
-                    depth == 0
-                })
-                .expect("a match block ends");
-            blocks.push(&source[open + 1..end]);
-        }
-        blocks
-    }
-
-    /// The strings an arm's pattern names, in each arm at the block's top level: the lines that
-    /// start at its depth and hold `=>` in code.
-    fn arm_methods(block: &str) -> Vec<String> {
-        let code = blanked(block);
-        let mut depth = 0i32;
-        let mut methods = Vec::new();
-        let mut start = 0;
-        for line in block.split_inclusive('\n') {
-            let line_code = &code[start..start + line.len()];
-            start += line.len();
-            let arrow = line_code.windows(2).position(|pair| pair == b"=>");
-            if depth == 0
-                && let Some(arrow) = arrow
-            {
-                // The pattern, without its guard (`"x" if working`), whose strings are no method.
-                let pattern = line_code[..arrow]
-                    .windows(4)
-                    .position(|word| word == b" if ")
-                    .unwrap_or(arrow);
-                methods.extend(literals(&line[..pattern]));
-            }
-            for byte in line_code {
-                match byte {
-                    b'{' | b'(' | b'[' => depth += 1,
-                    b'}' | b')' | b']' => depth -= 1,
-                    _ => {}
-                }
-            }
-        }
-        methods
-    }
 
     /// Every method a service dispatches, read from its source: each match on the method, and
     /// each comparison of the method with a name.
@@ -1086,7 +1164,7 @@ mod tests {
     #[test]
     fn every_attach_entry_is_documented() {
         let decode = function(TERMINAL_PAYLOADS, "decode");
-        let keys = regex::Regex::new(r#"b"([A-Z]+)" =>"#).unwrap();
+        let keys = regex::Regex::new(r#"b"([A-Z0-9_]+)" =>"#).unwrap();
         let mut read: BTreeSet<String> = keys
             .captures_iter(decode)
             .map(|found| found[1].to_string())
@@ -1211,13 +1289,127 @@ mod tests {
         assert!(page.contains("may change in any release"));
     }
 
+    /// Every `##` section starts with the line saying it is internal, so a reader who lands on
+    /// one by its anchor (`json-output.md` links `#hidden-commands`) reads it first.
     #[test]
-    fn arms_are_read_from_a_match() {
-        let source = "fn f() {\n    match request.method.as_str() {\n        \"a\" => x,\n        \
-                      \"b\" if y => {\n            match z { \"inner\" => 1 }\n        }\n        \
-                      _ => return Err(r#\"{\"method\": \"no\"}\"#),\n    }\n}\n";
-        let blocks = match_blocks(source, "request.method.as_str()");
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(arm_methods(blocks[0]), ["a", "b"]);
+    fn every_section_says_it_is_internal() {
+        let page = page();
+        let sections: Vec<&str> = page.split("\n## ").skip(1).collect();
+        assert!(sections.len() >= 8);
+        for each in sections {
+            let (heading, body) = each.split_once('\n').expect("a heading line");
+            assert!(
+                body.starts_with(&format!("\n*{UNSTABLE}*\n")),
+                "## {heading} doesn't start with the internal line"
+            );
+        }
+    }
+
+    /// The words a row quotes (in code spans) are names its service's source has: a key or a
+    /// string it writes or reads, a field of the types it reads requests into, or a variant (as
+    /// `follow_within_root` is `FollowWithinRoot`). And every field of those types is quoted by
+    /// some row or by the service's wire line, so none goes undescribed.
+    #[test]
+    fn every_name_a_row_quotes_is_in_its_services_source() {
+        let span = regex::Regex::new(r"`([^`]*)`").unwrap();
+        let word = regex::Regex::new(r"\b([a-z][A-Za-z0-9_]*)\b").unwrap();
+        for each in SERVICES {
+            let mut fields: Vec<String> = Vec::new();
+            for name in each.request_types {
+                fields.extend(struct_fields(each.source, name));
+            }
+            let known = |name: &str| {
+                let camel: String = name
+                    .split('_')
+                    .map(|part| {
+                        let mut chars = part.chars();
+                        chars.next().map_or(String::new(), |first| {
+                            first.to_ascii_uppercase().to_string() + chars.as_str()
+                        })
+                    })
+                    .collect();
+                ["true", "false", "null"].contains(&name)
+                    || fields.iter().any(|field| field == name)
+                    || each.source.contains(&format!("\"{name}\""))
+                    || regex::Regex::new(&format!(r"\b{camel}\b"))
+                        .unwrap()
+                        .is_match(each.source)
+            };
+            let mut quoted: BTreeSet<String> = BTreeSet::new();
+            for text in each
+                .requests
+                .iter()
+                .map(|request| request.shape)
+                .chain([each.wire])
+            {
+                for code in span.captures_iter(&render(text)) {
+                    for name in word.captures_iter(&code[1]) {
+                        quoted.insert(name[1].to_string());
+                    }
+                }
+            }
+            for request in each.requests {
+                for code in span.captures_iter(&render(request.shape)) {
+                    for name in word.captures_iter(&code[1]) {
+                        assert!(
+                            known(&name[1]),
+                            "the {} service's `{}` row quotes `{}`, which its source doesn't have",
+                            each.name,
+                            request.method,
+                            &name[1]
+                        );
+                    }
+                }
+            }
+            for field in fields {
+                if [
+                    "version",
+                    "method",
+                    "kind",
+                    "backend",
+                    "shared_root",
+                    "barrier_root",
+                ]
+                .contains(&field.as_str())
+                {
+                    continue;
+                }
+                assert!(
+                    quoted.contains(&field),
+                    "the {} service reads `{field}`, which no row describes",
+                    each.name
+                );
+            }
+        }
+    }
+
+    /// Every event on stream 0 is described with the fields its code writes, and only those.
+    #[test]
+    fn every_stream_event_is_described_with_its_fields() {
+        for each in STREAM_EVENTS {
+            let read: BTreeSet<String> = (each.read)().into_iter().collect();
+            let described: BTreeSet<String> = each
+                .fields
+                .iter()
+                .map(|(name, _)| name.to_string())
+                .collect();
+            assert_eq!(read, described, "{}", each.heading);
+        }
+        assert!(page().contains("| `exitCode` |"));
+    }
+
+    /// The numbers the page quotes are the constants they name.
+    #[test]
+    fn the_limits_are_the_constants() {
+        assert_eq!(render("$n{MAX_HISTORY_LIMIT}"), "10000");
+        assert_eq!(render("$size{MAX_STAT_TEXT}"), "4 KiB");
+        assert_eq!(render("$size{MAX_RESPONSE}"), "16 MiB");
+        assert_eq!(
+            render("$s{PING_INTERVAL} and $s{SERVICE_DEADLINE}"),
+            "15 s and 60 s"
+        );
+        let page = page();
+        assert!(!page.contains("$n{") && !page.contains("$size{") && !page.contains("$s{"));
+        assert!(page.contains("at most 1 MiB"));
     }
 }

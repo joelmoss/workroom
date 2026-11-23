@@ -70,14 +70,14 @@
       page: reference/json-output
     - title: Terminal API
       page: reference/terminal-api
-    - title: Internal APIs
-      page: reference/internal-apis
     - title: config.json
       page: reference/config-json
     - title: Environment variables
       page: reference/environment-variables
     - title: Keyboard shortcuts
       page: reference/keyboard-shortcuts
+    - title: Internal APIs
+      page: reference/internal-apis
 
 - title: CLI
   pages:

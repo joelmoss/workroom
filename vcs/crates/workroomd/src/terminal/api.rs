@@ -164,6 +164,12 @@ impl ApiError {
     }
 }
 
+/// The error kinds any method can reply with, whatever it is, because `dispatch` does: a request
+/// it can't read (`InvalidRequest`), a request or a reply over the limit (`TooLarge`), and a method
+/// whose thread could not start or whose stream broke off (`InternalError`).
+pub const DISPATCH_ERRORS: &[&str] =
+    &[kind::INVALID_REQUEST, kind::TOO_LARGE, kind::INTERNAL_ERROR];
+
 /// One method: its name, what it does, its schemas and how it runs.
 pub struct Method {
     pub name: &'static str,
@@ -172,7 +178,7 @@ pub struct Method {
     pub input: fn() -> Value,
     /// The JSON Schema of its `result`.
     pub output: fn() -> Value,
-    /// The error kinds it can reply with, beyond `InvalidRequest`, which any method can.
+    /// The error kinds it can reply with, beyond [`DISPATCH_ERRORS`], which any method can.
     pub errors: &'static [&'static str],
     /// A `params` it accepts, which `api.describe` lists under the input schema's `examples`.
     pub params_example: fn() -> Value,
@@ -864,7 +870,10 @@ fn describe_output() -> Value {
                     "errors": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Error kinds beyond InvalidRequest, which any method has.",
+                        "description": format!(
+                            "Error kinds beyond those any method can reply with: {}.",
+                            DISPATCH_ERRORS.join(", ")
+                        ),
                     },
                 },
             }},

@@ -18,6 +18,8 @@ From a Workroom terminal, `workroom api call METHOD PARAMS` sends one request an
 
 The daemon is the one `WORKROOM_DAEMON` names, which every Workroom terminal sets. On the wire, the API is service `0x08` of the daemon's socket, from protocol 12, one request per stream; the [internal APIs](internal-apis.md#the-socket) page shows the framing.
 
+Any method can fail with [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1): a request the daemon can't read, a request or a reply over the limit, or a method that broke off.
+
 ## Requests and replies
 
 A request:
@@ -93,7 +95,7 @@ This API's revision and every method's parameter and result schemas, or one meth
 | ----- | ---- | -------- | ----------- |
 | `error_schema` | object | yes | The JSON Schema of a failed reply's `error`, for every method, with errors under `examples`. Named `error_schema`, since an `error` is only ever a failure. |
 | `methods` | array of object | yes |  |
-| `methods[].errors` | array of string | yes | Error kinds beyond InvalidRequest, which any method has. |
+| `methods[].errors` | array of string | yes | Error kinds beyond those any method can reply with: InvalidRequest, TooLarge, InternalError. |
 | `methods[].input` | object | yes | The JSON Schema of `params`, with a `params` it accepts under `examples`. |
 | `methods[].name` | string | yes |  |
 | `methods[].output` | object | yes | The JSON Schema of `result`, with a `result` it replies with under `examples`. |
@@ -101,7 +103,7 @@ This API's revision and every method's parameter and result schemas, or one meth
 | `request` | object | yes | The JSON Schema of a request, for every method. |
 | `revision` | integer | yes | Raised by each release that adds a method or a field. |
 
-**Errors**: [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -152,7 +154,7 @@ The sessions that share the caller's scope, oldest first, or with `all: true` ev
 | `caller` | string or null | yes | The id of the session the request comes from: the session whose shell the connecting process descends from, else the request's `caller` when it names one of this daemon's sessions. Null for neither. |
 | `sessions` | array of [session](#the-session-object) | yes |  |
 
-**Errors**: [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -238,7 +240,7 @@ The one session a target names: by full id, then an id suffix of at least 4 char
 | `caller` | string or null | yes | The id of the session the request comes from: the session whose shell the connecting process descends from, else the request's `caller` when it names one of this daemon's sessions. Null for neither. |
 | `session` | [session](#the-session-object) | yes |  |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -302,7 +304,7 @@ A session's screen as text: the visible screen, trimmed, by default; with `lines
 | `text` | string | yes | The rows, one line each (one per wrapped line with `unwrap`), without a final newline. With `all`, this reply's chunk: whole lines, which joined are the text. |
 | `title` | string or null | yes | The live title its program last set (OSC 0 or 2). |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -362,7 +364,7 @@ Types into a session without attaching to it: `text` as it is (as a bracketed pa
 | `modes.kitty_keyboard_flags` | integer | yes | The kitty keyboard protocol's flags its program pushed; 0 for none, the legacy encoding. |
 | `session` | string | yes | The id of the session typed into. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -415,7 +417,7 @@ Runs one shell command in a session and answers once it has ended, with its exit
 | `session` | string | yes | The id of the session it ran in. |
 | `truncated` | boolean | yes | Whether the command printed more than `output` holds, which is then its end. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`NoShellIntegration`](json-output.md#the-terminal-apis-kinds) (3), [`AlternateScreen`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`WaitTimeout`](json-output.md#the-terminal-apis-kinds) (8), [`WaitInterrupted`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`NoShellIntegration`](json-output.md#the-terminal-apis-kinds) (3), [`AlternateScreen`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`WaitTimeout`](json-output.md#the-terminal-apis-kinds) (8), [`WaitInterrupted`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -472,7 +474,7 @@ Waits for one thing to happen in a session: a program status, a run state, outpu
 | `session` | string | yes | The session's id. |
 | `status` | string or null | yes | The program status reached, for `status`; for `turn`, the one the turn ended in, null when the agent's report went. One of `idle`, `working`, `done`, `blocked`, `error`, `null`. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`WaitTimeout`](json-output.md#the-terminal-apis-kinds) (8), [`WaitInterrupted`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`NoShellIntegration`](json-output.md#the-terminal-apis-kinds) (3), [`ExitCodeMismatch`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`WaitTimeout`](json-output.md#the-terminal-apis-kinds) (8), [`WaitInterrupted`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`NoShellIntegration`](json-output.md#the-terminal-apis-kinds) (3), [`ExitCodeMismatch`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -528,7 +530,7 @@ Gives the coding agent in a session a prompt in one step: `text` as a bracketed 
 | `session` | string | yes | The id of the session prompted. |
 | `status` | string or null | yes | Without `wait`, null. With it, null in the reply that says the prompt was typed, `working` in the one that says its turn has started, and in the last (`more` false) the status its turn ended in: `done`, `blocked`, `idle` or `error`, or null when the agent's report went (it exited). One of `idle`, `working`, `done`, `blocked`, `error`, `null`. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`NotAnAgent`](json-output.md#the-terminal-apis-kinds) (3), [`AgentBusy`](json-output.md#the-terminal-apis-kinds) (3), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`WaitTimeout`](json-output.md#the-terminal-apis-kinds) (8), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`NotAnAgent`](json-output.md#the-terminal-apis-kinds) (3), [`AgentBusy`](json-output.md#the-terminal-apis-kinds) (3), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`WaitTimeout`](json-output.md#the-terminal-apis-kinds) (8), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -582,7 +584,7 @@ Opens a new terminal: a session made as the caller's was, tagged with its scope,
 | `opened.split` | string or null | yes | The split asked for, or null for a tab. One of `right`, `down`, `null`. |
 | `session` | [session](#the-session-object) | yes |  |
 
-**Errors**: [`NotADirectory`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`NotADirectory`](json-output.md#error-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -640,7 +642,7 @@ Restarts or stops a run session's command through its supervisor, as the app's R
 | `caller` | string or null | yes | The id of the session the request comes from: the session whose shell the connecting process descends from, else the request's `caller` when it names one of this daemon's sessions. Null for neither. |
 | `session` | string | yes | The id of the run session. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`NotARun`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`NotARun`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -682,7 +684,7 @@ Closes a terminal: ends its session (a run's supervisor asked to quit first), an
 | `caller` | string or null | yes | The id of the session the request comes from: the session whose shell the connecting process descends from, else the request's `caller` when it names one of this daemon's sessions. Null for neither. |
 | `session` | string | yes | The id of the session closed. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`RefusedSelf`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -724,7 +726,7 @@ Gives a session another label, the name of its tab in the app, or clears it with
 | `changed` | boolean | yes | Whether its label changed: false when it already had this one, and no `session.labelled` was told. |
 | `session` | [session](#the-session-object) | yes |  |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`SessionEnded`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -810,7 +812,7 @@ The daemon's events, streamed: the sessions as they are (one `session` event eac
 | `sessions` | array of string |  | `snapshot-complete`: the ids of the snapshot's sessions. |
 | `title` | string or null |  | `session` and `session.created`: as `session.list` gives it. |
 
-**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), [`InternalError`](json-output.md#the-terminal-apis-kinds) (1), [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`TargetNotFound`](json-output.md#the-terminal-apis-kinds) (3), [`TargetAmbiguous`](json-output.md#the-terminal-apis-kinds) (3), [`Busy`](json-output.md#the-terminal-apis-kinds) (3), and [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -862,7 +864,7 @@ Ends one of this connection's `events.subscribe` subscriptions, named by the str
 | `ended` | boolean | yes | `true`: this ended the subscription on it. `false`: the connection held none there, as for one that had already ended. |
 | `stream` | integer | yes | The stream asked about. |
 
-**Errors**: [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), which any method can return.
+**Errors**: [`InvalidRequest`](json-output.md#the-terminal-apis-kinds) (2), [`TooLarge`](json-output.md#the-terminal-apis-kinds) (2), [`InternalError`](json-output.md#error-kinds) (1), which any method can return.
 
 **Example**
 
@@ -891,7 +893,7 @@ Its `result`:
 | `snapshot-complete` |  | The snapshot's end. Live events follow. | `sessions`, `reason` |
 | `resumed` |  | The subscription went on after its `since`. Live events follow. | none beside the three |
 | `place` |  | Where a filtered stream stands, once events its filters skipped have moved it on, at most once a second. Resume from it as from any event; `workroom events` never prints it. | none beside the three |
-| `session.created` | yes | A session was created. | `session`, `scope`, `label`, `title`, `run`, `cwd`, `coding_agent`, `run_state`, `clients`, `opened` |
+| `session.created` | yes | A session was created. | `session`, `scope`, `label`, `title`, `run`, `cwd`, `coding_agent`, `run_state`, `exit_code`, `clients`, `opened` |
 | `session.ended` | yes | A session ended. | `session`, `scope`, `exit_code`, `closed` |
 | `session.program_status` | yes | Its coding agent's state, program or waiting on the user changed, or its message did while it isn't working. | `session`, `scope`, `coding_agent` |
 | `session.run_state` | yes | Its run moved to another state, passing ones included. | `session`, `scope`, `run_state`, `exit_code` |
