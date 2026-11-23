@@ -80,6 +80,14 @@ A family is hidden from **Family** while one of its two themes isn't on its own 
 
 If your light theme is missing, or is now a dark theme, Workroom shows **Workroom Light** in its place. If your dark theme is missing, or is now a light theme, it shows **Workroom**. The window for that side says so under the theme's name. Your choice is kept, so the theme comes back when its file does.
 
+### Favourite themes
+
+Star the themes and families you come back to. Each theme and family has a star at the end of its name: it shows while you point at the theme, and stays filled on a favourite. Click it, or choose **Add to Favourites** from the theme's right-click menu, to star or unstar a theme without choosing it. <kbd>⌘D</kbd> stars or unstars the theme you're on: the highlighted one in the <kbd>⇧⌘K</kbd> picker, or your current choice in the Themes pane. A theme is starred by its name, on whichever side it's on, and a family is starred apart from its themes.
+
+The star at the end of the search field, or <kbd>⌘F</kbd>, lists only your favourites, on whichever of **Family**, **Light** or **Dark** you're browsing, and together with the search. The Themes pane and the <kbd>⇧⌘K</kbd> picker share it, and it stays on until you turn it off. A theme you unstar while only favourites are listed stays in the list until you change tab or search, so you can star it again. With no favourites on a tab, the list says so and offers **Show All Themes**.
+
+A favourite whose theme file goes missing keeps its star, and is listed again when the file comes back.
+
 ## Terminal
 
 | Setting | What it does |

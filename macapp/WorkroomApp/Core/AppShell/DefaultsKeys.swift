@@ -83,6 +83,17 @@ extension Defaults.Keys {
   static let glassOpacity = Key<Double>(
     "glassOpacity", default: GlassResolver.opacityRange.upperBound, suite: .app)
 
+  /// The themes the user has starred, by name (`ThemeFavourites`). A name counts on whichever side
+  /// the theme is on. A theme that's gone keeps its star and is listed again when it comes back.
+  static let favouriteThemes = Key<Set<String>>("favouriteThemes", default: [], suite: .app)
+
+  /// The theme families the user has starred, by name, apart from `favouriteThemes`.
+  static let favouriteFamilies = Key<Set<String>>("favouriteFamilies", default: [], suite: .app)
+
+  /// Whether the theme lists show only favourites: one setting for the ⌘⇧K picker and Settings ▸
+  /// Themes, kept between openings.
+  static let themeFavouritesOnly = Key<Bool>("themeFavouritesOnly", default: false, suite: .app)
+
   /// The theme setting for one side: `lightTheme` or `darkTheme`.
   static func theme(for side: ThemeSide) -> Key<String> {
     switch side {

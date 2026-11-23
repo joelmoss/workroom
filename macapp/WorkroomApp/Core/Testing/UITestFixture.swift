@@ -1246,6 +1246,21 @@ import WorkroomVCS
     /// See `lightTheme`.
     static var darkTheme: String { theme(argument: "WorkroomUITestDarkTheme", side: .dark) }
 
+    /// The favourite themes and families a fixture launch starts with
+    /// (`-WorkroomUITestFavouriteThemes "A,B"`, `-WorkroomUITestFavouriteFamilies "C"`), none when
+    /// unset, and the favourites filter off. Mirrored into `Defaults` for the same reason as
+    /// `lightTheme`: they persist, and the runner mustn't write the developer's own.
+    static var favouriteThemes: Set<String> { names("WorkroomUITestFavouriteThemes") }
+
+    /// See `favouriteThemes`.
+    static var favouriteFamilies: Set<String> { names("WorkroomUITestFavouriteFamilies") }
+
+    private static func names(_ key: String) -> Set<String> {
+      Set(
+        (text(key) ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+          .filter { !$0.isEmpty })
+    }
+
     /// The appearance a fixture launch is pinned to (`-WorkroomUITestAppearance system|light|dark`,
     /// #735), or nil to leave it alone. `ThemePickerUITests` pins it so which side is showing, and so
     /// which tab ⌘⇧K opens, depends on neither the machine's appearance nor the Dev app's last choice.
@@ -1376,6 +1391,9 @@ import WorkroomVCS
       Defaults[.lightTheme] = lightTheme
       Defaults[.darkTheme] = darkTheme
       if let appearance { Defaults[.appearance] = appearance }
+      Defaults[.favouriteThemes] = favouriteThemes
+      Defaults[.favouriteFamilies] = favouriteFamilies
+      Defaults[.themeFavouritesOnly] = false
       // Unfocused-pane dimming, for the same reason as the themes: it PERSISTS in the real Dev
       // domain, and it decides whether the pane scrim, the terminal tab strip and the pane header render
       // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later

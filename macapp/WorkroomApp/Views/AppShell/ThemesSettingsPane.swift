@@ -35,6 +35,8 @@ struct ThemesSettingsPane: View {
   @FocusState private var gridFocused: Bool
   /// The grid's width, to know how many tiles a row holds (↑/↓ move a row).
   @State private var gridWidth: CGFloat = 0
+  /// The favourites, the filter (shared with the ⌘⇧K picker), and the tiles a filtered grid keeps.
+  @State private var favourites = ThemeListFavourites()
 
   /// The smallest tile width per list, and the gap between tiles; the grid fits as many per row as
   /// these allow.
@@ -99,9 +101,11 @@ struct ThemesSettingsPane: View {
         .overlay { if !settle.ready { ThemeListLoading() } }
         .onAppear {
           lists = ThemeLists()
+          favourites.rebuild()
           settleOnCurrent(proxy)
         }
         .onChange(of: browse) { _, _ in settleOnCurrent(proxy) }
+        .onChange(of: favourites.favouritesOnly) { _, _ in settleOnCurrent(proxy) }
         // A search shrinks the grid under a scroll offset that may sit past its new end; go back to
         // the top of the results.
         .onChange(of: query) { _, _ in
@@ -109,6 +113,26 @@ struct ThemesSettingsPane: View {
         }
       }
     }
+    .themeListKeys(favourites, toggleFavourite: toggleKeyboardFavourite)
+  }
+
+  // MARK: Favourites
+
+  /// Browses `tab`, rebuilding the filtered grid.
+  private func select(_ tab: ThemePickerTab) {
+    if tab != browse { favourites.rebuild() }
+    browse = tab
+  }
+
+  private var browseBinding: Binding<ThemePickerTab> {
+    Binding(get: { browse }, set: { select($0) })
+  }
+
+  /// Stars or unstars the tile the keyboard is on (⌘D): the current choice, or the first tile while
+  /// the current choice isn't listed.
+  private func toggleKeyboardFavourite() {
+    guard let id = keyboardID, let tile = currentTiles.first(where: { $0.id == id }) else { return }
+    ThemeFavourites.toggle(tile.favourite)
   }
 
   // MARK: Stage
@@ -169,7 +193,7 @@ struct ThemesSettingsPane: View {
     // VoiceOver; clicking the name browses too.
     return VStack(alignment: .leading, spacing: Spacing.s) {
       Button {
-        browse = ThemePickerTab(side: side)
+        select(ThemePickerTab(side: side))
       } label: {
         MiniWorkroomWindow(preview: active.preview)
           .frame(maxWidth: .infinity)
@@ -211,7 +235,7 @@ struct ThemesSettingsPane: View {
         Spacer(minLength: 0)
       }
       .contentShape(Rectangle())
-      .onTapGesture { browse = ThemePickerTab(side: side) }
+      .onTapGesture { select(ThemePickerTab(side: side)) }
       if let note {
         Label(note.text, systemImage: "exclamationmark.triangle.fill")
           .font(.caption)
@@ -229,7 +253,7 @@ struct ThemesSettingsPane: View {
   private var browserBar: some View {
     VStack(alignment: .leading, spacing: Spacing.s) {
       HStack(spacing: Spacing.l) {
-        Picker("Browse", selection: $browse) {
+        Picker("Browse", selection: browseBinding) {
           ForEach(ThemePickerTab.allCases) { Text($0.label).tag($0) }
         }
         .pickerStyle(.segmented)
@@ -263,7 +287,7 @@ struct ThemesSettingsPane: View {
   private var searchField: some View {
     HStack(spacing: Spacing.s) {
       Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
-      TextField("Search themes", text: $query)
+      TextField("Search themes", text: favourites.search($query))
         .textFieldStyle(.plain)
         .focused($searchFocused)
         .help("Search the themes listed below by name; ↓ moves into them")
@@ -284,6 +308,8 @@ struct ThemesSettingsPane: View {
         .help("Clear search")
         .accessibilityLabel("Clear search")
       }
+      FavouritesFilterButton(
+        favourites: favourites, outlineColor: .secondary, identifier: "settings.themes.favourites")
     }
     .padding(.horizontal, Spacing.m)
     .frame(height: 24)
@@ -297,21 +323,28 @@ struct ThemesSettingsPane: View {
   // MARK: Grid
 
   private func filtered<T>(_ items: [T], _ name: (T) -> String) -> [T] {
-    ThemeLists.filtered(items, by: query, name: name)
+    favourites.shown(items, ThemeFavourite.Kind(browse), query: query, name: name)
   }
 
-  private var currentIDs: [String] {
+  /// The tiles the grid shows, in order: each one's scroll ID and what its star stars.
+  private var currentTiles: [(id: String, favourite: ThemeFavourite)] {
     switch browse.side {
-    case nil: return filtered(lists.availableFamilies(), \.name).map { ThemeRowID.family($0.name) }
+    case nil:
+      return filtered(lists.availableFamilies(), \.name).map {
+        (ThemeRowID.family($0.name), .family($0.name))
+      }
     case let side?:
-      return filtered(lists.themes(on: side), \.name).map { ThemeRowID.theme($0.name, on: side) }
+      return filtered(lists.themes(on: side), \.name).map {
+        (ThemeRowID.theme($0.name, on: side), .theme($0.name))
+      }
     }
   }
 
-  /// Settles the grid on the current choice out of sight. With no current choice in the list (a
-  /// custom pair on Families), it starts at the top.
+  private var currentIDs: [String] { currentTiles.map(\.id) }
+
+  /// Settles the grid on the tile the keyboard is on, out of sight.
   private func settleOnCurrent(_ proxy: ScrollViewProxy) {
-    settle.settle(proxy) { currentChoiceID ?? currentIDs.first }
+    settle.settle(proxy) { keyboardID }
   }
 
   /// The row ID of the current choice in the list showing, or nil for a custom pair on Family.
@@ -322,21 +355,33 @@ struct ThemesSettingsPane: View {
     }
   }
 
+  /// Whether the grid lists the current choice. It doesn't for a custom pair on Families, or while
+  /// only favourites are listed and the current choice isn't one.
+  private var choiceListed: Bool {
+    currentChoiceID.map { currentIDs.contains($0) } ?? false
+  }
+
+  /// The tile the arrows move from and ⌘D stars: the current choice when it's listed, else the first
+  /// tile, ringed but not applied, as the ⌘⇧K picker highlights its first row.
+  private var keyboardID: String? {
+    choiceListed ? currentChoiceID : currentIDs.first
+  }
+
   /// How many tiles a row holds at the grid's width, as an adaptive `GridItem` lays them out.
   private var columns: Int {
     let minimum = browse.side == nil ? Self.familyTileMinWidth : Self.themeTileMinWidth
     return max(1, Int((gridWidth + Self.tileSpacing) / (minimum + Self.tileSpacing)))
   }
 
-  /// Moves the current choice `delta` tiles through the list showing (clamped to it) and applies it,
-  /// keeping it on screen. With no current choice in the list, the first tile is chosen.
+  /// Moves `delta` tiles from the one the keyboard is on (clamped to the list showing) and applies
+  /// that tile, keeping it on screen. From the first tile while the current choice isn't listed,
+  /// a move that the edge stops applies the first tile itself, as ↑ on the picker's first row does.
   private func move(by delta: Int, _ proxy: ScrollViewProxy) {
     guard settle.ready else { return }
     let ids = currentIDs
-    guard !ids.isEmpty else { return }
-    let current = currentChoiceID.flatMap { ids.firstIndex(of: $0) }
-    let next = current.map { min(max($0 + delta, 0), ids.count - 1) } ?? 0
-    guard next != current else { return }
+    guard let from = keyboardID.flatMap({ ids.firstIndex(of: $0) }) else { return }
+    let next = min(max(from + delta, 0), ids.count - 1)
+    guard next != from || !choiceListed else { return }
     choose(at: next)
     let id = ids[next]
     keepVisible.reveal(proxy, id, movingForward: delta > 0) { currentChoiceID == id }
@@ -375,7 +420,10 @@ struct ThemesSettingsPane: View {
               previews: [family.dark, family.light].map { ThemeService.themePreview(named: $0) },
               selected: family == activeFamily,
               identifier: "settings.themes.family-\(family.name)",
-              help: "\(family.name): \(family.dark) when dark, \(family.light) when light"
+              help: "\(family.name): \(family.dark) when dark, \(family.light) when light",
+              favourite: .family(family.name),
+              isFavourite: favourites.contains(.family(family.name)),
+              highlighted: !choiceListed && keyboardID == ThemeRowID.family(family.name)
             ) {
               ThemeService.shared.applyFamily(family)
               gridFocused = true
@@ -403,7 +451,10 @@ struct ThemesSettingsPane: View {
               selected: theme.name == stored(side),
               isUserTheme: theme.isUserTheme,
               identifier: "settings.themes.\(side.rawValue)-\(theme.name)",
-              help: theme.name
+              help: theme.name,
+              favourite: .theme(theme.name),
+              isFavourite: favourites.contains(.theme(theme.name)),
+              highlighted: !choiceListed && keyboardID == ThemeRowID.theme(theme.name, on: side)
             ) {
               ThemeService.shared.apply(theme: theme.name, for: side)
               gridFocused = true
@@ -417,19 +468,22 @@ struct ThemesSettingsPane: View {
   }
 
   private var emptyResults: some View {
-    VStack(spacing: Spacing.s) {
-      Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
-      Text("No themes match “\(query.trimmingCharacters(in: .whitespaces))”")
-        .foregroundStyle(.secondary)
-    }
-    .frame(maxWidth: .infinity, minHeight: 120)
+    let all: [String] =
+      switch browse.side {
+      case nil: lists.availableFamilies().map(\.name)
+      case let side?: lists.themes(on: side).map(\.name)
+      }
+    return ThemeListEmptyView(
+      state: favourites.emptyState(on: browse, query: query, from: all), favourites: favourites,
+      identifier: "settings.themes.empty")
   }
 }
 
 // MARK: - Tiles
 
 /// One theme, or one family (its dark theme beside its light one), in the grid: its preview, then its
-/// name with a checkmark on the current choice and a "Yours" label on the user's own files.
+/// name with a "Yours" label on the user's own files, its favourite star, and a checkmark on the
+/// current choice.
 private struct ThemeTile: View {
   let name: String
   let previews: [ThemePreview?]
@@ -437,7 +491,14 @@ private struct ThemeTile: View {
   var isUserTheme = false
   let identifier: String
   let help: String
+  let favourite: ThemeFavourite
+  let isFavourite: Bool
+  /// The tile the keyboard starts from while the current choice isn't listed: a fainter ring.
+  var highlighted = false
   let action: () -> Void
+  @State private var hovered = false
+
+  private static let starSize: CGFloat = 10
 
   var body: some View {
     Button(action: action) {
@@ -446,7 +507,7 @@ private struct ThemeTile: View {
           ForEach(previews.indices, id: \.self) { TerminalSnippet(preview: previews[$0]) }
         }
         .frame(height: 58)
-        .themeTileChrome(selected: selected, radius: Radius.s)
+        .themeTileChrome(selected: selected, highlighted: highlighted, radius: Radius.s)
         HStack(spacing: Spacing.xs) {
           Text(name)
             .font(.system(size: 11, weight: selected ? .semibold : .regular))
@@ -466,6 +527,12 @@ private struct ThemeTile: View {
               .accessibilityIdentifier("\(identifier)-yours")
           }
           Spacer(minLength: 0)
+          // The star's place in the line. The star itself is drawn over the button, at exactly this
+          // place (`overlayPreferenceValue`), rather than inside it, so its click is its own and
+          // doesn't also choose the theme.
+          Color.clear
+            .frame(width: FavouriteStar.footprint(Self.starSize), height: Self.starSize + 3)
+            .anchorPreference(key: TileStarAnchor.self, value: .bounds) { $0 }
           if selected {
             Image(systemName: "checkmark")
               .font(.system(size: 9, weight: .bold))
@@ -483,6 +550,29 @@ private struct ThemeTile: View {
     .accessibilityAddTraits(selected ? .isSelected : [])
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier(identifier)
+    .overlayPreferenceValue(TileStarAnchor.self) { anchor in
+      GeometryReader { geometry in
+        if let anchor {
+          let place = geometry[anchor]
+          FavouriteStar(
+            favourite: favourite, isFavourite: isFavourite, revealed: hovered,
+            size: Self.starSize, outlineColor: .secondary, keyTarget: .selected,
+            identifier: identifier
+          )
+          .position(x: place.midX, y: place.midY)
+        }
+      }
+    }
+    .onHover { hovered = $0 }
+    .contextMenu { FavouriteMenuItem(favourite: favourite, isFavourite: isFavourite) }
+  }
+}
+
+/// Where a tile's favourite star goes in its name line.
+private struct TileStarAnchor: PreferenceKey {
+  static let defaultValue: Anchor<CGRect>? = nil
+  static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+    value = value ?? nextValue()
   }
 }
 
@@ -511,11 +601,13 @@ private struct ThemeTileButtonBody: View {
   }
 }
 
-/// A preview's frame: a hairline, a ring in the accent on the current choice, and a fainter ring on
+/// A preview's frame: a hairline, a ring in the accent on the current choice, a fainter one on the
+/// tile the keyboard starts from while the current choice isn't listed, and a fainter one still on
 /// hover.
 private struct ThemeTileChrome: ViewModifier {
   @Environment(\.themeTokens) private var tokens
   let selected: Bool
+  let highlighted: Bool
   let radius: CGFloat
   @State private var hovered = false
 
@@ -529,19 +621,28 @@ private struct ThemeTileChrome: ViewModifier {
       .padding(3)
       .overlay(
         RoundedRectangle(cornerRadius: radius + 3, style: .continuous)
-          .strokeBorder(
-            selected ? tokens.accent : hovered ? Color.primary.opacity(0.22) : .clear,
-            lineWidth: selected ? 2 : 1.5)
+          .strokeBorder(style: StrokeStyle(lineWidth: selected ? 2 : 1.5))
+          // Only the ring's colour fades. A `.animation(_:value:)` on the tile animated everything
+          // that changed with it, and filtering to favourites changes which tile is current or
+          // ringed in the same update that moves the tiles, so a tile's preview slid across the
+          // grid to its new place while its name jumped there.
+          .animation(.easeOut(duration: 0.15)) { $0.foregroundStyle(ringColor) }
       )
       .onHover { hovered = $0 }
-      .animation(.easeOut(duration: 0.15), value: hovered)
-      .animation(.easeOut(duration: 0.15), value: selected)
+  }
+
+  private var ringColor: Color {
+    if selected { return tokens.accent }
+    if highlighted { return tokens.accent.opacity(0.45) }
+    return hovered ? Color.primary.opacity(0.22) : .clear
   }
 }
 
 extension View {
-  fileprivate func themeTileChrome(selected: Bool, radius: CGFloat) -> some View {
-    modifier(ThemeTileChrome(selected: selected, radius: radius))
+  fileprivate func themeTileChrome(selected: Bool, highlighted: Bool = false, radius: CGFloat)
+    -> some View
+  {
+    modifier(ThemeTileChrome(selected: selected, highlighted: highlighted, radius: radius))
   }
 }
 

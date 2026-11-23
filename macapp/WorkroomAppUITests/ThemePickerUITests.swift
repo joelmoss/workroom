@@ -60,11 +60,18 @@ final class ThemePickerUITests: XCTestCase {
   private let darkVariantFile = "Night Owl"
   private let lightVariantFile = "Light Owl"
 
-  private func launchedApp(withUserThemes: Bool = false, lightTheme: String = "Workroom Light")
-    -> XCUIApplication
-  {
+  private func launchedApp(
+    withUserThemes: Bool = false, lightTheme: String = "Workroom Light",
+    favouriteThemes: [String] = []
+  ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    // Favourites are seeded by the app itself, and reset to none when unset, like the themes below.
+    if !favouriteThemes.isEmpty {
+      app.launchArguments += [
+        "-WorkroomUITestFavouriteThemes", favouriteThemes.joined(separator: ","),
+      ]
+    }
     if withUserThemes { app.launchArguments += ["-WorkroomUITestUserThemes", "1"] }
     // Start somewhere that is NOT the family under test, so a passing assertion can't be the
     // fixture's starting state.
@@ -652,5 +659,183 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertTrue(
       element(app, "theme-picker.note").waitForExistence(timeout: 3), "the Light tab did not open")
     XCTAssertFalse(element(app, "theme-light-Broken Mine").exists, "an unparseable file is listed")
+  }
+
+  // MARK: Favourites
+
+  /// The terminal panes of the fixture workroom, to tell whether ⌘D split one.
+  private func panes(_ app: XCUIApplication) -> XCUIElementQuery {
+    app.descendants(matching: .any).matching(identifier: "terminal.pane")
+  }
+
+  private func assertPaneCount(
+    _ app: XCUIApplication, is expected: Int, _ message: String, file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let reached = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "count == %d", expected), object: panes(app))
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [reached], timeout: 6), .completed, message, file: file, line: line)
+  }
+
+  /// Favourites in the ⌘⇧K picker: ⌘D stars the highlighted theme and ⌘F lists only favourites,
+  /// neither reaching the workroom behind (⌘D is Split Right there, and still is once the picker
+  /// closes). A row unstarred with the filter on stays until the list is rebuilt; a tab with no
+  /// favourites says so and offers every theme back.
+  func testThePickerStarsTheHighlightedThemeAndFiltersToFavourites() throws {
+    let app = launchedApp()
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
+    XCTAssertTrue(panes(app).firstMatch.waitForExistence(timeout: 10), "no terminal pane")
+    openPicker(app)
+    let workroom = element(app, "theme-dark-Workroom")
+    XCTAssertTrue(workroom.waitForExistence(timeout: 5), "⌘⇧K did not open on the Dark tab")
+    waitForListToSettle(app)
+
+    // ⌘D stars the highlighted row, Workroom, the current choice.
+    app.typeKey("d", modifierFlags: .command)
+    let star = element(app, "theme-dark-Workroom-star")
+    XCTAssertTrue(star.waitForExistence(timeout: 3), "the Workroom row has no star")
+    XCTAssertTrue(waitFor(star, selected: true), "⌘D didn't star the highlighted theme")
+    XCTAssertTrue(app.popovers.firstMatch.exists, "⌘D closed the picker")
+    assertPaneCount(app, is: 1, "⌘D in the picker split the workroom behind it")
+
+    // ⌘F: only favourites.
+    let neighbour = element(app, "theme-dark-Night Owl")
+    app.typeText("Owl")
+    XCTAssertTrue(neighbour.waitForExistence(timeout: 3), "the search didn't list Night Owl")
+    app.typeKey("a", modifierFlags: .command)
+    app.typeKey(.delete, modifierFlags: [])
+    app.typeKey("f", modifierFlags: .command)
+    let filter = element(app, "theme-picker.favourites")
+    XCTAssertTrue(waitFor(filter, selected: true), "⌘F didn't turn the favourites filter on")
+    XCTAssertFalse(
+      findBar(app).exists, "⌘F in the picker opened Find in the workroom behind it")
+    XCTAssertTrue(workroom.waitForExistence(timeout: 3), "the favourite isn't listed")
+    app.typeText("Owl")
+    let noMatch = element(app, "theme-picker.empty.title")
+    XCTAssertTrue(noMatch.waitForExistence(timeout: 3), "a search no favourite matches is blank")
+    XCTAssertEqual(text(of: noMatch), "No favourites match “Owl”")
+    app.typeKey("a", modifierFlags: .command)
+    app.typeKey(.delete, modifierFlags: [])
+
+    // Unstarred with the filter on: still listed, until the tab changes.
+    XCTAssertTrue(workroom.waitForExistence(timeout: 3))
+    app.typeKey("d", modifierFlags: .command)
+    XCTAssertTrue(waitFor(star, selected: false), "⌘D didn't unstar the highlighted theme")
+    XCTAssertTrue(workroom.exists, "the unstarred row vanished at once")
+    element(app, "theme-picker.tab.light").click()
+    element(app, "theme-picker.tab.dark").click()
+    let empty = element(app, "theme-picker.empty.title")
+    XCTAssertTrue(empty.waitForExistence(timeout: 3), "a tab with no favourites is blank")
+    XCTAssertEqual(text(of: empty), "No favourite dark themes yet")
+    XCTAssertFalse(workroom.exists, "the unstarred row outlived the rebuild")
+
+    element(app, "theme-picker.empty.showAll").click()
+    XCTAssertTrue(waitFor(filter, selected: false), "Show All Themes left the filter on")
+    XCTAssertTrue(workroom.waitForExistence(timeout: 3), "every theme isn't listed again")
+
+    // Closed, ⌘D is Split Right again.
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(app.popovers.firstMatch.waitForNonExistence(timeout: 3), "Esc didn't close it")
+    app.typeKey("d", modifierFlags: .command)
+    assertPaneCount(app, is: 2, "⌘D no longer splits once the picker is closed")
+    app.typeKey("f", modifierFlags: .command)
+    XCTAssertTrue(
+      findBar(app).waitForExistence(timeout: 3), "⌘F no longer opens Find once the picker is closed"
+    )
+  }
+
+  /// The terminal's Find bar's field, which ⌘F opens outside a theme list. Its match count, the
+  /// bar's one identifier, is empty text until there's a search, so it isn't in the tree to find.
+  private func findBar(_ app: XCUIApplication) -> XCUIElement {
+    app.textFields.matching(NSPredicate(format: "placeholderValue == %@", "Find")).firstMatch
+  }
+
+  /// Favourites in Settings ▸ Themes, with one starred at launch: the filter is the picker's own
+  /// setting, the grid starts on a favourite without applying it, a tile's star unstars it without
+  /// choosing it, a tab with no favourites says so, the context menu and ⌘D star one, and ⌘D and ⌘F
+  /// stay in Settings.
+  func testSettingsSharesTheFilterAndStarsFromTheTile() throws {
+    let app = launchedApp(favouriteThemes: ["Night Owl"])
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
+    XCTAssertTrue(panes(app).firstMatch.waitForExistence(timeout: 10), "no terminal pane")
+
+    // Turned on in the picker…
+    openPicker(app)
+    XCTAssertTrue(element(app, "theme-dark-Workroom").waitForExistence(timeout: 5))
+    app.typeKey("f", modifierFlags: .command)
+    XCTAssertTrue(waitFor(element(app, "theme-picker.favourites"), selected: true))
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(app.popovers.firstMatch.waitForNonExistence(timeout: 3))
+
+    // …it's on in Settings.
+    openThemesSettings(app)
+    waitForListToSettle(app)
+    let filter = element(app, "settings.themes.favourites")
+    XCTAssertTrue(waitFor(filter, selected: true), "Settings doesn't share the picker's filter")
+    let nightOwl = tile(app, "dark-Night Owl")
+    let workroom = tile(app, "dark-Workroom")
+    XCTAssertTrue(nightOwl.waitForExistence(timeout: 3), "the favourite has no tile")
+    XCTAssertFalse(workroom.exists, "a theme that isn't a favourite is listed")
+
+    // Workroom, the current choice, isn't a favourite: the grid starts on Night Owl without
+    // applying it.
+    XCTAssertEqual(waitForConfToSettle(), "Workroom", "opening the filtered grid applied a theme")
+
+    // The tile's star unstars it without choosing it; the tile stays until the grid is rebuilt.
+    let star = element(app, "settings.themes.dark-Night Owl-star")
+    XCTAssertTrue(waitFor(star, selected: true), "the favourite's star isn't filled")
+    star.click()
+    XCTAssertTrue(waitFor(star, selected: false), "clicking the star didn't unstar it")
+    XCTAssertTrue(nightOwl.exists, "the unstarred tile vanished at once")
+    XCTAssertEqual(waitForConfToSettle(), "Workroom", "clicking the star chose the theme")
+
+    // Rebuilt, with no favourites left on Dark.
+    browse(app, "Light")
+    browse(app, "Dark")
+    let empty = element(app, "settings.themes.empty.title")
+    XCTAssertTrue(empty.waitForExistence(timeout: 3), "a tab with no favourites is blank")
+    XCTAssertEqual(text(of: empty), "No favourite dark themes yet")
+    XCTAssertFalse(nightOwl.exists, "the unstarred tile outlived the rebuild")
+    element(app, "settings.themes.empty.showAll").click()
+    XCTAssertTrue(waitFor(filter, selected: false), "Show All Themes left the filter on")
+    XCTAssertTrue(workroom.waitForExistence(timeout: 3), "every theme isn't listed again")
+
+    // ⌘D stars the current choice, and splits nothing in the main window…
+    workroom.click()
+    app.typeKey("d", modifierFlags: .command)
+    XCTAssertTrue(
+      waitFor(element(app, "settings.themes.dark-Workroom-star"), selected: true),
+      "⌘D didn't star the current theme")
+    assertPaneCount(app, is: 1, "⌘D in Settings split the workroom")
+
+    // …and the filter button is ⌘F's too.
+    filter.click()
+    XCTAssertTrue(waitFor(filter, selected: true), "the filter button didn't turn the filter on")
+    app.typeKey("f", modifierFlags: .command)
+    XCTAssertTrue(waitFor(filter, selected: false), "⌘F didn't turn the filter off in Settings")
+
+    // …and the context menu stars a tile. Searched, so the lazy grid has made its tile.
+    search(app, "Night Owl")
+    XCTAssertTrue(nightOwl.waitForExistence(timeout: 3), "the search didn't list Night Owl")
+    nightOwl.rightClick()
+    let add = app.menuItems["Add to Favourites"]
+    XCTAssertTrue(add.waitForExistence(timeout: 3), "the tile's menu can't add it to favourites")
+    add.click()
+    XCTAssertTrue(waitFor(star, selected: true), "Add to Favourites didn't star it")
+  }
+
+  /// Polls `element` until its selected state is `selected`: the Settings scene's `@Default`
+  /// invalidates asynchronously. An unstarred star that isn't hovered is hidden, and may leave the
+  /// accessibility tree, so gone counts as not selected.
+  private func waitFor(_ element: XCUIElement, selected: Bool, timeout: TimeInterval = 3) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if element.exists ? element.isSelected == selected : !selected { return true }
+      usleep(100_000)
+    }
+    return false
   }
 }
