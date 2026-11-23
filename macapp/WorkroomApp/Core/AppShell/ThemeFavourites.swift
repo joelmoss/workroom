@@ -1,4 +1,3 @@
-import AppKit
 import Defaults
 import Observation
 import SwiftUI
@@ -6,7 +5,7 @@ import SwiftUI
 /// Something the user can star in the theme lists: a theme, by name and on whichever side it's on, or
 /// a theme family, each kind stored apart (`Kind.key`).
 struct ThemeFavourite: Hashable, Sendable {
-  enum Kind: Hashable, Sendable {
+  enum Kind: Hashable, Sendable, CaseIterable {
     case theme
     case family
 
@@ -34,10 +33,6 @@ struct ThemeFavourite: Hashable, Sendable {
 /// missing for a while (a dotfiles sync), and the star comes back with the file.
 @MainActor
 enum ThemeFavourites {
-  static func contains(_ favourite: ThemeFavourite) -> Bool {
-    Defaults[favourite.kind.key].contains(favourite.name)
-  }
-
   /// Stars `favourite`, or unstars it when it's starred already.
   static func toggle(_ favourite: ThemeFavourite) {
     var names = Defaults[favourite.kind.key]
@@ -69,13 +64,12 @@ extension ThemeLists {
 @MainActor
 @Observable
 final class ThemeListFavourites {
-  private(set) var themes: Set<String> = []
-  private(set) var families: Set<String> = []
+  /// The starred names of each kind, mirrored from `Kind.key`.
+  private var starred: [ThemeFavourite.Kind: Set<String>] = [:]
   /// Only favourites listed: one setting for every theme list, kept between openings.
   private(set) var favouritesOnly = false
-  /// The favourites the list was last rebuilt with.
-  private var builtThemes: Set<String> = []
-  private var builtFamilies: Set<String> = []
+  /// The starred names of each kind the list was last rebuilt with.
+  private var built: [ThemeFavourite.Kind: Set<String>] = [:]
   @ObservationIgnored private var observation: Defaults.Observation?
 
   init() {
@@ -85,7 +79,7 @@ final class ThemeListFavourites {
       keys: .favouriteThemes, .favouriteFamilies, .themeFavouritesOnly, options: []
     ) { [weak self] in
       // Written on the main actor by everything in the app, so mirrored at once, before the write
-      // returns; a write from elsewhere hops.
+      // returns (and so inside its transaction); a write from elsewhere hops.
       if Thread.isMainThread {
         MainActor.assumeIsolated { self?.load() }
       } else {
@@ -95,8 +89,7 @@ final class ThemeListFavourites {
   }
 
   private func load() {
-    themes = Defaults[.favouriteThemes]
-    families = Defaults[.favouriteFamilies]
+    for kind in ThemeFavourite.Kind.allCases { starred[kind] = Defaults[kind.key] }
     favouritesOnly = Defaults[.themeFavouritesOnly]
   }
 
@@ -105,22 +98,23 @@ final class ThemeListFavourites {
   }
 
   /// Forgets rows unstarred since the last rebuild.
-  func rebuild() {
-    builtThemes = themes
-    builtFamilies = families
-  }
+  func rebuild() { built = starred }
 
-  /// Flips the favourites filter (the star by the search, ⌘F), rebuilding the list.
+  /// Flips the favourites filter (the star by the search, ⌘F, Show All Themes), rebuilding the list.
+  /// Without animation: the filter moves the tiles that stay to new places, and a tile's own implicit
+  /// animations would otherwise carry parts of it there.
   func toggleFilter() {
     rebuild()
-    Defaults[.themeFavouritesOnly].toggle()
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) { Defaults[.themeFavouritesOnly].toggle() }
   }
 
   /// The names of `kind` a filtered list shows, or nil while the filter is off: the favourites, and
   /// those unstarred since the last rebuild.
   func listed(_ kind: ThemeFavourite.Kind) -> Set<String>? {
     guard favouritesOnly else { return nil }
-    return names(kind).union(kind == .family ? builtFamilies : builtThemes)
+    return names(kind).union(built[kind] ?? [])
   }
 
   /// What a list of `kind` shows of `items`, for `query`.
@@ -151,9 +145,7 @@ final class ThemeListFavourites {
       })
   }
 
-  private func names(_ kind: ThemeFavourite.Kind) -> Set<String> {
-    kind == .family ? families : themes
-  }
+  private func names(_ kind: ThemeFavourite.Kind) -> Set<String> { starred[kind] ?? [] }
 }
 
 /// What an empty theme list says.
@@ -186,60 +178,5 @@ enum ThemeListEmptyState: Equatable {
     case .noFavouriteMatches(let query): return "No favourites match “\(query)”"
     case .noMatches(let query): return "No themes match “\(query)”"
     }
-  }
-}
-
-/// ⌘D (star the highlighted theme) and ⌘F (the favourites filter) inside a theme list. Both keys
-/// belong to other commands everywhere else (Split Right, Find), so they aren't `ShortcutAction`s:
-/// the app's key monitor (`AppDelegate`) offers them here first, and a theme list takes them only
-/// while its window is the key window. The ⌘⇧K picker is a popover, which leaves the window it hangs
-/// from key, so its list also takes them from that window while it's open.
-@MainActor
-final class ThemeListKeys {
-  static let shared = ThemeListKeys()
-
-  enum Command: Equatable {
-    case toggleFavourite
-    case toggleFilter
-
-    /// ⌘D or ⌘F and nothing else, by the character typed, as the shortcut registry matches.
-    init?(_ chord: KeyChord) {
-      guard chord.modifiers == .command else { return nil }
-      switch chord.character {
-      case "d": self = .toggleFavourite
-      case "f": self = .toggleFilter
-      default: return nil
-      }
-    }
-  }
-
-  private struct Entry {
-    let id: UUID
-    weak var window: NSWindow?
-    let perform: (Command) -> Void
-  }
-
-  private var entries: [Entry] = []
-
-  /// Hands `window`'s theme list the keys while it's up. Unregister when the list goes.
-  func register(window: NSWindow, perform: @escaping (Command) -> Void) -> UUID {
-    let id = UUID()
-    entries.append(Entry(id: id, window: window, perform: perform))
-    return id
-  }
-
-  func unregister(_ id: UUID) {
-    entries.removeAll { $0.id == id }
-  }
-
-  /// Performs `command` on the theme list in `window`, or the popover hanging from it, and says
-  /// whether there was one. The newest list wins.
-  func handle(_ command: Command, in window: NSWindow?) -> Bool {
-    entries.removeAll { $0.window == nil }
-    guard let window,
-      let entry = entries.last(where: { $0.window === window || $0.window?.parent === window })
-    else { return false }
-    entry.perform(command)
-    return true
   }
 }

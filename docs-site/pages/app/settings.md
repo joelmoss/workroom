@@ -78,7 +78,7 @@ Your own Ghostty theme files in `~/.config/ghostty/themes` are listed too, each 
 
 A family is hidden from **Family** while one of its two themes isn't on its own side, for example when a dark file of yours replaces its light theme. You can still choose its other theme on its own.
 
-If your light theme is missing, or is now a dark theme, Workroom shows **Workroom Light** in its place. If your dark theme is missing, or is now a light theme, it shows **Workroom**. The window for that side says so under the theme's name. Your choice is kept, so the theme comes back when its file does.
+If your light theme is missing, or is now a dark theme, Workroom shows **Workroom Light** in its place. If your dark theme is missing, or is now a light theme, it shows **Workroom**. The window for that side says so beside the theme's name. Your choice is kept, so the theme comes back when its file does.
 
 ### Favourite themes
 

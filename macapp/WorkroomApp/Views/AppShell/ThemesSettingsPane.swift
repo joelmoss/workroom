@@ -113,7 +113,7 @@ struct ThemesSettingsPane: View {
         }
       }
     }
-    .themeListKeys(favourites, toggleFavourite: toggleKeyboardFavourite)
+    .themeListKeys(favourites) { keyboardFavourite }
   }
 
   // MARK: Favourites
@@ -128,11 +128,11 @@ struct ThemesSettingsPane: View {
     Binding(get: { browse }, set: { select($0) })
   }
 
-  /// Stars or unstars the tile the keyboard is on (⌘D): the current choice, or the first tile while
-  /// the current choice isn't listed.
-  private func toggleKeyboardFavourite() {
-    guard let id = keyboardID, let tile = currentTiles.first(where: { $0.id == id }) else { return }
-    ThemeFavourites.toggle(tile.favourite)
+  /// What ⌘D stars: the tile the keyboard is on, the current choice, or the first tile while the
+  /// current choice isn't listed.
+  private var keyboardFavourite: ThemeFavourite? {
+    guard let id = keyboardID else { return nil }
+    return currentTiles.first { $0.id == id }?.favourite
   }
 
   // MARK: Stage
@@ -197,7 +197,6 @@ struct ThemesSettingsPane: View {
       } label: {
         MiniWorkroomWindow(preview: active.preview)
           .frame(maxWidth: .infinity)
-          .frame(height: 124)
           // On the window rather than beside the name, so a long name keeps the room.
           .overlay(alignment: .topTrailing) {
             if onScreen {
@@ -213,7 +212,7 @@ struct ThemesSettingsPane: View {
           .themeTileChrome(selected: browse.side == side, radius: Radius.m)
           .contentShape(Rectangle())
       }
-      .buttonStyle(ThemeTileButtonStyle())
+      .themeTileButton()
       .help(help)
       .accessibilityLabel("Browse \(sideName.lowercased()) themes")
       .accessibilityValue(name)
@@ -232,20 +231,38 @@ struct ThemesSettingsPane: View {
           .accessibilityLabel("\(sideName) theme")
           .accessibilityValue(name)
           .accessibilityIdentifier("settings.themes.stage.\(side.rawValue).name")
-        Spacer(minLength: 0)
+          .layoutPriority(1)
+        Spacer(minLength: Spacing.s)
+        // On the name's line, in type no taller than the name, rather than on a line of its own: a
+        // note that came and went moved the browser and the grid under the stage.
+        if let note { fallbackNote(note, side: side) }
       }
       .contentShape(Rectangle())
       .onTapGesture { select(ThemePickerTab(side: side)) }
-      if let note {
-        Label(note.text, systemImage: "exclamationmark.triangle.fill")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .help(note.help)
-          .accessibilityIdentifier("settings.themes.fallback.\(side.rawValue)")
-      }
     }
+  }
+
+  /// A stage window's fallback note, on its theme's name line: the warning glyph always, with as
+  /// much of its text as the line leaves room for (all of it, the part before the colon, or none),
+  /// and the whole of it in the tooltip and to VoiceOver.
+  private func fallbackNote(_ note: ThemeFallbackNote, side: ThemeSide) -> some View {
+    let short = note.text.split(separator: ":", maxSplits: 1).first.map(String.init) ?? note.text
+    return HStack(spacing: Spacing.xs) {
+      Image(systemName: "exclamationmark.triangle.fill")
+      ViewThatFits(in: .horizontal) {
+        Text(note.text)
+        Text(short)
+        EmptyView()
+      }
+      .lineLimit(1)
+    }
+    .font(.caption)
+    .foregroundStyle(.secondary)
+    .fixedSize(horizontal: false, vertical: true)
+    .help(note.help)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(note.text)
+    .accessibilityIdentifier("settings.themes.fallback.\(side.rawValue)")
   }
 
   // MARK: Browser
@@ -544,7 +561,7 @@ private struct ThemeTile: View {
       }
       .contentShape(Rectangle())
     }
-    .buttonStyle(ThemeTileButtonStyle())
+    .themeTileButton()
     .help(help)
     .accessibilityLabel(name)
     .accessibilityAddTraits(selected ? .isSelected : [])
@@ -556,8 +573,7 @@ private struct ThemeTile: View {
           let place = geometry[anchor]
           FavouriteStar(
             favourite: favourite, isFavourite: isFavourite, revealed: hovered,
-            size: Self.starSize, outlineColor: .secondary, keyTarget: .selected,
-            identifier: identifier
+            size: Self.starSize, outlineColor: .secondary, identifier: identifier
           )
           .position(x: place.midX, y: place.midY)
         }
@@ -576,28 +592,42 @@ private struct TileStarAnchor: PreferenceKey {
   }
 }
 
-/// A plain button that dims slightly while pressed, with a focus ring for keyboard navigation (a
-/// plain style draws none); the tile's own chrome shows hover.
+/// A plain button that dims slightly while pressed, with a focus ring when keyboard navigation (Tab,
+/// with Full Keyboard Access) lands on it; a plain style draws none. The tile's own chrome shows
+/// hover.
 private struct ThemeTileButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
-    ThemeTileButtonBody(configuration: configuration)
+    configuration.label
+      .animation(.easeOut(duration: 0.12)) { $0.opacity(configuration.isPressed ? 0.75 : 1) }
   }
 }
 
-private struct ThemeTileButtonBody: View {
-  @Environment(\.isFocused) private var focused
+/// The focus ring of one tile button, drawn only while that button has focus. It reads the button's
+/// own focus (`@FocusState` bound to it), not `\.isFocused`: that is true for every view inside a
+/// focused one, so with the grid focused (it is, to take the arrow keys) every tile drew the ring.
+private struct ThemeTileFocusRing: ViewModifier {
   @Environment(\.themeTokens) private var tokens
-  let configuration: ButtonStyleConfiguration
+  @FocusState private var focused: Bool
 
-  var body: some View {
-    configuration.label
-      .opacity(configuration.isPressed ? 0.75 : 1)
+  func body(content: Content) -> some View {
+    content
+      .focused($focused)
       .overlay {
         RoundedRectangle(cornerRadius: Radius.m + 2, style: .continuous)
-          .strokeBorder(focused ? tokens.accent.opacity(0.6) : .clear, lineWidth: 3)
+          .strokeBorder(lineWidth: 3)
+          .animation(.easeOut(duration: 0.12)) {
+            $0.foregroundStyle(focused ? tokens.accent.opacity(0.6) : .clear)
+          }
           .padding(-3)
+          .allowsHitTesting(false)
       }
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+extension View {
+  /// A theme tile's or stage window's button: `ThemeTileButtonStyle` and its own focus ring.
+  fileprivate func themeTileButton() -> some View {
+    buttonStyle(ThemeTileButtonStyle()).modifier(ThemeTileFocusRing())
   }
 }
 
@@ -648,47 +678,58 @@ extension View {
 
 /// The whole app in miniature, painted from the theme's derived chrome (`ThemeTokens`): a sidebar of
 /// workrooms with one selected, a tab strip, and a terminal.
+///
+/// As tall as its content, so nothing is left empty under the terminal: the terminal column (the tab
+/// strip over `TerminalSnippet`) sets the height, and the sidebar's rows are fewer than would make it
+/// any taller. Its width comes from the stage, read rather than taken from a `GeometryReader`, which
+/// would need a height of its own.
 private struct MiniWorkroomWindow: View {
   let preview: ThemePreview?
+  @State private var width: CGFloat = 0
 
   var body: some View {
     let t = ThemeTokens(preview: preview)
-    GeometryReader { geo in
-      let sidebar = max(56, geo.size.width * 0.24)
-      HStack(spacing: 0) {
-        VStack(alignment: .leading, spacing: 6) {
-          HStack(spacing: 3) {
-            ForEach([Color.red, .yellow, .green], id: \.self) {
-              Circle().fill($0.opacity(0.85)).frame(width: 6, height: 6)
-            }
+    let sidebar = max(56, width * 0.24)
+    HStack(spacing: 0) {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 3) {
+          ForEach([Color.red, .yellow, .green], id: \.self) {
+            Circle().fill($0.opacity(0.85)).frame(width: 6, height: 6)
           }
-          .padding(.bottom, 6)
-          // Workroom rows of varied length, the second one selected.
-          ForEach(Array([0.5, 0.78, 0.62, 0.44, 0.56].enumerated()), id: \.offset) { index, width in
-            RoundedRectangle(cornerRadius: 2)
-              .fill(index == 1 ? t.accent.opacity(0.45) : t.fg.opacity(0.14))
-              .frame(width: (sidebar - 16) * width, height: 6)
-          }
+        }
+        .padding(.bottom, 6)
+        // Workroom rows of varied length, the second one selected.
+        ForEach(Array([0.5, 0.78, 0.62, 0.44].enumerated()), id: \.offset) { index, width in
+          RoundedRectangle(cornerRadius: 2)
+            .fill(index == 1 ? t.accent.opacity(0.45) : t.fg.opacity(0.14))
+            .frame(width: (sidebar - 16) * width, height: 6)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(8)
+      .frame(width: sidebar, alignment: .leading)
+      .frame(maxHeight: .infinity)
+      .background(t.panel)
+      Rectangle().fill(t.border).frame(width: 0.5)
+      VStack(spacing: 0) {
+        HStack(spacing: 5) {
+          RoundedRectangle(cornerRadius: 2).fill(t.fg.opacity(0.22)).frame(width: 40, height: 6)
+          RoundedRectangle(cornerRadius: 2).fill(t.fg.opacity(0.09)).frame(width: 32, height: 6)
           Spacer(minLength: 0)
         }
-        .padding(8)
-        .frame(width: sidebar, alignment: .leading)
-        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 8)
+        .frame(height: 20)
         .background(t.panel)
-        Rectangle().fill(t.border).frame(width: 0.5)
-        VStack(spacing: 0) {
-          HStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 2).fill(t.fg.opacity(0.22)).frame(width: 40, height: 6)
-            RoundedRectangle(cornerRadius: 2).fill(t.fg.opacity(0.09)).frame(width: 32, height: 6)
-            Spacer(minLength: 0)
-          }
-          .padding(.horizontal, 8)
-          .frame(height: 20)
-          .background(t.panel)
-          Rectangle().fill(t.border).frame(height: 0.5)
-          TerminalSnippet(preview: preview, fontSize: 10)
-        }
+        Rectangle().fill(t.border).frame(height: 0.5)
+        TerminalSnippet(preview: preview, fontSize: 10)
       }
+    }
+    .fixedSize(horizontal: false, vertical: true)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onGeometryChange(for: CGFloat.self) {
+      $0.size.width
+    } action: {
+      width = $0
     }
     .background(t.bg)
     .accessibilityHidden(true)

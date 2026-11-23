@@ -490,10 +490,15 @@ final class ThemePickerUITests: XCTestCase {
     search(app, lightVariantFile)
     let target = tile(app, "light-\(lightVariantFile)")
     XCTAssertTrue(target.waitForExistence(timeout: 5), "'\(lightVariantFile)' is not listed")
+    // The note sits on the theme's name line, so its going moves nothing under the stage.
+    let searchTop = element(app, "settings.themes.search").frame.minY
     target.click()
     waitForLabel(app, "settings.themes.stage.light.name", toShow: lightVariantFile)
     XCTAssertTrue(
       note.waitForNonExistence(timeout: 5), "the fallback note stayed after choosing a light theme")
+    XCTAssertEqual(
+      element(app, "settings.themes.search").frame.minY, searchTop,
+      "the fallback note going moved the grid")
   }
 
   /// The Settings ▸ Themes grid moves by keyboard and applies each theme live, as the ⌘⇧K picker does:
@@ -510,10 +515,19 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertTrue(start.waitForExistence(timeout: 5), "the Dark grid has no Workroom tile")
     start.click()  // gives the grid focus; Workroom is already chosen
 
+    // The stage's windows preview the chosen themes. Every theme draws them at the same size, so a
+    // choice never moves the browser or the grid under them.
+    let stage = element(app, "settings.themes.stage.dark")
+    let search = element(app, "settings.themes.search")
+    let stageFrame = stage.frame
+    let searchTop = search.frame.minY
+
     app.typeKey(.rightArrow, modifierFlags: [])
     let next = waitForConfToSettle()
     XCTAssertNotNil(next)
     XCTAssertNotEqual(next, "Workroom", "→ didn't choose the next theme")
+    XCTAssertEqual(stage.frame, stageFrame, "choosing \(next ?? "a theme") resized its preview")
+    XCTAssertEqual(search.frame.minY, searchTop, "choosing \(next ?? "a theme") moved the grid")
     app.typeKey(.leftArrow, modifierFlags: [])
     XCTAssertEqual(waitForConfToSettle(), "Workroom", "← didn't go back to Workroom")
 
@@ -532,6 +546,8 @@ final class ThemePickerUITests: XCTestCase {
     }
     let chosen = tile(app, "dark-\(name)")
     XCTAssertTrue(chosen.waitForExistence(timeout: 3), "no tile for '\(name)'")
+    XCTAssertEqual(stage.frame, stageFrame, "choosing \(name) resized its preview")
+    XCTAssertEqual(search.frame.minY, searchTop, "choosing \(name) moved the grid")
     let top = element(app, "settings.themes.search").frame.maxY
     let bottom = app.windows["Settings"].frame.maxY
     XCTAssertGreaterThanOrEqual(chosen.frame.minY, top, "'\(name)' is under the browser")
@@ -735,6 +751,33 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertTrue(waitFor(filter, selected: false), "Show All Themes left the filter on")
     XCTAssertTrue(workroom.waitForExistence(timeout: 3), "every theme isn't listed again")
 
+    // Families are favourites of their own: ⌘D on the Family tab stars the highlighted family,
+    // Workroom, and the filter then lists it alone.
+    element(app, "theme-picker.tab.family").click()
+    let workroomFamily = row(app, "Workroom")
+    XCTAssertTrue(workroomFamily.waitForExistence(timeout: 3), "the Family tab has no Workroom")
+    waitForListToSettle(app)
+    app.typeKey("d", modifierFlags: .command)
+    XCTAssertTrue(
+      waitFor(element(app, "theme-family-Workroom-star"), selected: true),
+      "⌘D didn't star the highlighted family")
+    // A family listed beside it now, which the filter has to take away.
+    let otherFamily = app.descendants(matching: .any).matching(
+      NSPredicate(
+        format: "identifier BEGINSWITH %@ AND identifier != %@ AND NOT identifier ENDSWITH %@",
+        "theme-family-", "theme-family-Workroom", "-star")
+    ).firstMatch
+    XCTAssertTrue(otherFamily.waitForExistence(timeout: 3), "no other family is listed")
+    let other = element(app, otherFamily.identifier)
+    app.typeKey("f", modifierFlags: .command)
+    XCTAssertTrue(waitFor(filter, selected: true), "⌘F didn't turn the filter on")
+    XCTAssertTrue(workroomFamily.waitForExistence(timeout: 3), "the favourite family isn't listed")
+    XCTAssertTrue(
+      other.waitForNonExistence(timeout: 3),
+      "\(other.identifier), not a favourite, is still listed")
+    app.typeKey("f", modifierFlags: .command)
+    XCTAssertTrue(waitFor(filter, selected: false), "⌘F didn't turn the filter off")
+
     // Closed, ⌘D is Split Right again.
     app.typeKey(.escape, modifierFlags: [])
     XCTAssertTrue(app.popovers.firstMatch.waitForNonExistence(timeout: 3), "Esc didn't close it")
@@ -816,6 +859,7 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertTrue(waitFor(filter, selected: true), "the filter button didn't turn the filter on")
     app.typeKey("f", modifierFlags: .command)
     XCTAssertTrue(waitFor(filter, selected: false), "⌘F didn't turn the filter off in Settings")
+    XCTAssertFalse(findBar(app).exists, "⌘F in Settings opened Find in the workroom")
 
     // …and the context menu stars a tile. Searched, so the lazy grid has made its tile.
     search(app, "Night Owl")

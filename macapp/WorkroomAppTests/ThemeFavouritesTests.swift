@@ -35,17 +35,14 @@ final class ThemeFavouritesTests: XCTestCase {
   // MARK: Store
 
   func testStarringAThemeTwiceUnstarsIt() {
-    XCTAssertFalse(ThemeFavourites.contains(.theme("Nord")))
     ThemeFavourites.toggle(.theme("Nord"))
-    XCTAssertTrue(ThemeFavourites.contains(.theme("Nord")))
+    XCTAssertEqual(Defaults[.favouriteThemes], ["Nord"])
     ThemeFavourites.toggle(.theme("Nord"))
-    XCTAssertFalse(ThemeFavourites.contains(.theme("Nord")))
+    XCTAssertEqual(Defaults[.favouriteThemes], [])
   }
 
   func testAThemeAndAFamilyOfTheSameNameAreSeparateFavourites() {
     ThemeFavourites.toggle(.family("Nord"))
-    XCTAssertTrue(ThemeFavourites.contains(.family("Nord")))
-    XCTAssertFalse(ThemeFavourites.contains(.theme("Nord")))
     XCTAssertEqual(Defaults[.favouriteFamilies], ["Nord"])
     XCTAssertEqual(Defaults[.favouriteThemes], [])
   }
