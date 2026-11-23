@@ -22,6 +22,13 @@
 //!
 //! Each run gets a cleared environment: only `PATH`, its own HOME and `WORKROOM_CONFIG`, and git
 //! with no global or system config. Nothing a run does can reach the real home or config.
+//!
+//! Each run starts outside this test's process tree (`outside`), so a coding agent running the
+//! suite is none of the binary's parents, and `trust`, `delete` and `delete-project`, which refuse
+//! to run under one (#793), run as they do for a person. The `needs_the_user_` tests put a
+//! stand-in coding agent above the binary instead.
+
+mod outside;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -107,31 +114,62 @@ impl Home {
         self.run_program(&binary(), cwd, args)
     }
 
-    /// Runs `program`, a copy of the binary under test, as [`Home::run`] runs that.
+    /// Runs `program`, a copy of the binary under test, as [`Home::run`] runs that: with nothing on
+    /// stdin, outside this test's process tree (`outside`), so a coding agent running the tests is
+    /// none of its parents and `trust` and `delete` run as they do for a person (#793).
     fn run_program<S: AsRef<OsStr>>(&self, program: &Path, cwd: &Path, args: &[S]) -> Run {
-        let output = self
-            .command(program, cwd)
-            .args(args)
-            .output()
-            .unwrap_or_else(|error| panic!("run {}: {error}", program.display()));
-        Run::from(args, output)
+        let mut command = self.command(program, cwd);
+        command.args(args).stdin(std::process::Stdio::null());
+        Run::from(args, outside::spawn(command, None).wait_with_output())
     }
 
     /// Runs the binary under test as [`Home::run`] does, with `stdin` (a pipe, not a terminal) as
     /// its standard input.
     fn run_with_stdin<S: AsRef<OsStr>>(&self, cwd: &Path, args: &[S], stdin: &[u8]) -> Run {
-        use std::io::Write;
-        let mut child = self
-            .command(binary(), cwd)
-            .args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("run the binary under test");
-        // A binary that never reads its stdin may close it first, which is no failure here.
-        let _ = child.stdin.take().expect("stdin").write_all(stdin);
-        Run::from(args, child.wait_with_output().expect("wait"))
+        let mut command = self.command(binary(), cwd);
+        command.args(args);
+        Run::from(
+            args,
+            outside::spawn(command, Some(stdin)).wait_with_output(),
+        )
+    }
+
+    /// Runs the binary under test as [`Home::run`] does, under a stand-in coding agent: a
+    /// `#!/bin/sh` script named `agent` (`claude`, `codex`), outside this test's process tree, so
+    /// the agent is the binary's only one. With `through_a_shell` the script runs it from a shell
+    /// of its own, as an agent's tool runs a command, so the agent is its grandparent. `stdin`,
+    /// when given, is the binary's standard input; nothing otherwise.
+    fn run_under_agent(
+        &self,
+        agent: &str,
+        through_a_shell: bool,
+        cwd: &Path,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+    ) -> Run {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = self.path(if through_a_shell {
+            "agents/through-a-shell"
+        } else {
+            "agents/direct"
+        });
+        std::fs::create_dir_all(&folder).expect("agents folder");
+        let script = folder.join(agent);
+        // Not the last command, so no shell execs the binary in its own place.
+        let body = if through_a_shell {
+            "#!/bin/sh\n/bin/sh -c '\"$@\"; status=$?; exit $status' sh \"$@\"\nexit $?\n"
+        } else {
+            "#!/bin/sh\n\"$@\"\nexit $?\n"
+        };
+        std::fs::write(&script, body).expect("write the stand-in agent");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in agent executable");
+        let mut command = self.command(&script, cwd);
+        command.arg(binary()).args(args);
+        if stdin.is_none() {
+            command.stdin(std::process::Stdio::null());
+        }
+        Run::from(args, outside::spawn(command, stdin).wait_with_output())
     }
 
     /// Runs git in `dir`, which must succeed.
@@ -2841,22 +2879,20 @@ fn run_with_env(home: &Home, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
     finish(args, spawn_with_env(home, args, env))
 }
 
-/// Starts the binary under test in `home` with `env` added, its stdout and stderr piped.
-fn spawn_with_env(home: &Home, args: &[&str], env: &[(&str, &OsStr)]) -> std::process::Child {
+/// Starts the binary under test in `home` with `env` added, its stdout and stderr piped, outside
+/// this test's process tree as [`Home::run`] runs it; its `pid` is the binary's.
+fn spawn_with_env(home: &Home, args: &[&str], env: &[(&str, &OsStr)]) -> outside::Outside {
     let mut command = home.command(binary(), &home.dir);
-    command
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    command.args(args).stdin(std::process::Stdio::null());
     for (key, value) in env {
         command.env(key, value);
     }
-    command.spawn().expect("start the binary")
+    outside::spawn(command, None)
 }
 
 /// A run started by [`spawn_with_env`], once it has exited.
-fn finish(args: &[&str], child: std::process::Child) -> Run {
-    let output = child.wait_with_output().expect("wait for the binary");
+fn finish(args: &[&str], child: outside::Outside) -> Run {
+    let output = child.wait_with_output();
     Run {
         args: args.join(" "),
         code: output
@@ -3041,7 +3077,7 @@ fn add_project_clone_cancelled_by_a_signal_puts_everything_back() {
     let child = spawn_with_env(&home, &args, &[("GIT_ALLOW_PROTOCOL", OsStr::new("ext"))]);
     let helper = wait_for_pid(&pid_file);
     // SAFETY: signals the binary under test, which this test started.
-    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    assert_eq!(unsafe { libc::kill(child.pid, libc::SIGTERM) }, 0);
     let run = finish(&args, child);
     run.assert_code(4);
     assert_eq!(run.error_kind(), "Cancelled");
@@ -3325,11 +3361,17 @@ fn add_project_clone_keeps_a_killed_clis_staging_until_its_git_is_gone() {
     std::fs::create_dir_all(&dest).expect("dest");
     let dest_arg = dest.to_string_lossy().into_owned();
     let args = ["add-project", &dest_arg, "--clone", &url, "--json"];
-    let mut child = Reaped(spawn_with_env(
-        &home,
-        &args,
-        &[("GIT_ALLOW_PROTOCOL", OsStr::new("ext"))],
-    ));
+    // This process's own child, which it kills and reaps while git lives on: `add-project` runs
+    // under a coding agent as anywhere, so it needs no starting outside this tree.
+    let mut child = Reaped(
+        home.command(binary(), &home.dir)
+            .args(args)
+            .env("GIT_ALLOW_PROTOCOL", "ext")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("start the binary"),
+    );
     let mut helper = Helper(Some(wait_for_pid(&pid_file)));
     let cli = child.0.id();
     child.0.kill().expect("SIGKILL the CLI");
@@ -4393,25 +4435,15 @@ fn delete_args<'a>(project: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Runs the binary under test as [`Home::run`] does, with nothing on stdin and in a session of its
-/// own, so there is no terminal it could ask on even when the test runs in one (Go's prompt opens
-/// /dev/tty, which would wait on the developer's), with `env` set on top.
+/// own (`outside` starts one), so there is no terminal it could ask on even when the test runs in
+/// one (Go's prompt opens /dev/tty, which would wait on the developer's), with `env` set on top.
 fn run_without_a_terminal(home: &Home, cwd: &Path, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
-    use std::os::unix::process::CommandExt;
     let mut command = home.command(binary(), cwd);
     command.args(args).stdin(std::process::Stdio::null());
     for (key, value) in env {
         command.env(key, value);
     }
-    // SAFETY: between fork and exec the child only calls setsid, which is async-signal-safe.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Run::from(args, command.output().expect("run the binary under test"))
+    Run::from(args, outside::spawn(command, None).wait_with_output())
 }
 
 /// The goldens Go's `TestContract` records for `delete`: the teardown's output as `teardown`
@@ -4571,7 +4603,7 @@ fn delete_cancelled_during_the_teardown_reports_it_failed_and_keeps_the_workroom
     let child = spawn_with_env(&home, &args, &[]);
     let script = wait_for_pid(&home.path("workrooms/teardown.pid"));
     // SAFETY: signals the binary under test, which this test started.
-    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    assert_eq!(unsafe { libc::kill(child.pid, libc::SIGTERM) }, 0);
     let run = finish(&args, child);
     run.assert_code(5).assert_quiet_stderr();
     assert_eq!(
@@ -8181,7 +8213,7 @@ fn create_cancelled_during_setup_still_reports() {
     let child = spawn_with_env(&home, &args, &[]);
     let script = wait_for_pid(&pid_file);
     // SAFETY: kill has no memory preconditions; the pid is the child this test started.
-    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    unsafe { libc::kill(child.pid, libc::SIGTERM) };
     let run = finish(&args, child);
     run.assert_code(5);
     let envelope = run.envelope();
@@ -8312,6 +8344,184 @@ fn create_runs_git_as_go_does() {
             .to_string(),
     ];
     assert_eq!(seen, want);
+}
+
+// --- the commands only a person may run (#793) ---
+
+/// Checks `run` is `NeedsTheUser` (exit 3) naming `agent`, in an envelope with nothing on stderr,
+/// or for a person (`--json` left out) on stderr with nothing on stdout.
+fn assert_needs_the_user(run: &Run, agent: &str) {
+    run.assert_code(3);
+    let message = if run.args.split(' ').any(|arg| arg == "--json") {
+        run.assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "NeedsTheUser", "`{}`", run.args);
+        run.envelope()["error"]["message"]
+            .as_str()
+            .expect("message")
+            .to_string()
+    } else {
+        run.assert_quiet_stdout();
+        run.stderr
+            .strip_prefix("Error: ")
+            .unwrap_or_else(|| panic!("`{}`: {:?}", run.args, run.stderr))
+            .to_string()
+    };
+    assert!(
+        message.contains(&format!("coding agent ({agent})")),
+        "{message}"
+    );
+    assert!(message.contains("Ask the user to "), "{message}");
+    assert!(message.contains("in the Workroom app"), "{message}");
+    assert!(message.contains("in their own terminal"), "{message}");
+}
+
+/// What a run says off the Mac, where `trust`, `delete` and `delete-project` are `MacOnly`.
+fn assert_mac_only(run: &Run) {
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "MacOnly", "`{}`", run.args);
+}
+
+/// Under a coding agent, as its parent or above a shell it started, `trust` approves nothing: with
+/// `--json`, the app's `--stdin` form, `--pretend`, or for a person. Its refusal is the same on a
+/// host, ahead of `MacOnly`. `trust status` still answers, and without the agent `trust` approves.
+#[test]
+fn needs_the_user_trust_under_a_coding_agent_approves_nothing() {
+    let home = Home::new("needs-the-user-trust");
+    let repo = home.repo("repo");
+    commit_script(&home, &repo, "workroom_setup", "#!/bin/sh\necho hi\n");
+    let project = repo.to_string_lossy().into_owned();
+    let setup = b"#!/bin/sh\necho hi\n";
+    for (agent, through_a_shell) in [("claude", false), ("codex", true)] {
+        let under = |args: &[&str], stdin: Option<&[u8]>| {
+            home.run_under_agent(agent, through_a_shell, &home.dir, args, stdin)
+        };
+        for args in [
+            &["trust", "--json", "--project", &project][..],
+            &["trust", "--project", &project],
+            &["trust", "--pretend", "--json", "--project", &project],
+        ] {
+            assert_needs_the_user(&under(args, None), agent);
+        }
+        // The app's own call, the bytes on stdin.
+        let stdin = [
+            "trust",
+            "--json",
+            "--project",
+            &project,
+            "--stdin",
+            "workroom_setup",
+        ];
+        assert_needs_the_user(&under(&stdin, Some(setup)), agent);
+        assert!(!home.config_path().exists(), "{agent}: trust wrote config");
+
+        let status = under(&["trust", "status", "--json", "--project", &project], None);
+        if cfg!(target_os = "macos") {
+            status.assert_code(1).assert_quiet_stderr();
+            assert_eq!(status.envelope()["trusted"], false);
+        } else {
+            assert_mac_only(&status);
+        }
+    }
+
+    let run = home.run(&home.dir, &["trust", "--json", "--project", &project]);
+    if cfg!(target_os = "macos") {
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(run.envelope()["scripts"][0]["sha256"], SHA_HI);
+        assert!(
+            config_text(&home).contains(SHA_HI),
+            "{}",
+            config_text(&home)
+        );
+    } else {
+        assert_mac_only(&run);
+    }
+}
+
+/// Under a coding agent `delete` and `delete-project` delete nothing, in the app's own forms
+/// (`--json --confirm`) and a person's, and run no teardown; on a host too, ahead of `MacOnly`.
+/// Read-only commands and `create --skip-setup` still run. Without the agent the app's forms
+/// delete, as before.
+#[test]
+fn needs_the_user_delete_and_delete_project_under_a_coding_agent_delete_nothing() {
+    let home = Home::new("needs-the-user-delete");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let project_arg = project.to_string_lossy().into_owned();
+    let p = project_arg.as_str();
+    let before = config_text(&home);
+    let app_delete = delete_args(p, &[]);
+    let skip_teardown = delete_args(p, &["--skip-teardown"]);
+    let pretend = delete_args(p, &["--pretend"]);
+    let app_delete_project = ["delete-project", p, "--json", "--confirm", p];
+    for (agent, through_a_shell) in [("claude", false), ("codex", true)] {
+        let under =
+            |args: &[&str]| home.run_under_agent(agent, through_a_shell, &project, args, None);
+        for args in [
+            &app_delete[..],
+            &skip_teardown[..],
+            &pretend[..],
+            &["delete", "calm-river", "--confirm", "calm-river"],
+            &["d", "calm-river"],
+            &app_delete_project,
+            &["delete-project", p, "--json", "--confirm", p, "--from-disk"],
+            &[
+                "delete-project",
+                p,
+                "--json",
+                "--confirm",
+                p,
+                "--with-workrooms",
+            ],
+        ] {
+            assert_needs_the_user(&under(args), agent);
+            assert_eq!(config_text(&home), before, "{agent}: {args:?}");
+            assert!(home.path("workrooms/calm-river/.git").exists(), "{args:?}");
+        }
+
+        let list = under(&["list", "--json"]);
+        if cfg!(target_os = "macos") {
+            list.assert_code(0).assert_quiet_stderr();
+            assert_eq!(list.envelope()["ok"], true);
+        } else {
+            assert_mac_only(&list);
+        }
+        let version = under(&["version", "--json"]);
+        version.assert_code(0).assert_quiet_stderr();
+    }
+
+    // A create that runs no setup script makes a workroom under a coding agent as anywhere.
+    let created = home.run_under_agent(
+        "claude",
+        true,
+        &home.dir,
+        &[
+            "create",
+            "--json",
+            "--no-editor",
+            "--project",
+            p,
+            "--skip-setup",
+        ],
+        None,
+    );
+    if cfg!(target_os = "macos") {
+        created.assert_code(0);
+        assert_eq!(created.envelope()["ok"], true, "{}", created.stdout);
+    } else {
+        assert_mac_only(&created);
+    }
+
+    let deleted = home.run(&project, &app_delete);
+    let dropped = home.run(&home.dir, &app_delete_project);
+    if cfg!(target_os = "macos") {
+        deleted.assert_code(0);
+        assert_eq!(deleted.envelope()["name"], "calm-river");
+        assert!(!home.path("workrooms/calm-river").exists());
+        dropped.assert_code(0).assert_quiet_stderr();
+        assert!(!config_text(&home).contains(p), "{}", config_text(&home));
+    } else {
+        assert_mac_only(&deleted);
+        assert_mac_only(&dropped);
+    }
 }
 
 // --- completion ---

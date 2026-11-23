@@ -2705,6 +2705,61 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
     assert!(started.starts_with(&format!("{bin}:")), "{started}");
 }
 
+/// The commands only a person may run (#793), on a Linux host under a coding agent: a stand-in
+/// `claude` or `codex` (a `#!/bin/sh` script, as an interpreter runs a CLI), the binary's parent or
+/// above a shell it started, found from `/proc`. Each is `NeedsTheUser` (exit 3), ahead of the
+/// `MacOnly` it is without one, and a command anyone may run still runs under it.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_a_coding_agent_on_a_host_is_refused_what_only_a_person_may_do() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    // A folder of this run's own on the host, which it alone removes.
+    let dir = fixture.run("mktemp -d /tmp/wr-needs-the-user.XXXXXX");
+    let dir = dir.trim();
+    fixture.run(&format!(
+        "mkdir {dir}/nested && \
+         printf '#!/bin/sh\\n\"$@\"\\nexit $?\\n' > {dir}/claude && \
+         printf '#!/bin/sh\\n/bin/sh -c '\\''\"$@\"; status=$?; exit $status'\\'' sh \"$@\"\\nexit $?\\n' > {dir}/nested/codex && \
+         chmod +x {dir}/claude {dir}/nested/codex"
+    ));
+    let said = |prefix: &str, command: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!("{prefix}workroomd {command}; echo \"exit=$?\""))
+            .output()
+            .expect("run on the host");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    for command in [
+        "trust --json --project /tmp",
+        "delete calm-river --json --project /tmp --confirm calm-river",
+        "delete-project /tmp --json --confirm /tmp",
+    ] {
+        for (agent, prefix) in [
+            ("claude", format!("{dir}/claude ")),
+            ("codex", format!("{dir}/nested/codex ")),
+        ] {
+            let refused = said(&prefix, command);
+            assert!(
+                refused.contains("\"kind\":\"NeedsTheUser\""),
+                "{agent} {command}: {refused}"
+            );
+            assert!(
+                refused.contains(&format!("coding agent ({agent})")),
+                "{agent} {command}: {refused}"
+            );
+            assert!(refused.trim_end().ends_with("exit=3"), "{refused}");
+        }
+        let alone = said("", command);
+        assert!(alone.contains("\"kind\":\"MacOnly\""), "{command}: {alone}");
+    }
+    let version = said(&format!("{dir}/claude "), "version --json");
+    assert!(version.trim_end().ends_with("exit=0"), "{version}");
+    fixture.run(&format!("rm -r {dir}"));
+}
+
 /// A pane attached from the Mac as the app attaches one (ADR 0074), as `term`, with `relay` run on
 /// the host after `prefix` (`env SHELL=…` picks the login's shell), typing `typed`. What it showed
 /// by the time its shell exited.

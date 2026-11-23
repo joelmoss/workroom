@@ -3,6 +3,9 @@
 //! the same on the Mac and a host. The real binary, on Linux, as a host runs it; the unit tests in
 //! `commands` cover the same rule on any platform.
 
+#[cfg(target_os = "linux")]
+mod outside;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -59,11 +62,14 @@ fn a_mac_only_command_on_a_host_fails_with_mac_only() {
             "/nonexistent/x.tar",
         ],
     ] {
-        let output = Command::new(binary())
+        // Outside this test's process tree, so a coding agent running the tests is none of its
+        // parents: under one, `trust` and `delete` would be `NeedsTheUser` first (#793).
+        let mut command = Command::new(binary());
+        command
             .args(args)
             .env_clear()
-            .output()
-            .expect("run workroom");
+            .stdin(std::process::Stdio::null());
+        let output = outside::spawn(command, None).wait_with_output();
         assert_eq!(output.status.code(), Some(3), "{args:?}");
         let envelope: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("one JSON envelope");

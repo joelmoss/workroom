@@ -11,6 +11,8 @@
 //! gets a throwaway HOME and config, as the contract suite's do.
 #![cfg(target_os = "macos")]
 
+mod outside;
+
 use std::io::Write;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
@@ -186,17 +188,16 @@ impl Home {
     }
 
     /// Runs this crate's `workroom` in `cwd` with `args`, a pty as its stdin with `typed` already
-    /// typed into it: (exit code, stdout, stderr).
+    /// typed into it: (exit code, stdout, stderr). Outside this test's process tree (`outside`),
+    /// so a coding agent running the tests is none of its parents, and `delete` asks as it asks a
+    /// person (#793).
     fn run_typing(&self, cwd: &Path, args: &[&str], typed: &str) -> (i32, String, String) {
         let (primary, secondary) = pty();
         let mut keyboard = std::fs::File::from(primary);
         keyboard.write_all(typed.as_bytes()).expect("type");
-        let output = self
-            .command(env!("CARGO_BIN_EXE_workroom"), cwd)
-            .args(args)
-            .stdin(Stdio::from(secondary))
-            .output()
-            .expect("run workroom");
+        let mut command = self.command(env!("CARGO_BIN_EXE_workroom"), cwd);
+        command.args(args).stdin(Stdio::from(secondary));
+        let output = outside::spawn(command, None).wait_with_output();
         drop(keyboard);
         (
             output.status.code().expect("exited"),

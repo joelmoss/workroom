@@ -51,6 +51,9 @@ pub(crate) enum Kind {
     /// `update` in an install something else updates: the app bundle (Sparkle) or a host's
     /// daemon directory (bootstrap).
     ManagedInstall,
+    /// A command only a person may run (`trust`, `delete`, `delete-project`), run under a coding
+    /// agent (#793): nothing was approved or deleted.
+    NeedsTheUser,
     /// A terminal API target that more than one session matches; the error lists them.
     TargetAmbiguous,
     /// A terminal API target that no session matches.
@@ -125,6 +128,7 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::DestinationNotEmpty,
     Kind::MacOnly,
     Kind::ManagedInstall,
+    Kind::NeedsTheUser,
     Kind::TargetAmbiguous,
     Kind::TargetNotFound,
     Kind::DaemonUnreachable,
@@ -196,6 +200,8 @@ impl Kind {
             Kind::DestinationNotEmpty => ("DestinationNotEmpty", 3),
             Kind::MacOnly => ("MacOnly", 3),
             Kind::ManagedInstall => ("ManagedInstall", 3),
+            // A precondition, as `MacOnly` is: the command can run, only not from here.
+            Kind::NeedsTheUser => ("NeedsTheUser", 3),
             Kind::TargetAmbiguous => ("TargetAmbiguous", 3),
             Kind::TargetNotFound => ("TargetNotFound", 3),
             Kind::DaemonUnreachable => ("DaemonUnreachable", 7),
@@ -225,7 +231,10 @@ impl Kind {
     /// so its row in the docs is marked Nightly while `commands::docs` says that binary is.
     #[cfg(test)]
     pub(crate) fn new_with_the_rust_binary(self) -> bool {
-        matches!(self, Kind::MacOnly | Kind::ManagedInstall)
+        matches!(
+            self,
+            Kind::MacOnly | Kind::ManagedInstall | Kind::NeedsTheUser
+        )
     }
 
     /// What the docs say the kind means, and which of their tables it is in: the error kinds of
@@ -329,6 +338,13 @@ impl Kind {
                  the Workroom app, the daemon the app installed on a host, or the daemon's own \
                  copy that its terminals run. Update the app instead; a host gets each newer \
                  build when the app connects.",
+            ),
+            Kind::NeedsTheUser => (
+                Workroom,
+                "`trust`, `delete` or `delete-project` ran under a coding agent, such as Claude \
+                 Code or Codex: approving a script and deleting are the user's to do. Nothing was \
+                 approved or deleted. The message says to ask the user to do it in the Workroom \
+                 app, or to run the command in their own terminal.",
             ),
             Kind::TargetAmbiguous => (
                 TerminalApi,
@@ -548,6 +564,7 @@ mod tests {
             [
                 ("MacOnly", 3),
                 ("ManagedInstall", 3),
+                ("NeedsTheUser", 3),
                 ("TargetAmbiguous", 3),
                 ("TargetNotFound", 3),
                 ("DaemonUnreachable", 7),
@@ -574,6 +591,10 @@ mod tests {
     fn the_rust_binarys_own_kinds() {
         assert_eq!(Kind::MacOnly.exit_code(), 3);
         assert_eq!(Kind::ManagedInstall.exit_code(), 3);
+        assert_eq!(
+            (Kind::NeedsTheUser.code(), Kind::NeedsTheUser.exit_code()),
+            ("NeedsTheUser", 3)
+        );
         // Go's unclassified error: errs.Code's "InternalError", errs.ExitCode's 1.
         assert_eq!(Kind::InternalError.code(), "InternalError");
         assert_eq!(Kind::InternalError.exit_code(), 1);

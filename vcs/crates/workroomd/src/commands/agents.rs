@@ -73,6 +73,8 @@ pub(super) const NOT_TERMINAL_API_KINDS: &[Kind] = &[
     Kind::DestinationNotEmpty,
     Kind::MacOnly,
     Kind::ManagedInstall,
+    // Its rule is in the introduction's: never approve or delete for the user.
+    Kind::NeedsTheUser,
 ];
 
 /// The terminal API's commands, in the order an agent meets them.
