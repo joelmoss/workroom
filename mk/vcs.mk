@@ -40,6 +40,15 @@ vcs-test: ## Test the Rust workspace, then workroomd with terminal-state, as CI 
 	CARGO_TARGET_DIR=vcs/target/terminal-state WORKROOMD_HAS_TERMINAL_STATE=1 \
 	  cargo test --manifest-path vcs/Cargo.toml -p workroom --features terminal-state $(VCS_TEST_FLAGS)
 
+# The CLI's black-box contract suite (vcs/crates/workroomd/tests/commands_contract.rs, #669), run
+# against this checkout's workroom, or the binary WORKROOM_BIN names (the nightly and release
+# workflows name the one they ship). Its Mac-only groups run only on a Mac.
+contract-test: ## Run the CLI contract suite against this checkout's workroom (WORKROOM_BIN= for another binary)
+	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "contract-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
+	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
+	$(if $(WORKROOM_BIN),WORKROOM_BIN="$(WORKROOM_BIN)") \
+	  cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract
+
 # What an idle daemon costs (vcs/scripts/daemon-idle-bench.sh): a release workroomd on its own
 # socket with DAEMON_BENCH_SESSIONS idle shells for DAEMON_BENCH_SECS, its CPU time and context
 # switches read from outside. Compare a run before a daemon change with one after. macOS only.

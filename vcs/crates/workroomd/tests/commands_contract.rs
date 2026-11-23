@@ -1,31 +1,23 @@
-//! The `workroom` CLI's contract (ADR 0013), run as a black box against whatever binary
-//! `WORKROOM_BIN` names: the Go CLI today, and the Rust `workroom` as each command group is ported
-//! (ADR 0078, #667). A run checks what a caller sees: the one JSON envelope on stdout, stderr, the
-//! exit code and `kind`, and the config.json the command leaves behind.
-//!
-//! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
-//! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `trust_`, `completion_`, `add_project_`, `delete_`, `delete_project_`, `claim_provisioned_` and
-//! `create_` today). `make contract-test` builds the Go CLI and runs every test against it with
-//! `--include-ignored`.
+//! The `workroom` CLI's contract (ADR 0013), run as a black box against this crate's own
+//! `workroom`, or the binary `WORKROOM_BIN` names (the nightly and release workflows name the one
+//! they ship). A run checks what a caller sees: the one JSON envelope on stdout, stderr, the exit
+//! code and `kind`, and the config.json the command leaves behind.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`,
 //! `trust_`, `add_project_`, `delete_`, `delete_project_`, `claim_provisioned_`, `create_`) are
-//! ignored off the Mac too,
-//! where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs
-//! `version_`, `update_` and `completion_`, which work anywhere, and
-//! `--include-ignored` against the Go CLI still runs everything.
+//! ignored off the Mac, where the binary answers them with `MacOnly` (ADR 0078): on Linux a run
+//! covers `version_`, `update_` and `completion_`, which work anywhere, and CI's macOS `app` job
+//! runs the whole suite.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
 //! `include_archive_`, `base_`, `host_`, `trust_`, `completion_`, `add_project_`, `delete_`
 //! (whose filter takes `delete_project_` too), `delete_project_`, `claim_provisioned_`,
-//! `create_`), so a port can run only its own group's names against Rust.
+//! `create_`), so a change can run only its own group's names.
 //!
-//! The JSON goldens are `testdata/contracts`, the files Go's contract tests
-//! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
-//! HOME written as `/Users/dev`. `WORKROOM_CONTRACT_UPDATE=1` rewrites the goldens this suite owns
-//! from the binary under test; it never rewrites the ones Go's tests own.
+//! The JSON goldens are `testdata/contracts`, the files the app's `CLIContractTests.swift` checks
+//! too, with the temporary HOME written as `/Users/dev`. `WORKROOM_CONTRACT_UPDATE=1` rewrites the
+//! goldens this suite owns from the binary under test; it never rewrites the frozen ones, the
+//! retired Go CLI's completion output.
 //!
 //! Each run gets a cleared environment: only `PATH`, its own HOME and `WORKROOM_CONFIG`, and git
 //! with no global or system config. Nothing a run does can reach the real home or config.
@@ -305,17 +297,18 @@ fn golden_path(file: &str) -> PathBuf {
         .join(file)
 }
 
-/// Who writes a golden: this suite, or Go's contract tests, whose goldens this suite only reads,
-/// or the Go CLI itself, whose output a golden keeps as it was (a completion script it generated).
+/// Who writes a golden: this suite, from the binary under test, or nobody, for one frozen as the
+/// retired Go CLI wrote it (a completion script, and cobra's `__complete` protocol, which every
+/// script a user saved from it speaks to whatever binary they have now).
 #[derive(Clone, Copy, PartialEq)]
 enum Owner {
     ThisSuite,
-    GoContractTests,
-    GoCli,
+    Frozen,
 }
 
 /// Compares `got` with `testdata/contracts/<file>`. A golden this suite owns is rewritten instead
-/// under `WORKROOM_CONTRACT_UPDATE=1`; one Go's tests own is rewritten only by `go test -update`.
+/// under `WORKROOM_CONTRACT_UPDATE=1`; a frozen one never is. The app's `CLIContractTests.swift`
+/// reads these goldens too.
 fn check_golden(owner: Owner, file: &str, got: &str) {
     let path = golden_path(file);
     let update = std::env::var_os("WORKROOM_CONTRACT_UPDATE").is_some_and(|v| v == "1");
@@ -327,8 +320,8 @@ fn check_golden(owner: Owner, file: &str, got: &str) {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let how = match owner {
         Owner::ThisSuite => "rerun with WORKROOM_CONTRACT_UPDATE=1",
-        Owner::GoContractTests => "rerun `go test ./cmd -run TestContract -update`",
-        Owner::GoCli => "it is the Go CLI's output, kept as it was: the binary must match it",
+        Owner::Frozen => "not happen: it is the retired Go CLI's output, frozen, which the binary \
+                          must match",
     };
     assert!(
         got == want,
@@ -480,15 +473,6 @@ fn version_json_encodes_an_echoed_argument_as_go_does() {
 // first, so each test checks it didn't. The releases themselves (each channel, checksums, the
 // swap) are `commands/update/tests.rs`'s, against a fake releases server.
 
-/// Whether the binary under test is the Go CLI, which has none of the daemon's subcommands.
-fn under_test_is_go() -> bool {
-    Command::new(binary())
-        .arg("protocol")
-        .env_clear()
-        .output()
-        .is_ok_and(|output| !output.status.success())
-}
-
 /// The binary under test copied to `relative` in `home`, for a run from there.
 ///
 /// Copied by a `cp` child, not `std::fs::copy`: while this process holds the copy open for
@@ -575,25 +559,16 @@ fn update_json_reports_a_usage_error_without_a_command() {
     }
 }
 
-/// The copy inside the app bundle is the app's, which Sparkle updates. Go refused it as an
-/// `InternalError`; the Rust binary gives it its own kind, `ManagedInstall` (exit 3, ADR 0078).
-/// Go refused a dev build before it looked where it was, so it is checked only with a version, as
-/// `make contract-test` builds it; the Rust binary looks first.
+/// The copy inside the app bundle is the app's, which Sparkle updates: its own kind,
+/// `ManagedInstall` (exit 3, ADR 0078), found before a dev build is refused.
 #[test]
 fn update_inside_the_app_bundle_is_a_managed_install() {
     let home = Home::new("update-bundle");
-    if under_test_is_go() && is_dev_build(&home) {
-        return;
-    }
     let bundled = copy_binary(
         &home,
         "Applications/Workroom.app/Contents/Resources/workroom",
     );
-    let (kind, code) = if under_test_is_go() {
-        ("InternalError", 1)
-    } else {
-        ("ManagedInstall", 3)
-    };
+    let (kind, code) = ("ManagedInstall", 3);
     let message = "this workroom is bundled inside the Workroom app and is managed by it";
 
     let run = home.run_program(&bundled, &home.dir, &["update", "--json"]);
@@ -627,13 +602,9 @@ fn update_inside_the_app_bundle_is_a_managed_install() {
 }
 
 /// On a host, the daemon bootstrap installed is bootstrap's to update: `<daemon dir>/workroomd`
-/// (ADR 0057), reached as itself or through the `workroom` link beside it. New with the Rust
-/// binary; Go would ask GitHub here, so it is skipped for Go.
+/// (ADR 0057), reached as itself or through the `workroom` link beside it.
 #[test]
 fn update_in_a_hosts_daemon_directory_is_a_managed_install() {
-    if under_test_is_go() {
-        return;
-    }
     let home = Home::new("update-daemon-dir");
     let daemon = copy_binary(&home, ".local/state/workroom/daemon/workroomd");
     let link = home.path(".local/state/workroom/daemon/workroom");
@@ -702,7 +673,7 @@ fn update_help_explains_the_channels_and_its_flags() {
 
 // --- list ---
 
-/// The config `list.json` was recorded from (`TestContractList` in `cmd/contract_test.go`): a
+/// The config `list.json` was recorded from (by the retired Go CLI's contract tests): a
 /// project with a healthy workroom, a stray directory, a missing one, a remote one whose host
 /// descriptor the CLI must report verbatim, a destroyed one, a project base and a global base,
 /// and a second project with no workrooms. `{home}` is the temporary HOME.
@@ -762,14 +733,14 @@ fn list_json_matches_the_golden() {
     let run = home.run(&home.dir, &["list", "--json", "--warnings=full"]);
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "list.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
 }
 
-/// Plain `list` from each kind of directory, as Go prints it (`TestListOutput` in
-/// `cmd/list_output_test.go`), uncoloured since stdout is a pipe. ADR 0078 lets human text change
+/// Plain `list` from each kind of directory, as the Go CLI printed it, uncoloured since stdout is
+/// a pipe. ADR 0078 lets human text change
 /// its wording, so these are pinned apart from the machine contract: a port that rewords them
 /// updates the strings here, keeping the information.
 #[test]
@@ -1289,7 +1260,7 @@ fn list_json_project_keeps_the_case_it_was_given() {
     let ct = home.path("ct");
     std::fs::create_dir_all(ct.join("CaseProj")).expect("project dir");
     // The case only folds on a case-insensitive disk (macOS's default). On a case-sensitive one,
-    // such as the Go job's Linux runner with --include-ignored, `caseproj` simply doesn't exist.
+    // such as Linux's, `caseproj` simply doesn't exist.
     if !ct.join("caseproj").exists() {
         eprintln!("skipped: {} is on a case-sensitive disk", ct.display());
         return;
@@ -1480,8 +1451,7 @@ fn include_fixture(home: &Home) -> (PathBuf, bool) {
     (root, unreadable)
 }
 
-/// The envelope the app decodes into `IncludeArchive` (`TestContractIncludeArchive` in
-/// `cmd/contract_test.go`, and `CLIContractTests.swift`).
+/// The envelope the app decodes into `IncludeArchive` (`CLIContractTests.swift`).
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -1507,7 +1477,7 @@ fn include_archive_json_matches_the_golden() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "include-archive.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2347,7 +2317,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "add-project.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2364,7 +2334,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(3).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "add-project-unsupported-vcs.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2384,7 +2354,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "add-project-clone-pretend.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2403,7 +2373,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(3).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "add-project-destination-not-empty.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2822,7 +2792,7 @@ fn add_project_clone_names_staging_it_cannot_prove_dead() {
 }
 
 /// Whether this process runs as root, whom a 0555 folder doesn't stop writing: a test that needs
-/// a write to fail says so on stderr and skips that part (CI's Go job may run as root on Linux).
+/// a write to fail says so on stderr and skips that part (a Linux container may run as root).
 fn skip_as_root(test: &str) -> bool {
     // SAFETY: geteuid has no preconditions and can't fail.
     let root = unsafe { libc::geteuid() } == 0;
@@ -3467,12 +3437,12 @@ fn delete_project_json_matches_the_goldens() {
         let run = home.run(&home.dir, &args);
         run.assert_code(0);
         check_golden(
-            Owner::GoContractTests,
+            Owner::ThisSuite,
             file,
             &home.normalize(&normalize_version(&run.stdout)),
         );
         check_golden(
-            Owner::GoContractTests,
+            Owner::ThisSuite,
             &file.replace(".json", "-events.ndjson"),
             &home.normalize(&run.stderr),
         );
@@ -4431,12 +4401,12 @@ fn delete_json_matches_the_goldens() {
     let run = home.run(&home.dir, &delete_args(&project_arg, &[]));
     run.assert_code(0);
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "delete.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "delete-events.ndjson",
         &home.normalize(&run.stderr),
     );
@@ -5772,7 +5742,7 @@ fn trust_status_json_matches_the_goldens() {
     );
     run.assert_code(1).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "trust-status.json",
         &normalized_stdout(&home, &run),
     );
@@ -5792,7 +5762,7 @@ fn trust_status_json_matches_the_goldens() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "trust-status-local-work.json",
         &normalize_start(&normalized_stdout(&home, &run)),
     );
@@ -6622,7 +6592,7 @@ fn create_remote_records_the_workroom_and_makes_nothing_here() {
     run.assert_code(0).assert_quiet_stderr();
     let name = created_name(&run);
     let golden = normalize_create(&home, &name, &run.stdout);
-    check_golden(Owner::GoContractTests, "create-remote.json", &golden);
+    check_golden(Owner::ThisSuite, "create-remote.json", &golden);
     assert_eq!(
         normalize_create(&home, &name, &config_text(&home)),
         "{\n  \"/Users/dev/src/app\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \
@@ -6881,12 +6851,12 @@ fn create_json_matches_the_goldens() {
     run.assert_code(0);
     let name = created_name(&run);
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -6916,12 +6886,12 @@ fn create_json_matches_the_goldens() {
     run.assert_code(5);
     let name = created_name(&run);
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-setup-failed.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-setup-failed-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -6940,7 +6910,7 @@ fn create_json_matches_the_goldens() {
         ["fetch:skipped:No remote to fetch from"]
     );
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-script-not-trusted.json",
         &normalize_create(&home, "calm-river", &run.stdout),
     );
@@ -6966,12 +6936,12 @@ fn create_json_matches_the_goldens() {
     run.assert_code(0);
     let name = created_name(&run);
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-fetch-warning.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-fetch-warning-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -7066,7 +7036,7 @@ fn create_start_ask_refuses_with_the_local_work_and_nobody_to_ask_warns() {
     let run = create(&home, &project, &["--start", "ask"]);
     run.assert_code(3);
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-local-work.json",
         &normalize_create(&home, "calm-river", &run.stdout),
     );
@@ -7290,12 +7260,12 @@ fn create_chosen_start_holds_offline_and_against_a_missing_default_base() {
     run.assert_code(0);
     let name = created_name(&run);
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-offline-local-start.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::GoContractTests,
+        Owner::ThisSuite,
         "create-offline-local-start-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -8511,7 +8481,7 @@ fn completion_protocol_matches_the_golden() {
         );
     }
     // Recorded from the Go CLI, so never rewritten by a run against Rust.
-    check_golden(Owner::GoCli, "completion-protocol.txt", &transcript);
+    check_golden(Owner::Frozen, "completion-protocol.txt", &transcript);
 }
 
 /// `completion` is one of `--help`'s commands, and runs anywhere, so it is not marked Mac-only.
@@ -8548,7 +8518,7 @@ fn completion_writes_each_shells_script_as_go_does() {
         let run = home.run(&home.dir, &["completion", shell]);
         run.assert_code(0).assert_quiet_stderr();
         let file = format!("completion/{fixture}");
-        check_golden(Owner::GoCli, &file, &run.stdout);
+        check_golden(Owner::Frozen, &file, &run.stdout);
         let want = std::fs::read_to_string(golden_path(&file)).expect("read fixture");
         assert_eq!(want.matches(" __complete ").count(), 1, "{file}");
         let bare = home.run(&home.dir, &["completion", shell, "--no-descriptions"]);
