@@ -255,58 +255,79 @@ final class ContainerHostDriverExecTests: XCTestCase {
   }
 
   // Value: protects=a staged daemon a killed create left in Apple's folder is removed, and nothing
-  // else is: not a create's copy at work alongside, not a name of another shape, not a link or a
-  // folder; fails_when=the sweep matches by prefix alone, by modification time (a copy keeps its
-  // source's), or follows a link; why_new=nothing removed what a killed create left;
-  // seam=removeAbandonedDaemons with the clock moved on; no_claim=a create killed by the system
-  /// A staged daemon a create left (killed mid-copy) is removed once it is older than any staging
-  /// lasts, and only that: a fresh one, a name not exactly the staged shape, a link and a folder
-  /// stay, as do the daemon and its link.
+  // else is: not a staging whose maker still holds its lock (however long it has slept), not an
+  // earlier version's `.workroomd-<UUID>`, not a name of another shape, not a link, FIFO or
+  // folder; fails_when=the sweep goes by name or age rather than the lock, or follows a link, or
+  // blocks on a FIFO; why_new=nothing removed what a killed create left;
+  // seam=removeAbandonedDaemons, with a staging's lock held by a file of the test's own;
+  // no_claim=a create killed by the system
+  /// A staged daemon a create left (killed mid-copy, its lock gone with it) is removed, and only
+  /// that: a staging whose maker still holds its lock stays, as do an earlier version's staged
+  /// name (which had no lock), names of another shape, and a link, FIFO or folder of the staged
+  /// name; the daemon and its link stay too.
   func testOnlyAnAbandonedStagedDaemonIsRemovedFromApplesFolder() throws {
     let folder = directory.appendingPathComponent("daemon")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     let manager = FileManager.default
-    let abandoned = ".workroomd-\(UUID().uuidString)"
-    let linked = ".workroomd-\(UUID().uuidString)"
-    let folderNamed = ".workroomd-\(UUID().uuidString)"
+    func staging() -> String { ContainerHostDriver.stagedDaemonPrefix + UUID().uuidString }
+    // Made exclusively and locked as it is made, as `stageDaemon` makes one.
+    func locked(_ name: String) throws -> Int32 {
+      let file = open(
+        folder.appendingPathComponent(name).path, O_WRONLY | O_CREAT | O_EXCL | O_EXLOCK, 0o700)
+      guard file >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+      return file
+    }
+    let held = staging()
+    let holder = try locked(held)
+    defer { close(holder) }
+    let abandoned = staging()
+    close(try locked(abandoned))
+    let linked = staging()
+    let fifo = staging()
+    let folderNamed = staging()
     let keptNames = [
-      "workroomd", ".workroomd-\(UUID().uuidString.lowercased())", ".workroomd-notauuid",
-      "workroomd-\(UUID().uuidString)",
+      "workroomd", ".workroomd-\(UUID().uuidString)",
+      ContainerHostDriver.stagedDaemonPrefix + UUID().uuidString.lowercased(),
+      ContainerHostDriver.stagedDaemonPrefix + "notauuid", "staging-\(UUID().uuidString)",
+      ".workroomd-staging\(UUID().uuidString)",
     ]
-    for name in [abandoned] + keptNames {
+    for name in keptNames {
       try Data("ELF".utf8).write(to: folder.appendingPathComponent(name))
     }
     let outside = directory.appendingPathComponent("outside")
     try Data("someone's".utf8).write(to: outside)
     try manager.createSymbolicLink(
       atPath: folder.appendingPathComponent(linked).path, withDestinationPath: outside.path)
+    XCTAssertEqual(mkfifo(folder.appendingPathComponent(fifo).path, 0o600), 0)
     try manager.createDirectory(
       at: folder.appendingPathComponent(folderNamed), withIntermediateDirectories: false)
     try manager.createSymbolicLink(
       atPath: folder.appendingPathComponent("workroom").path, withDestinationPath: "workroomd")
     let everything = Set(try manager.contentsOfDirectory(atPath: folder.path))
 
-    // Just made, as a create's copy at work is: kept.
     ContainerHostDriver.removeAbandonedDaemons(in: folder)
-    XCTAssertEqual(Set(try manager.contentsOfDirectory(atPath: folder.path)), everything)
-
-    ContainerHostDriver.removeAbandonedDaemons(
-      in: folder, now: Date().addingTimeInterval(ContainerHostDriver.abandonedDaemonAge + 60))
     XCTAssertEqual(
       Set(try manager.contentsOfDirectory(atPath: folder.path)),
       everything.subtracting([abandoned]))
     XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "someone's")
+
+    // Once its maker lets go (it has gone), the held one is abandoned too.
+    ContainerHostDriver.removeAbandonedDaemons(in: folder)
+    XCTAssertTrue(manager.fileExists(atPath: folder.appendingPathComponent(held).path))
+    XCTAssertEqual(flock(holder, LOCK_UN), 0)
+    ContainerHostDriver.removeAbandonedDaemons(in: folder)
+    XCTAssertEqual(
+      Set(try manager.contentsOfDirectory(atPath: folder.path)),
+      everything.subtracting([abandoned, held]))
   }
 
-  /// A copy that fails part way leaves nothing behind in Apple's folder: here the "daemon" is a
-  /// folder holding a file no one can read, so the copy is made, then fails on that file.
+  /// A staging that fails part way leaves nothing behind in Apple's folder: here the "daemon" is
+  /// a file no one can read, so the staged file is made, then can't be filled.
   func testAFailedStagingInApplesFolderLeavesNoCopy() async throws {
     let runtime = try stubRuntime()
-    let notAFile = directory.appendingPathComponent("not-a-daemon", isDirectory: true)
-    try FileManager.default.createDirectory(at: notAFile, withIntermediateDirectories: true)
-    let unreadable = notAFile.appendingPathComponent("unreadable")
-    try Data("ELF".utf8).write(to: unreadable)
-    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+    let notAFile = directory.appendingPathComponent("unreadable-daemon")
+    try Data("ELF".utf8).write(to: notAFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: notAFile.path)
     let folder = directory.appendingPathComponent("daemon")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     try Data("OLD".utf8).write(to: folder.appendingPathComponent("workroomd"))
