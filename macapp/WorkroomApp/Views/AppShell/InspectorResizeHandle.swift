@@ -21,6 +21,20 @@ struct InspectorResizeHandle: NSViewRepresentable {
     var onEnd: (() -> Void)?
     private var lastX: CGFloat = 0
 
+    override init(frame: NSRect) {
+      super.init(frame: frame)
+      // Its own accessibility element: the handle is AppKit, so SwiftUI's modifiers can't name it,
+      // and without this assistive tech and UI tests can't find the resize edge at all.
+      setAccessibilityElement(true)
+      setAccessibilityRole(.handle)
+      setAccessibilityLabel("Resize Inspector")
+      setAccessibilityIdentifier("inspector.resizeHandle")
+      toolTip = "Drag to resize the inspector"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
     override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
