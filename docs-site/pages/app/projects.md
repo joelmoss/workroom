@@ -9,7 +9,7 @@ A project is a Git repository you have registered with Workroom. This page shows
 
 The sidebar on the left lists every project. Each project expands into its root, then its workrooms. The root is the project's own checkout. Click the project name to expand or collapse it. Workroom remembers which projects are open, and which one you had selected, when you relaunch.
 
-Each project row has a **+** button that creates a workroom. See [Workrooms](workrooms.md#create-a-workroom). Hover the row to reveal a gear button, which opens the project's [settings](#project-settings).
+Each project row has a **+** button that creates a workroom. See [Workrooms](workrooms.md#create-a-workroom). Hover the row to reveal a gear button, which opens the project's [settings](#project-settings). Nightly only: the **+** shows only while you hover the row too, beside the gear, and so does the arrow after the project's name. Click anywhere else on the row to fold its workrooms away or show them again.
 
 Right-click a project row for **New Workroom**, **Project Settings…** and **Delete Project…**.
 
