@@ -263,7 +263,7 @@ impl Config {
     /// Drops `project`'s entry, touching nothing on disk; a scalar setting's key is never one. A
     /// project with a host descriptor, its own or a workroom's, is refused, checked again here
     /// under the lock: a descriptor written since the caller looked is the only record of a
-    /// remote machine.
+    /// remote machine. Under a coding agent it is refused (#793); a `--pretend` never gets here.
     pub(crate) fn remove_project(&self, project: &str) -> Result<(), CliError> {
         if let Some(error) = super::needs_the_user::deletion_refusal(true, self.coding_agent_above)
         {

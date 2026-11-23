@@ -1756,9 +1756,10 @@ mod tests {
     }
 
     /// Under a coding agent (#793), `trust`, `delete` and `delete-project` are refused before
-    /// anything is read or checked, with `--pretend`, `--confirm` or `--stdin` too, and on a host
-    /// as well, ahead of `MacOnly`. The refusal names the agent and says what to ask the user.
-    /// `trust status`, `--help` and every other command are as they are without one.
+    /// anything is read or checked, with `--confirm` or `--stdin` too (`trust` with `--pretend`
+    /// too), and on a host as well, ahead of `MacOnly`. The refusal names the agent and says what
+    /// to ask the user. The deletes' dry runs, `trust status`, `--help` and every other command are
+    /// as they are without one.
     #[test]
     fn a_coding_agent_above_is_refused_the_commands_only_a_person_may_run() {
         let claude = || Some("claude".to_string());
@@ -1790,15 +1791,6 @@ mod tests {
                     "--json",
                     "--confirm",
                     "/nonexistent/x",
-                ],
-                // Its `--pretend` still drops the project from config, as Go's does.
-                &[
-                    "delete-project",
-                    "/nonexistent/x",
-                    "--json",
-                    "--confirm",
-                    "/nonexistent/x",
-                    "--pretend",
                 ],
                 &[
                     "delete-project",
@@ -1840,8 +1832,8 @@ mod tests {
             let ((stdout, _), code) = run_with(Platform::Other, claude, args);
             assert_eq!(code, 0, "{args:?}: {stdout}");
         }
-        // A `delete --pretend`, which changes nothing, goes on as without an agent: here, to
-        // `MacOnly`.
+        // A `delete --pretend` or `delete-project --pretend`, which change nothing, go on as
+        // without an agent: here, to `MacOnly`.
         for args in [
             &["delete", "calm-river", "--json", "--pretend"][..],
             &[
@@ -1850,6 +1842,23 @@ mod tests {
                 "--json",
                 "--confirm",
                 "calm-river",
+                "-p",
+            ],
+            &[
+                "delete-project",
+                "/nonexistent/x",
+                "--json",
+                "--confirm",
+                "/nonexistent/x",
+                "--pretend",
+            ],
+            &[
+                "delete-project",
+                "/nonexistent/x",
+                "--json",
+                "--confirm",
+                "/nonexistent/x",
+                "--from-disk",
                 "-p",
             ],
         ] {
@@ -1876,11 +1885,12 @@ mod tests {
                 "{args:?}: {stdout}"
             );
         }
-        assert!(
-            needs_the_user::says("delete")
-                .unwrap()
-                .contains("--pretend")
-        );
+        for command in ["delete", "delete-project"] {
+            assert!(
+                needs_the_user::says(command).unwrap().contains("--pretend"),
+                "{command}"
+            );
+        }
         assert!(!needs_the_user::says("trust").unwrap().contains("--pretend"));
         let ((stdout, _), code) = run_with(Platform::Other, claude, &["create", "--json"]);
         assert_eq!(code, 3);

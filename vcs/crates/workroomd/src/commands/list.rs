@@ -26,7 +26,7 @@ enum Warnings {
     /// Config alone: no filesystem or VCS call, and each project's stored type verbatim.
     None,
     /// Also each workroom's directory, and each project's type detected from disk, healing the
-    /// stored one when it differs.
+    /// stored one when it differs (not under `--pretend`).
     Fast,
     /// Also each project's VCS workspaces, listed once per project.
     Full,
@@ -118,7 +118,7 @@ fn json(context: &Context, args: &Args, config: &Config) -> Result<Outcome, CliE
     let data = config.read()?;
     let mut projects: Vec<ProjectInfo> = config::all_projects(&data)
         .iter()
-        .map(|(path, project)| project_info(config, path, project, level))
+        .map(|(path, project)| project_info(heal(context, config), path, project, level))
         .collect();
     if let Some(wanted) = args.value("project").filter(|wanted| !wanted.is_empty()) {
         let canonical = config::canonical_path(wanted, context).map_err(CliError::internal)?;
@@ -133,13 +133,24 @@ fn json(context: &Context, args: &Args, config: &Config) -> Result<Outcome, CliE
     Ok(Outcome::Success(super::envelope::success("list", &payload)))
 }
 
+/// The config a listing heals a stale type in: `config`, but none under `--pretend`.
+fn heal<'a>(context: &Context, config: &'a Config) -> Option<&'a Config> {
+    (!context.pretend).then_some(config)
+}
+
 /// One project's view, its warnings computed at `level`. The human list and `--json` share it, so
-/// both name each problem alike.
-fn project_info(config: &Config, path: &str, project: &Project, level: Warnings) -> ProjectInfo {
+/// both name each problem alike. A stale type is healed in `heal`, the config, which is none
+/// under `--pretend` (#798).
+fn project_info(
+    heal: Option<&Config>,
+    path: &str,
+    project: &Project,
+    level: Warnings,
+) -> ProjectInfo {
     let vcs = if level == Warnings::None {
         project.vcs.clone()
     } else {
-        effective_vcs(config, path, &project.vcs)
+        effective_vcs(heal, path, &project.vcs)
     };
     let checks_dir = level != Warnings::None;
     // Listed once per project. None means the listing couldn't be had, which warns of nothing.
@@ -208,13 +219,14 @@ fn is_missing(path: &str) -> bool {
 }
 
 /// The project's type as its directory shows it, so a stale stored type (a `jj` from before
-/// Jujutsu support was removed) is reported right and healed in config. The stored type when the
-/// directory is gone or isn't a repository, so a moved project still lists.
-fn effective_vcs(config: &Config, path: &str, stored: &str) -> String {
+/// Jujutsu support was removed) is reported right and healed in `heal`, the config, when there is
+/// one. The stored type when the directory is gone or isn't a repository, so a moved project
+/// still lists.
+fn effective_vcs(heal: Option<&Config>, path: &str, stored: &str) -> String {
     if !is_git_repo(Path::new(path)) {
         return stored.to_string();
     }
-    if stored != "git" {
+    if let Some(config) = heal.filter(|_| stored != "git") {
         // Best-effort: the answer is already right even if the write fails.
         let _ = config.set_project_vcs(path, "git");
     }
@@ -316,7 +328,7 @@ fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(),
                 write("No workrooms found for this project.\n");
             } else {
                 write(&table(&project_info(
-                    config,
+                    heal(context, config),
                     &path,
                     &project,
                     Warnings::Full,
@@ -333,7 +345,12 @@ fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(),
             }
             for (path, project) in &projects {
                 write(&format!("{}:\n", display(path)));
-                write(&table(&project_info(config, path, project, Warnings::Full)));
+                write(&table(&project_info(
+                    heal(context, config),
+                    path,
+                    project,
+                    Warnings::Full,
+                )));
                 write("\n");
             }
         }

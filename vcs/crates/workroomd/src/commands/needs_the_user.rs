@@ -2,9 +2,9 @@
 //! scripts Workroom runs, and `delete` and `delete-project`, which delete. Under a coding agent
 //! each is refused with `NeedsTheUser` before anything is read or checked, whatever its flags
 //! (`--json`, `--stdin`, `--confirm`), so an agent asks the user rather than approve its own setup
-//! script or delete a workroom. A `delete --pretend` changes nothing, so it runs; `trust
-//! --pretend` and `delete-project --pretend` (which still drops the project) don't. `trust
-//! status`, `--help` and every other command run as they do anywhere else.
+//! script or delete a workroom. A `delete --pretend` or `delete-project --pretend` changes nothing,
+//! so it runs; a `trust --pretend` doesn't. `trust status`, `--help` and every other command run as
+//! they do anywhere else.
 //!
 //! Every approval and delete is refused under one too, whatever command reaches it, since a
 //! terminal an agent holds (a pty, tmux, `script`) is no person to ask: a create's prompt for an
@@ -42,7 +42,7 @@ struct Guarded {
     /// What the user can do in the app instead.
     in_the_app: &'static str,
     /// Whether its `--pretend` changes nothing, so a coding agent may run it to show the user what
-    /// the command would do. `delete-project --pretend` still drops the project, as Go's does.
+    /// the command would do.
     dry_run: bool,
 }
 
@@ -67,7 +67,7 @@ const GUARDED: &[Guarded] = &[
         does: "removes a project",
         undone: "Nothing was removed",
         in_the_app: "remove the project in the Workroom app",
-        dry_run: false,
+        dry_run: true,
     },
 ];
 
@@ -455,11 +455,11 @@ mod tests {
         assert!(refusal("untrust", "untrust", false, claude).is_none());
         assert!(refusal("create", "create", false, claude).is_none());
         assert!(refusal("delete", "delete", false, || None).is_none());
-        // A dry run that changes nothing goes on; `trust`'s and `delete-project`'s don't, the
-        // second's because it still drops the project.
+        // A delete's dry run changes nothing, so it goes on (`delete-project`'s since #798);
+        // `trust`'s doesn't.
         assert!(refusal("delete", "delete", true, claude).is_none());
+        assert!(refusal("delete-project", "delete-project", true, claude).is_none());
         assert!(refusal("trust", "trust", true, claude).is_some());
-        assert!(refusal("delete-project", "delete-project", true, claude).is_some());
         // A create's prompt, and every approval or removal, whatever command got there.
         let create = create_refusal("scripts/workroom_setup", claude).expect("refused");
         assert_eq!(create.kind, Kind::NeedsTheUser);
