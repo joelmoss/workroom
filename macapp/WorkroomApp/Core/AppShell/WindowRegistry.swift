@@ -386,6 +386,8 @@ final class WindowRegistry: ObservableObject {
       targetID = moved
     }
     let store = owner ?? keyStore
+    // A banner clicked from another app: the window comes forward with the app.
+    NSApp.activate(ignoringOtherApps: true)
     // `window(forTab:)`, not `hostWindow`: a detached pane (issue #172) lives in its own window.
     store?.window(forTab: tabID)?.makeKeyAndOrderFront(nil)
     store?.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)

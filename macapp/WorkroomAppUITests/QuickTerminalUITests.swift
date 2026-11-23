@@ -31,8 +31,10 @@ final class QuickTerminalUITests: XCTestCase {
 
   /// The Quick Terminal's window, by its title: it is the app's only window titled so, and its
   /// title is fixed (`QuickTerminalController.createWindow`), hidden from view but not from AX.
+  /// A non-activating panel, AppKit gives it the system-dialog subrole, so XCUITest lists it under
+  /// `dialogs`, not `windows`.
   private func quickTerminal(_ app: XCUIApplication) -> XCUIElement {
-    app.windows.matching(NSPredicate(format: "title == %@", "Quick Terminal")).firstMatch
+    app.dialogs.matching(NSPredicate(format: "title == %@", "Quick Terminal")).firstMatch
   }
 
   /// The fixture's workroom window: every window but the Quick Terminal's.
@@ -109,7 +111,8 @@ final class QuickTerminalUITests: XCTestCase {
     // 1. Summon.
     var qt = summon(app)
     XCTAssertTrue(
-      waitForCount(app.windows, windowsBefore + 1), "summoning adds exactly one window")
+      waitForCount(app.dialogs, 1), "summoning adds exactly one window, the panel")
+    XCTAssertEqual(app.windows.count, windowsBefore, "and opens no other")
     assertCounts(in: qt, tabs: 1, panes: 1, "summoned")
 
     // 2. Its keys.
@@ -131,7 +134,8 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(
       quickTerminal(app).waitForNonExistence(timeout: 10),
       "closing its last tab hides the Quick Terminal")
-    XCTAssertTrue(waitForCount(app.windows, windowsBefore), "and only its window went")
+    XCTAssertTrue(waitForCount(app.dialogs, 0), "and only its window went")
+    XCTAssertEqual(app.windows.count, windowsBefore, "the workroom's stay")
 
     // 4. Summon again: a fresh window with one tab.
     qt = summon(app)

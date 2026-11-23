@@ -349,6 +349,98 @@ final class QuickTerminalControllerTests: XCTestCase {
       controller.windowShouldZoom(window, toFrame: .zero), "a double-click never un-docks it")
   }
 
+  /// Summoned over another app, it takes focus without activating Workroom, which would bring every
+  /// one of its windows forward with it.
+  /// Value: protects=the menu item (the shortcut in a Debug build) sliding the panel in and back
+  /// out, while the toolbar button only ever brings it in; fails_when=a request is not answered or
+  /// a show hides it; why_new=one notification carries both requests; seam=observeRequests(in:)
+  /// with the test's own center, so the test host's own controller doesn't answer; no_claim=the
+  /// menu item's key equivalent.
+  func testItsRequestsShowAndToggleIt() async {
+    let controller = makeController()
+    defer { controller.close() }
+    let center = NotificationCenter()
+    controller.observeRequests(in: center)
+
+    QuickTerminalRequest.toggle.post(in: center)
+    await waitUntil { controller.isVisible }
+    XCTAssertTrue(controller.isVisible, "a toggle slides it in")
+    QuickTerminalRequest.show.post(in: center)
+    await settle()
+    XCTAssertTrue(controller.isVisible, "a show leaves it in")
+    QuickTerminalRequest.toggle.post(in: center)
+    await waitUntil { !controller.isVisible }
+    XCTAssertFalse(controller.isVisible, "a toggle slides it back out")
+    QuickTerminalRequest.show.post(in: center)
+    await waitUntil { controller.isVisible }
+    XCTAssertTrue(controller.isVisible, "a show brings it back")
+  }
+
+  /// A notification that isn't a request (no payload, or an unknown one) is ignored.
+  func testARequestIsReadOnlyFromItsPayload() {
+    let name = QuickTerminalRequest.notification
+    XCTAssertNil(QuickTerminalRequest(Notification(name: name)))
+    XCTAssertNil(QuickTerminalRequest(Notification(name: name, userInfo: ["request": "close"])))
+    XCTAssertEqual(
+      QuickTerminalRequest(Notification(name: name, userInfo: ["request": "toggle"])), .toggle)
+  }
+
+  /// Value: protects=⌘H taking the panel away with the app, which it doesn't by itself
+  /// (`canHide` is off so it can show while Workroom is hidden); fails_when=the willHide observer
+  /// is missing; why_new=new behaviour; seam=none; no_claim=a real NSApp.hide.
+  func testTheAppHidingSlidesItAway() async {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    XCTAssertTrue(controller.isVisible)
+
+    NotificationCenter.default.post(name: NSApplication.willHideNotification, object: NSApp)
+    await waitUntil { !controller.isVisible }
+    XCTAssertFalse(controller.isVisible, "⌘H slides it away")
+    XCTAssertTrue(controller.hasWindow, "hidden, not destroyed")
+  }
+
+  /// Value: protects=Esc staying the terminal's (vim, a TUI's cancel): a panel closes on an Esc
+  /// nothing before it took, which here would slide it away mid-typing; fails_when=the
+  /// cancelOperation override is removed; why_new=new behaviour; seam=none; no_claim=a real key
+  /// press through ghostty.
+  func testEscDoesNotSlideItAway() async throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let window = try XCTUnwrap(controller.currentWindow)
+
+    window.cancelOperation(nil)
+    await settle()
+    XCTAssertTrue(controller.isVisible, "Esc leaves it up")
+  }
+
+  /// Polls `condition` on the main actor for up to 2 s: a request reaches the controller through
+  /// the main queue, and a hide's slide-out sets `hiding` at once.
+  private func waitUntil(_ condition: () -> Bool) async {
+    for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+  }
+
+  /// Lets the main queue run what a post or a call queued, before asserting nothing changed.
+  private func settle() async {
+    for _ in 0..<5 { try? await Task.sleep(for: .milliseconds(10)) }
+  }
+
+  func testWindowShowsAlongsideOtherAppsWithoutActivatingWorkroom() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+
+    let window = try XCTUnwrap(controller.currentWindow as? NSPanel)
+    XCTAssertTrue(window.styleMask.contains(.nonactivatingPanel))
+    XCTAssertTrue(window.canBecomeKey, "it still takes the keyboard")
+    XCTAssertFalse(window.hidesOnDeactivate, "it shows while another app is frontmost")
+    XCTAssertFalse(window.canHide, "it shows while Workroom is hidden, without unhiding the rest")
+    XCTAssertTrue(window.collectionBehavior.contains(.moveToActiveSpace), "on the current Space")
+    XCTAssertTrue(
+      window.collectionBehavior.contains(.fullScreenAuxiliary), "over a full-screen app")
+  }
+
   func testWindowStartsOffScreenOutsideAppKitsConstraint() throws {
     let controller = makeController()
     defer { controller.close() }

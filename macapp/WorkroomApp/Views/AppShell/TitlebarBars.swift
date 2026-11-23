@@ -220,7 +220,7 @@ struct TrailingTitlebarBar: View {
       // Quick Terminal (⌥§ by default) — a shell in its own slide-in window, always at the trailing
       // edge.
       Button {
-        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+        QuickTerminalRequest.show.post()
       } label: {
         // The `.badge.plus` extends this glyph's box upward, so a plain centre sits ~0.5pt high vs the
         // other icons; nudge it down to sit on the same line.

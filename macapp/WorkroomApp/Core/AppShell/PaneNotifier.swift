@@ -138,9 +138,12 @@ final class PaneNotifier {
     // `seen` (suppress?) keys on the host window's `isKeyWindow` — is THIS pane the one focused.
     // The banner-vs-in-app routing below keys on `NSApp.isActive` — is the APP frontmost at all.
     // Two different questions, deliberately different vocabulary: a frontmost-but-not-key window
-    // still shows an in-app toast, never a banner. (`isKeyWindow` already implies the app is
-    // active.) Per-window so a *non-key* window's selected cursor tab still notifies (issue #89,
-    // multi-window) instead of being suppressed because some other window holds key.
+    // still shows an in-app toast, never a banner. A key window does NOT imply an active app: the
+    // Quick Terminal is a non-activating panel, key over another app while Workroom stays inactive,
+    // so activity in one of its background tabs then goes to a banner, not a toast on a workroom
+    // window hidden behind that app. Per-window so a *non-key* window's selected cursor tab still
+    // notifies (issue #89, multi-window) instead of being suppressed because some other window
+    // holds key.
     let appFrontmost = host.isHostWindowKey
     let onScreen = host.onScreenTarget(forID: targetID)
     let isSelectedMember = onScreen?.id == host.primaryTargetID
