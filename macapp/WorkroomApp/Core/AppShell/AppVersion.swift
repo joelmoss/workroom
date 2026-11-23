@@ -4,7 +4,7 @@ import Foundation
 /// "2.0.0-beta.1"), plus a SemVer 2.0.0–correct comparison (`SemanticVersion`).
 ///
 /// Feature 2's "What's New" dialog filters GitHub releases by this version, so prerelease ordering
-/// has to be right: this repo ships betas (`.goreleaser.yml` `prerelease: auto`), and a naive
+/// has to be right: this repo ships betas (a `-beta.N` tag publishes as a prerelease), and a naive
 /// numeric-string compare sorts `2.0.0-beta.1` *after* `2.0.0` — which would suppress the dialog on a
 /// beta→stable upgrade, exactly for the users most likely to read release notes. An unparseable
 /// string is surfaced as `nil` so callers skip the dialog rather than crash.

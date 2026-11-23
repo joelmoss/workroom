@@ -1,8 +1,8 @@
 #!/bin/sh
 #
 # Test for cli-archives.sh, the standalone archives a release and the Nightly publish (ADR 0078,
-# #681), and for the swap they make: an old Go CLI's `workroom update` installs the Rust binary
-# from them. Run: sh macapp/Scripts/cli-archives_test.sh   (exits non-zero on any mismatch).
+# #681), under the names the retired Go CLI's `workroom update` and install.sh look for.
+# Run: sh macapp/Scripts/cli-archives_test.sh   (exits non-zero on any mismatch).
 #
 # 1. What the archives ship agrees with the notices: about.toml's targets are the four the script
 #    builds, and its features are the notices' and the app's (#714).
@@ -14,12 +14,10 @@
 #    CI's script tests minutes; CLI_ARCHIVES_TEST_PLATFORMS="darwin_arm64 darwin_amd64
 #    linux_arm64 linux_amd64" builds all four, as the release does.
 # 4. `check` refuses a Go binary, a Windows archive, a bad checksum and an unstamped binary.
-# 5. A Go CLI built from this checkout, pointed at a releases server on 127.0.0.1 that serves the
-#    archives from 3 under GitHub's API shape, updates itself into the Rust binary with
-#    `workroom update`, as `workroom` (stable) and as `workroom-nightly`, in a throwaway prefix
-#    and home. It is the Go updater as it ships, with only its releases URL replaced at build time
-#    (`go build -overlay`), so the checksum, extraction and swap are the ones users run. Needs go
-#    and python3, and skips without them: no release or Nightly runner has Go since the swap.
+#
+# Until #682 a fifth case built the Go CLI from this checkout and ran its `workroom update` into
+# these archives; the Go sources went with it, so the archive names, layout and checksums.txt
+# checked in 3 are what keeps an installed Go CLI's update working.
 #
 # The builds share build-daemon_test.sh's cargo target directory, so only the workroom crate is
 # rebuilt.
@@ -53,9 +51,7 @@ app_features="$(sed -n 's/^DAEMON_FEATURES="\(.*\)"$/\1/p' "$DIR/build-daemon.sh
   || fail "features differ: cli-archives.sh '$script_features', the notices '$notices_features', build-daemon.sh '$app_features'"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cli-archives_test.XXXXXX")"
-SERVER_PID=""
 cleanup() {
-  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -106,7 +102,7 @@ for p in $PLATFORMS; do
 done
 if [ -n "$skip_build" ]; then
   if [ "$fails" -ne 0 ]; then echo "cli-archives_test: $fails failure(s)"; exit 1; fi
-  echo "cli-archives_test: SKIP the builds and the update ($skip_build)"
+  echo "cli-archives_test: SKIP the builds ($skip_build)"
   exit 0
 fi
 export CARGO_TARGET_DIR="${BUILD_DAEMON_TEST_TARGET_DIR:-$REPO/vcs/target/build-daemon-test}"
@@ -196,140 +192,16 @@ done
 resum baked
 expect_check_fails baked "want version 9.9.9-nightly.7 on the stable channel" 9.9.9-nightly.7
 
-if command -v go >/dev/null 2>&1; then
-  mutant go-binary
-  mkdir "$WORK/gobin" "$WORK/gobin/pkg"
-  printf 'module gobin\n\ngo 1.21\n' >"$WORK/gobin/pkg/go.mod"
-  printf 'package main\n\nfunc main() { println("daemon-build Third-party software notices 9.9.9") }\n' \
-    >"$WORK/gobin/pkg/main.go"
-  goarch="${HOST#darwin_}"
-  if (cd "$WORK/gobin/pkg" && CGO_ENABLED=0 GOOS=darwin GOARCH="$goarch" GOFLAGS=-mod=mod go build -o "$WORK/gobin/workroom" .) >/dev/null 2>&1; then
-    cp "$REPO/vcs/crates/workroomd/THIRD-PARTY-NOTICES.txt" "$WORK/gobin/"
-    chmod 0644 "$WORK/gobin/THIRD-PARTY-NOTICES.txt"
-    COPYFILE_DISABLE=1 tar -czf "$WORK/go-binary/workroom_9.9.9_$HOST.tar.gz" -C "$WORK/gobin" \
-      workroom THIRD-PARTY-NOTICES.txt
-    resum go-binary
-    expect_check_fails go-binary "is a Go binary"
-  else
-    fail "could not build a Go binary for the Go-binary case"
-  fi
-fi
-
-# --- 5. an old Go CLI updates itself into the Rust binary --------------------------------------
-if ! command -v go >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-  # CI's app-scripts job installs both: there, a missing one would hide the swap's one end-to-end
-  # test behind a skip that prints OK.
-  if [ -n "${CI:-}" ]; then
-    fail "go or python3 is not on PATH in CI, so the Go CLI update cannot run"
-  fi
-  if [ "$fails" -ne 0 ]; then echo "cli-archives_test: $fails failure(s)"; exit 1; fi
-  echo "cli-archives_test: OK (SKIP the Go CLI update: go or python3 not on PATH)"
-  exit 0
-fi
-
-# The releases server: GitHub's API paths the updaters read, as files.
-SRV="$WORK/srv"
-API="$SRV/repos/joelmoss/workroom/releases"
-mkdir -p "$API/tags" "$SRV/download/v9.9.9" "$SRV/download/nightly"
-cp "$WORK/stable/"* "$SRV/download/v9.9.9/"
-cp "$WORK/nightly/"* "$SRV/download/nightly/"
-# Not `python3 -m http.server`: its HTTPServer.server_bind names the server by socket.getfqdn, a
-# reverse lookup of 127.0.0.1, before it prints the port, and on a GitHub macOS runner that lookup
-# outlasted the wait below with nothing printed (#681). This binds the port and prints it, with no
-# name lookup; each request is still logged to stderr, which the error check at the end reads.
-python3 -I -u -c '
-import functools, http.server, socketserver, sys
-
-class Server(http.server.ThreadingHTTPServer):
-    def server_bind(self):
-        socketserver.TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.server_address[:2]
-
-handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
-with Server(("127.0.0.1", 0), handler) as server:
-    print("releases server port", server.server_port)
-    server.serve_forever()
-' "$SRV" >"$WORK/server.log" 2>&1 &
-SERVER_PID=$!
-PORT=""
-tries=0
-while [ -z "$PORT" ] && [ "$tries" -lt 100 ]; do
-  PORT="$(sed -n 's/^releases server port \([0-9][0-9]*\)$/\1/p' "$WORK/server.log")"
-  [ -n "$PORT" ] || { tries=$((tries + 1)); sleep 0.1; }
-done
-if [ -z "$PORT" ]; then
-  if kill -0 "$SERVER_PID" 2>/dev/null; then state="still running, printed nothing"; else state="exited"; fi
-  fail "the releases server did not start ($(python3 --version 2>&1), $state): $(cat "$WORK/server.log")"
-  exit 1
-fi
-BASE="http://127.0.0.1:$PORT"
-
-# release_json <tag> <name> <download dir>: the release as GitHub's API returns it.
-release_json() {
-  assets=""
-  for f in "$SRV/download/$3/"*; do
-    name="$(basename "$f")"
-    assets="${assets:+$assets,}{\"name\":\"$name\",\"browser_download_url\":\"$BASE/download/$3/$name\"}"
-  done
-  printf '{"tag_name":"%s","name":"%s","draft":false,"prerelease":%s,"assets":[%s]}\n' \
-    "$1" "$2" "$([ "$1" = nightly ] && echo true || echo false)" "$assets"
-}
-release_json v9.9.9 v9.9.9 v9.9.9 >"$API/latest"
-release_json nightly 9.9.9-nightly.7 nightly >"$API/tags/nightly"
-
-# The Go CLI as it ships, its releases URL replaced by the server's.
-UPDATER="$REPO/internal/updater/updater.go"
-const='const releasesAPI = "https://api.github.com/repos/joelmoss/workroom/releases"'
-if [ "$(grep -cxF "$const" "$UPDATER")" -ne 1 ]; then
-  fail "internal/updater/updater.go no longer has '$const'; update this test"
-  exit 1
-fi
-mkdir "$WORK/overlay"
-sed "s|^const releasesAPI = \"https://api.github.com/repos/joelmoss/workroom/releases\"\$|const releasesAPI = \"$BASE/repos/joelmoss/workroom/releases\"|" \
-  "$UPDATER" >"$WORK/overlay/updater.go"
-printf '{"Replace":{"%s":"%s"}}\n' "$UPDATER" "$WORK/overlay/updater.go" >"$WORK/overlay/overlay.json"
-mkdir -p "$WORK/prefix/bin" "$WORK/home"
-go_build() {
-  (cd "$REPO" && CGO_ENABLED=0 go build -trimpath -overlay "$WORK/overlay/overlay.json" \
-    -ldflags "-s -w $2" -o "$WORK/prefix/bin/$1" .) >"$WORK/go-$1.log" 2>&1 \
-    || { fail "go build of $1: $(cat "$WORK/go-$1.log")"; return 1; }
-}
-
-# update_into_rust <command> <ldflags> <archives> <label> <channel> <version> <want output>
-update_into_rust() {
-  cmd="$1"
-  bin="$WORK/prefix/bin/$cmd"
-  go_build "$cmd" "$2" || return
-  LC_ALL=C grep -q -a -F 'Go buildinf:' "$bin" || { fail "$cmd: the old CLI is not a Go binary"; return; }
-  out="$(HOME="$WORK/home" WORKROOM_CONFIG="$WORK/home/config.json" "$bin" update 2>&1)"
-  rc=$?
-  [ "$rc" -eq 0 ] || { fail "$cmd update exited $rc: $out"; return; }
-  case "$out" in *"$7"*) ;; *) fail "$cmd update printed '$out', want '$7'" ;; esac
-  mkdir "$WORK/want-$cmd"
-  tar -xzf "$WORK/$3/workroom_$4_$HOST.tar.gz" -C "$WORK/want-$cmd"
-  cmp -s "$bin" "$WORK/want-$cmd/workroom" || fail "$cmd: the installed file is not the archive's binary"
-  ! LC_ALL=C grep -q -a -F 'Go buildinf:' "$bin" || fail "$cmd: still a Go binary after the update"
-  [ -x "$bin" ] || fail "$cmd: the updated binary is not executable"
-  protocol="$("$bin" protocol 2>&1)"
-  case "$protocol" in *"daemon-build "*) ;; *) fail "$cmd: the updated binary's protocol says '$protocol'" ;; esac
-  json="$(HOME="$WORK/home" WORKROOM_CONFIG="$WORK/home/config.json" "$bin" version --json 2>&1)"
-  case "$json" in *"\"version\":\"$6\""*) ;; *) fail "$cmd: the updated binary is not version $6: '$json'" ;; esac
-  case "$json" in *"\"channel\":\"$5\""*) ;; *) fail "$cmd: the updated binary is not on the $5 channel: '$json'" ;; esac
-}
-# The Go CLI asks for this Mac's archive.
-case " $PLATFORMS " in
-  *" $HOST "*)
-  update_into_rust workroom "-X main.version=1.0.0" stable 9.9.9 stable 9.9.9 \
-    "Updated workroom 1.0.0 → v9.9.9"
-  update_into_rust workroom-nightly "-X main.version=9.9.8-nightly.1 -X main.channel=nightly" \
-    nightly nightly nightly 9.9.9-nightly.7 "Updated workroom 9.9.8-nightly.1 → 9.9.9-nightly.7"
-  # Each fetched only from the server, and every request it made was answered.
-  if grep -Eq '" (4|5)[0-9][0-9] ' "$WORK/server.log"; then
-    fail "the releases server answered an error: $(grep -E '" (4|5)[0-9][0-9] ' "$WORK/server.log")"
-  fi
-  ;;
-  *) fail "CLI_ARCHIVES_TEST_PLATFORMS leaves out this Mac's $HOST, which the Go CLI update needs" ;;
-esac
+# A Go binary is known by the magic Go's debug/buildinfo puts before its build info: this Mac's
+# Rust binary with that magic added stands in for one, so no Go toolchain is needed.
+mutant go-binary
+mkdir "$WORK/gobin"
+tar -xzf "$WORK/stable/workroom_9.9.9_$HOST.tar.gz" -C "$WORK/gobin"
+printf '\377 Go buildinf:\010\002' >>"$WORK/gobin/workroom"
+COPYFILE_DISABLE=1 tar -czf "$WORK/go-binary/workroom_9.9.9_$HOST.tar.gz" -C "$WORK/gobin" \
+  workroom THIRD-PARTY-NOTICES.txt
+resum go-binary
+expect_check_fails go-binary "is a Go binary"
 
 if [ "$fails" -ne 0 ]; then
   echo "cli-archives_test: $fails failure(s)"

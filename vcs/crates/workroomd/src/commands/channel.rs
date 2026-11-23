@@ -1,10 +1,9 @@
 //! Workroom's release channels, the rules that map a GitHub release tag to a channel, and a
 //! channel to the set of channels it accepts (the nested "floor" model).
 //!
-//! This is the Rust copy of `internal/channel` (Go), kept in lockstep with the Go package, the
-//! shell installers' `macapp/Scripts/channel-helper.sh` and the macOS app's `ReleaseChannel`
-//! enum: if you change a rule here, change all of them. The tests here read the same fixture as
-//! the Go and shell tests, `internal/channel/testdata/channel_cases.tsv`.
+//! Kept in lockstep with the shell installers' `macapp/Scripts/channel-helper.sh` and the macOS
+//! app's `ReleaseChannel` enum: if you change a rule here, change both. The tests here read the
+//! same fixture as the shell and Swift tests, `testdata/channel_cases.tsv`.
 //!
 //! # Channel model (floor / nested)
 //!
@@ -132,12 +131,12 @@ fn valid_core(s: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// The shared tag -> channel fixture, parsed the way Go's `testtable.Rows` does: skip blank
+    /// The shared tag -> channel fixture, parsed as the shell and Swift readers do: skip blank
     /// lines and `#` comments, split on tabs, exactly two fields per row.
     fn load_cases() -> Vec<(String, Option<Channel>)> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../internal/channel/testdata/channel_cases.tsv"
+            "/../../../testdata/channel_cases.tsv"
         );
         let data = std::fs::read_to_string(path).expect("read channel_cases.tsv");
         let mut rows = Vec::new();

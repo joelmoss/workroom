@@ -14,7 +14,7 @@ FIELDS="${BUILD}/appcast-fields.env"
 FEED="${BUILD}/appcast.xml"
 FEED_TAG="appcast"  # the fixed release that hosts appcast.xml (matches SUFeedURL)
 
-# Shared channel classification (kept in lockstep with internal/channel + ReleaseChannel).
+# Shared channel classification (kept in lockstep with the CLI's channel.rs + ReleaseChannel).
 # shellcheck source=channel-helper.sh
 . "${MACAPP_DIR}/Scripts/channel-helper.sh"
 

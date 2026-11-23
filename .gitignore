@@ -4,13 +4,11 @@ CLAUDE.local.md
 /.claude/settings.local.json
 /.claude/worktrees/
 
-# Go: `make cli-build` writes bin/workroom; /workroom is where it used to write, still in older
-# checkouts.
+# What the retired Go CLI's build (`make cli-build`, before that /workroom) and GoReleaser (/dist/)
+# left in checkouts made before #682.
 /bin/
 /workroom
 *.exe
-
-# GoReleaser
 /dist/
 
 # macOS app (macapp/)

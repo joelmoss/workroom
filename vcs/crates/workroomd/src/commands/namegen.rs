@@ -1,5 +1,5 @@
-//! A new workroom's friendly random name, `<adjective>-<noun>`, from Go's `internal/namegen` word
-//! lists (a test holds these to Go's, word for word).
+//! A new workroom's friendly random name, `<adjective>-<noun>`, from the word lists the retired Go
+//! CLI used, word for word.
 
 /// The first word of a name.
 const ADJECTIVES: [&str; 120] = [
@@ -61,31 +61,6 @@ pub(super) fn below(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The quoted words of Go's `var <name> = []string{…}`.
-    fn go_list(source: &str, name: &str) -> Vec<String> {
-        let start = source
-            .find(&format!("var {name} = []string{{"))
-            .unwrap_or_else(|| panic!("no {name} in namegen.go"));
-        let body = &source[start..];
-        let body = &body[..body.find('}').expect("end of list")];
-        body.split('"')
-            .skip(1)
-            .step_by(2)
-            .map(str::to_string)
-            .collect()
-    }
-
-    #[test]
-    fn the_word_lists_are_gos() {
-        let source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../internal/namegen/namegen.go"
-        ))
-        .expect("read namegen.go");
-        assert_eq!(go_list(&source, "adjectives"), ADJECTIVES);
-        assert_eq!(go_list(&source, "nouns"), NOUNS);
-    }
 
     #[test]
     fn a_name_is_an_adjective_and_a_noun() {

@@ -164,9 +164,9 @@ pub(crate) fn one_line(text: &str) -> String {
         .collect()
 }
 
-/// Whether `ch` is in Unicode's Cf (format) category, as Go's `unicode.Cf` table has it in the Go
-/// `go.mod` names (1.27.4: Unicode 17.0.0): invisible characters that change how text around them
-/// is shown. A Go whose table differs needs this one changed with it.
+/// Whether `ch` is in Unicode's Cf (format) category, as Go 1.27.4's `unicode.Cf` table has it
+/// (Unicode 17.0.0), the Go the retired Go CLI last built with: invisible characters that change
+/// how text around them is shown. A newer Unicode's Cf ranges are added here by hand.
 fn is_format(ch: char) -> bool {
     const CF: &[(u32, u32)] = &[
         (0x00ad, 0x00ad),

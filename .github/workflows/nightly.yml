@@ -108,13 +108,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Xcode and XcodeGen + create-dmg. No Go: no Nightly builds the Go CLI (ADR 0078). go-cache
-      # stays off as well, for the linter, which can't see the step is skipped.
+      # Xcode and XcodeGen + create-dmg.
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
         with:
-          go: "false"
-          go-cache: "false"
           formulae: xcodegen create-dmg
 
       # Separate step, and deliberately non-fatal — unlike the release workflow, which installs
@@ -227,7 +224,7 @@ jobs:
           tar -xzf macapp/build/release/cli/workroom_nightly_darwin_arm64.tar.gz -C "$SHIPPED"
           WORKROOM_BIN="$SHIPPED/workroom" rustup run "$(make -s print-VCS_RUST)" \
             cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- \
-            --include-ignored --exact \
+            --exact \
             --skip version_json_matches_the_golden \
             --skip version_json_flag_may_come_before_the_command \
             --skip version_json_reports_the_configured_channel \

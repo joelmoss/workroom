@@ -1,6 +1,6 @@
 ---
 name: curate-release
-description: Workroom's tag-driven release process — channel architecture (stable/pre vs the side-by-side Nightly build), keeping the channel-classification logic in lockstep across Go/Swift/shell, and curating GitHub release notes after a tag publishes.
+description: Workroom's tag-driven release process — channel architecture (stable/pre vs the side-by-side Nightly build), keeping the channel-classification logic in lockstep across Rust/Swift/shell, and curating GitHub release notes after a tag publishes.
 ---
 
 Tag-driven (see `docs/contributing/releasing.md`). After a release publishes, **curate its GitHub release
@@ -34,9 +34,8 @@ covers `release/**`. Full runbook: `docs/contributing/releasing.md` "Patch relea
 (patching an *old* minor makes it GitHub's "Latest" by creation date and misleads the stable
 updater).
 
-Canonical tag→channel classification is `internal/channel` (Go), mirrored by
-`macapp/Scripts/channel-helper.sh` and the Rust copy in
-`vcs/crates/workroomd/src/commands/channel.rs`; all three share `internal/channel/testdata/channel_cases.tsv` —
+Canonical tag→channel classification is the CLI's `vcs/crates/workroomd/src/commands/channel.rs`,
+mirrored by `macapp/Scripts/channel-helper.sh`; both share `testdata/channel_cases.tsv` —
 **keep them in lockstep**. `macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` classifies no
 tags: its channel raw names must match what `appcast.sh` writes. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
 and `appcast-nightly.xml` (one rolling item). Nightly needs its own because Sparkle offers every

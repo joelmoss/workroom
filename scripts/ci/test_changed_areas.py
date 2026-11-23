@@ -49,23 +49,19 @@ def filtered_jobs():
 
 
 class ChangedAreasTests(unittest.TestCase):
-    def test_go_sources_run_only_the_cli_job(self):
-        self.assertEqual(needed("cmd/list.go", "internal/vcs/vcs_test.go", "main.go"), {"cli"})
-
-    def test_a_data_file_beside_the_go_code_runs_everything(self):
-        # channel_cases.tsv is read by the app's ReleaseChannelTests and channel-helper_test.sh.
-        self.assertEqual(needed("internal/channel/testdata/channel_cases.tsv"), set(JOBS))
+    def test_the_channel_cases_run_the_jobs_that_read_them(self):
+        # The Rust classifier's tests, the app's ReleaseChannelTests and channel-helper_test.sh.
+        self.assertEqual(needed("testdata/channel_cases.tsv"), {"rust", "app", "scripts"})
 
     def test_each_fixture_table_runs_the_jobs_that_read_it(self):
         cases = {
-            "testdata/contracts/list.json": {"cli", "packages", "app"},
-            "testdata/contracts/create-events.ndjson": {"cli", "packages", "app"},
+            "testdata/contracts/list.json": {"rust", "packages", "app"},
+            "testdata/contracts/create-events.ndjson": {"rust", "packages", "app"},
             "testdata/contracts/frames.tsv": {"rust", "packages"},
-            "testdata/twins/login_shell.tsv": {"cli", "rust", "packages", "app"},
-            "testdata/twins/split_base.tsv": {"cli", "rust", "packages", "app"},
+            "testdata/twins/login_shell.tsv": {"rust", "packages", "app"},
+            "testdata/twins/split_base.tsv": {"rust", "packages", "app"},
             "testdata/program-status/status.json": {"rust", "packages", "app"},
-            "testdata/script-env/local.txt": {"cli", "rust", "app"},
-            "testdata/fixtures/setup": {"cli"},
+            "testdata/script-env/local.txt": {"rust", "app"},
         }
         for path, jobs in cases.items():
             with self.subTest(path=path):
@@ -77,7 +73,6 @@ class ChangedAreasTests(unittest.TestCase):
     def test_each_workflow_runs_its_own_jobs(self):
         cases = {
             ".github/workflows/ci.yml": set(JOBS),
-            ".github/workflows/ci-go.yml": {"cli"},
             ".github/workflows/ci-rust.yml": {"rust"},
             ".github/workflows/ci-app.yml": {"packages", "app", "scripts"},
             ".github/workflows/release.yml": {"scripts"},
@@ -109,7 +104,7 @@ class ChangedAreasTests(unittest.TestCase):
     def test_every_make_file_runs_the_jobs_that_run_make(self):
         # Every make parses every mk file, test-invariants_test.sh reads each one make reads, and
         # the rust job runs `make notices-check`.
-        for path in ("Makefile", "mk/app.mk", "mk/cli.mk", "mk/docs.mk", "mk/vcs.mk",
+        for path in ("Makefile", "mk/app.mk", "mk/docs.mk", "mk/vcs.mk",
                      "mk/actions.mk", "mk/notices.mk", "mk/new.mk"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"rust", "packages", "app", "scripts"})
@@ -123,9 +118,10 @@ class ChangedAreasTests(unittest.TestCase):
     def test_the_daemon_runs_rust_and_everything_that_bundles_it(self):
         self.assertEqual(needed("vcs/crates/workroomd/src/main.rs"), {"rust", "app", "scripts"})
 
-    def test_the_cli_contract_suite_also_runs_the_cli_job_that_runs_it(self):
+    def test_the_cli_contract_suite_runs_the_jobs_that_run_it(self):
+        # rust runs its groups that work anywhere; app runs the whole suite on macOS.
         self.assertEqual(needed("vcs/crates/workroomd/tests/commands_contract.rs"),
-                         {"cli", "rust", "app", "scripts"})
+                         {"rust", "app", "scripts"})
 
     def test_the_bootstrap_scripts_also_run_rust(self):
         self.assertEqual(needed("macapp/Resources/daemon-bootstrap/probe.sh"),
@@ -139,15 +135,12 @@ class ChangedAreasTests(unittest.TestCase):
         self.assertEqual(needed("macapp/Packages/WorkroomDomain/Sources/WorkroomDomain/X.swift"),
                          {"packages", "app", "scripts"})
 
-    def test_go_mod_runs_everything_that_builds_the_cli(self):
-        # The app builds no Go since the swap (ADR 0078); the script tests build the Go CLI.
-        self.assertEqual(needed("go.mod"), {"cli", "scripts"})
-
-    def test_docs_site_runs_the_go_checks_and_the_shortcuts_page_the_app(self):
-        self.assertEqual(needed("docs-site/pages/guides/remote.md"), {"cli"})
-        self.assertEqual(needed("docs-site/pages/reference/keyboard-shortcuts.md"), {"cli", "app"})
-        # The terminal API's CLI pages, which the Rust tests generate and check.
-        self.assertEqual(needed("docs-site/pages/cli/workroom-wait.md"), {"cli", "rust"})
+    def test_docs_site_runs_the_rust_checks_and_the_shortcuts_page_the_app(self):
+        self.assertEqual(needed("docs-site/pages/guides/remote.md"), {"rust"})
+        self.assertEqual(needed("docs-site/nav.yml"), {"rust"})
+        self.assertEqual(needed("docs-site/pages/reference/keyboard-shortcuts.md"), {"rust", "app"})
+        # The CLI pages, which the Rust tests generate and check.
+        self.assertEqual(needed("docs-site/pages/cli/workroom-wait.md"), {"rust"})
 
     def test_design_docs_run_nothing_filtered(self):
         self.assertEqual(needed("docs/designs/x.md", "README.md", "scripts/ci/watch_pr_checks.py"),
@@ -172,10 +165,9 @@ class ChangedAreasTests(unittest.TestCase):
 
     def test_what_the_archive_test_reads_also_runs_the_script_tests(self):
         # cli-archives_test.sh checks the archives' targets and features against about.toml and
-        # the notices script, and builds the Go CLI's updater to update it into the Rust binary.
+        # the notices script.
         self.assertEqual(needed("third-party/about.toml"), {"rust", "scripts"})
         self.assertEqual(needed("scripts/third_party_notices.py"), {"rust", "scripts"})
-        self.assertEqual(needed("internal/updater/updater.go"), {"cli", "scripts"})
 
     def test_every_file_the_notices_check_reads_runs_the_rust_job(self):
         # The licence files and pinned version lines components.json names, and the generated
@@ -211,15 +203,14 @@ class ChangedAreasTests(unittest.TestCase):
         self.assertEqual(needed(""), set(JOBS))
 
     def test_the_union_of_every_path(self):
-        self.assertEqual(needed("cmd/list.go", "macapp/Packages/A/B.swift"),
-                         {"cli", "packages", "app", "scripts"})
+        self.assertEqual(needed("docs-site/nav.yml", "macapp/Packages/A/B.swift"),
+                         {"rust", "packages", "app", "scripts"})
 
     def test_prints_github_output_lines(self):
         out = io.StringIO()
-        with patch("sys.stdin", io.StringIO("cmd/list.go\n")), redirect_stdout(out):
+        with patch("sys.stdin", io.StringIO("docs-site/nav.yml\n")), redirect_stdout(out):
             main()
-        self.assertEqual(out.getvalue(), "cli=true\nrust=false\npackages=false\napp=false\n"
-                         "scripts=false\n")
+        self.assertEqual(out.getvalue(), "rust=true\npackages=false\napp=false\nscripts=false\n")
 
 
 class WorkflowReadersTests(unittest.TestCase):

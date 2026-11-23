@@ -7,8 +7,8 @@ push skips that job, and so runs every job.
 
 Each rule names the jobs whose tests or build read that path, which is wider than the language it
 is written in: the shared tables under `testdata/` are read by several languages' tests, the app
-bundles the daemon, the Rust tests read the daemon bootstrap scripts, and the Go and app tests both
-read `docs-site/`. A path no rule names runs every job, as does an empty diff, so a file a new test
+bundles the daemon, the Rust tests read the daemon bootstrap scripts, and the Rust and app tests
+both read `docs-site/`. A path no rule names runs every job, as does an empty diff, so a file a new test
 starts to read is over-tested until a rule says otherwise, never skipped; each narrow rule sits
 ahead of a catch-all for its tree (`.github/`, `testdata/`) that runs everything. Add a rule
 here when a test reads a new path outside its own tree. The master push runs everything whatever
@@ -18,7 +18,7 @@ this says.
 import sys
 from fnmatch import fnmatchcase
 
-JOBS = ("cli", "rust", "packages", "app", "scripts")
+JOBS = ("rust", "packages", "app", "scripts")
 ALL = frozenset(JOBS)
 
 # First match wins. Patterns are fnmatch globs, matched case-sensitively, whose `*` also matches
@@ -27,7 +27,6 @@ RULES = (
     # ci.yml calls every job. Each other workflow, and each composite action, runs the jobs that
     # run it: test_changed_areas.py reads those off the workflows and checks these rules name them.
     ((".github/workflows/ci.yml",), ALL),
-    ((".github/workflows/ci-go.yml",), {"cli"}),
     ((".github/workflows/ci-rust.yml",), {"rust"}),
     ((".github/workflows/ci-app.yml", ".github/actions/setup-app-build/*"),
      {"packages", "app", "scripts"}),
@@ -46,8 +45,8 @@ RULES = (
       ".github/actions/import-signing-certificate/*", ".github/dependabot.yml",
       ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md", ".github/ISSUE_TEMPLATE/*"),
      frozenset()),
-    # The macOS jobs and the rust job's `make notices-check` run `make` (the cli job and the rust
-    # job's other steps call go and cargo directly), and every make parses every mk file: a setting
+    # The macOS jobs and the rust job's `make notices-check` run `make` (the rust job's other steps
+    # call cargo directly), and every make parses every mk file: a setting
     # in any of them reaches those targets, mk/vcs.mk's VCS_RUST is a version the notices pin, and
     # test-invariants_test.sh (app-scripts) reads every file make reads.
     (("Makefile", "mk/*"), {"rust", "packages", "app", "scripts"}),
@@ -71,11 +70,14 @@ RULES = (
     # The shared fixture tables, each with the jobs whose tests read it. The tables a Rust unit
     # test include_str!s count the app too: its macOS `cargo test --lib` compiles those tests.
     (("testdata/contracts/frames.tsv",), {"rust", "packages"}),
-    (("testdata/contracts/*",), {"cli", "packages", "app"}),
-    (("testdata/twins/*",), {"cli", "rust", "packages", "app"}),
+    # The contract suite (rust on Linux, app on macOS) and the app's CLIContractTests (packages).
+    (("testdata/contracts/*",), {"rust", "packages", "app"}),
+    (("testdata/twins/*",), {"rust", "packages", "app"}),
     (("testdata/program-status/*",), {"rust", "packages", "app"}),
-    (("testdata/script-env/*",), {"cli", "rust", "app"}),
-    (("testdata/fixtures/*",), {"cli"}),
+    (("testdata/script-env/*",), {"rust", "app"}),
+    # The channel classifiers' shared cases: the Rust tests, the app's ReleaseChannelTests and
+    # channel-helper_test.sh (app-scripts).
+    (("testdata/channel_cases.tsv",), {"rust", "app", "scripts"}),
     (("testdata/*",), ALL),
     # The app's and the daemon's own docs, which nothing builds, bundles or reads. The Markdown the
     # app bundles lives under macapp/Resources and stays with the app.
@@ -86,24 +88,12 @@ RULES = (
     # The daemon's far-side bootstrap, which remote_transport.rs runs too.
     (("macapp/Resources/daemon-bootstrap/*",), {"rust", "app", "scripts"}),
     (("macapp/*",), {"app", "scripts"}),
-    # The CLI's contract suite, which the cli workflow's `contract` job runs against the Go CLI.
-    (("vcs/crates/workroomd/tests/commands_contract.rs",), {"cli", "rust", "app", "scripts"}),
     # The app bundles the daemon and runs its macOS-only tests; the script tests build it.
     (("vcs/*",), {"rust", "app", "scripts"}),
-    # The script tests' setup-go, and the Go CLI cli-archives_test.sh compiles, read the toolchain
-    # from go.mod. The app builds no Go (ADR 0078).
-    (("go.mod", "go.sum"), {"cli", "scripts"}),
-    # KeyboardShortcutsDocsTests reads this page; cmd/docs_test.go and internal/docsite read all.
-    (("docs-site/pages/reference/keyboard-shortcuts.md",), {"cli", "app"}),
-    # The terminal API's CLI pages, which the Rust binary generates and checks (commands/docs.rs).
-    (("docs-site/pages/cli/*",), {"cli", "rust"}),
-    (("docs-site/*",), {"cli"}),
-    # Go sources only: a data file under cmd/ or internal/ (channel_cases.tsv, which the app and
-    # the script tests read) has no rule and so runs everything.
-    # The Go CLI's updater, which cli-archives_test.sh (app-scripts) builds to update an old Go
-    # CLI into the Rust binary (#681).
-    (("internal/updater/updater.go",), {"cli", "scripts"}),
-    (("*.go", ".golangci.yml", ".goreleaser.yml"), {"cli"}),
+    # KeyboardShortcutsDocsTests reads this page; the Rust docs tests (commands::docs and
+    # tests/docs_site.rs) read every page.
+    (("docs-site/pages/reference/keyboard-shortcuts.md",), {"rust", "app"}),
+    (("docs-site/*",), {"rust"}),
     # Read by no job's tests. The `workflows` job, which is never filtered, covers scripts/ci/.
     (("docs/*", "*.md", ".agents/*", ".claude/*", ".out-of-scope/*", "scripts/ci/*",
       "MIT-LICENSE"), frozenset()),

@@ -3,17 +3,17 @@
 # Dependency-free test for wr_classify_channel (channel-helper.sh). No bats/toolchain — just sh.
 # Run: sh macapp/Scripts/channel-helper_test.sh   (exits non-zero on any mismatch).
 #
-# Guards the contract that MUST stay identical across the Go internal/channel package, the Swift
-# ReleaseChannel enum, and this shell helper. Cases live in one shared fixture
-# (internal/channel/testdata/channel_cases.tsv) that internal/channel/channel_test.go's
-# TestClassify also reads, so a newly discovered case is added once instead of independently to
-# two hand-maintained lists (which had already silently drifted apart).
+# Guards the contract that MUST stay identical across the CLI's classifier
+# (vcs/crates/workroomd/src/commands/channel.rs), the Swift ReleaseChannel enum, and this shell
+# helper. Cases live in one shared fixture (testdata/channel_cases.tsv) that the Rust
+# classify_matches_the_shared_fixture test also reads, so a newly discovered case is added once
+# instead of independently to two hand-maintained lists (which had already silently drifted apart).
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${DIR}/channel-helper.sh"
 
-FIXTURE="${DIR}/../../internal/channel/testdata/channel_cases.tsv"
+FIXTURE="${DIR}/../../testdata/channel_cases.tsv"
 TAB="$(printf '\t')"
 
 fails=0

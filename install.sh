@@ -46,7 +46,7 @@ api_get() {
 
 # Resolve the release tag to install for the given channel. install.sh is curl-piped and can't
 # source Scripts/channel-helper.sh, so it inlines the minimal channel routing — NOT tag
-# classification (that contract lives in internal/channel + ReleaseChannel + channel-helper.sh):
+# classification (that contract lives in the CLI's channel.rs + ReleaseChannel + channel-helper.sh):
 #   stable  -> GitHub's "Latest" (excludes prereleases by definition)
 #   pre     -> newest release that is not the nightly/appcast pseudo-release (GitHub lists newest
 #              first and hides drafts from anonymous callers, so this is the newest stable-or-prerelease)

@@ -23,15 +23,17 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Tags too: the docs site's Nightly check (tests/docs_site.rs) compares the docs with the
+      # latest stable tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       # Pinned for the lint gates below, as the app's daemon build is (setup-daemon-build, #714).
       # rustfmt's layout and clippy's lint set both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
-      # when GitHub rolls its image rather than when someone's code is wrong. Same reasoning as the
-      # pinned golangci-lint in `cli`. The same as mk/vcs.mk's VCS_RUST, here and in the jobs below
-      # (scripts/ci/test_tool_pins.py).
+      # when GitHub rolls its image rather than when someone's code is wrong. The same as
+      # mk/vcs.mk's VCS_RUST, here and in the jobs below (scripts/ci/test_tool_pins.py).
       - name: Install Rust 1.99.1
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
@@ -69,8 +71,12 @@ jobs:
       # `default-members`, so every member's unit and integration tests run here. That matters
       # because the daemon's pty, /proc introspection and socket code are the parts most likely to
       # differ between Darwin and Linux, and a bug that only shows up on one of them has already
-      # happened once (an output pump that never noticed a closed socket, which macOS hid).
+      # happened once (an output pump that never noticed a closed socket, which macOS hid). It
+      # also checks docs-site/: the CLI pages (commands::docs) and the site's format and Nightly
+      # markers (tests/docs_site.rs), which fails here without the tags the checkout fetched.
       - name: Test
+        env:
+          WORKROOM_DOCS_NIGHTLY_CHECK: "1"
         run: cargo test --manifest-path vcs/Cargo.toml
 
   # The shadow terminal, which is what makes a reattaching client see its screen. Separate from

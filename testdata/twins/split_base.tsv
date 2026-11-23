@@ -1,6 +1,7 @@
 # Shared base-branch setting -> (remote, branch) cases. The CLI and the app each read a base
-# branch, and both MUST agree on every row: Go internal/vcs's SplitBase (vcs_test.go) and Swift
-# RemoteWorkrooms.splitBase (the app's TerminalTargetTests). The code stays two copies, one per
+# branch, and both MUST agree on every row: the Rust workroom's commands::start::split_base (its
+# a_base_splits_as_the_shared_table_says test) and Swift RemoteWorkrooms.splitBase (the app's
+# TerminalTargetTests). The code stays two copies, one per
 # runtime (ADR 0005's spirit); this table is what keeps them one rule. The base names another
 # remote only when the part before its first "/" is one of the repository's remotes.
 # Format: <remotes, comma-separated><TAB><base><TAB><remote><TAB><branch>.
