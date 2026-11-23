@@ -71,8 +71,33 @@ Passing --channel switches you to that channel (installing its latest build even
 means a downgrade) and remembers it. Nightly is not a channel switch \u{2014} it's a separate
 side-by-side install (a `workroom-nightly` binary); see the install script's WORKROOM_CHANNEL.";
 
-/// Where the releases are.
-const RELEASES_API: &str = "https://api.github.com/repos/joelmoss/workroom/releases";
+/// Where the releases are: GitHub's, except in a build `macapp/Scripts/cli-archives_test.sh` makes
+/// with `WORKROOM_RELEASES_API_FOR_TESTS` naming a releases server on 127.0.0.1, to run this
+/// updater end to end against the archives a release ships. Only a loopback `http://` URL compiles
+/// (`loopback_only`), and `cli-archives.sh check` refuses a binary that holds one.
+const RELEASES_API: &str = match option_env!("WORKROOM_RELEASES_API_FOR_TESTS") {
+    Some(url) => loopback_only(url),
+    None => "https://api.github.com/repos/joelmoss/workroom/releases",
+};
+
+/// `url`, which must start `http://127.0.0.1:`; anything else fails the build.
+const fn loopback_only(url: &'static str) -> &'static str {
+    let prefix = b"http://127.0.0.1:";
+    let bytes = url.as_bytes();
+    assert!(
+        bytes.len() > prefix.len(),
+        "WORKROOM_RELEASES_API_FOR_TESTS must be http://127.0.0.1:<port>/…"
+    );
+    let mut i = 0;
+    while i < prefix.len() {
+        assert!(
+            bytes[i] == prefix[i],
+            "WORKROOM_RELEASES_API_FOR_TESTS must be http://127.0.0.1:<port>/…"
+        );
+        i += 1;
+    }
+    url
+}
 
 /// The release asset that lists each archive's SHA-256 (goreleaser's `checksum.name_template`).
 const CHECKSUMS_ASSET: &str = "checksums.txt";

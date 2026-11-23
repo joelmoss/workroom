@@ -16,8 +16,8 @@
 #   GitHub's "Latest", which install.sh and the stable updater read, never names a release without
 #   its archives. A clean vX.Y.Z is marked Latest, a prerelease tag a pre-release
 #   (channel-helper.sh). A re-run finds the release and replaces its files.
-# - The nightly release already exists. The Go CLI's Windows archives are removed from it, by name:
-#   no Nightly ships them now, and the release is reused every night.
+# - The nightly release already exists, and is reused every night. (The Go CLI's Windows archives
+#   it held were removed from it after ADR 0078; one there now is refused by the last check.)
 # - checksums.txt goes up after the archives, so an updater never reads sums for archives still
 #   being replaced: a mismatch makes it refuse, never install.
 # - Last, the release's archive names are checked: exactly this build's, and no other file with an
@@ -155,15 +155,6 @@ gh_release upload "$TARGET" "${ARCHIVE_FILES[@]}" "$DMG" --clobber
 gh_release upload "$TARGET" "$ARCHIVES/checksums.txt" --clobber
 
 ASSETS="$(gh_release view "$TARGET" --json assets -q '.assets[].name')"
-if [ "$CHANNEL" = nightly ]; then
-  for stale in workroom_nightly_windows_amd64.zip workroom_nightly_windows_arm64.zip; do
-    if printf '%s\n' "$ASSETS" | grep -qxF "$stale"; then
-      echo "==> Removing $stale from the nightly release (no Windows build since ADR 0078)"
-      gh_release delete-asset "$TARGET" "$stale" --yes
-    fi
-  done
-  ASSETS="$(gh_release view "$TARGET" --json assets -q '.assets[].name')"
-fi
 
 # What the release holds that an updater or install.sh could take for an archive, or its sums.
 want="$(for file in "${ARCHIVE_FILES[@]}"; do basename "$file"; done; echo checksums.txt)"

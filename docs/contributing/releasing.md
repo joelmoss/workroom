@@ -208,14 +208,15 @@ Mach-O per arch, signed with the Developer ID (hardened runtime, secure timestam
 a bare Mach-O can't be stapled, so Gatekeeper checks its ticket online. linux is a static musl ELF
 per arch. Windows builds of the CLI have ended; installed copies keep working but get no updates,
 and `install.ps1` is gone with the Go CLI (#682). `cli-archives.sh
-check`, which the build and the `publish` job both run, refuses any other set of files, a Go binary
-or a bad checksum, and runs every binary of its own OS: `version --json` must report exactly the
-version and channel. So each binary runs before anything publishes: the darwin ones in the build
-(the amd64 one under Rosetta), the linux ones in `publish` (the arm64 one under qemu-user).
-`publish-assets.sh` then refuses a release holding any other archive, and removes the Go CLI's
-Windows archives from the reused `nightly` release. `macapp/Scripts/cli-archives_test.sh` builds
-both channels' archives for this Mac and checks their names, layout and checksums, and that `check`
-refuses each kind of bad archive. The release runs the CLI contract suite against the darwin arm64 binary unpacked from its
+check`, which the build and the `publish` job both run, refuses any other set of files, a Go binary,
+a binary whose `update` reaches a test server, or a bad checksum, and runs every binary of its own
+OS: `version --json` must report exactly the version and channel. So each binary runs before
+anything publishes: the darwin ones in the build (the amd64 one under Rosetta), the linux ones in
+`publish` (the arm64 one under qemu-user). `publish-assets.sh` then refuses a release holding any
+other archive, a Windows one included. `macapp/Scripts/cli-archives_test.sh` builds both channels'
+archives for this Mac, checks their names, layout and checksums and that `check` refuses each kind
+of bad archive, then runs an older Rust `workroom`'s own `workroom update` into them, stable and
+nightly, from a releases server on 127.0.0.1. The release runs the CLI contract suite against the darwin arm64 binary unpacked from its
 archive, and the Nightly does too, skipping the four cases whose goldens are the main binary's: the
 nightly's baked channel changes `version --json` and refuses `update --channel` by design.
 

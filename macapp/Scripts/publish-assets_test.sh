@@ -4,9 +4,9 @@
 # files, and a stand-in for cli-archives.sh's check. Run: sh macapp/Scripts/publish-assets_test.sh
 #
 # What it pins: a tag's release is created as a draft and published only once every file is up,
-# Latest for a clean tag and a pre-release otherwise; checksums.txt goes up after the archives; the
-# nightly loses the Go CLI's Windows archives; a release whose archives are not exactly this
-# build's (a stale Go archive, a Windows one) or whose archives fail the check is never published;
+# Latest for a clean tag and a pre-release otherwise; checksums.txt goes up after the archives; a
+# release whose archives are not exactly this build's (a stale Go archive, a Windows one, on a tag
+# or the nightly) or whose archives fail the check is never published;
 # and a dry run does all of it to a draft of its own, never published and then deleted, without
 # one call that names the real release.
 set -u
@@ -169,9 +169,7 @@ line() {
   n="$(grep -nE "$1" "$FAKE_GH/calls" | head -1 | cut -d: -f1)"
   echo "${n:-0}"
 }
-NIGHTLY_ASSETS="workroom_nightly_windows_amd64.zip
-workroom_nightly_windows_arm64.zip
-workroom_nightly_darwin_arm64.tar.gz
+NIGHTLY_ASSETS="workroom_nightly_darwin_arm64.tar.gz
 checksums.txt
 workroom-macos-app_nightly.dmg"
 
@@ -210,17 +208,25 @@ expect_no_call "release create" "rerun"
 expect_no_call "release edit" "rerun"
 expect_call "--clobber" "rerun"
 
-# --- the nightly: its Go CLI's Windows archives go ---
+# --- the nightly: its files replaced, nothing deleted ---
 fresh nightly
 seed nightly false "$NIGHTLY_ASSETS"
 run nightly nightly VERSION=2.1.0-nightly.912
 expect_rc 0 "nightly"
-expect_call "release delete-asset nightly workroom_nightly_windows_amd64.zip --yes" "nightly"
-expect_call "release delete-asset nightly workroom_nightly_windows_arm64.zip --yes" "nightly"
+expect_no_call "delete-asset" "nightly"
 expect_assets "nightly" nightly "$(shipped nightly; echo app.dmg; echo workroom-macos-app_nightly.dmg)"
 grep -qxF "check $WORK/archives-nightly VERSION=2.1.0-nightly.912 CHANNEL=nightly" "$FAKE_GH/checked" \
   || fail "nightly: the archives were not checked as 2.1.0-nightly.912 on the nightly channel"
 expect_no_call "release create" "nightly"
+
+# --- a Windows archive left on the nightly release: refused, never deleted by name ---
+fresh nightly-windows
+seed nightly false "workroom_nightly_windows_amd64.zip
+$NIGHTLY_ASSETS"
+run nightly nightly VERSION=2.1.0-nightly.912
+expect_rc 1 "a Windows archive on the nightly"
+expect_no_call "delete-asset" "a Windows archive on the nightly"
+case "$OUT" in *workroom_nightly_windows_amd64.zip*) ;; *) fail "a Windows archive on the nightly: the error does not name it" ;; esac
 
 # --- the nightly needs its version, and its release ---
 fresh nightly-no-version

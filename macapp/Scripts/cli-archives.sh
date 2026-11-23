@@ -195,6 +195,11 @@ check_binary() {
   if LC_ALL=C grep -q -a -F 'Go buildinf:' "$bin"; then
     die "$platform: workroom is a Go binary; a release ships only the Rust workroom (ADR 0078)."
   fi
+  # cli-archives_test.sh's own builds point `update` at a releases server on 127.0.0.1
+  # (WORKROOM_RELEASES_API_FOR_TESTS); one of those must never ship.
+  if LC_ALL=C grep -q -a -E 'http://127\.0\.0\.1:[0-9]+/repos/joelmoss/workroom/releases' "$bin"; then
+    die "$platform: workroom's update reaches a test server on 127.0.0.1, not GitHub."
+  fi
   # What only the Rust binary holds: the daemon's build identity line (#680) and the notices it
   # embeds (#714).
   if ! LC_ALL=C grep -q -a -F 'daemon-build ' "$bin" \
