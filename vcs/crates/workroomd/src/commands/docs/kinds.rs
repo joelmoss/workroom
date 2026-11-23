@@ -163,7 +163,7 @@ mod tests {
         } else {
             ""
         };
-        for kind in [Kind::MacOnly, Kind::ManagedInstall] {
+        for kind in [Kind::MacOnly, Kind::ManagedInstall, Kind::NeedsTheUser] {
             assert!(
                 page.contains(&format!("| `{}` | 3 | {mark}", kind.code())),
                 "{}",

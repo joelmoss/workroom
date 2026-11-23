@@ -736,6 +736,8 @@ mod tests {
             color: false,
             // Never looked for in tests (#684): a test run in a pane must not find a real daemon.
             daemon_above: || None,
+            // Nor a coding agent (#793): a test a coding agent runs would find it.
+            coding_agent_above: || None,
         }
     }
 

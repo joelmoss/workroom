@@ -18,6 +18,7 @@ fn context(env: fn(&str) -> Option<String>) -> Context {
         platform: Platform::Mac,
         env,
         daemon_above: || None,
+        coding_agent_above: || None,
         color: false,
     }
 }

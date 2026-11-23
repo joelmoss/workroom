@@ -1558,6 +1558,10 @@ mod events;
 mod lifecycle;
 mod prompt;
 mod send;
+
+/// The coding agents known by their program's name, which the CLI's commands only a person may run
+/// refuse too (#793).
+pub(crate) use prompt::AGENTS;
 mod wait;
 
 pub use send::{

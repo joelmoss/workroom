@@ -264,6 +264,7 @@ mod tests {
                 platform,
                 env: |_| None,
                 daemon_above: || None,
+                coding_agent_above: || None,
                 color: false,
             },
         )

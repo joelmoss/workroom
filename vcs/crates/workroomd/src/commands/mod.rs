@@ -48,6 +48,7 @@ mod lifecycle;
 mod list;
 mod log;
 mod namegen;
+mod needs_the_user;
 mod panel;
 pub(crate) mod prompt;
 mod prompt_agent;
@@ -114,6 +115,10 @@ pub(crate) struct Context {
     /// whose environment names none (`terminal_api::daemon_above`). Never looked for in tests: a
     /// test run in a Workroom pane would find the developer's own daemon.
     daemon_above: fn() -> Option<String>,
+    /// The coding agent this process runs under, found from its parents, which the commands only
+    /// a person may run refuse (`needs_the_user`). Never looked for in the unit tests here: a test
+    /// run by a coding agent would find it. The binary always looks.
+    coding_agent_above: fn() -> Option<String>,
     /// Whether human output is coloured: stdout is a terminal and neither `NO_COLOR` nor a dumb
     /// `TERM` says otherwise, as Go's colour package decides.
     color: bool,
@@ -1151,6 +1156,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
         platform: Platform::current(),
         env,
         daemon_above: terminal_api::daemon_above,
+        coding_agent_above: needs_the_user::coding_agent_above,
         color: std::io::stdout().is_terminal()
             && env("NO_COLOR").is_none_or(|value| value.is_empty())
             && env("TERM").as_deref() != Some("dumb"),
@@ -1360,7 +1366,13 @@ fn run(args: &[String], mut context: Context) -> Output {
     if let Some(message) = missing_required(args.flags, &args.values).filter(|_| !refuses_nothing) {
         return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
-    let outcome = if command.mac_only && context.platform != Platform::Mac {
+    // A command only a person may run, under a coding agent, is refused first: on a host too, so
+    // an agent there is told the same, and before anything is read (#793).
+    let outcome = if let Some(error) =
+        needs_the_user::refusal(command.name, leaf.name, context.coding_agent_above)
+    {
+        Outcome::Failed(error)
+    } else if command.mac_only && context.platform != Platform::Mac {
         Outcome::Failed(CliError::new(
             Kind::MacOnly,
             format!(
@@ -1706,6 +1718,15 @@ mod tests {
 
     /// ((stdout, stderr), exit code) of running `args` on `platform`, with an empty environment.
     fn run_on(platform: Platform, args: &[&str]) -> ((String, String), u8) {
+        run_with(platform, || None, args)
+    }
+
+    /// [`run_on`], with `coding_agent_above` as the coding agent the run finds above it.
+    fn run_with(
+        platform: Platform,
+        coding_agent_above: fn() -> Option<String>,
+        args: &[&str],
+    ) -> ((String, String), u8) {
         let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
         let Output {
             stdout,
@@ -1720,10 +1741,93 @@ mod tests {
                 platform,
                 env: |_| None,
                 daemon_above: || None,
+                coding_agent_above,
                 color: false,
             },
         );
         ((stdout, stderr), code)
+    }
+
+    /// Under a coding agent (#793), `trust`, `delete` and `delete-project` are refused before
+    /// anything is read or checked, with `--pretend`, `--confirm` or `--stdin` too, and on a host
+    /// as well, ahead of `MacOnly`. The refusal names the agent and says what to ask the user.
+    /// `trust status`, `--help` and every other command are as they are without one.
+    #[test]
+    fn a_coding_agent_above_is_refused_the_commands_only_a_person_may_run() {
+        let claude = || Some("claude".to_string());
+        for platform in [Platform::Mac, Platform::Other] {
+            for args in [
+                &["trust", "--json", "--project", "/nonexistent/x"][..],
+                &[
+                    "trust",
+                    "--json",
+                    "--project",
+                    "/nonexistent/x",
+                    "--stdin",
+                    "workroom_setup",
+                ],
+                &["trust", "--pretend", "--json"],
+                &[
+                    "delete",
+                    "calm-river",
+                    "--json",
+                    "--project",
+                    "/nonexistent/x",
+                    "--confirm",
+                    "calm-river",
+                ],
+                &["d", "calm-river", "--json", "--confirm", "calm-river"],
+                &["delete", "calm-river", "--json", "--pretend"],
+                &[
+                    "delete-project",
+                    "/nonexistent/x",
+                    "--json",
+                    "--confirm",
+                    "/nonexistent/x",
+                ],
+                &[
+                    "delete-project",
+                    "/nonexistent/x",
+                    "--json",
+                    "--confirm",
+                    "/nonexistent/x",
+                    "--from-disk",
+                ],
+            ] {
+                let ((stdout, stderr), code) = run_with(platform, claude, args);
+                assert_eq!((code, stderr.as_str()), (3, ""), "{args:?}");
+                let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(envelope["ok"], false, "{args:?}");
+                assert_eq!(envelope["error"]["kind"], "NeedsTheUser", "{args:?}");
+                let message = envelope["error"]["message"].as_str().unwrap();
+                assert!(message.contains("(claude)"), "{message}");
+                assert!(message.contains("Ask the user to "), "{message}");
+                assert!(message.contains("Workroom app"), "{message}");
+                assert!(message.contains("in their own terminal"), "{message}");
+            }
+            for (args, said) in [
+                (&["trust"][..], "Error: `workroom trust` approves"),
+                (
+                    &["delete", "calm-river"],
+                    "Error: `workroom delete` deletes",
+                ),
+            ] {
+                let ((stdout, stderr), code) = run_with(platform, claude, args);
+                assert_eq!((code, stdout.as_str()), (3, ""), "{args:?}");
+                assert!(stderr.starts_with(said), "{stderr}");
+            }
+        }
+        // What a coding agent may still run: a check, help, and the rest.
+        let ((stdout, _), code) = run_with(Platform::Other, claude, &["trust", "status", "--json"]);
+        assert_eq!(code, 3);
+        assert!(stdout.contains("\"kind\":\"MacOnly\""), "{stdout}");
+        for args in [&["delete", "--help"][..], &["help", "trust"], &["version"]] {
+            let ((stdout, _), code) = run_with(Platform::Other, claude, args);
+            assert_eq!(code, 0, "{args:?}: {stdout}");
+        }
+        let ((stdout, _), code) = run_with(Platform::Other, claude, &["create", "--json"]);
+        assert_eq!(code, 3);
+        assert!(stdout.contains("\"kind\":\"MacOnly\""), "{stdout}");
     }
 
     #[test]
