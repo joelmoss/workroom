@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Print a terminal session's screen, or its history, as text
-
 ```text
 workroom capture TARGET
 ```

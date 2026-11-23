@@ -1,9 +1,9 @@
 ---
 title: workroom update
-description: Update workroom to the latest version.
+description: "Update workroom to the latest version."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ## Synopsis
 
@@ -18,15 +18,15 @@ means a downgrade) and remembers it. Nightly is not a channel switch — it's a 
 side-by-side install (a `workroom-nightly` binary); see the install script's WORKROOM_CHANNEL.
 
 ```text
-workroom update [flags]
+workroom update
 ```
 
 ## Options
 
 ```text
+  -h, --help[=true|false]    help for update
       --channel string       Release channel: stable or pre (remembered for next time)
   -c, --check[=true|false]   Only check if an update is available
-  -h, --help[=true|false]    help for update
 ```
 
 ## Options inherited from parent commands

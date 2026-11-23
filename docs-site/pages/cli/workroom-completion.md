@@ -1,15 +1,18 @@
 ---
 title: workroom completion
-description: Generate the autocompletion script for the specified shell.
+description: "Generate the autocompletion script for the specified shell."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ## Synopsis
 
 Generate the autocompletion script for workroom for the specified shell.
 See each sub-command's help for details on how to use the generated script.
 
+```text
+workroom completion [command]
+```
 
 ## Options
 

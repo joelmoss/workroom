@@ -1,19 +1,21 @@
 ---
 title: workroom base clear
-description: Start new workrooms from the global base, else origin's default branch.
+description: "Start new workrooms from the global base, else origin's default branch."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
+
+Mac only.
 
 ```text
-workroom base clear [flags]
+workroom base clear
 ```
 
 ## Options
 
 ```text
-      --global[=true|false]   The default for every project that names no base branch
   -h, --help[=true|false]     help for clear
+      --global[=true|false]   The default for every project that names no base branch
       --project string        Project directory (defaults to the current directory)
 ```
 

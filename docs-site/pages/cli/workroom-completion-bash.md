@@ -1,9 +1,9 @@
 ---
 title: workroom completion bash
-description: Generate the autocompletion script for bash.
+description: "Generate the autocompletion script for bash."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ## Synopsis
 
@@ -27,7 +27,6 @@ To load completions for every new session, execute once:
 	workroom completion bash > $(brew --prefix)/etc/bash_completion.d/workroom
 
 You will need to start a new shell for this setup to take effect.
-
 
 ```text
 workroom completion bash

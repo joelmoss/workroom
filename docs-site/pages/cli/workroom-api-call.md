@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Call METHOD with JSON parameters: inline, @FILE, or - for stdin
-
 ```text
 workroom api call METHOD [PARAMS]
 ```

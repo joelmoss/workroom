@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Type text and keys into a terminal session
-
 ```text
 workroom send TARGET [TEXT] [flags]
 ```

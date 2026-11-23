@@ -1,13 +1,19 @@
 ---
 title: workroom base
-description: Set or clear the branch new workrooms start from.
+description: "Set or clear the branch new workrooms start from."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
 ## Synopsis
 
 Set or clear the branch new workrooms start from. BRANCH is a branch on origin, such as develop, or &lt;remote>/&lt;branch> for another remote, such as upstream/main. Workroom fetches that remote and uses its copy of the branch, else the local branch. A project's own base wins over the --global one. Unset, new workrooms start from origin's default branch.
+
+Mac only.
+
+```text
+workroom base
+```
 
 ## Options
 

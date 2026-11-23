@@ -1,19 +1,21 @@
 ---
 title: workroom base set
-description: Start new workrooms from BRANCH.
+description: "Start new workrooms from BRANCH."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
+
+Mac only.
 
 ```text
-workroom base set BRANCH [flags]
+workroom base set BRANCH
 ```
 
 ## Options
 
 ```text
-      --global[=true|false]   The default for every project that names no base branch
   -h, --help[=true|false]     help for set
+      --global[=true|false]   The default for every project that names no base branch
       --project string        Project directory (defaults to the current directory)
 ```
 

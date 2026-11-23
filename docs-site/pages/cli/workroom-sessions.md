@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-List the daemon's terminal sessions, or the one TARGET names
-
 ```text
 workroom sessions [TARGET]
 ```

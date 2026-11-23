@@ -4,7 +4,7 @@ The source of the Workroom documentation site, served by Codaset at `/workroom/d
 every decision behind it are in [`docs/designs/docs-site.md`](../docs/designs/docs-site.md).
 
 This file is the format contract. Codaset's renderer and this repo's check
-(`internal/docsite/docsite_test.go`) both implement what it says. If you change a rule here, change both.
+(`vcs/crates/workroomd/tests/docs_site.rs`) both implement what it says. If you change a rule here, change both.
 
 ## Preview and check
 
@@ -113,14 +113,15 @@ shortcut catalog (`ShortcutAction`) has no matching row, or a row matches no def
 
 The pages under `pages/cli/` are generated from the CLI's commands. Don't edit them by hand; run
 `make docs-cli` instead. There is one page per public command, named after its command path, so
-`workroom create` is `cli/workroom-create.md`. `nav.yml` lists each one in the CLI group.
+`workroom create` is `cli/workroom-create.md`, beside `cli/workroom.md` for the CLI itself and
+`cli/workroom-help-agents.md` for `workroom help agents`. `nav.yml` lists each one in the CLI group.
 
-Two generators write them. The Go CLI's cobra commands generate their pages, and the test in
-`cmd/docs_test.go` fails when they are stale. The Rust binary generates the pages for the commands only
-it has, the terminal API's, and `workroom help agents`
-(`vcs/crates/workroomd/src/commands/docs.rs`); its test fails when they are stale. Each generator's
-pages carry its own comment under the front matter, and each writes, checks and removes only the pages
-that carry its comment. `make docs-check` runs both tests.
+The `workroom` binary generates them from its commands table, the one `--help` and shell completion
+read (`vcs/crates/workroomd/src/commands/docs.rs`), and its test fails when they are stale. Every page
+carries the generator's comment under the front matter. The generator writes, checks and removes only
+pages that carry it; any other page in `pages/cli/` fails the test. The terminal API's pages, and
+`workroom help agents`, are marked Nightly until a stable release has them. `make docs-check` runs the
+test.
 
 ## Search, `.md` and `llms.txt`
 

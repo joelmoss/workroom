@@ -1,12 +1,14 @@
 ---
 title: workroom untrust
-description: Forget the approval of a project's setup and teardown scripts.
+description: "Forget the approval of a project's setup and teardown scripts."
 ---
 
-<!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
+<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
+
+Mac only.
 
 ```text
-workroom untrust [flags]
+workroom untrust
 ```
 
 ## Options

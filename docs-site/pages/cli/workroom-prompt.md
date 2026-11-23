@@ -6,10 +6,6 @@ nightly: true
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-## Synopsis
-
-Give the coding agent in a terminal session a prompt
-
 ```text
 workroom prompt TARGET [TEXT] [flags]
 ```
