@@ -1,6 +1,6 @@
 ---
 name: curate-release
-description: Workroom's tag-driven release process — channel architecture (stable/pre vs the side-by-side Nightly build), keeping the channel-classification logic in lockstep across Rust/Swift/shell, and curating GitHub release notes after a tag publishes.
+description: Workroom's tag-driven release process — channel architecture (stable/pre vs the side-by-side Nightly build), keeping the channel-classification logic in lockstep across Rust/Swift/shell, signing off a Nightly, and curating GitHub release notes after a tag publishes.
 ---
 
 Tag-driven (see `docs/contributing/releasing.md`). After a release publishes, **curate its GitHub release
@@ -8,6 +8,8 @@ notes** — replace GitHub's generated notes (the release is created with `--gen
 short summary. The list of changes is what the git log is for.
 
 **Keep release notes concise and in plain English** (the model is `v3.1.0`). Shape: a `## Workroom X.Y` headline, one line naming the highlights, then `### New`, `### Changed` and `### Fixed` (omit an empty section). One short bullet per item: what the user gets or what was broken, not how it works. No implementation detail, internal names (daemon flags, file paths, ticket numbers) or edge-case lists. Write a fix as the symptom the user saw ("Line numbers drifted after resizing"). Go into detail only for a **breaking change** (say what stopped working and what to do instead) or an important bug fix (data loss, security, crashes). Leave out minor polish entirely.
+
+**Before a Nightly is signed off, or a release tagged from one,** the owner runs the manual checklist in `docs/contributing/nightly-sign-off.md` (update, quit and reopen, a remote and a container workroom, the run tab, the terminal API with real agents); point them to it rather than running it for them.
 
 **After a stable release, clear its Nightly badges in the docs.** `docs-site/` marks features no stable release has yet: `nightly: true` in a page's front matter, ` {nightly}` at the end of a heading, and `nightly` and `MAC_ONLY_IS_NIGHTLY` in `vcs/crates/workroomd/src/commands/docs.rs` for CLI pages (format: `docs-site/README.md`). For each feature the new stable tag includes, remove its marker, run `make docs-cli` and `make docs-check`, and open a docs PR. Leave the markers on features still only on master. `make docs-check` (`whats_new_since_the_stable_release_is_marked_nightly` in `vcs/crates/workroomd/tests/docs_site.rs`) enforces the other direction: what is new since the latest stable tag on master carries a marker or `<!-- stable -->`.
 
