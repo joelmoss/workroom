@@ -14,10 +14,12 @@
 #    CI's script tests minutes; CLI_ARCHIVES_TEST_PLATFORMS="darwin_arm64 darwin_amd64
 #    linux_arm64 linux_amd64" builds all four, as the release does.
 # 4. `check` refuses a Go binary, a Windows archive, a bad checksum and an unstamped binary.
-#
-# Until #682 a fifth case built the Go CLI from this checkout and ran its `workroom update` into
-# these archives; the Go sources went with it, so the archive names, layout and checksums.txt
-# checked in 3 are what keeps an installed Go CLI's update working.
+# 5. An older Rust `workroom` built from this checkout, its releases URL a server on 127.0.0.1
+#    that serves the archives from 3 under GitHub's API shape, updates itself into them with
+#    `workroom update`, as `workroom` (stable) and `workroom-nightly`, in a throwaway prefix and
+#    home; and `check` refuses such a test build. Needs python3. (Until #682 this was the Go CLI's
+#    updater; the archive names, layout and checksums.txt checked in 3 are what keeps an installed
+#    Go CLI's update working now.)
 #
 # The builds share build-daemon_test.sh's cargo target directory, so only the workroom crate is
 # rebuilt.
@@ -51,7 +53,9 @@ app_features="$(sed -n 's/^DAEMON_FEATURES="\(.*\)"$/\1/p' "$DIR/build-daemon.sh
   || fail "features differ: cli-archives.sh '$script_features', the notices '$notices_features', build-daemon.sh '$app_features'"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cli-archives_test.XXXXXX")"
+SERVER_PID=""
 cleanup() {
+  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -102,7 +106,7 @@ for p in $PLATFORMS; do
 done
 if [ -n "$skip_build" ]; then
   if [ "$fails" -ne 0 ]; then echo "cli-archives_test: $fails failure(s)"; exit 1; fi
-  echo "cli-archives_test: SKIP the builds ($skip_build)"
+  echo "cli-archives_test: SKIP the builds and the update ($skip_build)"
   exit 0
 fi
 export CARGO_TARGET_DIR="${BUILD_DAEMON_TEST_TARGET_DIR:-$REPO/vcs/target/build-daemon-test}"
@@ -202,6 +206,124 @@ COPYFILE_DISABLE=1 tar -czf "$WORK/go-binary/workroom_9.9.9_$HOST.tar.gz" -C "$W
   workroom THIRD-PARTY-NOTICES.txt
 resum go-binary
 expect_check_fails go-binary "is a Go binary"
+
+# --- 5. an older workroom updates itself into these archives ------------------------------------
+# The Rust updater as it ships, built from this checkout as an older version, its releases URL a
+# server on 127.0.0.1 (WORKROOM_RELEASES_API_FOR_TESTS, which only a loopback URL compiles with):
+# `workroom update` there takes this Mac's archive from 3, checks it against checksums.txt and
+# swaps it in, as `workroom` (stable) and as `workroom-nightly`, in a throwaway prefix and home.
+command -v python3 >/dev/null 2>&1 || { fail "python3 is not on PATH, so the update cannot run"; }
+case " $PLATFORMS " in
+  *" $HOST "*) ;;
+  *) fail "CLI_ARCHIVES_TEST_PLATFORMS leaves out this Mac's $HOST, which the update needs" ;;
+esac
+if [ "$fails" -ne 0 ]; then echo "cli-archives_test: $fails failure(s)"; exit 1; fi
+
+# The releases server: GitHub's API paths the updater reads, as files.
+SRV="$WORK/srv"
+API="$SRV/repos/joelmoss/workroom/releases"
+mkdir -p "$API/tags" "$SRV/download/v9.9.9" "$SRV/download/nightly"
+cp "$WORK/stable/"* "$SRV/download/v9.9.9/"
+cp "$WORK/nightly/"* "$SRV/download/nightly/"
+# Not `python3 -m http.server`: its HTTPServer.server_bind names the server by socket.getfqdn, a
+# reverse lookup of 127.0.0.1, before it prints the port, and on a GitHub macOS runner that lookup
+# outlasted the wait below with nothing printed (#681). This binds the port and prints it, with no
+# name lookup; each request is still logged to stderr, which the error check at the end reads.
+python3 -I -u -c '
+import functools, http.server, socketserver, sys
+
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+with Server(("127.0.0.1", 0), handler) as server:
+    print("releases server port", server.server_port)
+    server.serve_forever()
+' "$SRV" >"$WORK/server.log" 2>&1 &
+SERVER_PID=$!
+PORT=""
+tries=0
+while [ -z "$PORT" ] && [ "$tries" -lt 100 ]; do
+  PORT="$(sed -n 's/^releases server port \([0-9][0-9]*\)$/\1/p' "$WORK/server.log")"
+  [ -n "$PORT" ] || { tries=$((tries + 1)); sleep 0.1; }
+done
+if [ -z "$PORT" ]; then
+  if kill -0 "$SERVER_PID" 2>/dev/null; then state="still running, printed nothing"; else state="exited"; fi
+  fail "the releases server did not start ($(python3 --version 2>&1), $state): $(cat "$WORK/server.log")"
+  exit 1
+fi
+BASE="http://127.0.0.1:$PORT"
+
+# release_json <tag> <name> <download dir>: the release as GitHub's API returns it.
+release_json() {
+  assets=""
+  for f in "$SRV/download/$3/"*; do
+    name="$(basename "$f")"
+    assets="${assets:+$assets,}{\"name\":\"$name\",\"browser_download_url\":\"$BASE/download/$3/$name\"}"
+  done
+  printf '{"tag_name":"%s","name":"%s","draft":false,"prerelease":%s,"assets":[%s]}\n' \
+    "$1" "$2" "$([ "$1" = nightly ] && echo true || echo false)" "$assets"
+}
+release_json v9.9.9 v9.9.9 v9.9.9 >"$API/latest"
+release_json nightly 9.9.9-nightly.7 nightly >"$API/tags/nightly"
+
+mkdir -p "$WORK/prefix/bin" "$WORK/home"
+# This Mac's target, as 3 built it, so the older builds share its dependencies' artifacts.
+HOST_TARGET="$(sed -n "/^rust_target()/,/^}/s/^ *$HOST) echo \([^ ]*\) ;;/\1/p" "$SCRIPT")"
+OLD_BIN="$CARGO_TARGET_DIR/$HOST_TARGET/release/workroom"
+# old_build <command> <version> <channel>: an older workroom at $WORK/prefix/bin/<command>.
+old_build() {
+  (cd "$REPO/vcs" && WORKROOM_VERSION="$2" WORKROOM_RELEASE_CHANNEL="$3" \
+    WORKROOM_RELEASES_API_FOR_TESTS="$BASE/repos/joelmoss/workroom/releases" \
+    rustup run "$TOOLCHAIN" cargo build --release -p workroom --target "$HOST_TARGET") \
+    >"$WORK/old-$1.log" 2>&1 \
+    || { fail "cargo build of the older $1: $(tail -20 "$WORK/old-$1.log")"; return 1; }
+  cp "$OLD_BIN" "$WORK/prefix/bin/$1"
+}
+
+# update_into <command> <version> <channel> <archives> <label> <want output>
+update_into() {
+  cmd="$1"
+  bin="$WORK/prefix/bin/$cmd"
+  old_build "$cmd" "$2" "$3" || return
+  # The older binary is the one asked, and its update reaches only the server.
+  json="$(HOME="$WORK/home" WORKROOM_CONFIG="$WORK/home/config.json" "$bin" version --json 2>&1)"
+  case "$json" in *"\"version\":\"$2\""*) ;; *) fail "$cmd: the older binary is not version $2: '$json'"; return ;; esac
+  LC_ALL=C grep -q -a -F "$BASE/repos/joelmoss/workroom/releases" "$bin" \
+    || { fail "$cmd: the older binary's update does not reach the server"; return; }
+  out="$(HOME="$WORK/home" WORKROOM_CONFIG="$WORK/home/config.json" "$bin" update 2>&1)"
+  rc=$?
+  [ "$rc" -eq 0 ] || { fail "$cmd update exited $rc: $out"; return; }
+  case "$out" in *"$6"*) ;; *) fail "$cmd update printed '$out', want '$6'" ;; esac
+  mkdir "$WORK/want-$cmd"
+  tar -xzf "$WORK/$4/workroom_$5_$HOST.tar.gz" -C "$WORK/want-$cmd"
+  cmp -s "$bin" "$WORK/want-$cmd/workroom" || fail "$cmd: the installed file is not the archive's binary"
+  [ -x "$bin" ] || fail "$cmd: the updated binary is not executable"
+  want_channel=stable
+  [ -n "$3" ] && want_channel="$3"
+  json="$(HOME="$WORK/home" WORKROOM_CONFIG="$WORK/home/config.json" "$bin" version --json 2>&1)"
+  case "$json" in *"\"channel\":\"$want_channel\""*) ;; *) fail "$cmd: the updated binary is not on the $want_channel channel: '$json'" ;; esac
+  case "$json" in *"\"version\":\"$2\""*) fail "$cmd: still version $2 after the update: '$json'" ;; esac
+}
+update_into workroom 1.0.0 "" stable 9.9.9 "Updated workroom 1.0.0 → v9.9.9"
+update_into workroom-nightly 9.9.8-nightly.1 nightly nightly nightly \
+  "Updated workroom 9.9.8-nightly.1 → 9.9.9-nightly.7"
+# Every request was answered.
+if grep -Eq '" (4|5)[0-9][0-9] ' "$WORK/server.log"; then
+  fail "the releases server answered an error: $(grep -E '" (4|5)[0-9][0-9] ' "$WORK/server.log")"
+fi
+
+# A binary built for this test never ships: `check` refuses it.
+mutant test-server
+mkdir "$WORK/testbin"
+cp "$OLD_BIN" "$WORK/testbin/workroom"
+tar -xzf "$WORK/stable/workroom_9.9.9_$HOST.tar.gz" -C "$WORK/testbin" THIRD-PARTY-NOTICES.txt
+COPYFILE_DISABLE=1 tar -czf "$WORK/test-server/workroom_9.9.9_$HOST.tar.gz" -C "$WORK/testbin" \
+  workroom THIRD-PARTY-NOTICES.txt
+resum test-server
+expect_check_fails test-server "reaches a test server on 127.0.0.1"
 
 if [ "$fails" -ne 0 ]; then
   echo "cli-archives_test: $fails failure(s)"
