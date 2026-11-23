@@ -16,8 +16,9 @@
 //!
 //! The JSON goldens are `testdata/contracts`, the files the app's `CLIContractTests.swift` checks
 //! too, with the temporary HOME written as `/Users/dev`. `WORKROOM_CONTRACT_UPDATE=1` rewrites the
-//! goldens this suite owns from the binary under test; it never rewrites the frozen ones, the
-//! retired Go CLI's completion output.
+//! goldens this suite owns from the binary under test; it never rewrites the ones the app decodes
+//! (`Owner::AppContract`), whose change is a hand edit beside `CLIContractTests.swift`, nor the
+//! retired Go CLI's completion output (`Owner::Frozen`).
 //!
 //! Each run gets a cleared environment: only `PATH`, its own HOME and `WORKROOM_CONFIG`, and git
 //! with no global or system config. Nothing a run does can reach the real home or config.
@@ -297,35 +298,69 @@ fn golden_path(file: &str) -> PathBuf {
         .join(file)
 }
 
-/// Who writes a golden: this suite, from the binary under test, or nobody, for one frozen as the
-/// retired Go CLI wrote it (a completion script, and cobra's `__complete` protocol, which every
-/// script a user saved from it speaks to whatever binary they have now).
-#[derive(Clone, Copy, PartialEq)]
+/// Who writes a golden: this suite, from the binary under test, or nobody.
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Owner {
+    /// Rewritten from the binary under test by `WORKROOM_CONTRACT_UPDATE=1`.
     ThisSuite,
+    /// The machine contract the app decodes (`CLIContractTests.swift`): never rewritten by a run,
+    /// so a change is a hand edit of the golden and of the app's test together.
+    AppContract,
+    /// The retired Go CLI's output, frozen (a completion script, and cobra's `__complete`
+    /// protocol, which every script a user saved from it speaks to whatever binary they have now).
     Frozen,
 }
 
 /// Compares `got` with `testdata/contracts/<file>`. A golden this suite owns is rewritten instead
-/// under `WORKROOM_CONTRACT_UPDATE=1`; a frozen one never is. The app's `CLIContractTests.swift`
-/// reads these goldens too.
+/// under `WORKROOM_CONTRACT_UPDATE=1`; the others never are.
 fn check_golden(owner: Owner, file: &str, got: &str) {
-    let path = golden_path(file);
     let update = std::env::var_os("WORKROOM_CONTRACT_UPDATE").is_some_and(|v| v == "1");
+    check_golden_at(owner, &golden_path(file), got, update);
+}
+
+/// [`check_golden`] for the golden at `path`, `update` as `WORKROOM_CONTRACT_UPDATE=1` says.
+fn check_golden_at(owner: Owner, path: &Path, got: &str, update: bool) {
     if update && owner == Owner::ThisSuite {
-        std::fs::write(&path, got).expect("write golden");
+        std::fs::write(path, got).expect("write golden");
         return;
     }
-    let want = std::fs::read_to_string(&path)
+    let want = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let how = match owner {
         Owner::ThisSuite => "rerun with WORKROOM_CONTRACT_UPDATE=1",
+        Owner::AppContract => "edit it by hand with CLIContractTests.swift, which decodes it",
         Owner::Frozen => "not happen: it is the retired Go CLI's output, which the binary matches",
     };
     assert!(
         got == want,
-        "{file} no longer matches; a deliberate change should {how}\n got: {got}\nwant: {want}"
+        "{} no longer matches; a deliberate change should {how}\n got: {got}\nwant: {want}",
+        path.display()
     );
+}
+
+/// `WORKROOM_CONTRACT_UPDATE=1` rewrites only the goldens this suite owns: one the app decodes, or
+/// a frozen one, is left as it is and still fails when the binary disagrees with it.
+#[test]
+fn the_update_flag_rewrites_only_this_suites_goldens() {
+    let home = Home::new("golden-owners");
+    for owner in [Owner::AppContract, Owner::Frozen] {
+        let path = home.path("golden.json");
+        std::fs::write(&path, "{\"ok\":true}\n").expect("write");
+        let failed = std::panic::catch_unwind(|| {
+            check_golden_at(owner, &path, "{\"ok\":false}\n", true);
+        })
+        .is_err();
+        assert!(failed, "{owner:?}: a mismatch passed under the update flag");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "{\"ok\":true}\n",
+            "{owner:?}: the update flag rewrote it"
+        );
+    }
+    let path = home.path("ours.json");
+    std::fs::write(&path, "old\n").expect("write");
+    check_golden_at(Owner::ThisSuite, &path, "new\n", true);
+    assert_eq!(std::fs::read_to_string(&path).expect("read"), "new\n");
 }
 
 // --- version ---
@@ -732,7 +767,7 @@ fn list_json_matches_the_golden() {
     let run = home.run(&home.dir, &["list", "--json", "--warnings=full"]);
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "list.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -1476,7 +1511,7 @@ fn include_archive_json_matches_the_golden() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "include-archive.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2316,7 +2351,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "add-project.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2333,7 +2368,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(3).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "add-project-unsupported-vcs.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2353,7 +2388,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "add-project-clone-pretend.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -2372,7 +2407,7 @@ fn add_project_json_matches_the_goldens() {
     );
     run.assert_code(3).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "add-project-destination-not-empty.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -3436,12 +3471,12 @@ fn delete_project_json_matches_the_goldens() {
         let run = home.run(&home.dir, &args);
         run.assert_code(0);
         check_golden(
-            Owner::ThisSuite,
+            Owner::AppContract,
             file,
             &home.normalize(&normalize_version(&run.stdout)),
         );
         check_golden(
-            Owner::ThisSuite,
+            Owner::AppContract,
             &file.replace(".json", "-events.ndjson"),
             &home.normalize(&run.stderr),
         );
@@ -4400,12 +4435,12 @@ fn delete_json_matches_the_goldens() {
     let run = home.run(&home.dir, &delete_args(&project_arg, &[]));
     run.assert_code(0);
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "delete.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "delete-events.ndjson",
         &home.normalize(&run.stderr),
     );
@@ -5741,7 +5776,7 @@ fn trust_status_json_matches_the_goldens() {
     );
     run.assert_code(1).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "trust-status.json",
         &normalized_stdout(&home, &run),
     );
@@ -5761,7 +5796,7 @@ fn trust_status_json_matches_the_goldens() {
     );
     run.assert_code(0).assert_quiet_stderr();
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "trust-status-local-work.json",
         &normalize_start(&normalized_stdout(&home, &run)),
     );
@@ -6591,7 +6626,7 @@ fn create_remote_records_the_workroom_and_makes_nothing_here() {
     run.assert_code(0).assert_quiet_stderr();
     let name = created_name(&run);
     let golden = normalize_create(&home, &name, &run.stdout);
-    check_golden(Owner::ThisSuite, "create-remote.json", &golden);
+    check_golden(Owner::AppContract, "create-remote.json", &golden);
     assert_eq!(
         normalize_create(&home, &name, &config_text(&home)),
         "{\n  \"/Users/dev/src/app\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \
@@ -6850,12 +6885,12 @@ fn create_json_matches_the_goldens() {
     run.assert_code(0);
     let name = created_name(&run);
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -6885,12 +6920,12 @@ fn create_json_matches_the_goldens() {
     run.assert_code(5);
     let name = created_name(&run);
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-setup-failed.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-setup-failed-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -6909,7 +6944,7 @@ fn create_json_matches_the_goldens() {
         ["fetch:skipped:No remote to fetch from"]
     );
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-script-not-trusted.json",
         &normalize_create(&home, "calm-river", &run.stdout),
     );
@@ -6935,12 +6970,12 @@ fn create_json_matches_the_goldens() {
     run.assert_code(0);
     let name = created_name(&run);
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-fetch-warning.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-fetch-warning-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
@@ -7035,7 +7070,7 @@ fn create_start_ask_refuses_with_the_local_work_and_nobody_to_ask_warns() {
     let run = create(&home, &project, &["--start", "ask"]);
     run.assert_code(3);
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-local-work.json",
         &normalize_create(&home, "calm-river", &run.stdout),
     );
@@ -7259,12 +7294,12 @@ fn create_chosen_start_holds_offline_and_against_a_missing_default_base() {
     run.assert_code(0);
     let name = created_name(&run);
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-offline-local-start.json",
         &normalize_create(&home, &name, &run.stdout),
     );
     check_golden(
-        Owner::ThisSuite,
+        Owner::AppContract,
         "create-offline-local-start-events.ndjson",
         &normalize_create(&home, &name, &run.stderr),
     );
