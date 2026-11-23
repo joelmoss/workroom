@@ -68,6 +68,10 @@
   pages:
     - title: JSON output and exit codes
       page: reference/json-output
+    - title: Terminal API
+      page: reference/terminal-api
+    - title: Internal APIs
+      page: reference/internal-apis
     - title: config.json
       page: reference/config-json
     - title: Environment variables

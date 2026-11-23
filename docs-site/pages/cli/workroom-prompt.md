@@ -35,3 +35,4 @@ Gives the coding agent (Claude Code or Codex) in a session a prompt: the text as
 
 * [workroom](workroom.md)	 - Manage development workrooms
 * [workroom help agents](workroom-help-agents.md)	 - The terminal API, for coding agents
+* [Terminal API reference](../reference/terminal-api.md)	 - Every method, event and error of the terminal API

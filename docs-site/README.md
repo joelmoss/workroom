@@ -123,6 +123,22 @@ pages that carry it; any other page in `pages/cli/` fails the test. The terminal
 `workroom help agents`, are marked Nightly until a stable release has them. `make docs-check` runs the
 test.
 
+## Generated Reference pages
+
+`make docs-cli` writes these too, from the same binary (`vcs/crates/workroomd/src/commands/docs/`), and
+the same test fails when they are stale:
+
+- `pages/reference/terminal-api.md`, from the terminal API's methods and schemas, the ones
+  `workroom api describe` shows.
+- `pages/reference/internal-apis.md`, from the daemon's services, frames and subcommands and the CLI's
+  hidden commands. A test fails when the daemon dispatches a request the page doesn't describe.
+- The error kinds in `pages/reference/json-output.md`, from the kind registry. That page is written by
+  hand around them: each table sits between a pair of `<!-- … -->` markers, and only what is between
+  them is rewritten.
+
+Like the CLI pages, the two whole pages carry the generator's comment, and the generator never
+overwrites a page there that doesn't.
+
 ## Search, `.md` and `llms.txt`
 
 Codaset builds these from the pages, so nothing in this folder needs to change for them.

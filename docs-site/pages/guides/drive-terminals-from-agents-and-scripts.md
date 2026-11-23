@@ -102,7 +102,7 @@ Add `--json` to any of these commands for one JSON object on stdout, as every `w
 
 Because `workroom command` exits with the command's code, which can be any number, read its result with `--json`: `ok: true` with `exit_code` is the command's, and `ok: false` with `error.kind` is Workroom's.
 
-`workroom api list`, `api describe METHOD` and `api call METHOD` give raw access to every method of the terminal API, each with the JSON Schema of its parameters and result. The API only ever adds fields and methods, so a script written today keeps working.
+`workroom api list`, `api describe METHOD` and `api call METHOD` give raw access to every method of the terminal API, each with the JSON Schema of its parameters and result. The API only ever adds fields and methods, so a script written today keeps working. The [terminal API reference](../reference/terminal-api.md) describes every method, with an example of each, every event `workroom events` streams, and how requests and replies are shaped.
 
 ## When `workroom` isn't the one you expect
 

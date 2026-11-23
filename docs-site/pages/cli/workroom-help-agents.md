@@ -179,7 +179,7 @@ Restarts or stops the command of a run tab, as its Run tab's buttons do. Follow 
 
 `workroom api [command]`: List, describe and call the terminal API's methods.
 
-Raw access to every terminal API method on the daemon, for what no command above covers. `api list` lists the methods, `api describe METHOD` shows the JSON Schema of its parameters, its result and its errors, with examples, and `api call METHOD [PARAMS]` calls it, PARAMS a JSON object inline, `@FILE` or `-` for stdin. A method that streams prints one reply per line until `more` is false. The API only ever adds fields and methods; `revision` counts the additions.
+Raw access to every terminal API method on the daemon, for what no command above covers. `api list` lists the methods, `api describe METHOD` shows the JSON Schema of its parameters, its result and its errors, with examples, and `api call METHOD [PARAMS]` calls it, PARAMS a JSON object inline, `@FILE` or `-` for stdin. A method that streams prints one reply per line until `more` is false. The API only ever adds fields and methods; `revision` counts the additions. Every method, event and error, with an example of each method, is in the reference at https://codaset.dev/workroom/docs/reference/terminal-api.
 
 - `workroom api call METHOD [PARAMS]`: Call METHOD with JSON parameters: inline, @FILE, or - for stdin.
 - `workroom api describe METHOD`: Show METHOD's parameter and result schemas, with examples.
@@ -261,3 +261,4 @@ workroom send TARGET --key Ctrl+C
 ## See also
 
 * [workroom](workroom.md)	 - Manage development workrooms
+* [Terminal API reference](../reference/terminal-api.md)	 - Every method, event and error of the terminal API

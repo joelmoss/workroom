@@ -27,3 +27,4 @@ workroom api call METHOD [PARAMS]
 
 * [workroom api](workroom-api.md)	 - List, describe and call the terminal API's methods
 * [workroom help agents](workroom-help-agents.md)	 - The terminal API, for coding agents
+* [Terminal API reference](../reference/terminal-api.md)	 - Every method, event and error of the terminal API
