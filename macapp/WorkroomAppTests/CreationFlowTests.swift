@@ -1669,13 +1669,17 @@ final class CreationFlowTests: XCTestCase {
     let approve = try XCTUnwrap(store.modals.errorApproval)
 
     approve.run()
-    await waitUntil({ cli.host(of: "calm-river")?.setupPending == nil }, "the mark stayed")
+    // The mark clears before the approval finishes (it reloads, then lets the run go), so both.
+    await waitUntil(
+      {
+        cli.host(of: "calm-river")?.setupPending == nil
+          && store.lifecycle.pendingSetupRuns.isEmpty
+      }, "the mark stayed, or the approval never finished")
     XCTAssertEqual(
       cli.calls.filter { $0.hasPrefix("trust") }, ["trust workroom_setup \(Self.hostScript.text)"])
     let id = try XCTUnwrap(workroom.host?.id)
     XCTAssertEqual(requests.all, ["calm-river /home/boxd/r \(HostID.remote(id))"])
     XCTAssertFalse(cli.calls.contains("reserve"), "a create started")
-    XCTAssertTrue(store.lifecycle.pendingSetupRuns.isEmpty)
   }
 
   /// Value: protects=an approved pending setup whose script never starts (its host unreachable)
