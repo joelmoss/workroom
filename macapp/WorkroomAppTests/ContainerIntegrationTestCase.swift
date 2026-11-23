@@ -72,13 +72,23 @@ class ContainerIntegrationTestCase: XCTestCase {
 
   // MARK: Helpers
 
+  /// `workroom.test-run=<id>` when the runner names its run (`WR_CONTAINER_TEST_RUN`, set by
+  /// macapp/Scripts/remote-tests.sh), so a cleanup after an interrupted run removes what this run
+  /// made and nothing another run or a person made.
+  static var runLabels: [String] {
+    ProcessInfo.processInfo.environment["WR_CONTAINER_TEST_RUN"].map {
+      ["workroom.test-run=\($0)"]
+    } ?? []
+  }
+
   func driver(runtime override: URL? = nil, folder: String = "hosts") -> ContainerHostDriver {
     let daemon = self.daemon!
     return ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent(folder),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: override ?? runtime, image: "unused", user: "",
-        daemonSocket: ContainerHostDriver.containerSocket, labels: [label], dialect: dialect,
+        daemonSocket: ContainerHostDriver.containerSocket, labels: [label] + Self.runLabels,
+        dialect: dialect,
         daemon: { _ in daemon }, daemonFolder: directory.appendingPathComponent("daemon")))
   }
 

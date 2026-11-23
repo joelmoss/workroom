@@ -33,11 +33,13 @@
 # `Executed` line, or cargo's `test result:` lines.
 #
 # A runtime that isn't running fails the run before anything is built, naming the runtime and the
-# suites that need it; this script starts nobody's runtime.
+# suites that need it; this script starts nobody's runtime. On the way out, Ctrl-C included, it
+# removes the containers and images still labelled with this run's name (`ours` below).
 #
 # `remote-tests.sh counts <xcode|swift|cargo> <log> [class]` prints one log's `passed failed
-# skipped`, and `remote-tests.sh verdict <exit status> [passed failed skipped]` a row's verdict;
-# remote-tests_test.sh checks both against canned output.
+# skipped`, `verdict <exit status> [passed failed skipped]` a row's verdict, `rows <suite> <exit
+# status> <log> <class...>` an app suite's rows, and `ours <listing> <run>` what a runtime's listing
+# holds of a run's; remote-tests_test.sh checks each against canned output.
 #
 # bash 3.2 (macOS's /bin/bash): no associative arrays or mapfile, and every array expansion guarded.
 set -euo pipefail
@@ -116,6 +118,45 @@ counts() {
   esac
 }
 
+# ours <docker|apple-containers|apple-images> <run>: from a runtime's listing on stdin, what carries
+# `workroom.test-run=<run>`, the label the container suites put on everything they make when
+# WR_CONTAINER_TEST_RUN names the run (ContainerIntegrationTestCase.runLabels): Docker's
+# `<id>\t<that label's value>` lines, or Apple's `list --all` / `image list` JSON. That label is
+# the proof a container or image is this run's: anything without it, or with another run's, is a
+# person's, the app's or another run's, and stays.
+ours() {
+  local kind="$1" run="$2"
+  case "$kind" in
+    docker)
+      awk -F '\t' -v run="$run" 'run != "" && $2 == run { print $1 }'
+      ;;
+    apple-containers | apple-images)
+      python3 -c '
+import json, sys
+kind, run = sys.argv[1], sys.argv[2]
+try:
+    items = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for item in items if isinstance(items, list) else []:
+    configuration = item.get("configuration") or {}
+    if kind == "apple-containers":
+        labels, name = configuration.get("labels") or {}, item.get("id") or configuration.get("id")
+    else:
+        labels, name = {}, configuration.get("name")
+        for variant in item.get("variants") or []:
+            labels.update(((variant.get("config") or {}).get("config") or {}).get("Labels") or {})
+    if run and name and labels.get("workroom.test-run") == run:
+        print(name)
+' "$kind" "$run"
+      ;;
+    *)
+      echo "remote-tests: unknown listing '$kind'" >&2
+      return 2
+      ;;
+  esac
+}
+
 # verdict <exit status> [passed failed skipped]: PASS, or why the row fails.
 verdict() {
   local status="$1" passed="${2:-}" failed="${3:-}" skipped="${4:-}"
@@ -132,7 +173,49 @@ verdict() {
   fi
 }
 
+ROWS=""
+failed_rows=0
+
+# row <name> <exit status> [passed failed skipped]: adds a table row, counting it when it fails.
+row() {
+  local name="$1" status="$2" passed="${3:-}" failed="${4:-}" skipped="${5:-}" result
+  result="$(verdict "$status" "$passed" "$failed" "$skipped")"
+  [ "$result" = PASS ] || failed_rows=$((failed_rows + 1))
+  ROWS="$ROWS$(printf '%-58s %6s %7s %6s  %s' "$name" "${passed:--}" "${skipped:--}" "${failed:--}" "$result")
+"
+}
+
+# class_rows <suite> <exit status> <log> <class...>: a row per class of a `make app-test` run. A
+# class the summary counted is judged by its counts, so when the run fails only the classes that
+# failed say so and the others keep theirs; one it didn't count takes the run's status. A failed
+# run that no class's row explains gets a row of its own, so the run still fails.
+class_rows() {
+  local suite="$1" status="$2" log="$3" class class_counts failed_before
+  shift 3
+  failed_before=$failed_rows
+  for class in "$@"; do
+    class_counts="$(counts xcode "$log" "$class")"
+    if [ -n "$class_counts" ]; then
+      # shellcheck disable=SC2086 # three numbers.
+      row "$suite: $class" 0 $class_counts
+    else
+      row "$suite: $class" "$status"
+    fi
+  done
+  if [ "$status" != 0 ] && [ "$failed_rows" -eq "$failed_before" ]; then
+    row "$suite: its command" "$status"
+  fi
+}
+
 case "${1:-}" in
+  rows)
+    # rows <suite> <exit status> <log> <class...>: class_rows' table, exiting 1 when a row failed.
+    shift
+    class_rows "$@"
+    printf '%s' "$ROWS"
+    [ "$failed_rows" -eq 0 ]
+    exit
+    ;;
   counts)
     shift
     counts "$@"
@@ -143,9 +226,14 @@ case "${1:-}" in
     verdict "$@"
     exit
     ;;
+  ours)
+    shift
+    ours "$@"
+    exit
+    ;;
   "") ;;
   *)
-    echo "usage: remote-tests.sh | remote-tests.sh counts <kind> <log> [class] | remote-tests.sh verdict <status> [passed failed skipped]" >&2
+    echo "usage: remote-tests.sh | remote-tests.sh counts <kind> <log> [class] | remote-tests.sh verdict <status> [passed failed skipped] | remote-tests.sh ours <listing> <run>" >&2
     exit 2
     ;;
 esac
@@ -332,17 +420,43 @@ echo "remote-tests: daemon $DAEMON"
 # --- Run ---
 
 LOGS="$(mktemp -d "${TMPDIR:-/tmp}/wr-remote-tests.XXXXXX")"
-ROWS=""
-failed_rows=0
 
-# row <name> <exit status> [passed failed skipped]
-row() {
-  local name="$1" status="$2" passed="${3:-}" failed="${4:-}" skipped="${5:-}" result
-  result="$(verdict "$status" "$passed" "$failed" "$skipped")"
-  [ "$result" = PASS ] || failed_rows=$((failed_rows + 1))
-  ROWS="$ROWS$(printf '%-58s %6s %7s %6s  %s' "$name" "${passed:--}" "${skipped:--}" "${failed:--}" "$result")
-"
+# This run's name, which the container suites label everything they make with
+# (WR_CONTAINER_TEST_RUN). Their own tearDown removes what they made; an interrupted or crashed
+# run skips it, so on the way out, Ctrl-C included, whatever still carries this run's label goes.
+# run.sh cleans up the ssh fixture and what was made from it on its own.
+RUN_ID="remote-tests-$$-$(date +%s)"
+CLEAN_DOCKER=0 CLEAN_APPLE=0
+case " $SUITES " in *" docker-containers "*) CLEAN_DOCKER=1 ;; esac
+case " $SUITES " in *" apple-containers "* | *" host-drivers "*) CLEAN_APPLE=1 ;; esac
+cleanup() {
+  local id
+  if [ "$CLEAN_DOCKER" = 1 ] && runtime_up docker; then
+    for id in $(docker ps -a --filter "label=workroom.test-run=$RUN_ID" \
+      --format '{{.ID}}	{{.Label "workroom.test-run"}}' 2>/dev/null | ours docker "$RUN_ID"); do
+      echo "remote-tests: removing this run's container $id" >&2
+      docker rm --force --volumes "$id" >/dev/null 2>&1 || true
+    done
+    for id in $(docker images -a --filter "label=workroom.test-run=$RUN_ID" \
+      --format '{{.ID}}	{{.Label "workroom.test-run"}}' 2>/dev/null | ours docker "$RUN_ID"); do
+      echo "remote-tests: removing this run's image $id" >&2
+      docker rmi --force "$id" >/dev/null 2>&1 || true
+    done
+  fi
+  if [ "$CLEAN_APPLE" = 1 ] && runtime_up container; then
+    for id in $(container list --all --format json 2>/dev/null | ours apple-containers "$RUN_ID"); do
+      echo "remote-tests: removing this run's container $id" >&2
+      container delete --force "$id" >/dev/null 2>&1 || true
+    done
+    for id in $(container image list --format json 2>/dev/null | ours apple-images "$RUN_ID"); do
+      echo "remote-tests: removing this run's image $id" >&2
+      container image delete --force "$id" >/dev/null 2>&1 || true
+    done
+  fi
 }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # run_logged <suite> <command...>: runs it from the repository root with its output both shown and
 # kept in $LOGS/<suite>.log, and sets `status` to its exit status.
@@ -390,14 +504,17 @@ for suite in $SUITES; do
       ;;
     docker-containers)
       run_logged "$suite" env TEST_SUMMARY_CLASSES=1 TEST_RUNNER_WR_DOCKER_CONTAINER_TESTS=1 \
-        TEST_RUNNER_WR_LINUX_DAEMON="$DAEMON" "$MAKE" app-test APP_TEST_FLAGS="$(only_testing "$@")"
+        TEST_RUNNER_WR_LINUX_DAEMON="$DAEMON" TEST_RUNNER_WR_CONTAINER_TEST_RUN="$RUN_ID" \
+        "$MAKE" app-test APP_TEST_FLAGS="$(only_testing "$@")"
       ;;
     apple-containers)
       run_logged "$suite" env TEST_SUMMARY_CLASSES=1 TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1 \
-        TEST_RUNNER_WR_LINUX_DAEMON="$DAEMON" "$MAKE" app-test APP_TEST_FLAGS="$(only_testing "$@")"
+        TEST_RUNNER_WR_LINUX_DAEMON="$DAEMON" TEST_RUNNER_WR_CONTAINER_TEST_RUN="$RUN_ID" \
+        "$MAKE" app-test APP_TEST_FLAGS="$(only_testing "$@")"
       ;;
     host-drivers)
       run_logged "$suite" env WR_APPLE_CONTAINER_TESTS=1 WR_LINUX_DAEMON="$DAEMON" \
+        WR_CONTAINER_TEST_RUN="$RUN_ID" \
         swift test --package-path macapp/Packages/HostDrivers --filter ContainerHostDriverLiveTests
       ;;
   esac
@@ -412,10 +529,7 @@ for suite in $SUITES; do
       row "$suite: $1" "$status" $(counts swift "$log")
       ;;
     *)
-      for class in "$@"; do
-        # shellcheck disable=SC2046
-        row "$suite: $class" "$status" $(counts xcode "$log" "$class")
-      done
+      class_rows "$suite" "$status" "$log" "$@"
       ;;
   esac
 done

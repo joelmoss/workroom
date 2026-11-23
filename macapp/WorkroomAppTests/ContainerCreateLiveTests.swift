@@ -29,7 +29,8 @@ final class ContainerCreateLiveTests: XCTestCase {
       hosts: [:], directory: directory.appendingPathComponent("hosts"),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: runtime, image: "unused", user: "",
-        daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=live-test"],
+        daemonSocket: DaemonInstall.defaultSocket,
+        labels: ["workroom.provisioner=live-test"] + ContainerIntegrationTestCase.runLabels,
         dialect: .apple, daemon: { _ in daemon },
         daemonFolder: directory.appendingPathComponent("daemon")))
     let json = Data(
@@ -112,7 +113,8 @@ final class ContainerCreateLiveTests: XCTestCase {
       provisioning: ContainerHostDriver.Provisioning(
         runtime: URL(fileURLWithPath: "/opt/homebrew/bin/container"), image: "unused", user: "",
         daemonSocket: DaemonInstall.defaultSocket,
-        labels: ["workroom.provisioner=live-test"], dialect: .apple, daemon: { _ in daemon },
+        labels: ["workroom.provisioner=live-test"] + ContainerIntegrationTestCase.runLabels,
+        dialect: .apple, daemon: { _ in daemon },
         daemonFolder: directory.appendingPathComponent("daemon")))
     let prepared = try await ContainerCreate.prepare(
       nil, project: directory.path, repository: "app", start: "HEAD", runtime: .apple,
