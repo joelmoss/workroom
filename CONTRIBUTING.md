@@ -224,6 +224,7 @@ make docs-cli
 | `app-uitest` | Run `WorkroomAppUITests` (XCUITest; needs a GUI session) |
 | `app-generate` | Regenerate the `.xcodeproj` from `project.yml` |
 | `app-format` / `app-lint` | Format / lint Swift via swift-format |
+| `app-test-remote` | Run the remote-host and container suites for real; fails on one that ran no test or skipped them all (`REMOTE_SUITES=`, `WR_LINUX_DAEMON=`) |
 | `app-test-preflight` | Fast Makefile/workflow invariants and headless benchmark failure checks; run after changing test infrastructure |
 | `app-test-scripts` | Run the preflight, then packaging and helper script tests |
 | `app-scripts-lint` | shellcheck over `macapp/Scripts/*.sh` (needs `shellcheck` on `PATH`) |
@@ -260,6 +261,28 @@ make contract-test                                             # the contract su
   tabs, menus, diffs). Run with `make app-uitest`. These need a **real GUI login session** (not a
   headless runner), and the Metal-rendered terminal content isn't in the a11y tree, so they exercise
   the app shell rather than terminal output.
+
+**Remote hosts and containers** — the suites that need a real host skip without one (the Rust ones
+are `#[ignore]`d), so `make app-test`, `make app-package-test` and `make vcs-test` pass without
+running them: the ssh fixture's Rust and app tests (`vcs/scripts/ssh-fixture/run.sh`; CI runs only
+the Rust ones), the container classes on Docker and Apple's `container`, and HostDrivers' live test.
+`make app-test-remote` runs them all for real. It builds the Linux
+`workroom` for this Mac's architecture (static musl, `terminal-state`, with cargo-zigbuild and the
+pinned Zig), or takes one as `WR_LINUX_DAEMON=<path>`, and ends with a table of each suite's
+passed, skipped and failed counts. It fails when a suite ran no test or skipped every one, and when
+Docker or `container` isn't running, naming which. Run it after a change to the daemon, its
+bootstrap, the CLI or remote hosts; `make pre-push` leaves it out, since it needs both runtimes and
+the GUI test host.
+
+```bash
+make app-test-remote                                  # every suite: Docker and `container` running
+make app-test-remote REMOTE_SUITES=ssh                # only the ssh fixture's suites
+make app-test-remote REMOTE_SUITES=rust,host-drivers  # the over_ssh runs and HostDrivers' live test
+```
+
+`REMOTE_SUITES` takes suites (`over-ssh`, `over-ssh-systemd`, `remote-host`, `ssh-host`,
+`ssh-host-systemd`, `docker-containers`, `apple-containers`, `host-drivers`) and groups (`rust`,
+`app`, `ssh`, `containers`, `all`); `macapp/Scripts/remote-tests.sh` says what each runs.
 
 > On Xcode 26, the test summary can be hidden; read pass/fail from the `.xcresult` via
 > `xcresulttool` if `make app-test` looks quiet.

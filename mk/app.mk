@@ -320,6 +320,15 @@ app-test-supervisor: ## Run the run-command supervisor PTY integration test (rea
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 	python3 vcs/scripts/test-parked-supervisor.py
 
+# The opt-in remote-host and container suites, which skip without their fixture or runtime and so
+# pass a plain app-test untested (macapp/Scripts/remote-tests.sh): the ssh fixture's Rust and app
+# tests, the container classes on Docker and Apple's `container`, and HostDrivers' live test, against
+# a Linux workroom built for this Mac's arch (or WR_LINUX_DAEMON=). Fails when a suite ran no test or
+# skipped all of them, or when a runtime it needs is down. Not in PRE_PUSH_GATES: it needs Docker,
+# `container` and the GUI test host. Not checkout-locked: the app-test runs it starts take the lock.
+app-test-remote: ## Run the opt-in remote-host and container suites; fails on one that skipped [REMOTE_SUITES= WR_LINUX_DAEMON=]
+	bash macapp/Scripts/remote-tests.sh
+
 app-test-preflight: ## Check Makefile/workflow invariants and benchmark failure safety without building the app
 	sh macapp/Scripts/test-invariants_test.sh
 	python3 macapp/Scripts/benchmark-safety_test.py
