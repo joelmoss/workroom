@@ -1218,53 +1218,71 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
       return folder
     }
-    // Staged under a name of its own and renamed into place in one call, which replaces whatever
-    // daemon is there: creates at once that all find it missing or old each put the same bytes in,
-    // and none fails for finding another's there first.
-    let staged = folder.appendingPathComponent("\(Self.stagedDaemonPrefix)\(UUID().uuidString)")
-    do {
-      try FileManager.default.copyItem(at: binary, to: staged)
-      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
-      // Another create may have put these bytes in while this one copied: then the daemon a
-      // container just started from is left as it is, not replaced by an identical file.
-      if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
-        try FileManager.default.removeItem(at: staged)
-        return folder
-      }
-      guard rename(staged.path, target.path) == 0 else {
-        throw Self.fileFailure("put the daemon in \(folder.path)", errno)
-      }
-    } catch {
-      try? FileManager.default.removeItem(at: staged)  // This call's own copy, named just above.
-      throw error
-    }
+    try Self.stageDaemon(binary, in: folder)
     return folder
   }
 
-  /// What a daemon staged in Apple's folder is named until it is renamed into place.
-  static let stagedDaemonPrefix = ".workroomd-"
-  /// How long a staged daemon lives at most: a copy of the daemon, made a moment before its rename.
-  static let abandonedDaemonAge: TimeInterval = 10 * 60
+  /// What a daemon staged in Apple's folder is named, before a UUID, until it is renamed into
+  /// place: a name only `stageDaemon` makes.
+  static let stagedDaemonPrefix = ".workroomd-staging-"
+
+  /// `binary`'s bytes put in `folder` as its `workroomd`, staged under a name of its own and
+  /// renamed into place in one call, which replaces whatever daemon is there: creates at once that
+  /// all find it missing or old each put the same bytes in, and none fails for finding another's
+  /// there first. The staged file is made exclusively and locked as it is made (`O_EXLOCK`), and
+  /// the lock is held until the file is renamed or removed, so a staged file whose lock can be
+  /// taken is one whose maker has gone (`removeAbandonedDaemons`).
+  static func stageDaemon(_ binary: URL, in folder: URL) throws {
+    let target = folder.appendingPathComponent("workroomd")
+    let staged = folder.appendingPathComponent(stagedDaemonPrefix + UUID().uuidString).path
+    let file = open(staged, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_EXLOCK, 0o700)
+    guard file >= 0 else { throw fileFailure("stage the daemon in \(folder.path)", errno) }
+    defer { close(file) }  // Last, once the staged name is gone: that releases the lock.
+    do {
+      let source = open(binary.path, O_RDONLY | O_CLOEXEC)
+      guard source >= 0 else { throw fileFailure("read \(binary.path)", errno) }
+      defer { close(source) }
+      guard fcopyfile(source, file, nil, copyfile_flags_t(COPYFILE_DATA)) == 0,
+        fchmod(file, 0o755) == 0
+      else { throw fileFailure("stage the daemon in \(folder.path)", errno) }
+      // Another create may have put these bytes in while this one copied: then the daemon a
+      // container just started from is left as it is, not replaced by an identical file.
+      if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
+        unlink(staged)
+        return
+      }
+      guard rename(staged, target.path) == 0 else {
+        throw fileFailure("put the daemon in \(folder.path)", errno)
+      }
+    } catch {
+      unlink(staged)  // This call's own file, made exclusively just above and locked since.
+      throw error
+    }
+  }
 
   /// Removes from `folder` (this build's daemon folder) a staged daemon a create left when it
-  /// was killed mid-copy. Only what can be nothing else: a regular file named exactly as
-  /// `appleDaemonFolder` names one (the prefix, then a UUID), whose inode last changed longer ago
-  /// than any staging lasts, so a create at work alongside never loses its copy. The inode's
-  /// change time, not its modification time: a copy keeps its source's.
-  static func removeAbandonedDaemons(in folder: URL, now: Date = Date()) {
+  /// was killed mid-copy, and only that: a regular file named exactly as `stageDaemon` names one
+  /// (its prefix, then a UUID) whose lock can be taken, which only its maker's going releases (a
+  /// maker that is asleep still holds it), and which is still the file at that name once locked.
+  /// Opened without following a link, and without blocking on a FIFO. A `.workroomd-<UUID>` an
+  /// earlier version staged, with no lock to say whether it is abandoned, is left.
+  static func removeAbandonedDaemons(in folder: URL) {
     guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else {
       return
     }
     for name in names where name.hasPrefix(stagedDaemonPrefix) {
-      let id = name.dropFirst(stagedDaemonPrefix.count)
-      guard UUID(uuidString: String(id))?.uuidString == String(id) else { continue }
+      let id = String(name.dropFirst(stagedDaemonPrefix.count))
+      guard UUID(uuidString: id)?.uuidString == id else { continue }
       let path = folder.appendingPathComponent(name).path
-      var info = stat()
-      guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
-      let changed = Date(
-        timeIntervalSince1970: TimeInterval(info.st_ctimespec.tv_sec)
-          + TimeInterval(info.st_ctimespec.tv_nsec) / 1e9)
-      guard now.timeIntervalSince(changed) > abandonedDaemonAge else { continue }
+      let file = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+      guard file >= 0 else { continue }
+      defer { close(file) }
+      var held = stat()
+      var named = stat()
+      guard fstat(file, &held) == 0, held.st_mode & S_IFMT == S_IFREG,
+        flock(file, LOCK_EX | LOCK_NB) == 0,
+        lstat(path, &named) == 0, named.st_dev == held.st_dev, named.st_ino == held.st_ino
+      else { continue }
       if unlink(path) == 0 {
         logger.notice("removed an abandoned staged daemon, \(path, privacy: .public)")
       }
