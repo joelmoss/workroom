@@ -10,6 +10,15 @@
 //!
 //! The terminal API's commands (those `help agents` guides) and `help agents` are marked Nightly:
 //! no stable release has them yet. Cutting one that does drops the mark ([`nightly`]).
+//!
+//! It writes three Reference pages too ([`reference`]): the terminal API's (`terminal_api`), from
+//! the methods and schemas `api.describe` serves; the internal APIs the app uses (`internal`), from
+//! the daemon's services, frames and subcommands and the hidden commands; and the error kinds in
+//! `json-output.md` (`kinds`), a marked region of a page otherwise written by hand.
+
+mod internal;
+mod kinds;
+mod terminal_api;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -203,8 +212,18 @@ fn page(command: &Command, parents: &[&Command]) -> String {
             "workroom-help-agents.md",
             "The terminal API, for coding agents",
         );
+        text += &see_reference();
     }
     text
+}
+
+/// The link from a terminal API page to the API's reference.
+fn see_reference() -> String {
+    see(
+        "Terminal API reference",
+        "../reference/terminal-api.md",
+        "Every method, event and error of the terminal API",
+    )
 }
 
 /// `help agents` as a page: its text below its own title, which the front matter carries.
@@ -225,7 +244,31 @@ fn help_agents() -> String {
     page += &escaped_markdown(body);
     page += "\n## See also\n\n";
     page += &see("workroom", "workroom.md", SHORT);
+    page += &see_reference();
     page
+}
+
+/// The Reference pages this generator writes, by path under `docs-site/pages`: whole pages, which
+/// carry [`HEADER`], and `json-output.md`, whose error kinds are a marked region (`kinds`) of a page
+/// written by hand, read from `current` (the page on disk).
+fn reference(current: &dyn Fn(&str) -> Option<String>) -> BTreeMap<&'static str, String> {
+    let mut pages = BTreeMap::new();
+    pages.insert(terminal_api::PAGE, terminal_api::page());
+    pages.insert(internal::PAGE, internal::page());
+    let json_output = current(kinds::PAGE)
+        .unwrap_or_else(|| panic!("docs-site/pages/{} is missing", kinds::PAGE));
+    pages.insert(kinds::PAGE, kinds::spliced(&json_output));
+    pages
+}
+
+fn site_pages_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs-site/pages")
+}
+
+/// A table cell's text: Markdown escaped as [`escaped`] does, with `|` escaped so it can't end the
+/// cell, a code span's included (GitHub's tables split on it there too).
+fn cell(text: &str) -> String {
+    escaped(text).replace('|', "\\|")
 }
 
 /// `--help`'s row, as cobra's docs list it.
@@ -361,6 +404,47 @@ mod tests {
         assert!(
             stale.is_empty(),
             "docs-site/pages/cli is stale ({stale:?}); run `make docs-cli`"
+        );
+    }
+
+    /// Fails when the Reference pages this generator writes are stale; `WORKROOM_DOCS_UPDATE=1`
+    /// (`make docs-cli`) rewrites them instead. A whole page of its own that exists without
+    /// [`HEADER`] is someone else's file, which it neither overwrites nor passes; in
+    /// `json-output.md` it writes only between its markers.
+    #[test]
+    fn the_reference_pages_are_current() {
+        let dir = site_pages_dir();
+        // As for the CLI pages: `test-linux.sh`'s container holds `vcs/` alone.
+        if !dir.is_dir() {
+            eprintln!("no {}, so the Reference pages aren't checked here", dir.display());
+            return;
+        }
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+        let update = std::env::var_os("WORKROOM_DOCS_UPDATE").is_some_and(|value| value == "1");
+        let mut stale = Vec::new();
+        for (name, text) in reference(&read) {
+            let have = read(name);
+            if name != kinds::PAGE
+                && let Some(have) = &have
+            {
+                assert!(
+                    have.contains(HEADER),
+                    "docs-site/pages/{name} exists, and `make docs-cli` didn't write it: it \
+                     writes that page, so move yours elsewhere"
+                );
+            }
+            if have.as_deref() == Some(text.as_str()) {
+                continue;
+            }
+            if update {
+                std::fs::write(dir.join(name), text).expect("write a Reference page");
+            } else {
+                stale.push(name);
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "docs-site/pages is stale ({stale:?}); run `make docs-cli`"
         );
     }
 

@@ -216,7 +216,8 @@ covers. `api list` lists the methods, `api describe METHOD` shows the JSON Schem
 parameters, its result and its errors, with examples, and `api call METHOD [PARAMS]` calls it, \
 PARAMS a JSON object inline, `@FILE` or `-` for stdin. A method that streams prints one reply \
 per line until `more` is false. The API only ever adds fields and methods; `revision` counts the \
-additions.",
+additions. Every method, event and error, with an example of each method, is in the reference at \
+https://codaset.dev/workroom/docs/reference/terminal-api.",
     },
 ];
 

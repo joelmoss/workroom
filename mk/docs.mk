@@ -10,11 +10,11 @@ DOCS_CARGO = cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { ech
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo test --manifest-path vcs/Cargo.toml -p workroom
 
-docs-check: ## Check docs-site/ (nav, front matter, links, anchors, Nightly markers) and that the CLI pages are current
+docs-check: ## Check docs-site/ (nav, front matter, links, anchors, Nightly markers) and that the generated pages are current
 	@$(DOCS_CARGO) --lib commands::docs::
 	@export WORKROOM_DOCS_NIGHTLY_CHECK=1; $(DOCS_CARGO) --test docs_site
 
-docs-cli: ## Regenerate docs-site/pages/cli from the CLI's commands
+docs-cli: ## Regenerate docs-site/pages/cli and the generated Reference pages from the workroom binary
 	@export WORKROOM_DOCS_UPDATE=1; $(DOCS_CARGO) --lib commands::docs::
 
 # Its own Caddy name and pidfile, so it runs beside Codaset's own dev server: with the defaults it

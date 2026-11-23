@@ -11,7 +11,7 @@ With `--json`, a command prints exactly one JSON object on stdout, then exits wi
 
 In `--json` mode a command never prompts. `workroom delete` needs `--confirm NAME`, and anything that would ask a question fails instead.
 
-Commands that run in `--json` mode: `create`, `list` (with `--warnings none|fast|full`), `delete`, `version`. `base set`, `base clear`, `trust`, `trust status` and `untrust` run in `--json` mode too. The app also uses two hidden commands, `add-project` and `delete-project`.
+Commands that run in `--json` mode: `create`, `list` (with `--warnings none|fast|full`), `delete`, `version`. `base set`, `base clear`, `trust`, `trust status` and `untrust` run in `--json` mode too. The app also uses hidden commands, such as `add-project` and `delete-project`, which [Internal APIs](internal-apis.md#hidden-commands) (Nightly only) describes.
 
 ## The result envelope
 
@@ -100,6 +100,10 @@ Branch on the exit code when you don't need the details.
 
 ## Error kinds
 
+`error.kind` is one of these. The tables are generated from the CLI's own registry of kinds, so every kind a command can end with is here.
+
+<!-- The kinds every command may end with: generated from the kind registry by `make docs-cli`. Don't edit by hand. -->
+
 | `kind` | Exit | Meaning |
 | ------ | ---- | ------- |
 | `InWorkroom` | 3 | The command ran from inside an existing workroom. |
@@ -117,48 +121,51 @@ Branch on the exit code when you don't need the details.
 | `ConfigReadFailed` | 6 | The config file could not be read or parsed. |
 | `ConfigWriteFailed` | 6 | The config file could not be written. After `add-project --clone`, the message says the clone is at the path but not registered; the clone is kept. |
 | `VCSCommandFailed` | 1 | An underlying `git` command failed. |
-| `InternalError` | 1 | Anything else. |
-
-These kinds are returned as well:
-
-| `kind` | Exit | Meaning |
-| ------ | ---- | ------- |
+| `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
+| `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
+| `ProjectNotFound` | 3 | The project is not registered. |
+| `WorkroomNotFound` | 3 | The workroom is not registered. |
+| `InvalidHostDescriptor` | 2 | A host descriptor must be a JSON object. |
+| `WorkroomExists` | 3 | A workroom of that name is already registered. |
 | `BaseBranchNotFound` | 3 | A base branch exists neither on its remote nor locally, or the fetch that checks the remote failed. |
 | `ScriptNotTrusted` | 3 | A setup or teardown script this Mac has not approved. |
 | `LocalWorkLeftOut` | 3 | `create --start ask` found unpushed commits on your local base branch, or uncommitted changes on it, that the new workroom would leave out. Nothing was created. The envelope's `local_work` carries `branch`, `remote`, `ahead` (the commits not pushed), `behind` (the remote's commits the local branch lacks), `uncommitted`, `summary` and `behind_note` (a sentence saying it is behind, or `""`); create again with `--start origin`, `local` or `local-with-changes`. `trust status` reports the same `local_work` when there is some. |
-| `ProjectNotFound` | 3 | The project is not registered. |
-| `WorkroomNotFound` | 3 | The workroom is not registered. |
-| `WorkroomExists` | 3 | A workroom of that name is already registered. |
-| `InvalidHostDescriptor` | 2 | A host descriptor must be a JSON object. |
-| `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
-| `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
+| `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
 | `CloneFailed` | 1 | `add-project --clone` could not clone the repository. The message carries git's own error, such as `Permission denied (publickey).`; git never prompts, so missing credentials fail here. Nothing was registered. |
 | `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it, or the folder gained files while the clone ran. No clone is left behind. Hidden staging that a crashed clone on this machine left is removed first and doesn't count. When only clone staging (`.clone-*` folders and `.clone-*.lock` files) is in the way, the message names it. |
-| `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
+| `MacOnly` | 3 | Nightly only. A command that reads or writes the Mac's Workroom config, such as `create` or `list`, ran somewhere other than a Mac, such as a remote host. |
+| `ManagedInstall` | 3 | Nightly only. `update` ran in an install something else keeps up to date: the copy inside the Workroom app, the daemon the app installed on a host, or the daemon's own copy that its terminals run. Update the app instead; a host gets each newer build when the app connects. |
+| `InternalError` | 1 | Anything else. |
+
+<!-- End of the generated kinds. -->
 
 ### The terminal API's kinds {nightly}
 
-The commands that drive terminals (`sessions`, `capture`, `wait`, `send`, `command`, `prompt`, `events`, `new`, `close`, `run-control` and `api`) return these, and `NotADirectory` for a `new --cwd` that is no folder. A kind may carry more in `error.details`, and `TargetAmbiguous` lists the terminals it matched in `error.matches`. `workroom command` exits with the command's own code when it runs, so tell its failures from the command's by `ok` in its `--json` envelope. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md).
+The commands that drive terminals (`sessions`, `capture`, `wait`, `send`, `command`, `prompt`, `events`, `new`, `close`, `run-control` and `api`) return these, and `NotADirectory` for a `new --cwd` that is no folder. A kind may carry more in `error.details`, and `TargetAmbiguous` lists the terminals it matched in `error.matches`. `workroom command` exits with the command's own code when it runs, so tell its failures from the command's by `ok` in its `--json` envelope. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md), and the [terminal API reference](terminal-api.md) for the kinds each method can return.
+
+<!-- The terminal API's kinds: generated from the kind registry by `make docs-cli`. Don't edit by hand. -->
 
 | `kind` | Exit | Meaning |
 | ------ | ---- | ------- |
-| `TargetNotFound` | 3 | No terminal matches the target. |
 | `TargetAmbiguous` | 3 | More than one terminal matches the target, so nothing was done. |
-| `SessionEnded` | 3 | The terminal ended before or while it was asked. |
-| `RefusedSelf` | 3 | The command named the terminal it runs in. Pass `--allow-self` to allow it. |
+| `TargetNotFound` | 3 | No terminal matches the target. |
+| `DaemonUnreachable` | 7 | No daemon answers: the command ran outside a Workroom terminal, or `WORKROOM_DAEMON` names a socket nothing listens on. |
+| `DaemonTooOld` | 7 | The daemon is older than the command needs. Run `"$WORKROOM_DAEMON.bin/path/workroom"`, the one that matches it. If that says so too, the daemon needs updating, which updating the app does. |
+| `WaitTimeout` | 8 | The `--timeout` passed before what was waited for happened. |
 | `AgentBusy` | 3 | The coding agent is working or waiting on a question, so the prompt wasn't given. `error.details` says whether the text was typed but not submitted. |
 | `NotAnAgent` | 3 | No coding agent runs in the terminal. |
 | `NotARun` | 3 | `run-control` named a terminal that is no run tab. |
+| `SessionEnded` | 3 | The terminal ended before or while it was asked. |
 | `AlternateScreen` | 3 | A full-screen program is up in the terminal. |
 | `NoShellIntegration` | 3 | The terminal's shell sends no shell integration marks, so a command's end can't be seen. |
 | `ExitCodeMismatch` | 3 | `wait --run exited --exit-code N` saw the run exit with another code, which `error.details.exit_code` holds. |
 | `WaitInterrupted` | 3 | A wait for output or a command's end may have missed it: the app updated the daemon in the middle, or the output came faster than the wait could read it. |
-| `Busy` | 3 | The terminal or the daemon is busy, such as a shell running another command, so try again shortly. |
-| `InvalidRequest` | 2 | The daemon couldn't read the request: an unknown method, or parameters it refuses. |
 | `TooLarge` | 2 | The request, or what it asked for, is more than one request or reply carries. |
-| `DaemonUnreachable` | 7 | No daemon answers: the command ran outside a Workroom terminal, or `WORKROOM_DAEMON` names a socket nothing listens on. |
-| `DaemonTooOld` | 7 | The daemon is older than the command needs. Run `"$WORKROOM_DAEMON.bin/path/workroom"`, the one that matches it. If that says so too, the daemon needs updating, which updating the app does. |
-| `WaitTimeout` | 8 | The `--timeout` passed before what was waited for happened. |
+| `Busy` | 3 | The terminal or the daemon is busy, such as a shell running another command, so try again shortly. |
+| `RefusedSelf` | 3 | The command named the terminal it runs in. Pass `--allow-self` to allow it. |
+| `InvalidRequest` | 2 | The daemon couldn't read the request: an unknown method, or parameters it refuses. |
+
+<!-- End of the generated kinds. -->
 
 ### The ScriptNotTrusted envelope
 

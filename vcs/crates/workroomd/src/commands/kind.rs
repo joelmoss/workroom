@@ -220,6 +220,210 @@ impl Kind {
             Kind::InternalError => ("InternalError", 1),
         }
     }
+
+    /// Whether the kind is new with the Rust binary (ADR 0078), which no stable release has yet,
+    /// so its row in the docs is marked Nightly while `commands::docs` says that binary is.
+    #[cfg(test)]
+    pub(crate) fn new_with_the_rust_binary(self) -> bool {
+        matches!(self, Kind::MacOnly | Kind::ManagedInstall)
+    }
+
+    /// What the docs say the kind means, and which of their tables it is in: the error kinds of
+    /// `docs-site/pages/reference/json-output.md`, which `make docs-cli` writes from this
+    /// (`commands::docs::kinds`). A match with no wildcard, so no kind can be added without them.
+    #[cfg(test)]
+    pub(crate) fn documented(self) -> (Table, &'static str) {
+        use Table::{TerminalApi, Workroom};
+        match self {
+            Kind::InWorkroom => (
+                Workroom,
+                "The command ran from inside an existing workroom.",
+            ),
+            Kind::UnsupportedVcs => (Workroom, "No Git repository was found."),
+            Kind::NotADirectory => (Workroom, "The path exists but is not a directory."),
+            Kind::InvalidName => (Workroom, "The workroom name failed validation."),
+            Kind::DirExists => (Workroom, "The target directory already exists."),
+            Kind::WorkspaceExists => (Workroom, "The Git worktree already exists."),
+            Kind::WorkspaceNotFound => (
+                Workroom,
+                "The Git worktree to delete doesn't exist. In the Nightly, also when the \
+                 workroom's folder isn't a worktree Git registers for the project, so its \
+                 teardown script won't run there.",
+            ),
+            Kind::ConfirmationMismatch => (
+                Workroom,
+                "`--confirm` didn't match the workroom's name.",
+            ),
+            Kind::UnsafeDeletePath => (
+                Workroom,
+                "Workroom refused to delete an unsafe or reserved path.",
+            ),
+            Kind::Cancelled => (Workroom, "The user aborted, or there was nothing to do."),
+            Kind::SetupScriptFailed => (Workroom, "The setup script returned non-zero."),
+            Kind::TeardownScriptFailed => (Workroom, "The teardown script returned non-zero."),
+            Kind::ConfigReadFailed => (
+                Workroom,
+                "The config file could not be read or parsed.",
+            ),
+            Kind::ConfigWriteFailed => (
+                Workroom,
+                "The config file could not be written. After `add-project --clone`, the message \
+                 says the clone is at the path but not registered; the clone is kept.",
+            ),
+            Kind::VcsCommandFailed => (Workroom, "An underlying `git` command failed."),
+            Kind::RemoteProjectUnsupported => (
+                Workroom,
+                "`add-project` was given a remote path such as `host:path` or `ssh://…`.",
+            ),
+            Kind::RemoteWorkroomUnsupported => (
+                Workroom,
+                "`delete` or `delete-project` was asked to act on a remote workroom.",
+            ),
+            Kind::ProjectNotFound => (Workroom, "The project is not registered."),
+            Kind::WorkroomNotFound => (Workroom, "The workroom is not registered."),
+            Kind::InvalidHostDescriptor => (
+                Workroom,
+                "A host descriptor must be a JSON object.",
+            ),
+            Kind::WorkroomExists => (
+                Workroom,
+                "A workroom of that name is already registered.",
+            ),
+            Kind::BaseBranchNotFound => (
+                Workroom,
+                "A base branch exists neither on its remote nor locally, or the fetch that \
+                 checks the remote failed.",
+            ),
+            Kind::ScriptNotTrusted => (
+                Workroom,
+                "A setup or teardown script this Mac has not approved.",
+            ),
+            Kind::LocalWorkLeftOut => (
+                Workroom,
+                "`create --start ask` found unpushed commits on your local base branch, or \
+                 uncommitted changes on it, that the new workroom would leave out. Nothing was \
+                 created. The envelope's `local_work` carries `branch`, `remote`, `ahead` (the \
+                 commits not pushed), `behind` (the remote's commits the local branch lacks), \
+                 `uncommitted`, `summary` and `behind_note` (a sentence saying it is behind, or \
+                 `\"\"`); create again with `--start origin`, `local` or `local-with-changes`. \
+                 `trust status` reports the same `local_work` when there is some.",
+            ),
+            Kind::StartCommitUnusable => (
+                Workroom,
+                "A create answering an earlier one's question was given a `start_commit` that \
+                 is no longer where it starts, as when the project's base branch changed in \
+                 between. Nothing was created; create again without it.",
+            ),
+            Kind::CloneFailed => (
+                Workroom,
+                "`add-project --clone` could not clone the repository. The message carries \
+                 git's own error, such as `Permission denied (publickey).`; git never prompts, so \
+                 missing credentials fail here. Nothing was registered.",
+            ),
+            Kind::DestinationNotEmpty => (
+                Workroom,
+                "`add-project --clone` was given a folder that already has files in it, or the \
+                 folder gained files while the clone ran. No clone is left behind. Hidden \
+                 staging that a crashed clone on this machine left is removed first and doesn't \
+                 count. When only clone staging (`.clone-*` folders and `.clone-*.lock` files) \
+                 is in the way, the message names it.",
+            ),
+            Kind::MacOnly => (
+                Workroom,
+                "A command that reads or writes the Mac's Workroom config, such as `create` or \
+                 `list`, ran somewhere other than a Mac, such as a remote host.",
+            ),
+            Kind::ManagedInstall => (
+                Workroom,
+                "`update` ran in an install something else keeps up to date: the copy inside \
+                 the Workroom app, the daemon the app installed on a host, or the daemon's own \
+                 copy that its terminals run. Update the app instead; a host gets each newer \
+                 build when the app connects.",
+            ),
+            Kind::TargetAmbiguous => (
+                TerminalApi,
+                "More than one terminal matches the target, so nothing was done.",
+            ),
+            Kind::TargetNotFound => (TerminalApi, "No terminal matches the target."),
+            Kind::DaemonUnreachable => (
+                TerminalApi,
+                "No daemon answers: the command ran outside a Workroom terminal, or \
+                 `WORKROOM_DAEMON` names a socket nothing listens on.",
+            ),
+            Kind::DaemonTooOld => (
+                TerminalApi,
+                "The daemon is older than the command needs. Run \
+                 `\"$WORKROOM_DAEMON.bin/path/workroom\"`, the one that matches it. If that says \
+                 so too, the daemon needs updating, which updating the app does.",
+            ),
+            Kind::WaitTimeout => (
+                TerminalApi,
+                "The `--timeout` passed before what was waited for happened.",
+            ),
+            Kind::AgentBusy => (
+                TerminalApi,
+                "The coding agent is working or waiting on a question, so the prompt wasn't \
+                 given. `error.details` says whether the text was typed but not submitted.",
+            ),
+            Kind::NotAnAgent => (TerminalApi, "No coding agent runs in the terminal."),
+            Kind::NotARun => (
+                TerminalApi,
+                "`run-control` named a terminal that is no run tab.",
+            ),
+            Kind::SessionEnded => (
+                TerminalApi,
+                "The terminal ended before or while it was asked.",
+            ),
+            Kind::AlternateScreen => (
+                TerminalApi,
+                "A full-screen program is up in the terminal.",
+            ),
+            Kind::NoShellIntegration => (
+                TerminalApi,
+                "The terminal's shell sends no shell integration marks, so a command's end can't \
+                 be seen.",
+            ),
+            Kind::ExitCodeMismatch => (
+                TerminalApi,
+                "`wait --run exited --exit-code N` saw the run exit with another code, which \
+                 `error.details.exit_code` holds.",
+            ),
+            Kind::WaitInterrupted => (
+                TerminalApi,
+                "A wait for output or a command's end may have missed it: the app updated the \
+                 daemon in the middle, or the output came faster than the wait could read it.",
+            ),
+            Kind::TooLarge => (
+                TerminalApi,
+                "The request, or what it asked for, is more than one request or reply carries.",
+            ),
+            Kind::Busy => (
+                TerminalApi,
+                "The terminal or the daemon is busy, such as a shell running another command, \
+                 so try again shortly.",
+            ),
+            Kind::RefusedSelf => (
+                TerminalApi,
+                "The command named the terminal it runs in. Pass `--allow-self` to allow it.",
+            ),
+            Kind::InvalidRequest => (
+                TerminalApi,
+                "The daemon couldn't read the request: an unknown method, or parameters it \
+                 refuses.",
+            ),
+            Kind::InternalError => (Workroom, "Anything else."),
+        }
+    }
+}
+
+/// Which table of the docs' error kinds a kind is in (`Kind::documented`).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Table {
+    /// The kinds every command may end with: the workroom lifecycle's and the CLI's own.
+    Workroom,
+    /// The kinds of the commands that drive terminals, the terminal API's (ADR 0079).
+    TerminalApi,
 }
 
 /// How a command failed: its kind, and the message a person reads.

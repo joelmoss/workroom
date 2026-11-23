@@ -19,7 +19,8 @@ of its parameters and its result, with examples, and `api call METHOD [PARAMS]` 
 is a JSON object given inline, @FILE to read it from a file, or - to read it from stdin; left out, \
 it is {}. With --json, `api call` prints the method's reply in the envelope: its `result`, the \
 API's `revision`, and `more`. A method that streams several replies gets one envelope per line \
-(one result each without --json) until `more` is false.";
+(one result each without --json) until `more` is false. Every method, event and error is in the \
+reference at https://codaset.dev/workroom/docs/reference/terminal-api.";
 
 /// Each subcommand's envelope names it, success and failure alike: one name per payload shape, as
 /// Go's `trust status` is.

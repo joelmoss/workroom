@@ -35,3 +35,4 @@ Reads a session's screen as plain text, as it shows now: what to look at before 
 
 * [workroom](workroom.md)	 - Manage development workrooms
 * [workroom help agents](workroom-help-agents.md)	 - The terminal API, for coding agents
+* [Terminal API reference](../reference/terminal-api.md)	 - Every method, event and error of the terminal API

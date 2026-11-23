@@ -35,3 +35,4 @@ Opens a new terminal beside yours, as a tab, or as a split with `--split right` 
 
 * [workroom](workroom.md)	 - Manage development workrooms
 * [workroom help agents](workroom-help-agents.md)	 - The terminal API, for coding agents
+* [Terminal API reference](../reference/terminal-api.md)	 - Every method, event and error of the terminal API

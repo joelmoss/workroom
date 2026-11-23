@@ -161,6 +161,12 @@ These images don't come back:
 
 When you reopen Workroom, visible panes reconnect immediately. Hidden terminal tabs reconnect gradually after the window appears, so restoring many panes leaves room for clicks and typing. Their shells and commands keep running in the background helper throughout.
 
+### Who is attached to a terminal {nightly}
+
+Each tab or split showing a terminal is one of its clients, on this Mac or, for a remote workroom, on another Mac showing the same terminal. A terminal takes the size of the client you last typed or clicked in.
+
+To see who is attached, run `workroom sessions --clients` in any terminal. Under each terminal it lists its clients: the Mac each is on, how long ago it attached, its size, which one the terminal's size follows, and whether it still answers. Scripts can follow clients coming and going with `workroom events --type client.attached,client.detached`. See [workroom sessions](../cli/workroom-sessions.md) and the [terminal API reference](../reference/terminal-api.md#the-client-object).
+
 ### Detached sessions
 
 A session can be running in the background with no tab showing it, in any window. When the current workroom has such sessions, a button with a stack icon and a count appears at the right of the pane footer, the strip along the bottom of a pane.

@@ -47,7 +47,7 @@ Rust tests sit beside their code (`#[cfg(test)] mod tests`) or under a crate's `
 
 ## Commit & Pull Request Guidelines
 
-A PR that changes what users see or do (the app, the CLI, a config key, a script variable) updates `docs-site/` in the same PR. A feature no stable release has yet is marked Nightly there (`docs-site/README.md`). After changing a CLI command or flag, run `make docs-cli`.
+A PR that changes what users see or do (the app, the CLI, a config key, a script variable) updates `docs-site/` in the same PR. A feature no stable release has yet is marked Nightly there (`docs-site/README.md`). After changing a CLI command or flag, a terminal API method or event, a daemon request or an error kind, run `make docs-cli`.
 
 Use concise, descriptive commits. History commonly uses `fix(macapp): …`, `refactor(macapp): …`, and `docs(…): …`; plain imperative subjects also occur. PRs should explain behavior changes, link issues (`Fixes #177`), report validation and skipped checks, and include screenshots for visible UI changes.
 

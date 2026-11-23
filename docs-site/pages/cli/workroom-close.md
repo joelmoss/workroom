@@ -38,3 +38,4 @@ Closes a session: its shell ends, and its tab or split closes in the app. It can
 
 * [workroom](workroom.md)	 - Manage development workrooms
 * [workroom help agents](workroom-help-agents.md)	 - The terminal API, for coding agents
+* [Terminal API reference](../reference/terminal-api.md)	 - Every method, event and error of the terminal API
