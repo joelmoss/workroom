@@ -48,8 +48,16 @@ final class TerminalDragSession {
   private var zones: [Zone] = []
   /// Another window's host whose zones the drag measured: the Quick Terminal's panel.
   private weak var otherHost: (any PaneDropZoneHost)?
+  private let measure: @MainActor (AppStore) -> [Zone]
 
-  init(store: AppStore) { self.store = store }
+  /// `measure` reads the zones off the screen as a drag starts: tests give their own.
+  init(
+    store: AppStore,
+    measure: @escaping @MainActor (AppStore) -> [Zone] = { $0.terminalDropZones() }
+  ) {
+    self.store = store
+    self.measure = measure
+  }
 
   /// `source`'s drag from `surface` is at `screenPoint`: starts the session if it is a new drag,
   /// and highlights the destination under it when it takes the drop. Whether one does.
@@ -59,7 +67,7 @@ final class TerminalDragSession {
     if self.source != source || self.surface != surface {
       // The Quick Terminal's panel comes in front first, so its tabs are measured as on top.
       WindowRegistry.shared.quickTerminal?.holdForDrag()
-      begin(source, from: surface, zones: store.terminalDropZones())
+      begin(source, from: surface, zones: measure(store))
     }
     let hit = accepting(at: screenPoint)
     highlight(hit?.zone, on: hit?.host)

@@ -11,9 +11,18 @@ import SwiftUI
 /// takes the mouse once a row is pressed, and no gesture of the row's sees the drag at all. So the
 /// table keeps its drag, and this swaps only its picture: the one table instance gets a subclass of
 /// its own class whose `beginDraggingSession(with:event:source:)` sets each dragged item's image to
-/// the chip before AppKit starts the session. Nothing else of the table changes, and no other
-/// table, so a SwiftUI that changes its tables only loses the chip, never the drag.
+/// the chip before AppKit starts the session. The subclass also notes each drop the table performs
+/// (`drop`), which `.onMove` doesn't say (#776), and changes nothing of it. Nothing else of the
+/// table changes, and no other table, so a SwiftUI that changes its tables only loses the chip and
+/// the drop's point, never the drag.
 enum SidebarTableDragImage {
+  /// The drop the table is performing, while it does: the List's `.onMove` runs inside it.
+  @MainActor private(set) static var drop: SidebarRowDrag.ListDrop?
+  /// The table's drag, from its start until the next row's begins.
+  @MainActor static weak var session: NSDraggingSession?
+  /// When the table's latest drag was pressed.
+  @MainActor private static var pressedAt: TimeInterval = 0
+
   /// The title of the row whose drag is starting, set by the row's own gesture (`SidebarRowDrag`),
   /// which reports a point before the table's drag starts. Nil: the table keeps its own picture.
   @MainActor static var title: String?
@@ -40,15 +49,44 @@ enum SidebarTableDragImage {
             // AppKit starts a drag on the main thread.
             nonisolated(unsafe) let given = items
             nonisolated(unsafe) var dragged = items
-            MainActor.assumeIsolated { dragged = chipItems(given, in: view, event: event) }
-            return inherited(view, selector, dragged, event, source)
+            MainActor.assumeIsolated {
+              // The event is the press that started the drag.
+              pressedAt = event.timestamp
+              dragged = chipItems(given, in: view, event: event)
+            }
+            let begun = inherited(view, selector, dragged, event, source)
+            nonisolated(unsafe) let started = begun
+            MainActor.assumeIsolated { session = started }
+            return begun
           }
       let types = method_getTypeEncoding(class_getInstanceMethod(base, selector)!)
       class_addMethod(made, selector, imp_implementationWithBlock(block), types)
+      noteDrops(in: made, inheritedFrom: base)
       objc_registerClassPair(made)
       subclass = made
     }
     object_setClass(table, subclass)
+  }
+
+  /// Has `made`'s `performDragOperation(_:)` set `drop` around `base`'s.
+  private static func noteDrops(in made: AnyClass, inheritedFrom base: AnyClass) {
+    let selector = #selector(NSDraggingDestination.performDragOperation(_:))
+    guard let method = class_getInstanceMethod(base, selector) else { return }
+    typealias Perform = @convention(c) (NSView, Selector, NSDraggingInfo) -> Bool
+    let inherited = unsafeBitCast(method_getImplementation(method), to: Perform.self)
+    let block: @convention(block) (NSView, NSDraggingInfo) -> Bool = { view, info in
+      // AppKit performs a drop on the main thread.
+      nonisolated(unsafe) let given = info
+      MainActor.assumeIsolated {
+        let point = given.draggingLocation
+        drop = .init(
+          pressedAt: pressedAt, point: view.window?.convertPoint(toScreen: point) ?? point)
+      }
+      defer { MainActor.assumeIsolated { drop = nil } }
+      return inherited(view, selector, info)
+    }
+    class_addMethod(
+      made, selector, imp_implementationWithBlock(block), method_getTypeEncoding(method))
   }
 
   /// `items` with the first carrying the chip, centred on the pointer and just above it as the

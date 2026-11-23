@@ -41,8 +41,8 @@ struct SidebarTerminalsList: View, Equatable {
           view(for: row)
         }
         // Reorders, and takes a group's terminal out to standalone or into another group. A row
-        // let go on another's middle drops on it instead (`SidebarRowDrag`), and the List makes no
-        // move of that drop; should one come anyway, it doesn't also move the row.
+        // let go on another's middle drops on it instead, and then the List moves nothing
+        // (`SidebarRowDrag.listMoves`).
         .onMove { offsets, destination in
           listMove(rows.map(\.item), offsets, to: destination)
         }
@@ -213,9 +213,11 @@ struct SidebarTerminalsList: View, Equatable {
     }.first
   }
 
-  /// The List's move of the rows at `offsets` to `destination`, where `rowMove` says. A row that
-  /// just dropped on another row's middle (`SidebarRowDrag`) doesn't also move.
+  /// The List's move of the rows at `offsets` to `destination`, where `rowMove` says, when it is
+  /// the List's to make (`SidebarRowDrag.listMoves`): asked before `offsets` are read, which a
+  /// left-over drag's no longer match.
   private func listMove(_ items: [Item], _ offsets: IndexSet, to destination: Int) {
+    guard rowDrag.listMoves(SidebarTableDragImage.drop) else { return }
     guard let offset = offsets.first, offsets.count == 1 else {
       return Self.move(items, offsets, to: destination, in: section)
     }
@@ -224,7 +226,6 @@ struct SidebarTerminalsList: View, Equatable {
       case .entry(let id): id.sidebarID.map(TerminalDragSource.entry)
       case .terminal(let tabID, let group): .terminal(tabID, of: group)
       }
-    if let dragged, rowDrag.dropped(dragged) { return }
     switch Self.rowMove(items, from: offset, to: destination) {
     case .stays: break
     case .reorders(let before):

@@ -428,6 +428,200 @@ final class SidebarTerminalRowDropTests: XCTestCase {
     XCTAssertNil(panel.terminals.tab(quick.id, for: panel.target))
   }
 
+  // MARK: When the button comes up (#776)
+
+  /// The mouse a row's drag reads.
+  @MainActor
+  private final class Pointer {
+    var location = CGPoint.zero
+    var isDown = true
+    var queuedRelease: CGPoint?
+    var listDragLocation: CGPoint?
+  }
+
+  /// Ops, with two terminals, above folded Dev: a drag of Ops's first, as the window measures it.
+  private struct RowDragScene {
+    let store: AppStore
+    let drag: SidebarRowDrag
+    let pointer: Pointer
+    let dragged: TerminalDragSource
+    let tab: TerminalTab.ID
+    let dev: SidebarID
+  }
+
+  // Screen coordinates: y grows up, so Ops's row is above Dev's.
+  private let onOwnRow = CGPoint(x: 50, y: 160)
+  private let onDev = CGPoint(x: 50, y: 112)
+  private let elsewhere = CGPoint(x: 600, y: 400)
+
+  private func rowDragScene() throws -> RowDragScene {
+    let store = makeStore()
+    let (ops, tab) = try group(store, "Ops")
+    _ = store.terminals.addTab(for: try XCTUnwrap(store.target(for: ops)))
+    let (dev, _) = try group(store, "Dev")
+    let zones = [
+      TerminalDragSession.Zone(
+        zone: .terminalRow(tab, in: ops), rect: CGRect(x: 0, y: 148, width: 200, height: 24)),
+      TerminalDragSession.Zone(
+        zone: .target(dev), rect: CGRect(x: 0, y: 100, width: 200, height: 24),
+        isFoldedGroup: true),
+    ]
+    store.terminalDrag = TerminalDragSession(store: store, measure: { _ in zones })
+    let pointer = Pointer()
+    pointer.location = onOwnRow
+    let drag = SidebarRowDrag(
+      mouse: .init(
+        location: { pointer.location }, isDown: { pointer.isDown },
+        queuedRelease: { pointer.queuedRelease },
+        listDragLocation: { pointer.listDragLocation }))
+    return RowDragScene(
+      store: store, drag: drag, pointer: pointer, dragged: .terminal(tab, of: ops), tab: tab,
+      dev: dev)
+  }
+
+  private func assertJoinedDevLast(
+    _ scene: RowDragScene, file: StaticString = #filePath, line: UInt = #line
+  ) async {
+    await settle { tabs(scene.store, scene.dev).contains(scene.tab) }
+    XCTAssertEqual(tabs(scene.store, scene.dev).last, scene.tab, file: file, line: line)
+  }
+
+  /// Value: protects=a drag the app first hears of after the button came up still drops where it
+  /// was let go (#776 "moved"); fails_when=the drag ends a session it never began; why_new=a busy
+  /// main thread delivers the row gesture late; seam=SidebarRowDrag.moved; no_claim=AppKit's queue
+  func testADragHeardOfAfterItsReleaseStillDrops() async throws {
+    let scene = try rowDragScene()
+    scene.pointer.isDown = false
+    scene.pointer.location = onDev
+    scene.pointer.queuedRelease = onDev
+
+    scene.drag.moved(scene.dragged, in: scene.store)
+
+    await assertJoinedDevLast(scene)
+  }
+
+  /// Value: protects=the drop lands where the button came up, however far the pointer has gone
+  /// since (#776); fails_when=it reads the pointer when it notices; why_new=the poll and the gesture
+  /// both run late; seam=SidebarRowDrag.follow; no_claim=AppKit's queue
+  func testTheDropLandsWhereTheButtonCameUpNotWhereThePointerWentNext() async throws {
+    let scene = try rowDragScene()
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.queuedRelease = onDev
+    scene.pointer.location = elsewhere
+
+    scene.drag.follow()
+
+    await assertJoinedDevLast(scene)
+  }
+
+  /// Value: protects=a release the List's drag took out of the queue lands where that drag ended
+  /// (#776); fails_when=the timer, ahead of the List's drop, reads the pointer instead; why_new=the
+  /// VM dropped 2 in 10 at the moved-on pointer; seam=SidebarRowDrag.follow;
+  /// no_claim=AppKit's session
+  func testAReleaseTheListsDragTookLandsWhereThatDragEnded() async throws {
+    let scene = try rowDragScene()
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.listDragLocation = onDev
+    scene.pointer.location = elsewhere
+
+    scene.drag.follow()
+
+    await assertJoinedDevLast(scene)
+  }
+
+  /// Value: protects=a queued mouse-up outranks the List's drag, whose location lags until it has
+  /// taken that event (#776); fails_when=the drop lands back at the press; why_new=the drag's
+  /// location read the press point in the VM; seam=SidebarRowDrag.follow; no_claim=AppKit's session
+  func testAQueuedMouseUpOutranksTheListsLaggingDrag() async throws {
+    let scene = try rowDragScene()
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.queuedRelease = onDev
+    scene.pointer.listDragLocation = onOwnRow
+    scene.pointer.location = elsewhere
+
+    scene.drag.follow()
+
+    await assertJoinedDevLast(scene)
+  }
+
+  /// Value: protects=the List's drop arriving before the mouse-up is noticed leaves a row's drop
+  /// to the row, at the List's drop point (#776 "not standalone"); fails_when=the List's move runs
+  /// first; why_new=.onMove beat the poll in the VM; seam=SidebarRowDrag.listMoves;
+  /// no_claim=the table's callback
+  func testTheListsDropBeforeTheMouseUpIsSeenLeavesTheDropToTheRow() async throws {
+    let scene = try rowDragScene()
+    let pressed = ProcessInfo.processInfo.systemUptime
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.location = elsewhere
+
+    XCTAssertFalse(scene.drag.listMoves(.init(pressedAt: pressed, point: onDev)))
+
+    await assertJoinedDevLast(scene)
+  }
+
+  /// Value: protects=a List drag left over from a drop moves no row, not even the one now at its
+  /// stale index (#776 "last: []"); fails_when=the guard goes by the row at that index;
+  /// why_new=it made a terminal nobody dragged standalone; seam=SidebarRowDrag.listMoves;
+  /// no_claim=how AppKit orphans the drag
+  func testAListDragLeftOverFromADropMovesNoOtherRow() async throws {
+    let scene = try rowDragScene()
+    let pressed = ProcessInfo.processInfo.systemUptime
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.location = onDev
+    scene.pointer.queuedRelease = onDev
+    scene.drag.follow()
+
+    XCTAssertFalse(scene.drag.listMoves(.init(pressedAt: pressed, point: elsewhere)))
+
+    await assertJoinedDevLast(scene)
+  }
+
+  /// Value: protects=a List drag left over from a release that dropped nothing doesn't move its
+  /// row to where the pointer went next (#776); fails_when=it is taken as the user's drop;
+  /// why_new=an orphaned drag drops on the next mouse move; seam=SidebarRowDrag.listMoves;
+  /// no_claim=how AppKit orphans the drag
+  func testAListDragLeftOverFromAReleaseDoesNotFollowThePointer() async throws {
+    let scene = try rowDragScene()
+    let pressed = ProcessInfo.processInfo.systemUptime
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.queuedRelease = onOwnRow
+    scene.drag.follow()
+
+    XCTAssertFalse(
+      scene.drag.listMoves(.init(pressedAt: pressed, point: elsewhere)))
+  }
+
+  /// Value: protects=let go between rows is still the List's reorder, and an earlier drop holds
+  /// back no later drag of the List's (#776); fails_when=the guard swallows either;
+  /// why_new=the guard no longer goes by the row; seam=SidebarRowDrag.listMoves;
+  /// no_claim=where the reorder lands (rowMove)
+  func testAGapsDropAndALaterDragAreStillTheListsMoves() async throws {
+    let scene = try rowDragScene()
+    let pressed = ProcessInfo.processInfo.systemUptime
+    let gap = CGPoint(x: 50, y: 136)
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.location = gap
+    XCTAssertTrue(
+      scene.drag.listMoves(.init(pressedAt: pressed, point: gap)), "a gap's drop")
+
+    scene.pointer.isDown = true
+    scene.drag.moved(scene.dragged, in: scene.store)
+    scene.pointer.isDown = false
+    scene.pointer.location = onDev
+    scene.pointer.queuedRelease = onDev
+    scene.drag.follow()
+    let next = ProcessInfo.processInfo.systemUptime + 1
+    XCTAssertTrue(
+      scene.drag.listMoves(.init(pressedAt: next, point: gap)), "the next drag")
+  }
+
   // MARK: The List's drop
 
   private let s = TargetID.standalone(UUID())
