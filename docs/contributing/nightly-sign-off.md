@@ -230,23 +230,25 @@ it the same way.
 
 Since #793 and #798, `trust`, `delete` and `delete-project` refuse under a coding agent, and so
 does a `create` that would run a setup script you haven't approved. In a workroom of the throwaway
-project, start Claude Code and ask it to run each of these with its shell tool and report the exit
-code and output (`<name>` is a workroom of the project, `<path>` the project's folder):
+project, start Claude Code and ask it to run each of these from the project's folder with its
+shell tool, and report the exit code and output (`<name>` is a workroom of the project, `<path>`
+the project's folder; `delete-project` takes only `--json`, and its `--confirm` in every mode):
 
 ```sh
+cd <path>
 workroom trust
 workroom delete <name> --confirm <name>
-workroom delete-project <path> --confirm <path>
-workroom delete <name> --pretend
-workroom delete-project <path> --pretend
+workroom delete-project <path> --json --confirm <path>
+workroom delete <name> --confirm <name> --pretend
+workroom delete-project <path> --json --confirm <path> --pretend
 workroom create            # with a setup script you haven't approved, or have changed since
 workroom create --skip-setup
 ```
 
 **Pass:** the first three exit 3 with `NeedsTheUser`, saying to ask you to do it in the app or your
 own terminal, and change nothing: `workroom trust status` (which runs under the agent) is as
-before, and the workroom and the project are still in the sidebar. Both `--pretend` runs work,
-printing what they would remove, and remove nothing. The plain `create` exits 3 with
+before, and the workroom and the project are still in the sidebar. Both `--pretend` runs succeed
+(`delete-project`'s with `"ok": true`), saying what they would remove, and remove nothing. The plain `create` exits 3 with
 `NeedsTheUser` and makes no workroom; `create --skip-setup` makes one without running the script.
 Delete that workroom in the app afterwards. In your own terminal, outside any agent,
 `workroom trust` asks you as it always has.

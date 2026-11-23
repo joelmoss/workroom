@@ -173,6 +173,57 @@ verdict() {
   fi
 }
 
+# runtime_up <cli>: whether that runtime answers, as test-linux.sh asks: its CLI on PATH is not
+# enough, since Docker's daemon or `container`'s system service may be stopped.
+runtime_up() {
+  command -v "$1" >/dev/null 2>&1 || return 1
+  case "$(basename "$1")" in
+    container) "$1" system status >/dev/null 2>&1 ;;
+    *) "$1" info >/dev/null 2>&1 ;;
+  esac
+}
+
+# docker_images_labelled <run>: `<id>\t<its workroom.test-run label>` for each image Docker's
+# label filter picks, read back with `image inspect`, since `docker images --format` has no
+# `.Label` (only `docker ps` does). The listing's errors show: a cleanup that can't list removes
+# nothing, and says why.
+docker_images_labelled() {
+  local id
+  for id in $(docker images -a -q --no-trunc --filter "label=workroom.test-run=$1" | sort -u); do
+    printf '%s\t%s\n' "$id" \
+      "$(docker image inspect --format '{{index .Config.Labels "workroom.test-run"}}' "$id")"
+  done
+}
+
+# cleanup: removes what carries this run's label (RUN_ID), from Docker when CLEAN_DOCKER=1 and
+# from Apple's `container` when CLEAN_APPLE=1, each only when it is running.
+RUN_ID="" CLEAN_DOCKER=0 CLEAN_APPLE=0
+cleanup() {
+  local id
+  [ -n "$RUN_ID" ] || return 0
+  if [ "$CLEAN_DOCKER" = 1 ] && runtime_up docker; then
+    for id in $(docker ps -a --filter "label=workroom.test-run=$RUN_ID" \
+      --format '{{.ID}}	{{.Label "workroom.test-run"}}' | ours docker "$RUN_ID"); do
+      echo "remote-tests: removing this run's container $id" >&2
+      docker rm --force --volumes "$id" >/dev/null || true
+    done
+    for id in $(docker_images_labelled "$RUN_ID" | ours docker "$RUN_ID"); do
+      echo "remote-tests: removing this run's image $id" >&2
+      docker rmi --force "$id" >/dev/null || true
+    done
+  fi
+  if [ "$CLEAN_APPLE" = 1 ] && runtime_up container; then
+    for id in $(container list --all --format json | ours apple-containers "$RUN_ID"); do
+      echo "remote-tests: removing this run's container $id" >&2
+      container delete --force "$id" >/dev/null || true
+    done
+    for id in $(container image list --format json | ours apple-images "$RUN_ID"); do
+      echo "remote-tests: removing this run's image $id" >&2
+      container image delete --force "$id" >/dev/null || true
+    done
+  fi
+}
+
 ROWS=""
 failed_rows=0
 
@@ -231,6 +282,20 @@ case "${1:-}" in
     ours "$@"
     exit
     ;;
+  clean)
+    # clean <run> <docker|apple>...: the cleanup a run does on its way out, for that run's name.
+    RUN_ID="${2:?usage: remote-tests.sh clean <run> <docker|apple>...}"
+    shift 2
+    for runtime in "$@"; do
+      case "$runtime" in
+        docker) CLEAN_DOCKER=1 ;;
+        apple) CLEAN_APPLE=1 ;;
+        *) echo "remote-tests: unknown runtime '$runtime'" >&2; exit 2 ;;
+      esac
+    done
+    cleanup
+    exit
+    ;;
   "") ;;
   *)
     echo "usage: remote-tests.sh | remote-tests.sh counts <kind> <log> [class] | remote-tests.sh verdict <status> [passed failed skipped] | remote-tests.sh ours <listing> <run>" >&2
@@ -275,16 +340,6 @@ SUITES="$ORDERED"
 # --- Runtimes, before anything is built ---
 
 FIXTURE_RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
-
-# runtime_up <cli>: whether that runtime answers, as test-linux.sh asks: its CLI on PATH is not
-# enough, since Docker's daemon or `container`'s system service may be stopped.
-runtime_up() {
-  command -v "$1" >/dev/null 2>&1 || return 1
-  case "$(basename "$1")" in
-    container) "$1" system status >/dev/null 2>&1 ;;
-    *) "$1" info >/dev/null 2>&1 ;;
-  esac
-}
 
 # How to start one, for the error.
 runtime_hint() {
@@ -426,34 +481,8 @@ LOGS="$(mktemp -d "${TMPDIR:-/tmp}/wr-remote-tests.XXXXXX")"
 # run skips it, so on the way out, Ctrl-C included, whatever still carries this run's label goes.
 # run.sh cleans up the ssh fixture and what was made from it on its own.
 RUN_ID="remote-tests-$$-$(date +%s)"
-CLEAN_DOCKER=0 CLEAN_APPLE=0
 case " $SUITES " in *" docker-containers "*) CLEAN_DOCKER=1 ;; esac
 case " $SUITES " in *" apple-containers "* | *" host-drivers "*) CLEAN_APPLE=1 ;; esac
-cleanup() {
-  local id
-  if [ "$CLEAN_DOCKER" = 1 ] && runtime_up docker; then
-    for id in $(docker ps -a --filter "label=workroom.test-run=$RUN_ID" \
-      --format '{{.ID}}	{{.Label "workroom.test-run"}}' 2>/dev/null | ours docker "$RUN_ID"); do
-      echo "remote-tests: removing this run's container $id" >&2
-      docker rm --force --volumes "$id" >/dev/null 2>&1 || true
-    done
-    for id in $(docker images -a --filter "label=workroom.test-run=$RUN_ID" \
-      --format '{{.ID}}	{{.Label "workroom.test-run"}}' 2>/dev/null | ours docker "$RUN_ID"); do
-      echo "remote-tests: removing this run's image $id" >&2
-      docker rmi --force "$id" >/dev/null 2>&1 || true
-    done
-  fi
-  if [ "$CLEAN_APPLE" = 1 ] && runtime_up container; then
-    for id in $(container list --all --format json 2>/dev/null | ours apple-containers "$RUN_ID"); do
-      echo "remote-tests: removing this run's container $id" >&2
-      container delete --force "$id" >/dev/null 2>&1 || true
-    done
-    for id in $(container image list --format json 2>/dev/null | ours apple-images "$RUN_ID"); do
-      echo "remote-tests: removing this run's image $id" >&2
-      container image delete --force "$id" >/dev/null 2>&1 || true
-    done
-  fi
-}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM

@@ -188,6 +188,29 @@ same "apple images: this run's only" \
 same "apple: unreadable listing, nothing" \
   "$(printf 'not json' | bash "$DIR/remote-tests.sh" ours apple-containers "$run")" ""
 
+# The cleanup itself, against a stub `docker` that answers as the real one does: `ps --format` with
+# each container's label, `images -q` with ids only (its --format has no .Label), and `image
+# inspect` with an image's label. Whatever the filter let through, only this run's go.
+mkdir -p "$TMP/clean-bin"
+cat >"$TMP/clean-bin/docker" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+"info "*) exit 0 ;;
+"ps "*) printf 'c-ours\t$run\nc-theirs\tremote-tests-999-456\n' ;;
+"images "*) printf 'sha256:i-ours\nsha256:i-theirs\nsha256:i-ours\n' ;;
+"image inspect")
+  for last in "\$@"; do :; done
+  case "\$last" in *i-ours) echo "$run" ;; *) echo "remote-tests-999-456" ;; esac ;;
+"rm "* | "rmi "*) for last in "\$@"; do :; done; echo "\$1 \$last" >>"$TMP/removed" ;;
+*) echo "stub docker: unexpected \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$TMP/clean-bin/docker"
+: >"$TMP/removed"
+PATH="$TMP/clean-bin:$PATH" bash "$DIR/remote-tests.sh" clean "$run" docker 2>/dev/null
+same "cleanup removes this run's container and image, once each" "$(tr '\n' ' ' <"$TMP/removed")" \
+  "rm c-ours rmi sha256:i-ours "
+
 # --- Suite names and runtimes, before anything is built ---
 
 mkdir -p "$TMP/bin"
