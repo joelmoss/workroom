@@ -63,7 +63,7 @@ jobs:
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
 
-      - name: Lint (swift-format --strict)
+      - name: Lint (swift-format --strict, check-main-actor-fs.py)
         run: make app-lint
 
       # The app bundles `workroomd`, and the Debug build bundles the Linux daemons too (#227),

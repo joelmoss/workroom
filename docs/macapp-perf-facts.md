@@ -85,6 +85,22 @@ The work per title event is small. Measured 2026-10-18 on an Apple-silicon Mac, 
 `ToolLogo-<id>` asset, so production never misses. A registry entry added without its asset makes
 every title event for that tool pay the miss.
 
+## No synchronous file-system call on the main actor in the git and inspector code
+
+A `stat`, `realpath` or directory read on a stalled network mount blocks its thread until the
+kernel gives up, and on the main actor that freezes every window. `RepositoryLocation.local`
+resolves on GCD (`runBlocking`), so it never blocks the main actor, but awaiting it has no timeout.
+On #812 Codex needed three review rounds to find these calls.
+`make app-lint` (and so CI's `app` job) runs `macapp/Scripts/check-main-actor-fs.py`, which flags
+`realpath(`, `.fileExists(`, `.attributesOfItem(`, `.contentsOfDirectory(`, `.resourceValues(`,
+`resolvingSymlinksInPath`, `RepositoryLocation.local(` and `canonicalPath(` under
+`Core/VersionControl` and `Core/AppShell`. The fix is to run the call inside a
+`GitRepositoryProbe.blockingRead` closure (`boundedRead` for async work, `localLocation` for a
+repository location), off the main actor under a timeout. The only other way through is an entry in
+`macapp/Scripts/main-actor-fs-allowlist.txt` with a one-line reason. A `nonisolated` function gets
+no exemption, because a synchronous one runs on its caller's actor. The allowlist tags the main-actor
+calls that predate the check as `grandfathered`.
+
 ## Reading the engine's source
 
 `vcs/scripts/build-ghostty-vt.sh` keeps the pinned engine's source at
