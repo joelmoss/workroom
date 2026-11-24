@@ -98,6 +98,18 @@ final class VCSStatusService: ObservableObject {
     @MainActor (@escaping @MainActor ([String], Bool) -> Void) -> any RepositoryWatching = {
       HostFileWatcher(onChange: $0)
     }
+  /// How long a followed repository's full probe waits before it forks `git` and `gh`: the selected
+  /// workroom's coalesce window, so arrow-keying past terminals in other repositories probes none of
+  /// them (review of #807, finding 5). Tests set 0.
+  @ObservationIgnored var followedProbeDebounce: TimeInterval = 0.3
+  /// The home folder, canonical, which no followed repository's tree watch covers
+  /// (`HostFileWatcher.isTooBroadToWatch`). A seam for tests.
+  @ObservationIgnored var watchHome: String = VCSStatusService.canonicalPath(NSHomeDirectory())
+  /// Resolves a path's symlinks (`canonicalPath`). A seam for tests, which count it.
+  @ObservationIgnored var canonicalise: (String) -> String = VCSStatusService.canonicalPath
+  /// The registered project roots and local workrooms by canonical path, and the projects it was
+  /// built from: rebuilt when they change, so a status read never touches the file system.
+  @ObservationIgnored var registeredIndex: (projects: [Project], ids: [String: SidebarID])?
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check; refreshed by `refreshGitHubCLI`. Drives the Pull

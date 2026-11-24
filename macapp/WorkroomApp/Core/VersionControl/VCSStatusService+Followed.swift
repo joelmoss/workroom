@@ -55,22 +55,32 @@ extension VCSStatusService {
 
   /// The registered project root or local workroom whose path is `root`, compared canonically.
   func registeredSidebarID(forRepositoryRoot root: String) -> SidebarID? {
-    let root = Self.canonicalPath(root)
-    for project in projectStore.projects {
-      if Self.canonicalPath(project.path) == root { return .root(project: project.id) }
-      for workroom in project.workrooms where !workroom.isRemote {
-        if Self.canonicalPath(workroom.path) == root {
-          return .workroom(project: project.id, name: workroom.name)
-        }
-      }
-    }
-    return nil
+    registeredSidebarID(forCanonicalRoot: canonicalise(root))
   }
 
-  /// A followed repository's status: its registered row's when it has one, else its own.
+  /// The registered row whose canonical path is `root`, already canonical (git names a repository
+  /// by its real path). Reads an index of the registered paths, built once per change to the
+  /// projects, so the inspector's reads run no `realpath` (review of #807, finding 4).
+  private func registeredSidebarID(forCanonicalRoot root: String) -> SidebarID? {
+    let projects = projectStore.projects
+    if let index = registeredIndex, index.projects == projects { return index.ids[root] }
+    var ids: [String: SidebarID] = [:]
+    // Reversed, so the first registration of a path wins, as the scan this replaced did.
+    for project in projects.reversed() {
+      for workroom in project.workrooms.reversed() where !workroom.isRemote {
+        ids[canonicalise(workroom.path)] = .workroom(project: project.id, name: workroom.name)
+      }
+      ids[canonicalise(project.path)] = .root(project: project.id)
+    }
+    registeredIndex = (projects, ids)
+    return ids[root]
+  }
+
+  /// A followed repository's status: its registered row's when it has one, else its own. `root` is
+  /// git's, so canonical already: a read touches no file system.
   func status(forFollowedRoot root: String) -> WorkroomStatus? {
-    if let sid = registeredSidebarID(forRepositoryRoot: root) { return workroomStatuses[sid] }
-    return followedStatuses[Self.canonicalPath(root)]
+    if let sid = registeredSidebarID(forCanonicalRoot: root) { return workroomStatuses[sid] }
+    return followedStatuses[root]
   }
 
   /// Whether some window follows `root`.
@@ -94,8 +104,8 @@ extension VCSStatusService {
       }
       startWatching(key)
     }
-    // A window coming to it re-reads it, as selecting a workroom does.
-    refreshFollowedStatus(key, gitHub: true)
+    // A window coming to it re-reads it, as selecting a workroom does, after the same debounce.
+    refreshFollowedStatus(key, gitHub: true, debounced: true)
   }
 
   /// A window's inspector stops following `root`. The last one out stops its watch and drops its
@@ -117,14 +127,21 @@ extension VCSStatusService {
 
   private func startWatching(_ key: String) {
     guard probesRepositories else { return }
-    let tree = makeRepositoryWatcher { [weak self] paths, overflow in
-      self?.handleFollowedRepositoryChange(key, paths: paths, overflow: overflow)
+    let outside = Self.gitDirectoryIsOutsideTree(key)
+    // A repository at the home folder (dotfiles) or a disk's root is a tree that never rests
+    // (`~/Library`): watch only its git directory, so a commit or `git switch` still lands, and a
+    // save shows on the next probe or Refresh (review of #807, finding 3).
+    let broad = HostFileWatcher.isTooBroadToWatch(key, home: watchHome)
+    if !(broad && outside) {
+      let tree = makeRepositoryWatcher { [weak self] paths, overflow in
+        self?.handleFollowedRepositoryChange(key, paths: paths, overflow: overflow)
+      }
+      tree.start(path: broad ? key + "/.git" : key)
+      followedRepositories[key]?.watchers.append(tree)
     }
-    tree.start(path: key)
-    followedRepositories[key]?.watchers.append(tree)
     // A linked worktree's `.git` is a file naming a git directory inside its main repository, which
     // holds the worktree's HEAD and the refs a commit or `git switch` moves.
-    guard Self.gitDirectoryIsOutsideTree(key) else { return }
+    guard outside else { return }
     Task { [weak self] in
       let r = await StatusCommandRunner().run(
         "git",
@@ -153,23 +170,37 @@ extension VCSStatusService {
 
   /// Something changed under a followed repository: re-read its local status (a save fires no `gh`
   /// call, as for the selected workroom), and tell the windows following it. `overflow` means the
-  /// paths are incomplete, so it counts as a change to the git directory too.
+  /// paths are incomplete, so it counts as a change to the git directory too. A moved ref (a
+  /// `git switch`, a commit, a push or fetch) asks GitHub again too, after the probe's debounce:
+  /// the branch's pull request and CI may be another's now (review of #807, finding 2).
   func handleFollowedRepositoryChange(_ root: String, paths: [String], overflow: Bool) {
     let key = Self.canonicalPath(root)
     guard followedRepositories[key] != nil else { return }
     if !overflow, !paths.isEmpty, paths.allSatisfy(AppStore.isJJInternalPath) { return }
+    let incomplete = overflow || paths.isEmpty
     refreshFollowedStatus(key, gitHub: false)
-    let metadata =
-      overflow || paths.isEmpty || paths.contains { $0.split(separator: "/").contains(".git") }
+    if incomplete || paths.contains(where: Self.isGitRefPath) {
+      refreshFollowedStatus(key, gitHub: true, debounced: true)
+    }
+    let metadata = incomplete || paths.contains { $0.split(separator: "/").contains(".git") }
     for window in statusWindows {
       window.followedRepositoryDidChange(root: key, metadata: metadata)
     }
   }
 
+  /// Whether `path` is one of a git directory's refs: `HEAD`, `FETCH_HEAD`, `packed-refs`, or under
+  /// `refs/`. Not `index`, which a `git status` itself can rewrite.
+  nonisolated static func isGitRefPath(_ path: String) -> Bool {
+    let parts = path.split(separator: "/")
+    guard let git = parts.lastIndex(of: ".git"), git + 1 < parts.count else { return false }
+    return ["HEAD", "FETCH_HEAD", "packed-refs", "refs"].contains(parts[git + 1])
+  }
+
   /// Re-read a followed repository's local status and, with `gitHub`, its CI and pull request.
   /// Cancel-and-replace within its lane (local-only, or full), so the latest change wins; a result
-  /// for a repository no window follows any more is dropped.
-  func refreshFollowedStatus(_ root: String, gitHub: Bool) {
+  /// for a repository no window follows any more is dropped. `debounced` waits
+  /// `followedProbeDebounce` first, so a burst (or a repository passed by) forks nothing.
+  func refreshFollowedStatus(_ root: String, gitHub: Bool, debounced: Bool = false) {
     let key = Self.canonicalPath(root)
     guard probesRepositories, var hold = followedRepositories[key] else { return }
     let registered = registeredSidebarID(forRepositoryRoot: key)
@@ -177,7 +208,12 @@ extension VCSStatusService {
     if let registered, isCreating(registered) { return }
     if isCommittingProject(item?.sharedLocation) { return }
     let resolver = statusResolver
+    let debounce = debounced ? followedProbeDebounce : 0
     let task = Task { [weak self] in
+      if debounce > 0 {
+        try? await Task.sleep(for: .seconds(debounce))
+        if Task.isCancelled { return }
+      }
       let fresh =
         if let item {
           await resolver.working.resolve(item: item)

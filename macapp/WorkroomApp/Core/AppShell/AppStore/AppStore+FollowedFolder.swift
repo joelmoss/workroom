@@ -111,7 +111,6 @@ extension AppStore {
       let state = FollowedFolderState(
         target: target, folder: FollowedFolder(folder: folder, repository: repository))
       if self.setFollowedFolder(state) {
-        self.holdFollowedRepository()
         self.focusHistoryIfShown()
         self.focusRemoteStateIfShown()
       }
@@ -128,7 +127,8 @@ extension AppStore {
     followedRepositoryCache[request.folder] = nil
     if let root {
       followedRepositoryCache = followedRepositoryCache.filter { _, repository in
-        repository.flatMap { $0 }.map { VCSStatusService.canonicalPath($0.root) != root } ?? true
+        // git names a root by its real path: compared as it is, with no `realpath` per entry.
+        repository.flatMap { $0 }.map { $0.root != root } ?? true
       }
     }
     followedFolderRequest = nil
@@ -152,14 +152,15 @@ extension AppStore {
     if let root { vcsStatus.follow(root) }
   }
 
-  /// Something changed under the repository this window follows: re-read its branch and root, and
-  /// for a change to its git directory (a commit, a ref moved), its History, as a workroom's git
+  /// Something changed in the git directory of the repository this window follows (a commit, a
+  /// ref moved, `.git` removed): re-read its branch and root, and its History, as a workroom's git
   /// directory watch does (`handleRootBranchChange`). A save in the tree reloads Changes only
-  /// (through the status), as for a workroom.
+  /// (through the status), as for a workroom: it can move neither the branch nor the root (review
+  /// of #807, finding 3).
   func followedRepositoryDidChange(root: String, metadata: Bool) {
-    guard heldFollowedRepository == root else { return }
+    guard metadata, heldFollowedRepository == root else { return }
     reresolveFollowedFolder(forgetting: root)
-    guard metadata, inspectorIsVisible else { return }
+    guard inspectorIsVisible else { return }
     if historySectionShown { commitHistory.refresh() }
     if remoteToolbarShown { remoteState.refresh(force: true) }
   }
@@ -175,7 +176,6 @@ extension AppStore {
         target: target,
         folder: FollowedFolder(folder: folder, repository: nil, repositoryUndetermined: true))
       if setFollowedFolder(state) {
-        holdFollowedRepository()
         focusHistoryIfShown()
         focusRemoteStateIfShown()
       }
@@ -203,10 +203,13 @@ extension AppStore {
     await followedFolderResolved()
   }
 
-  /// Publish `state` only when it differs, so an unchanged resolve re-renders nothing.
+  /// Publish `state` only when it differs, so an unchanged resolve re-renders nothing, and hold
+  /// the repository it shows: every way the subject changes (a cached folder shown at once, a
+  /// resolve landing) follows what it shows (review of #807, finding 1).
   private func setFollowedFolder(_ state: FollowedFolderState) -> Bool {
     guard followedFolderState != state else { return false }
     followedFolderState = state
+    holdFollowedRepository()
     return true
   }
 
