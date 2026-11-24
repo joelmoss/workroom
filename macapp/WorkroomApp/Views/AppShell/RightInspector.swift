@@ -88,7 +88,10 @@ struct RightInspector: View {
           full[sub.storeIndex] = shown[index]
         }
         store.updateInspectorSizeWeights(full)
-      }
+      },
+      // A followed repository's Changes and Pull Request keep their scroll per repository (#810).
+      scrollKeys: subs.map { store.inspectorMemoryKey(for: $0) },
+      scrollMemory: store.inspectorScrollMemory
     )
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .confirmationDialog(

@@ -148,6 +148,76 @@ final class InspectorPaneViewController: NSViewController {
     bodyHost.rootView = body.hostedRoot(glass: glass)
     (fillsBody ? bodyHost.view : bodyScroll).isHidden = collapsed
   }
+
+  // MARK: Scroll memory (#810)
+
+  private var scrollKey: String?
+  private var scrollMemory: InspectorScrollMemory?
+  /// The offset a return to `scrollKey` still has to reach: its content may arrive after the switch
+  /// (a status read), so each document resize tries again until it fits or the user scrolls.
+  private var pendingOffset: CGFloat?
+  /// Where the last restore put the clip view, to tell the user's own scroll from the restore's.
+  private var restoredY: CGFloat?
+  private var observesScroll = false
+
+  /// Remember a scroll-mode body's offset under `key` as the user scrolls, and restore the one
+  /// remembered for it when `key` changes. A nil key (a workroom's inspector) leaves the scroll view
+  /// alone. A fill-mode body scrolls itself (`inspectorScrollMemory(key:in:)`).
+  func remembersScroll(under key: String?, in memory: InspectorScrollMemory?) {
+    guard !fillsBody, key != scrollKey else { return }
+    _ = view
+    scrollKey = key
+    scrollMemory = memory
+    observeScrollIfNeeded()
+    guard let key, let memory else {
+      pendingOffset = nil
+      return
+    }
+    pendingOffset = memory.offset(under: key) ?? 0
+    applyPendingOffset()
+  }
+
+  private func observeScrollIfNeeded() {
+    guard !observesScroll else { return }
+    observesScroll = true
+    let clip = bodyScroll.contentView
+    clip.postsBoundsChangedNotifications = true
+    bodyHost.view.postsFrameChangedNotifications = true
+    let center = NotificationCenter.default
+    center.addObserver(
+      self, selector: #selector(clipBoundsDidChange(_:)),
+      name: NSView.boundsDidChangeNotification, object: clip)
+    center.addObserver(
+      self, selector: #selector(documentFrameDidChange(_:)),
+      name: NSView.frameDidChangeNotification, object: bodyHost.view)
+  }
+
+  @objc private func clipBoundsDidChange(_ notification: Notification) {
+    let y = bodyScroll.contentView.bounds.origin.y
+    if pendingOffset != nil {
+      // The user scrolled before the restore could land: theirs wins.
+      guard let restoredY, abs(y - restoredY) > 0.5 else { return }
+      pendingOffset = nil
+    }
+    guard let scrollKey else { return }
+    scrollMemory?.remember(y, under: scrollKey)
+  }
+
+  @objc private func documentFrameDidChange(_ notification: Notification) {
+    applyPendingOffset()
+  }
+
+  /// Scroll as near `pendingOffset` as the content allows, without animating; done once reached.
+  private func applyPendingOffset() {
+    guard let target = pendingOffset else { return }
+    let clip = bodyScroll.contentView
+    let limit = max(0, bodyHost.view.frame.height - clip.bounds.height)
+    let y = min(target, limit)
+    restoredY = y
+    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+    bodyScroll.reflectScrolledClipView(clip)
+    if y >= target { pendingOffset = nil }
+  }
 }
 
 // MARK: - Split container
@@ -492,6 +562,11 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   /// Whether the fill-mode panes draw overlay scrollers whatever the system setting
   /// (`InspectorPaneViewController.forcesOverlayScrollers`).
   var forcesOverlayScrollers = false
+  /// What each pane's scroll position is remembered under (#810), nil for none; empty for no
+  /// memory at all.
+  var scrollKeys: [String?] = []
+  /// Where those positions are remembered.
+  var scrollMemory: InspectorScrollMemory? = nil
 
   func makeNSViewController(context: Context) -> InspectorSplitContainerController {
     let panes = makePanes()
@@ -554,6 +629,9 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     for (index, pane) in panes.enumerated() {
       pane.setContent(
         header: headers[index], body: bodies[index], collapsed: collapsed[index], glass: glass)
+      if index < scrollKeys.count {
+        pane.remembersScroll(under: scrollKeys[index], in: scrollMemory)
+      }
     }
   }
 

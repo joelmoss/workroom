@@ -139,6 +139,7 @@ struct HistoryPanel: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .inspectorScrollMemory(key: inputs.scrollMemoryKey, in: inputs.scrollMemory)
   }
 
   private var loadingIndicator: some View {
@@ -161,6 +162,11 @@ struct HistoryPanelInputs {
   /// The folder a terminal's inspector follows, when it is in no git repository (#805): the pane
   /// says so instead of reading a log. Nil for a workroom, a project, or a folder in a repository.
   var notARepository: String? = nil
+  /// What the list's scroll position is remembered under for a followed repository (#810); nil
+  /// for a workroom or project, whose History remembers none.
+  var scrollMemoryKey: String? = nil
+  /// Where it is remembered: the window's.
+  var scrollMemory: InspectorScrollMemory? = nil
   /// The commit id of the focused changeset tab, or `nil`.
   ///
   /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
@@ -199,6 +205,8 @@ struct HistoryPanelAdapter: View {
       hasTarget: store.inspectorSubject != .nothing,
       activationKey: store.inspectorSubject.repositoryKey + "\u{1F}\(store.historySectionShown)",
       notARepository: notARepository,
+      scrollMemoryKey: store.inspectorMemoryKey(for: .history),
+      scrollMemory: store.inspectorScrollMemory,
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
         FocusedTabSelection.current(store: store)?.changesetCommitID
