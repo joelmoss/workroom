@@ -10,6 +10,8 @@ The repository is resolved again on every folder or focus change. The version-co
 
 Each window's inspector follows only that window's selection. The Quick Terminal, whose terminals live in its panel, never changes any window's inspector, and its own row keeps the old behaviour. An `ssh` inside the terminal changes nothing: libghostty drops a foreign host's folder reports, so the last folder on this Mac stands, and standalone terminals and groups stay this Mac's only (ADR 0077). A repository that is also a registered workroom's is shown in place; following it never changes the selection. A Terminals-section row still has no changes badge.
 
+A followed repository takes the Changes actions a workroom has: commit, and the toolbar's fetch, push and pull. The repository router, which refuses a write to a local repository nothing registered, holds a registration for a followed repository while some window follows it and drops it when the last one stops (a registered workroom's or project's own registration is untouched). A write addresses the repository it was started for, by its root: if the shell has moved to another repository since, the write lands where it began or is refused, never in the new one. Its pull request's actions stay read-only.
+
 What does not change from ADR 0077: these targets still have no project, branch, worktree, run commands or host of their own. The repository belongs to the folder the shell is in, not to the target, so it changes as the shell moves.
 
 Rejected: pointing a standalone terminal or group at a repository by hand. The shell's folder already says where the user is working, and a second, manual answer could disagree with it.
