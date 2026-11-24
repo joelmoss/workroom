@@ -249,7 +249,10 @@ extension VCSStatusService {
     guard let location = try? await RepositoryLocation.local(root) else { return nil }
     var shared = location
     let path = location.path
-    if (try? await runBlocking({ gitDirectoryIsOutsideTree(path) })) == true {
+    // Bounded and joined with the watch setup's stat of the same `.git` (`gitFileReadKey`).
+    let outside = await GitRepositoryProbe.blockingRead(
+      gitFileReadKey(path), timeout: 3, { gitDirectoryIsOutsideTree(path) })
+    if outside == true {
       let r = await StatusCommandRunner().run(
         "git",
         GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -356,32 +359,34 @@ extension VCSStatusService {
   }
 
   private func startWatching(_ key: String) {
-    let outside = Self.gitDirectoryIsOutsideTree(key)
+    guard let hold = followedRepositories[key]?.id else { return }
     // A repository at the home folder (dotfiles) or a disk's root is a tree that never rests
     // (`~/Library`): watch only its git directory, so a commit or `git switch` still lands, and a
     // save shows on the next probe or Refresh (review of #807, finding 3).
     let broad = HostFileWatcher.isTooBroadToWatch(key, home: watchHome)
-    if !(broad && outside) {
-      let tree = makeRepositoryWatcher { [weak self] paths, overflow in
-        self?.handleFollowedRepositoryChange(key, paths: paths, overflow: overflow)
-      }
-      tree.start(path: broad ? key + "/.git" : key)
-      followedRepositories[key]?.watchers.append(tree)
-    }
-    // A linked worktree's `.git` is a file naming a git directory inside its main repository, which
-    // holds the worktree's HEAD and the refs a commit or `git switch` moves.
-    guard outside, let hold = followedRepositories[key]?.id else { return }
+    if !broad { watchFollowedTree(key, at: key) }
+    let (stat, timeout) = (followedGitFileStat, followedStatTimeout)
     followedWatchSetups[hold] = Task { [weak self] in
       defer { self?.followedWatchSetups[hold] = nil }
+      // Whether `.git` is a file: a stat, which a stalled network mount blocks, so it is read off
+      // the main actor, bounded and joined (Codex on #812). One that can't tell is taken as a
+      // `.git` directory's, as a stat that fails is.
+      let outside =
+        await GitRepositoryProbe.blockingRead(
+          Self.gitFileReadKey(key), timeout: timeout, { stat(key) }) ?? false
+      // Let go of while it ran, and perhaps followed again: that hold sets up its own watch.
+      guard let self, self.followedRepositories[key]?.id == hold else { return }
+      if broad, !outside { self.watchFollowedTree(key, at: key + "/.git") }
+      // A linked worktree's `.git` is a file naming a git directory inside its main repository,
+      // which holds the worktree's HEAD and the refs a commit or `git switch` moves.
+      guard outside else { return }
       let r = await StatusCommandRunner().run(
         "git",
         GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
         in: key, timeout: 3)
       let directory = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
       // Let go of while git ran, and perhaps followed again: that hold sets up its own watch.
-      guard r.ok, !directory.isEmpty, let self,
-        self.followedRepositories[key]?.id == hold
-      else { return }
+      guard r.ok, !directory.isEmpty, self.followedRepositories[key]?.id == hold else { return }
       let metadata = self.makeRepositoryWatcher { [weak self] _, _ in
         self?.handleFollowedRepositoryChange(key, paths: [], overflow: true)
       }
@@ -390,12 +395,27 @@ extension VCSStatusService {
     }
   }
 
-  /// Wait for every linked worktree's git-directory watch being set up. For tests.
+  /// Watch `path` for the followed repository at `key`: its tree, or only its git directory.
+  private func watchFollowedTree(_ key: String, at path: String) {
+    let tree = makeRepositoryWatcher { [weak self] paths, overflow in
+      self?.handleFollowedRepositoryChange(key, paths: paths, overflow: overflow)
+    }
+    tree.start(path: path)
+    followedRepositories[key]?.watchers.append(tree)
+  }
+
+  /// The `blockingRead` key of `root`'s `.git` stat, which the watch setup and the registration
+  /// share, so a stalled mount holds one GCD thread for both.
+  nonisolated private static func gitFileReadKey(_ root: String) -> String {
+    "gitfile\u{0}\(root)"
+  }
+
+  /// Wait for every followed repository's watch being set up. For tests.
   func followedWatchesSettled() async {
     while let setup = followedWatchSetups.values.first { await setup.value }
   }
 
-  nonisolated private static func gitDirectoryIsOutsideTree(_ root: String) -> Bool {
+  nonisolated static func gitDirectoryIsOutsideTree(_ root: String) -> Bool {
     var isDirectory: ObjCBool = false
     let exists = FileManager.default.fileExists(
       atPath: root + "/.git", isDirectory: &isDirectory)

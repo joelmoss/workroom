@@ -134,6 +134,14 @@ final class VCSStatusService: ObservableObject {
   /// The linked-worktree git-directory watches being set up (`startWatching`), by hold, each until
   /// it lands.
   @ObservationIgnored var followedWatchSetups: [UUID: Task<Void, Never>] = [:]
+  /// Whether a followed repository's `.git` is a file (a linked worktree's, naming a git directory
+  /// elsewhere): a stat, which a stalled network mount blocks, so it runs off the main actor under
+  /// `followedStatTimeout` (Codex on #812). A seam for tests.
+  @ObservationIgnored var followedGitFileStat: @Sendable (String) -> Bool = {
+    VCSStatusService.gitDirectoryIsOutsideTree($0)
+  }
+  /// How long `followedGitFileStat` may take before the watch setup goes on without it.
+  @ObservationIgnored var followedStatTimeout: TimeInterval = 3
   /// Makes a watch on a followed repository's tree, or on a linked worktree's git directory. The
   /// host file watcher in the app; tests record it and drive the change handler themselves.
   @ObservationIgnored var makeRepositoryWatcher:

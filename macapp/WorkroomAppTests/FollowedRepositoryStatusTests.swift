@@ -902,4 +902,72 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     await status.followedRegistrationsSettled()
     await status.followedStatusSettled()
   }
+
+  /// A stat that never returns while its gate stands: a stalled SMB or NFS mount. `release` lets
+  /// it return at last, as the kernel giving up would, so no GCD thread outlives the test.
+  private final class StuckStat: Sendable {
+    private let gate = DispatchSemaphore(value: 0)
+    let calls = Mutex(0)
+    var stat: @Sendable (String) -> Bool {
+      { [self] _ in
+        calls.withLock { $0 += 1 }
+        _ = gate.wait(timeout: .now() + 10)
+        return false
+      }
+    }
+    func release() { gate.signal() }
+  }
+
+  /// Value: protects=a stalled mount never freezing the windows on a revisit (Codex on #812):
+  /// following a repository stats its `.git` off the main actor, under a bounded wait;
+  /// fails_when=`follow` (from `updateFollowedFolder`'s cached repository) runs the stat on the
+  /// main actor, or the watch setup waits on it unbounded; why_new=review;
+  /// seam=VCSStatusService follow + the stat seam (stuck); no_claim=a real network mount
+  func testAStuckStatNeverBlocksTheMainActor() async throws {
+    let status = makeStatus()
+    let stuck = StuckStat()
+    defer { stuck.release() }
+    status.followedGitFileStat = stuck.stat
+    status.followedStatTimeout = 0.2
+    let root = repo("app")
+    status.watchHome = root
+
+    let started = Date()
+    status.follow(root)
+    XCTAssertLessThan(Date().timeIntervalSince(started), 1, "follow returns at once")
+    await status.followedWatchesSettled()
+
+    XCTAssertEqual(stuck.calls.withLock { $0 }, 1, "the stat was asked, off the main actor")
+    XCTAssertNotNil(watcher(for: root + "/.git"), "the watch goes on without it")
+    status.unfollow(root)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
+
+  /// Value: protects=no watch for a hold let go of while its `.git` was stat'd (Codex on #812);
+  /// fails_when=a watch is installed once the stat returns though no window follows the
+  /// repository any more, or a hold taken afresh meanwhile gets the old one's watch as well as
+  /// its own; why_new=review; seam=VCSStatusService follow/unfollow + the stat seam (stuck);
+  /// no_claim=a real network mount
+  func testAHoldLetGoOfDuringAStuckStatGetsNoWatch() async throws {
+    let status = makeStatus()
+    let stuck = StuckStat()
+    status.followedGitFileStat = stuck.stat
+    let root = repo("app")
+    status.watchHome = root
+
+    status.follow(root)
+    status.unfollow(root)
+    stuck.release()
+    await status.followedWatchesSettled()
+    XCTAssertTrue(watchers.isEmpty, "nothing watches a repository no window follows")
+
+    status.followedGitFileStat = { _ in false }
+    status.follow(root)
+    await status.followedWatchesSettled()
+    XCTAssertEqual(watchers.filter { !$0.stopped }.map(\.path), [root + "/.git"])
+    status.unfollow(root)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
 }
