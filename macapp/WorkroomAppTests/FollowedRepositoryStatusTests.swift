@@ -1539,6 +1539,46 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     await status.followedStatusSettled()
   }
 
+  /// Value: protects=an unfollow's grace keeping a fresh follow's wait on the index (perf lanes 3
+  /// and 4 merged); fails_when=the grace drops the wait so the index landing finds nothing to
+  /// route, or the landing reads a repository no window follows, or the re-follow never reads it;
+  /// why_new=merge; seam=VCSStatusService follow + the canonicaliser (stalled); no_claim=the 10 s
+  /// figure
+  func testAFollowThatWaitsOnTheIndexKeepsWaitingThroughTheGrace() async throws {
+    let registered = repo("registered")
+    let other = repo("other")
+    let status = makeStatus()
+    await status.registeredIndexSettled()
+    let guarded = GuardedCanonicaliser(stalled: registered)
+    defer { guarded.release() }
+    status.canonicalise = guarded.canonicalise
+    status.registeredPathTimeout = 5
+    status.followedUnfollowGrace = 3600
+    projects.projects = [Project(path: registered, vcs: "git", workrooms: [])]
+    status.rebuildRegisteredIndex()
+
+    status.follow(other)
+    // A registration still running is let go of at once, grace or not.
+    await status.followedRegistrationsSettled()
+    let reads = countReads(status)
+    status.unfollow(other)
+    XCTAssertTrue(status.followedRootsAwaitingIndex.contains(other), "the grace keeps its wait")
+    guarded.release()
+    await status.registeredIndexSettled()
+    await status.followedStatusSettled()
+    XCTAssertTrue(status.followedRootsAwaitingIndex.isEmpty, "the landing routes it")
+    XCTAssertEqual(reads.count, 0, "nothing reads while no window follows it")
+
+    status.follow(other)
+    await status.followedStatusSettled()
+    XCTAssertEqual(reads.count, 1, "the re-follow reads it")
+    XCTAssertEqual(status.followedStatuses[other]?.changedFiles?.map(\.path), ["src/a.txt"])
+    status.followedUnfollowGrace = 0
+    status.unfollow(other)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
+
   /// Value: protects=Changes leaving "Checking…" once a commit ends, for a repository re-routed
   /// while it committed (offactor review N4); fails_when=the re-route's probe, held off by the
   /// commit, waits for a watch event; why_new=review; seam=VCSStatusService's commit marks + the
