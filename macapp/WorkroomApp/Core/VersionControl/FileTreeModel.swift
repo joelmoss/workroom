@@ -435,19 +435,39 @@ final class FileTreeModel: ObservableObject {
   private func startWatching(_ path: String) {
     let watcher = HostFileWatcher { [weak self] changed, overflow in
       guard let self else { return }
-      // A plain folder can be `~`, whose watch never rests: only a change in a listed directory
-      // re-reads it.
-      if self.isPlain {
-        if overflow || Self.touchesListed(changed, root: path, listed: Set(self.plainListings.keys))
-        {
-          self.reload()
-        }
-      } else if Self.isRelevantChange(changed, overflow: overflow) {
+      let listed = self.isPlain ? Set(self.plainListings.keys) : self.shownDirectories
+      if Self.shouldReload(
+        changed, overflow: overflow, root: path, plain: self.isPlain, listed: listed,
+        home: Self.home)
+      {
         self.reload()
       }
     }
     watcher.start(path: path)
     self.watcher = watcher
+  }
+
+  /// The home folder, canonical: a tree too broad to re-list on every change in it.
+  nonisolated static let home = VCSStatusService.canonicalPath(NSHomeDirectory())
+
+  /// The directories a repository's tree shows: its root, the followed subfolder, and what is
+  /// expanded (repository-relative, as `expanded` is).
+  private var shownDirectories: Set<String> { Set(expanded).union(["", subfolder]) }
+
+  /// Whether a watched change re-lists the tree at `root`. A plain folder can be `~`, whose watch
+  /// never rests, so only a change in a listed directory re-reads it; so too a repository at the
+  /// home folder or a disk's root (a dotfiles repository), whose whole-repository listing is the
+  /// costliest read there is (review of #807, finding 3). Any other repository re-lists on any
+  /// change outside its git directory.
+  nonisolated static func shouldReload(
+    _ changed: [String], overflow: Bool, root: String, plain: Bool, listed: Set<String>,
+    home: String
+  ) -> Bool {
+    if overflow { return true }
+    if plain || HostFileWatcher.isTooBroadToWatch(root, home: home) {
+      return touchesListed(changed, root: root, listed: listed)
+    }
+    return isRelevantChange(changed, overflow: false)
   }
 
   /// Whether any of `changed` (absolute paths, as the watch reports them) is an entry of a listed

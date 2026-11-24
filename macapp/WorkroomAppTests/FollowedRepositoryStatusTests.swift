@@ -32,12 +32,19 @@ final class FollowedRepositoryStatusTests: XCTestCase {
   private final class GitHubRunner: StatusCommandRunning, Sendable {
     private let real = StatusCommandRunner()
     private let onGitHub: Bool
+    /// The branch each `gh pr list` run asked about.
+    let pullRequestLists = Mutex<[String?]>([])
     init(onGitHub: Bool) { self.onGitHub = onGitHub }
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
       guard executable == "gh" else {
         return await real.run(executable, args, in: directory, timeout: timeout)
+      }
+      if args.prefix(2) == ["pr", "list"] {
+        let branch = args.firstIndex(of: "--head").map { args.index(after: $0) }
+          .flatMap { args.indices.contains($0) ? args[$0] : nil }
+        pullRequestLists.withLock { $0.append(branch) }
       }
       func ok(_ out: String) -> CommandResult {
         CommandResult(stdout: out, stderr: "", exitCode: 0, timedOut: false)
@@ -78,9 +85,18 @@ final class FollowedRepositoryStatusTests: XCTestCase {
 
   // MARK: Scaffold
 
-  private func makeStatus(onGitHub: Bool = false) -> VCSStatusService {
+  private var runner: GitHubRunner!
+
+  /// The branches `gh pr list` was asked about, in order.
+  private var pullRequestBranches: [String?] {
+    runner.pullRequestLists.withLock { $0 }
+  }
+
+  private func makeStatus(onGitHub: Bool = false, debounce: TimeInterval = 0) -> VCSStatusService {
     let status = VCSStatusService(projectStore: projects)
-    status.statusResolver = WorkroomStatusResolver(runner: GitHubRunner(onGitHub: onGitHub))
+    runner = GitHubRunner(onGitHub: onGitHub)
+    status.statusResolver = WorkroomStatusResolver(runner: runner)
+    status.followedProbeDebounce = debounce
     status.makeRepositoryWatcher = { [weak self] onChange in
       let watcher = RecordingWatcher(onChange: onChange)
       self?.watchers.append(watcher)
@@ -471,5 +487,172 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     guard case .followed(let followed) = store.inspectorSubject else { return XCTFail() }
     XCTAssertEqual(followed.repository?.root, plain)
     XCTAssertTrue(status.isFollowing(plain))
+  }
+
+  // MARK: Review of #807
+
+  /// Value: protects=a `cd` back to a folder seen before holding its repository (review of #807,
+  /// finding 1); fails_when=the cached folder shows its repository with no status and no watch, or
+  /// the repository left behind stays watched; why_new=review; seam=AppStore + VCSStatusService;
+  /// no_claim=the panels' rendering
+  func testACdBackToAFolderSeenBeforeFollowsItsRepository() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let one = repo("one")
+    let two = repo("two")
+
+    try await cd(store, tab, one)
+    try await cd(store, tab, folder("plain"))
+    try await cd(store, tab, one)
+
+    XCTAssertTrue(status.isFollowing(one))
+    XCTAssertEqual(store.heldFollowedRepository, one)
+    XCTAssertEqual(watcher(for: one)?.stopped, false, "the repository shown is watched")
+    XCTAssertEqual(changedPaths(store), ["src/a.txt"])
+
+    try await cd(store, tab, two)
+    try await cd(store, tab, one)
+
+    XCTAssertTrue(status.isFollowing(one))
+    XCTAssertFalse(status.isFollowing(two))
+    XCTAssertEqual(watcher(for: two)?.stopped, true, "the repository left behind is not watched")
+  }
+
+  /// Value: protects=Pull Request following a branch switched, committed or pushed in the terminal
+  /// (review of #807, finding 2); fails_when=a change to the repository's refs never asks GitHub
+  /// again, or a plain save does; why_new=review; seam=VCSStatusService change handler (gh
+  /// stubbed); no_claim=CI finishing on GitHub with nothing changed here
+  func testAMovedRefReProbesThePullRequestAndASaveDoesNot() async throws {
+    let status = makeStatus(onGitHub: true)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root)
+    let watch = try XCTUnwrap(watcher(for: root))
+    XCTAssertEqual(pullRequestBranches, ["main"])
+
+    try "saved\n".write(toFile: root + "/src/a.txt", atomically: true, encoding: .utf8)
+    watch.onChange([root + "/src/a.txt"], false)
+    watch.onChange([root + "/.git/index"], false)
+    await settle(store)
+    XCTAssertEqual(
+      pullRequestBranches, ["main"], "a save, and git's index write, ask GitHub nothing")
+
+    sh("git switch -q -c feature", in: root)
+    watch.onChange([root + "/.git/HEAD"], false)
+    await settle(store)
+    XCTAssertEqual(pullRequestBranches, ["main", "feature"])
+    XCTAssertEqual(status.status(for: store.inspectorSubject)?.pr?.number, 9)
+
+    watch.onChange([root + "/.git/refs/remotes/origin/feature"], false)
+    await settle(store)
+    XCTAssertEqual(pullRequestBranches, ["main", "feature", "feature"], "a push asks again")
+  }
+
+  /// Value: protects=a repository rooted at the home folder (a dotfiles repository) not being
+  /// watched as a tree (review of #807, finding 3); fails_when=the watch covers all of `~`, or the
+  /// repository's branch stops being watched; why_new=review; seam=VCSStatusService (watch
+  /// recorder); no_claim=the daemon's cost
+  func testARepositoryAtTheHomeFolderWatchesOnlyItsGitDirectory() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let home = repo("home")
+    status.watchHome = home
+
+    try await cd(store, tab, home + "/src")
+
+    XCTAssertNil(watcher(for: home), "the home folder's tree is not watched")
+    XCTAssertNotNil(watcher(for: home + "/.git"), "its git directory is")
+    XCTAssertEqual(changedPaths(store), ["src/a.txt"], "its status still reads on follow")
+  }
+
+  /// Value: the bound itself; fails_when=`/`, the home folder, `/Users` or a volume's root is
+  /// watched as a tree, or an ordinary folder isn't; why_new=review of #807, finding 3;
+  /// seam=pure function; no_claim=which folders a user keeps repositories in
+  func testTheWatchBoundRefusesTheHomeFolderTheDiskAndVolumes() {
+    let home = "/Users/me"
+    for root in ["/", "/Users", "/Users/me", "/Volumes/Backup"] {
+      XCTAssertTrue(HostFileWatcher.isTooBroadToWatch(root, home: home), root)
+    }
+    for root in ["/Users/me/dev/app", "/Volumes/Backup/app", "/private/tmp/x"] {
+      XCTAssertFalse(HostFileWatcher.isTooBroadToWatch(root, home: home), root)
+    }
+  }
+
+  /// Value: protects=a save re-reading the status only (review of #807, finding 3); fails_when=
+  /// every save in the tree re-resolves the folder in every window following it; why_new=review;
+  /// seam=AppStore resolve seam (counted); no_claim=FSEvents itself
+  func testASaveDoesNotReResolveTheFolder() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let resolves = Mutex(0)
+    let resolve = store.resolveFollowedRepository
+    store.resolveFollowedRepository = { folder in
+      resolves.withLock { $0 += 1 }
+      return await resolve(folder)
+    }
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root)
+    let watch = try XCTUnwrap(watcher(for: root))
+    let before = resolves.withLock { $0 }
+
+    watch.onChange([root + "/src/a.txt"], false)
+    await settle(store)
+    XCTAssertEqual(resolves.withLock { $0 }, before)
+
+    watch.onChange([root + "/.git/HEAD"], false)
+    await settle(store)
+    XCTAssertEqual(resolves.withLock { $0 }, before + 1, "a change to its git directory does")
+  }
+
+  /// Value: protects=the inspector's status reads touching no file system (review of #807,
+  /// finding 4); fails_when=a read canonicalises the registered paths again; why_new=review;
+  /// seam=VCSStatusService's canonicaliser (counted); no_claim=the first index build
+  func testReadingAFollowedStatusCanonicalisesNothing() async throws {
+    let root = repo("platform")
+    projects.projects = [
+      Project(
+        path: root, vcs: "git",
+        workrooms: [Workroom(name: "a", path: folder("wr"), vcsName: "workroom/a", warnings: [])])
+    ]
+    let status = makeStatus()
+    let counted = Mutex(0)
+    status.canonicalise = { path in
+      counted.withLock { $0 += 1 }
+      return VCSStatusService.canonicalPath(path)
+    }
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    try await cd(store, tab, root + "/src")
+    XCTAssertNotNil(status.status(for: store.inspectorSubject))
+    let before = counted.withLock { $0 }
+
+    for _ in 0..<10 { _ = status.status(for: store.inspectorSubject) }
+
+    XCTAssertEqual(counted.withLock { $0 }, before)
+    projects.projects.append(Project(path: folder("later"), vcs: "git", workrooms: []))
+    XCTAssertNotNil(status.status(for: store.inspectorSubject))
+    XCTAssertGreaterThan(counted.withLock { $0 }, before, "a new project rebuilds the index")
+  }
+
+  /// Value: protects=arrow-keying past terminals in different repositories (review of #807,
+  /// finding 5); fails_when=a repository followed for less than the selection's debounce forks
+  /// git and gh; why_new=review; seam=VCSStatusService follow/unfollow (gh stubbed);
+  /// no_claim=the folder's resolve
+  func testARepositoryPassedByQuicklyIsNotProbed() async throws {
+    let status = makeStatus(onGitHub: true, debounce: 0.3)
+    let one = repo("one", branch: "passed-by")
+    let two = repo("two")
+
+    status.follow(one)
+    status.unfollow(one)
+    status.follow(two)
+    await status.followedStatusSettled()
+
+    XCTAssertEqual(pullRequestBranches, ["main"], "only the repository stayed on is asked about")
+    XCTAssertEqual(status.followedStatuses[two]?.changedFiles?.map(\.path), ["src/a.txt"])
   }
 }

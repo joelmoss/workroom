@@ -47,6 +47,16 @@ final class HostFileWatcher {
   func start(path: String) { core.start(path: path) }
 
   func stop() { core.stop() }
+
+  /// Whether `root` (canonical) is too broad a tree to watch whole: the disk's root, a top-level
+  /// folder such as `/Users`, a volume's root, or the home folder, whose `Library` never rests. A
+  /// followed folder lands wherever the user `cd`s, so its watch is bounded by this (#807 review,
+  /// finding 3); a registered workroom is watched because the user chose it.
+  nonisolated static func isTooBroadToWatch(_ root: String, home: String) -> Bool {
+    if root == home { return true }
+    let parts = root.split(separator: "/")
+    return parts.count <= 1 || (parts.count == 2 && parts[0] == "Volumes")
+  }
 }
 
 // `@unchecked Sendable`: every mutable field is read and written under `lock`, and the loop's task

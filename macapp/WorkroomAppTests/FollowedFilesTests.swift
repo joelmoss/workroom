@@ -246,6 +246,23 @@ final class FollowedFilesTests: XCTestCase {
     XCTAssertFalse(FileTreeModel.touchesListed(["/hx/a"], root: "/h", listed: listed))
   }
 
+  /// Value: protects=a repository at the home folder (dotfiles) not re-listing on every change
+  /// under `~` (review of #807, finding 3); fails_when=a `~/Library` write re-lists it, or an
+  /// ordinary repository stops re-listing on a save; why_new=review; seam=FileTreeModel's watch
+  /// filter; no_claim=FSEvents
+  func testARepositoryAtTheHomeFolderReListsOnlyForShownDirectories() {
+    let shown: Set<String> = ["", "src"]
+    func reloads(_ path: String, root: String) -> Bool {
+      FileTreeModel.shouldReload(
+        [path], overflow: false, root: root, plain: false, listed: shown, home: "/Users/me")
+    }
+    XCTAssertFalse(reloads("/Users/me/Library/Caches/x", root: "/Users/me"))
+    XCTAssertFalse(reloads("/Users/me/Downloads/big.zip", root: "/Users/me"))
+    XCTAssertTrue(reloads("/Users/me/src/a.swift", root: "/Users/me"))
+    XCTAssertTrue(reloads("/Users/me/dev/app/Downloads/x", root: "/Users/me/dev/app"))
+    XCTAssertFalse(reloads("/Users/me/dev/app/.git/index", root: "/Users/me/dev/app"))
+  }
+
   // MARK: Breadcrumb
 
   /// Value: protects=the breadcrumb's base and trail (AC 2); fails_when=it starts anywhere but
