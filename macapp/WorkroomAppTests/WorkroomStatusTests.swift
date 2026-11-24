@@ -923,7 +923,7 @@ final class WorkroomStatusTests: XCTestCase {
 
     // gh failed → reverted to the original draft, with the error surfaced.
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr, draft)
-    XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t ready for review")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn't ready for review")
     XCTAssertEqual(store.modals.errorMessage, "pr already ready")
   }
 
@@ -981,7 +981,7 @@ final class WorkroomStatusTests: XCTestCase {
 
     // gh failed → reverted to the original open/mergeable PR, with the error surfaced.
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr, open)
-    XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t merge pull request")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn't merge pull request")
     XCTAssertEqual(store.modals.errorMessage, "not mergeable")
   }
 

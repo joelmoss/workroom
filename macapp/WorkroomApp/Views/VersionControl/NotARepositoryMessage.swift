@@ -34,13 +34,13 @@ struct NotARepositoryMessage: View {
   }
 
   private var title: String {
-    undetermined ? "Couldn’t read the repository" : "Not a git repository"
+    undetermined ? "Couldn't read the repository" : "Not a git repository"
   }
 
   /// The tooltip, which the header shares.
   static func help(path: String, undetermined: Bool) -> String {
     undetermined
-      ? "git couldn’t tell which repository \(path) is in. It may be on a slow or disconnected "
+      ? "git couldn't tell which repository \(path) is in. It may be on a slow or disconnected "
         + "volume, or owned by another user (add it to safe.directory). Workroom tries again shortly."
       : "\(path) is not in a git repository"
   }
