@@ -354,10 +354,14 @@ app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 # SourceKit-LSP reads compile flags through xcode-build-server, which parses the build logs under
 # --build_root. The make builds put them in macapp/DerivedData (-derivedDataPath), not Xcode's
 # default, so the root is named here. Without it the editor's Swift diagnostics report every package
-# import as "No such module" and every sibling-file type as missing.
-app-lsp: ## Write buildServer.json so SourceKit-LSP resolves the app's packages (brew install xcode-build-server)
+# import as "No such module" and every sibling-file type as missing. The logs only exist after a
+# build, so a fresh checkout or worktree must `make app-build` first or the config carries no flags.
+# buildServer.json holds absolute paths and is gitignored: run this once per checkout.
+app-lsp: ## Write buildServer.json so SourceKit-LSP resolves the app's packages (after app-build; brew install xcode-build-server)
 	@command -v xcode-build-server >/dev/null || { \
 	  echo 'xcode-build-server not found: brew install xcode-build-server' >&2; exit 1; }
+	@ls macapp/DerivedData/Logs/Build/*.xcactivitylog >/dev/null 2>&1 || { \
+	  echo 'no build logs under macapp/DerivedData: run make app-build in this checkout first, then make app-lsp' >&2; exit 1; }
 	cd macapp && xcodegen generate
 	xcode-build-server config -project macapp/WorkroomApp.xcodeproj -scheme WorkroomApp \
 	  --build_root "$(CURDIR)/macapp/DerivedData"

@@ -110,5 +110,6 @@ app by name, since every workroom's app, test host and XCUITest app is called "W
   it only bites when building from Xcode directly (regenerate, or run `make app-generate`).
 
 - **SourceKit "No such module" or "Cannot find type X in scope" means no `buildServer.json`.**
-  Without it the indexer sees one file at a time, with no packages; run `make app-lsp` in that
-  checkout. A clean `xcodebuild` stays authoritative either way.
+  Without it the indexer sees one file at a time, with no packages; run `make app-build`
+  then `make app-lsp` in that checkout (it reads the build's logs, so a fresh worktree needs the
+  build first; `brew install xcode-build-server` if missing). A clean `xcodebuild` stays authoritative either way.
