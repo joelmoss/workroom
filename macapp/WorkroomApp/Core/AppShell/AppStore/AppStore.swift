@@ -466,7 +466,7 @@ final class AppStore: ObservableObject {
   /// inside `if showInspector`, so opening it CONSTRUCTS `HistoryPanel`, whose `.task` calls
   /// `HistoryModel.activate` — the same load, at the moment it's first worth doing.
   func focusHistoryIfShown() {
-    guard inspectorIsVisible, historySectionShown else { return }
+    guard !isMovingTerminalsInPlace, inspectorIsVisible, historySectionShown else { return }
     commitHistory.focus(target: inspectorHistoryTarget)
   }
 
@@ -499,6 +499,7 @@ final class AppStore: ObservableObject {
   /// move but two or three `git` processes, so without this every selection change would read a
   /// repo for a toolbar nobody can see.
   func focusRemoteStateIfShown() {
+    guard !isMovingTerminalsInPlace else { return }
     guard inspectorIsVisible, remoteToolbarShown else {
       remoteState.focus(nil)
       return
@@ -818,7 +819,8 @@ final class AppStore: ObservableObject {
   /// True while this window hands its terminals from one target to another in place
   /// (`rehomeTerminals`): the `.tabsRemoved` that fires is a move, not a close, so the
   /// tidy-up a close gets (history, an emptied split member, the fallback selection, a row going)
-  /// is skipped.
+  /// is skipped. The inspector holds still meanwhile (#806): the selection moves before the
+  /// terminals do, so its subject would read nothing in between; the move re-points it at the end.
   @ObservationIgnored var isMovingTerminalsInPlace = false
   @ObservationIgnored var pendingSessionRecovery = false
   /// Saved targets held back from the restore (#253): remote workrooms this app couldn't reach
@@ -1383,6 +1385,7 @@ final class AppStore: ObservableObject {
   /// Recompute `selectionHasTabs` — call after a selection change or a tab add/remove. Guarded so it
   /// only publishes (re-renders the inspector) on an actual transition.
   func refreshSelectionHasTabs() {
+    guard !isMovingTerminalsInPlace else { return }
     let has = selectedTarget.map { terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
     let flipped = has != selectionHasTabs
     if flipped { selectionHasTabs = has }
