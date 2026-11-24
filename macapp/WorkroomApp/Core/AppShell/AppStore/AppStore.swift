@@ -516,7 +516,8 @@ final class AppStore: ObservableObject {
       // disagree with it. A registered row's is that row's own target, in place.
       switch followedActionTarget(followed, writingLocally: true) {
       case .row(let sid): return remoteTarget(for: sid)
-      case .followed(let root): return RemoteStateModel.Target(followed: root)
+      case .followed(let root):
+        return RemoteStateModel.Target(followed: root, name: followedRepositoryName(root))
       case nil: return nil
       }
     case .nothing: return nil
@@ -926,8 +927,9 @@ final class AppStore: ObservableObject {
       }
       self.handleRemoteMutation(action, on: sid, location: target.location)
     }
+    // Throws why it can't: let go of, or still followed with a registration that came back empty.
     self.remoteState.followedLocation = { [vcsStatus = self.vcsStatus] root in
-      await vcsStatus.followedWriteLocation(root)
+      try await vcsStatus.writeLocation(for: .followed(root: root))
     }
     // Only the store can name a target, and the model needs the name to attribute a failure that
     // outlived the selection it started from.

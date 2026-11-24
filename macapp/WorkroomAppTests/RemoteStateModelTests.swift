@@ -633,7 +633,7 @@ final class RemoteStateModelTests: XCTestCase {
     let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
     let m = model(writer, ttl: 0)
     m.describeTarget = { _ in "Terminal 1" }
-    m.followedLocation = { root in try? await RepositoryLocation.local(root) }
+    m.followedLocation = { root in try await RepositoryLocation.local(root) }
     let followed = RemoteStateModel.Target(followed: "/p/feat")
     let moved = RemoteStateModel.Target(followed: "/p/other")
     m.focus(followed)

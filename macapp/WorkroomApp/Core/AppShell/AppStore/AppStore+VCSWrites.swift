@@ -127,6 +127,8 @@ extension AppStore {
     /// A row's result for a work item that changed is dropped; a followed repository's failure is
     /// still the user's to see.
     let reportsStaleFailure: Bool
+    /// What a failure dialog calls a followed repository, as the shell spelled it at the click.
+    var name: String? = nil
   }
 
   /// `target`'s write, or nil once it is refused (reported, but for a row with no work item).
@@ -136,12 +138,14 @@ extension AppStore {
       guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return nil }
       return prWrite(on: item, errorTitle: errorTitle)
     case .followed(let root):
+      let name = followedRepositoryName(root)
       guard vcsStatus.isFollowing(root) else {
-        failPRWrite(errorTitle, FollowedRepositoryGone().localizedDescription, on: target)
+        failPRWrite(
+          errorTitle, FollowedRepositoryGone().localizedDescription, on: target, named: name)
         return nil
       }
       let vcsStatus = self.vcsStatus
-      let hold = vcsStatus.followedRegistration(of: root)
+      let hold = vcsStatus.followedHold(of: root)
       return PRWrite(
         target: target, requiresShownPR: true,
         prepare: {
@@ -151,8 +155,8 @@ extension AppStore {
             return try RepositoryRouter.shared.registeredGitHub(for: location, resolver: resolver)
           }
         },
-        isCurrent: { hold != nil && vcsStatus.followedRegistration(of: root) == hold },
-        reportsStaleFailure: true)
+        isCurrent: { hold != nil && vcsStatus.followedHold(of: root) == hold },
+        reportsStaleFailure: true, name: name)
     }
   }
 
@@ -198,7 +202,7 @@ extension AppStore {
     let priorPR = vcsStatus.status(for: target)?.pr
     // The PR on screen moved on since the click: never act on a number it no longer shows.
     if priorPR.map({ $0.number != number }) ?? write.requiresShownPR {
-      return failPRWrite(errorTitle, Self.pullRequestChanged, on: target)
+      return failPRWrite(errorTitle, Self.pullRequestChanged, on: target, named: write.name)
     }
     // Seeded statuses have no `gh` behind them: the optimistic update below *is* the result.
     guard vcsStatus.probesRepositories else {
@@ -206,7 +210,7 @@ extension AppStore {
     }
     let github: () async throws -> RepositoryGitHub
     do { github = try write.prepare() } catch {
-      return failPRWrite(errorTitle, error.localizedDescription, on: target)
+      return failPRWrite(errorTitle, error.localizedDescription, on: target, named: write.name)
     }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
@@ -236,7 +240,7 @@ extension AppStore {
       } else {
         // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
         if current, let priorPR { self.vcsStatus.setPullRequest(priorPR, on: target) }
-        self.failPRWrite(errorTitle, Self.stderrMessage(r), on: target)
+        self.failPRWrite(errorTitle, Self.stderrMessage(r), on: target, named: write.name)
       }
     }
   }
@@ -247,8 +251,11 @@ extension AppStore {
 
   /// Report a failed PR write. A followed repository the inspector no longer shows is named, as
   /// the toolbar's dialog names it: gh's stderr often names only `#N` (review of #808, finding 7).
-  private func failPRWrite(_ title: String, _ message: String, on target: VCSActionTarget) {
-    if let name = target.followedName, target.followedRoot != heldFollowedRepository {
+  /// `named` is what it is called as the shell spelled it at the click, the header's spelling.
+  private func failPRWrite(
+    _ title: String, _ message: String, on target: VCSActionTarget, named: String? = nil
+  ) {
+    if let name = named ?? target.followedName, target.followedRoot != heldFollowedRepository {
       modals.errorTitle = "\(title) in \(name)"
     } else {
       modals.errorTitle = title

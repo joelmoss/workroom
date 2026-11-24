@@ -32,8 +32,15 @@ struct FollowedRepositoryHold {
   var localProbe: Task<Void, Never>? = nil
   /// Its registration with the repository router (#808), held from the first window's follow to
   /// the last one's unfollow: what lets a write address it. Nil inside when its location couldn't
-  /// be told.
+  /// be told, until a retry (`retryFollowedRegistration`) replaces it with one that could.
   var registration: Task<RepositoryRouter.Registration?, Never>? = nil
+  /// Whether `registration` is still running: a retry never replaces one that is, since it may yet
+  /// take a router hold that only its own release lets go of.
+  var registering = false
+  /// How many registrations in a row came back empty: what spaces out its retries.
+  var registrationFailures = 0
+  /// The wait before the next retry of a registration that came back empty.
+  var registrationRetry: Task<Void, Never>? = nil
 }
 
 /// One GitHub probe result, for whichever status it lands in.
@@ -105,8 +112,12 @@ extension VCSStatusService {
     if var hold = followedRepositories[key] {
       hold.holders += 1
       followedRepositories[key] = hold
+      // Another window coming to it asks again, rather than inherit a registration that came back
+      // empty (lane B review M1).
+      retryFollowedRegistration(key)
     } else {
       var hold = FollowedRepositoryHold(holders: 1, watchers: [])
+      hold.registering = true
       hold.registration = registerFollowed(key, hold: hold.id)
       followedRepositories[key] = hold
       if registeredSidebarID(forRepositoryRoot: key) == nil, followedStatuses[key] == nil {
@@ -130,6 +141,7 @@ extension VCSStatusService {
     }
     hold.probe?.cancel()
     hold.localProbe?.cancel()
+    hold.registrationRetry?.cancel()
     for watcher in hold.watchers { watcher.stop() }
     followedRepositories[key] = nil
     followedStatuses[key] = nil
@@ -145,23 +157,62 @@ extension VCSStatusService {
   /// repository let go and followed again while this runs ends with exactly the new hold's.
   ///
   /// One that comes back empty is recorded in `unregisteredFollowedRoots` while `hold` stands, and
-  /// the windows are told, so they stop offering the writes it would refuse.
+  /// the windows are told, so they stop offering the writes it would refuse; it is retried after
+  /// a backoff, and sooner on a window's follow, `cd` or Refresh (`retryFollowedRegistration`).
   private func registerFollowed(
     _ key: String, hold: UUID
   ) -> Task<RepositoryRouter.Registration?, Never> {
     let router = RepositoryRouter.shared
     let resolve = resolveFollowedRegistration
     return Task { [weak self] in
-      guard let registration = await resolve(key) else {
-        if let self, self.followedRepositories[key]?.id == hold {
-          self.unregisteredFollowedRoots.insert(key)
-          for window in self.statusWindows { window.followedRegistrationDidFail(root: key) }
-        }
-        return nil
-      }
-      router.holdFollowed(registration)
+      let registration = await resolve(key)
+      // Taken even when the hold is gone meanwhile: its release awaits this and lets go of it.
+      if let registration { router.holdFollowed(registration) }
+      self?.followedRegistrationSettled(key, hold: hold, registered: registration != nil)
       return registration
     }
+  }
+
+  /// `hold`'s registration came back: registered, or empty again, so retried after a wait that
+  /// doubles with each empty one (`followedRegistrationRetryWait`). Either way the windows are told
+  /// when the root's standing changed, so they offer, or stop offering, its writes.
+  private func followedRegistrationSettled(_ key: String, hold: UUID, registered: Bool) {
+    guard var entry = followedRepositories[key], entry.id == hold else { return }
+    entry.registering = false
+    entry.registrationRetry?.cancel()
+    entry.registrationRetry = nil
+    let changed: Bool
+    if registered {
+      entry.registrationFailures = 0
+      changed = unregisteredFollowedRoots.remove(key) != nil
+    } else {
+      entry.registrationFailures += 1
+      let (wait, streak) = (followedRegistrationRetryWait, entry.registrationFailures)
+      entry.registrationRetry = Task { [weak self] in
+        await wait(streak)
+        guard !Task.isCancelled else { return }
+        self?.retryFollowedRegistration(key)
+      }
+      changed = unregisteredFollowedRoots.insert(key).inserted
+    }
+    followedRepositories[key] = entry
+    guard changed else { return }
+    for window in statusWindows { window.followedRegistrationDidChange(root: key) }
+  }
+
+  /// Ask again for the registration of `root`, followed, whose last one came back empty: at once,
+  /// in place of the backoff's wait. Nothing while one is running, or once it is registered. Its
+  /// writes stay refused until the new one is in.
+  func retryFollowedRegistration(_ root: String) {
+    let key = Self.canonicalPath(root)
+    guard unregisteredFollowedRoots.contains(key), var hold = followedRepositories[key],
+      !hold.registering
+    else { return }
+    hold.registrationRetry?.cancel()
+    hold.registrationRetry = nil
+    hold.registering = true
+    hold.registration = registerFollowed(key, hold: hold.id)
+    followedRepositories[key] = hold
   }
 
   /// Release what `registration` took, once it has taken it: nothing, when it registered nothing.
@@ -182,7 +233,7 @@ extension VCSStatusService {
   /// Nil when git can't say which repository a linked worktree's git directory belongs to (a
   /// timeout, a dangling `gitdir:`): registered as its own, its writes and its main repository's
   /// would stop refusing each other, so it is not registered at all. Its writes, and the toolbar's
-  /// reads, are refused until it is followed again.
+  /// reads, are refused until a retry registers it.
   nonisolated static func followedRegistration(root: String) async
     -> RepositoryRouter.Registration?
   {
@@ -223,10 +274,11 @@ extension VCSStatusService {
     return location
   }
 
-  /// The registration of the hold on `root`, nil when no window follows it: what a write captures
-  /// at the click, to tell later whether that hold still stands rather than one taken afresh.
-  func followedRegistration(of root: String) -> Task<RepositoryRouter.Registration?, Never>? {
-    followedRepositories[root]?.registration
+  /// The hold on `root`, nil when no window follows it: what a write captures at the click, to tell
+  /// later whether that hold still stands rather than one taken afresh. Not its registration, which
+  /// a retry replaces under the same hold.
+  func followedHold(of root: String) -> UUID? {
+    followedRepositories[root]?.id
   }
 
   // MARK: Writes
@@ -252,6 +304,8 @@ extension VCSStatusService {
       return try await item.resolvedLocation()
     case .followed(let root):
       guard let location = await followedWriteLocation(root) else {
+        // Still followed, but its registration came back empty: the terminal hasn't gone anywhere.
+        if unregisteredFollowedRoots.contains(root) { throw FollowedRepositoryUnregistered() }
         throw FollowedRepositoryGone()
       }
       return location
@@ -284,6 +338,12 @@ extension VCSStatusService {
   func followedRegistrationsSettled() async {
     for hold in followedRepositories.values { _ = await hold.registration?.value }
     await followedRelease?.value
+  }
+
+  /// Wait for every scheduled registration retry, and the registration it starts. For tests.
+  func followedRegistrationRetriesSettled() async {
+    for hold in followedRepositories.values { await hold.registrationRetry?.value }
+    await followedRegistrationsSettled()
   }
 
   private func startWatching(_ key: String) {

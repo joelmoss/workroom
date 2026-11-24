@@ -37,3 +37,13 @@ struct FollowedRepositoryGone: LocalizedError, CustomStringConvertible {
   var errorDescription: String? { description }
   var description: String { "That repository is no longer available." }
 }
+
+/// A write addressed a followed repository the terminal is still in, whose registration came back
+/// empty (git couldn't say which repository a linked worktree belongs to). It is retried on its
+/// own, and the write offered again once it is in.
+struct FollowedRepositoryUnregistered: LocalizedError, CustomStringConvertible {
+  var errorDescription: String? { description }
+  var description: String {
+    "Workroom couldn't tell which repository this worktree belongs to. Try again in a moment."
+  }
+}

@@ -218,6 +218,9 @@ extension AppStore {
       if self.setFollowedFolder(state) {
         self.focusHistoryIfShown()
         self.focusRemoteStateIfShown()
+      } else {
+        // Unchanged, so not re-held: hold it anyway, which retries an empty registration.
+        self.holdFollowedRepository()
       }
     }
     return changed
@@ -245,10 +248,23 @@ extension AppStore {
     if case .followed(let followed) = inspectorSubject, let repository = followed.repository {
       root = VCSStatusService.canonicalPath(repository.root)
     }
-    guard root != followedFolder.heldRepository else { return }
+    guard root != followedFolder.heldRepository else {
+      // The same repository, re-read (a `cd` within it, a re-resolve): a registration that came
+      // back empty is asked again (lane B review M1).
+      if let root { vcsStatus.retryFollowedRegistration(root) }
+      return
+    }
     if let held = followedFolder.heldRepository { vcsStatus.unfollow(held) }
     followedFolder.heldRepository = root
     if let root { vcsStatus.follow(root) }
+  }
+
+  /// The Changes header's Refresh, for the repository this window follows (#807), which no sweep
+  /// covers.
+  func refreshFollowedRepository() {
+    guard let root = heldFollowedRepository else { return }
+    vcsStatus.retryFollowedRegistration(root)
+    vcsStatus.refreshFollowedStatus(root, gitHub: true)
   }
 
   /// Something changed in the git directory of the repository this window follows (a commit, a
@@ -264,9 +280,10 @@ extension AppStore {
     if remoteToolbarShown { remoteState.refresh(force: true) }
   }
 
-  /// The repository this window follows turned out unregistered: the toolbar lets go of it, as
-  /// Commit and the pull request's actions already have (they read `unregisteredFollowedRoots`).
-  func followedRegistrationDidFail(root: String) {
+  /// The repository this window follows turned out unregistered, or a retry registered it: the
+  /// toolbar lets go of it, or takes it back, as Commit and the pull request's actions already do
+  /// (they read `unregisteredFollowedRoots`).
+  func followedRegistrationDidChange(root: String) {
     guard heldFollowedRepository == root else { return }
     focusRemoteStateIfShown()
   }
@@ -318,6 +335,18 @@ extension AppStore {
     followedFolderState = state
     holdFollowedRepository()
     return true
+  }
+
+  /// What a failure dialog calls the followed repository at canonical `root`: as the shell spells
+  /// it, the way the header shows it, while this window shows it; else its root. `~`-abbreviated.
+  func followedRepositoryName(_ root: String) -> String {
+    var shown = root
+    if case .followed(let followed) = inspectorSubject, let repository = followed.repository,
+      repository.root == root
+    {
+      shown = repository.displayRoot
+    }
+    return (shown as NSString).abbreviatingWithTildeInPath
   }
 
   /// The followed folder's repository root, nil for anything else: what a commit opened from its

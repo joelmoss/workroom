@@ -70,6 +70,8 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     status.statusResolver = WorkroomStatusResolver(runner: runner)
     status.followedProbeDebounce = 0
     status.makeRepositoryWatcher = { _ in NoWatcher() }
+    // A registration retry waits for its test: never a real 2 s sleep, and never a hot loop.
+    status.followedRegistrationRetryWait = { _ in try? await Task.sleep(for: .seconds(3600)) }
     return status
   }
 
@@ -1094,6 +1096,212 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     try await cd(store, tab, root)
     XCTAssertEqual(store.inspectorActionTarget, .followed(root: root))
     XCTAssertEqual(store.remoteState.target?.actionTarget, .followed(root: root))
+  }
+
+  // MARK: Registration retry
+
+  /// A flag and a stepped gate the registration seams read, set from the test.
+  private final class RegistrationControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var registers = false
+    private var permits = 0
+    private var resolving = true
+    private var recordedStreaks: [Int] = []
+    var streaks: [Int] { lock.withLock { recordedStreaks } }
+    func letRegister() { lock.withLock { registers = true } }
+    func step() { lock.withLock { permits += 1 } }
+    func finishResolving() { lock.withLock { resolving = false } }
+    func shouldRegister() -> Bool { lock.withLock { registers } }
+    func isResolving() -> Bool { lock.withLock { resolving } }
+    func record(_ streak: Int) { lock.withLock { recordedStreaks.append(streak) } }
+    func take() -> Bool {
+      lock.withLock {
+        guard permits > 0 else { return false }
+        permits -= 1
+        return true
+      }
+    }
+  }
+
+  /// A registration seam that comes back empty until `control.letRegister()`, and a retry wait
+  /// that records its streak and returns only on `control.step()`.
+  private func controlRegistration(_ status: VCSStatusService) -> RegistrationControl {
+    let control = RegistrationControl()
+    status.resolveFollowedRegistration = { root in
+      guard control.shouldRegister() else { return nil }
+      return await VCSStatusService.followedRegistration(root: root)
+    }
+    status.followedRegistrationRetryWait = { streak in
+      control.record(streak)
+      while !control.take() {
+        if Task.isCancelled { return }
+        try? await Task.sleep(for: .milliseconds(10))
+      }
+    }
+    return control
+  }
+
+  private func assertOffersWrites(
+    _ store: AppStore, _ root: String, file: StaticString = #filePath, line: UInt = #line
+  ) {
+    XCTAssertEqual(store.inspectorActionTarget, .followed(root: root), file: file, line: line)
+    XCTAssertEqual(store.inspectorPullRequestTarget, .followed(root: root), file: file, line: line)
+    XCTAssertEqual(
+      store.remoteState.target?.actionTarget, .followed(root: root), "the toolbar is back",
+      file: file, line: line)
+  }
+
+  /// Value: protects=a followed repository whose registration came back empty once (a transient
+  /// `rev-parse` timeout), followed in two windows; fails_when=Commit, the pull request's actions
+  /// and the toolbar stay off in either window until every window leaves the repository, or the
+  /// retries don't back off; why_new=lane B review M1; seam=AppStore x2, the registration and
+  /// retry-wait seams; no_claim=the real 2 s..60 s sleeps
+  func testAnEmptyRegistrationRetriesWithBackoffInEveryWindow() async throws {
+    let status = makeStatus()
+    let control = controlRegistration(status)
+    let first = makeStore(status)
+    let second = makeStore(status)
+    let root = repo("app")
+    let firstTab = try await openTerminal(first)
+    try await cd(first, firstTab, root)
+    let secondTab = try await openTerminal(second)
+    try await cd(second, secondTab, root)
+    XCTAssertNil(first.inspectorActionTarget)
+    XCTAssertNil(second.inspectorActionTarget)
+
+    // The first retry comes back empty too: the next one waits longer.
+    control.step()
+    await status.followedRegistrationRetriesSettled()
+    XCTAssertNil(first.inspectorActionTarget, "still unregistered: the actions stay off")
+    control.letRegister()
+    control.step()
+    await status.followedRegistrationRetriesSettled()
+    await first.remoteState.awaitCurrentLoad()
+    await second.remoteState.awaitCurrentLoad()
+
+    XCTAssertEqual(Array(control.streaks.prefix(2)), [1, 2])
+    XCTAssertFalse(status.unregisteredFollowedRoots.contains(root))
+    assertOffersWrites(first, root)
+    assertOffersWrites(second, root)
+  }
+
+  /// An unregistered followed repository in `store`, ready to register on its next attempt. The
+  /// retry wait never ends on its own, so only the trigger under test can register it.
+  private func unregisteredRepository() async throws
+    -> (status: VCSStatusService, store: AppStore, tab: TerminalTab, root: String)
+  {
+    let status = makeStatus()
+    let control = controlRegistration(status)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try FileManager.default.createDirectory(
+      atPath: root + "/sub", withIntermediateDirectories: true)
+    try await cd(store, tab, root)
+    XCTAssertNil(store.inspectorActionTarget)
+    control.letRegister()
+    return (status, store, tab, root)
+  }
+
+  /// Value: protects=registration recovering when a second window follows the repository (the
+  /// review's scenario); fails_when=a window's follow re-uses the empty registration;
+  /// why_new=lane B review M1; seam=AppStore x2; no_claim=the backoff
+  func testASecondWindowFollowingAnUnregisteredRepositoryRetriesIt() async throws {
+    let (status, first, _, root) = try await unregisteredRepository()
+    let second = makeStore(status)
+    let tab = try await openTerminal(second)
+    try await cd(second, tab, root)
+    await first.remoteState.awaitCurrentLoad()
+    assertOffersWrites(first, root)
+    assertOffersWrites(second, root)
+  }
+
+  /// Value: protects=registration recovering on a `cd` within the repository; fails_when=a `cd`
+  /// inside it, which keeps the hold, never retries; why_new=lane B review M1; seam=AppStore;
+  /// no_claim=the backoff
+  func testACdWithinAnUnregisteredRepositoryRetriesItsRegistration() async throws {
+    let (_, store, tab, root) = try await unregisteredRepository()
+    try await cd(store, tab, root + "/sub")
+    assertOffersWrites(store, root)
+  }
+
+  /// Value: protects=registration recovering on a re-resolve (a change in the git directory);
+  /// fails_when=a re-resolve landing on the same subject never retries; why_new=lane B review M1;
+  /// seam=AppStore; no_claim=the watch itself
+  func testAReresolveOfAnUnregisteredRepositoryRetriesItsRegistration() async throws {
+    let (_, store, _, root) = try await unregisteredRepository()
+    store.followedRepositoryDidChange(root: root, metadata: true)
+    await settle(store)
+    assertOffersWrites(store, root)
+  }
+
+  /// Value: protects=registration recovering on the Changes header's Refresh; fails_when=Refresh
+  /// re-reads the status but leaves the actions off; why_new=lane B review M1; seam=AppStore;
+  /// no_claim=the button's rendering
+  func testRefreshRetriesAnUnregisteredRepositorysRegistration() async throws {
+    let (_, store, _, root) = try await unregisteredRepository()
+    store.refreshFollowedRepository()
+    await settle(store)
+    assertOffersWrites(store, root)
+  }
+
+  /// Value: protects=a write clicked while the registration was still resolving, which then came
+  /// back empty; fails_when=it says the repository is no longer available while the terminal is
+  /// still in it; why_new=lane B review L2; seam=AppStore, the registration seam held open;
+  /// no_claim=the commit's own copy of the message
+  func testAWriteWhoseRegistrationComesBackEmptySaysWhy() async throws {
+    let runner = RecordingGitHubRunner()
+    let status = makeStatus(runner: runner)
+    let control = RegistrationControl()
+    status.resolveFollowedRegistration = { _ in
+      while control.isResolving() { try? await Task.sleep(for: .milliseconds(10)) }
+      return nil
+    }
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(root)
+    await store.followedFolderResolved()
+    await status.followedStatusSettled()
+    let target = try XCTUnwrap(store.inspectorActionTarget, "offered while it resolves")
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    control.finishResolving()
+    await waitForPRAction(store)
+
+    XCTAssertEqual(runner.writes, [])
+    XCTAssertEqual(
+      store.modals.errorMessage,
+      "Workroom couldn't tell which repository this worktree belongs to. Try again in a moment.")
+  }
+
+  /// Value: protects=a stale followed write's failure title naming the repository as the shell
+  /// spelled it (a symlink), as the header did; fails_when=it names the canonical root instead;
+  /// why_new=lane B review L3; seam=AppStore, `gh` held on a gate; no_claim=the toolbar's dialog
+  func testAStaleFollowedWritesFailureNamesTheShellsSpelling() async throws {
+    let runner = RecordingGitHubRunner()
+    runner.gated = true
+    runner.writeResult = CommandResult(stdout: "", stderr: "nope", exitCode: 1, timedOut: false)
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let first = repo("first")
+    let link = scratch.appendingPathComponent("link").path
+    try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: first)
+    try await cd(store, tab, link)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    XCTAssertEqual(target, .followed(root: first))
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForWrites(runner, count: 1)
+    try await cd(store, tab, repo("second"))
+    runner.release()
+    await waitForPRAction(store)
+
+    let title = try XCTUnwrap(store.modals.errorTitle)
+    XCTAssertTrue(title.hasSuffix(" in \((link as NSString).abbreviatingWithTildeInPath)"), title)
   }
 
   /// Value: protects=pull request actions on a followed repository the app can't write to, which

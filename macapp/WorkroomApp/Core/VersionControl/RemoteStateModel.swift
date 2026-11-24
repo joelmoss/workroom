@@ -28,6 +28,10 @@ final class RemoteStateModel: ObservableObject {
 
   /// What the model is pointed at. Carries `projectRoot` because fetch always runs there.
   struct Target: Equatable, Sendable {
+    /// What a failure dialog calls a followed repository: its root as the shell spelled it, the
+    /// header's spelling. Display only, so it takes no part in `==`: two terminals spelling one
+    /// repository differently still share one target.
+    var name: String? = nil
     /// What its actions act on: a sidebar row, or a repository a terminal's inspector follows that
     /// is no row's (#808), by its canonical root. A followed one's location is resolved through
     /// `followedLocation` on every read and action, never from the path.
@@ -44,11 +48,17 @@ final class RemoteStateModel: ObservableObject {
       self.location = location
     }
 
-    /// A followed repository's, at its canonical root.
-    init(followed root: String) {
+    /// A followed repository's, at its canonical root, called `name` in a failure dialog.
+    init(followed root: String, name: String? = nil) {
       actionTarget = .followed(root: root)
       path = root
       projectRoot = root
+      self.name = name
+    }
+
+    static func == (lhs: Target, rhs: Target) -> Bool {
+      lhs.actionTarget == rhs.actionTarget && lhs.path == rhs.path
+        && lhs.projectRoot == rhs.projectRoot && lhs.location == rhs.location
     }
 
     /// The sidebar row it names, nil for a followed repository.
@@ -139,7 +149,7 @@ final class RemoteStateModel: ObservableObject {
   /// Where a followed repository's reads and writes land (`Target.actionTarget`): its registration's
   /// location, awaited, or nil once no window follows it, which refuses the read or the action.
   /// Wired post-init to `VCSStatusService.followedWriteLocation`.
-  var followedLocation: (@MainActor (String) async -> RepositoryLocation?)?
+  var followedLocation: (@MainActor (String) async throws -> RepositoryLocation)?
 
   init(
     makeWriter: (@Sendable (URL) throws -> LocalVCSWriting)? = nil,
@@ -161,8 +171,8 @@ final class RemoteStateModel: ObservableObject {
     if let root = target.actionTarget.followedRoot {
       // Registered while some window follows it, and addressed only through that registration: a
       // repository let go since the click resolves to nothing, never to wherever the path leads.
-      guard let held = await followedLocation?(root) else { throw FollowedRepositoryGone() }
-      location = held
+      guard let followedLocation else { throw FollowedRepositoryGone() }
+      location = try await followedLocation(root)
     } else if let supplied = target.location {
       location = supplied
     } else {
@@ -468,7 +478,7 @@ final class RemoteStateModel: ObservableObject {
   /// What a failure dialog calls `target`: a followed repository by its root (#808), a row by its
   /// label.
   private func name(of target: Target) -> String? {
-    target.actionTarget.followedName ?? target.sid.flatMap { describeTarget?($0) }
+    target.name ?? target.actionTarget.followedName ?? target.sid.flatMap { describeTarget?($0) }
   }
 
   private func raiseFailureReport(
