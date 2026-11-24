@@ -931,6 +931,58 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(store.modals.errorMessage, "nope", "the failure is still the user's to see")
   }
 
+  /// Value: protects=a pull request write whose repository's `.git` went away before it ran, still
+  /// followed; fails_when=`gh` runs for it anyway (resolved from the path, not the registration's
+  /// checked location); why_new=#808 review; seam=AppStore; no_claim=the watch's re-resolve
+  func testAPullRequestActionInARepositoryRemovedUnderneathIsRefused() async throws {
+    let runner = RecordingGitHubRunner()
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("first")
+    try await cd(store, tab, root)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    let draft = Self.pullRequest(5, draft: true)
+    Self.seed(draft, on: target, in: status)
+
+    try FileManager.default.removeItem(atPath: root + "/.git")
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForPRAction(store)
+
+    XCTAssertEqual(runner.writes, [])
+    XCTAssertEqual(status.followedStatuses[root]?.pr, draft, "the optimistic flip is undone")
+    XCTAssertEqual(store.modals.errorMessage, "That repository is no longer available.")
+  }
+
+  /// Value: protects=a failing pull request write that outlives its hold, the repository followed
+  /// afresh before it returns; fails_when=its revert overwrites the fresh hold's re-read pull
+  /// request; why_new=#808 review; seam=AppStore, `gh` held on a gate; no_claim=GitHub's answer
+  func testAPullRequestRevertNeverLandsOnAHoldTakenAfresh() async throws {
+    let runner = RecordingGitHubRunner()
+    runner.gated = true
+    runner.writeResult = CommandResult(stdout: "", stderr: "nope", exitCode: 1, timedOut: false)
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let first = repo("first")
+    let second = repo("second")
+    try await cd(store, tab, first)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForWrites(runner, count: 1)
+    try await cd(store, tab, second)
+    try await cd(store, tab, first)
+    let fresh = Self.pullRequest(6, draft: false)
+    Self.seed(fresh, on: target, in: status)
+    runner.release()
+    await waitForPRAction(store)
+
+    XCTAssertEqual(status.followedStatuses[first]?.pr, fresh)
+    XCTAssertEqual(store.modals.errorMessage, "nope")
+  }
+
   /// Value: protects=pull request actions on a registered project's repository followed from a
   /// terminal, in place; fails_when=the write goes elsewhere, or no GitHub re-read follows it (no
   /// selection refresh reaches the row while a terminal is selected); why_new=#808 review;
