@@ -235,6 +235,8 @@ final class AppStore: ObservableObject {
   /// The folder this window's Files section was browsed to from its breadcrumb (#809), nil while it
   /// shows the followed folder. Cleared by the terminal's next folder change (snap-back).
   var filesBrowse: FilesBrowse?
+  /// Where each followed repository's and folder's inspector sections were scrolled to (#810).
+  @ObservationIgnored let inspectorScrollMemory = InspectorScrollMemory()
   /// What `refreshFollowedFolder` last asked to resolve: the target and its terminal's folder, so a
   /// repeat (every focus or tab event re-asks) runs no `git`.
   @ObservationIgnored var followedFolderRequest: (target: TargetID, folder: String)?
