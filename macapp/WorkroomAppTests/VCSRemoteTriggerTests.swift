@@ -229,7 +229,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     await store.remoteState.awaitCurrentLoad()
 
     XCTAssertEqual(store.modals.pendingRemoteConfirm?.action, .pull)
-    XCTAssertEqual(store.modals.pendingRemoteConfirm?.sid, sid)
+    XCTAssertEqual(store.modals.pendingRemoteConfirm?.target, .row(sid))
     XCTAssertNil(store.remoteState.inFlight, "nothing may run until the user answers")
     let pulls = await writer.pulls
     XCTAssertEqual(pulls, 0, "the engine must not be reached before confirmation")
@@ -269,11 +269,11 @@ final class VCSRemoteTriggerTests: XCTestCase {
     markDirty(store, first)
     store.performRemoteAction(.pull)
     let pending = try? XCTUnwrap(store.modals.pendingRemoteConfirm)
-    XCTAssertEqual(pending?.sid, first)
+    XCTAssertEqual(pending?.target, .row(first))
 
     await select(store, second)
     // Answer the dialog that was raised for `first` while `second` is selected.
-    store.runRemoteAction(.pull, on: first)
+    store.runRemoteAction(.pull, on: .row(first))
     await store.remoteState.awaitCurrentLoad()
 
     let pulls = await writer.pulls

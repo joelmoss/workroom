@@ -99,6 +99,20 @@ final class VCSStatusService: ObservableObject {
     set { storedCommittingFollowedRoots = newValue }
   }
   private var storedCommittingFollowedRoots: Set<String> = []
+  /// The followed repositories whose registration came back empty (git couldn't say which
+  /// repository a linked worktree belongs to), by canonical root: nothing writes to them, so no
+  /// action is offered for them, until they are followed again (review of #808, finding 5).
+  var unregisteredFollowedRoots: Set<String> {
+    get { storedUnregisteredFollowedRoots }
+    set { storedUnregisteredFollowedRoots = newValue }
+  }
+  private var storedUnregisteredFollowedRoots: Set<String> = []
+  /// Resolves a followed repository's registration (`followedRegistration(root:)`). A seam for
+  /// tests.
+  @ObservationIgnored var resolveFollowedRegistration:
+    @Sendable (String) async -> RepositoryRouter.Registration? = {
+      await VCSStatusService.followedRegistration(root: $0)
+    }
   /// The router releases in flight, chained in order (`releaseFollowed`).
   @ObservationIgnored var followedRelease: Task<Void, Never>?
   /// Makes a watch on a followed repository's tree, or on a linked worktree's git directory. The
@@ -225,12 +239,6 @@ final class VCSStatusService: ObservableObject {
     case .row(let sid): return sid.isStatusable ? workroomStatuses[sid] : nil
     case .followed(let root): return followedStatuses[root]
     }
-  }
-
-  /// The status of what the toolbar's model is pointed at.
-  func status(for target: RemoteStateModel.Target) -> WorkroomStatus? {
-    if let root = target.followedRoot { return followedStatuses[root] }
-    return workroomStatuses[target.sid]
   }
 
   /// Hand `window` every local status merged while it lives. Idempotent.
@@ -746,6 +754,9 @@ protocol VCSStatusWindow: AnyObject {
   /// Something changed under a followed repository's root (`metadata`: in its git directory). A
   /// window following it re-reads what it shows of it (#807).
   func followedRepositoryDidChange(root: String, metadata: Bool)
+  /// A followed repository's registration came back empty (`unregisteredFollowedRoots`): a window
+  /// following it stops offering the writes it would refuse (review of #808, finding 5).
+  func followedRegistrationDidFail(root: String)
 }
 
 /// The three resolvers a status sweep and `RepositoryGitHub` use, built over one command runner so a

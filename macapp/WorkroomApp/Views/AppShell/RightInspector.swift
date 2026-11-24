@@ -61,7 +61,7 @@ struct RightInspector: View {
       // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
       // the selection can move while it's open and `performRemoteAction` would re-derive the target.
       Button(item.action.label) {
-        store.runRemoteAction(item.action, on: item.sid, followedRoot: item.followedRoot)
+        store.runRemoteAction(item.action, on: item.target)
       }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
@@ -259,8 +259,9 @@ struct RightInspector: View {
   /// remaining actions can still be opened in the browser.
   @ViewBuilder private var prActionsMenu: some View {
     if vcsStatus.githubCLIStatus == .available, let pr = selectedStatus?.pr {
-      // A workroom's or a followed repository's (#808); none where the app can't write.
-      let target = store.inspectorActionTarget
+      // A workroom's or a followed repository's (#808), wherever `gh` can write: GitHub, not the
+      // folder, so a read-only checkout keeps them (review of #808, finding 6).
+      let target = store.inspectorPullRequestTarget
       let actions = target == nil ? [] : PRAction.available(for: pr)
       Menu {
         Button {

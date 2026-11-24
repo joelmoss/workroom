@@ -284,7 +284,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     let (work, bare) = clone("origin")
     try await cd(store, tab, work)
 
-    XCTAssertEqual(store.remoteState.target?.followedRoot, work)
+    XCTAssertEqual(store.remoteState.target?.actionTarget.followedRoot, work)
     XCTAssertNotNil(store.remoteState.snapshot, "the toolbar reads the followed repository")
     XCTAssertTrue(store.remoteState.canPush)
 
@@ -448,7 +448,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     await settle(store)
 
     XCTAssertEqual(store.inspectorActionTarget, .followed(root: root))
-    XCTAssertEqual(store.remoteState.target?.followedRoot, root)
+    XCTAssertEqual(store.remoteState.target?.actionTarget.followedRoot, root)
     let result = await Self.commit(store, .followed(root: root), message: "after returning")
     guard case .ok = result else { return XCTFail("commit: \(result)") }
     XCTAssertEqual(head(root), "after returning")
@@ -510,7 +510,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     store.performRemoteAction(.push)
     try await waitForFile(hook.started)
     try await cd(store, tab, second.work, toolbar: false)
-    XCTAssertEqual(store.remoteState.target?.followedRoot, second.work)
+    XCTAssertEqual(store.remoteState.target?.actionTarget.followedRoot, second.work)
     FileManager.default.createFile(atPath: hook.gate, contents: nil)
     await store.remoteState.awaitCurrentLoad()
     await settle(store)
@@ -537,16 +537,16 @@ final class FollowedRepositoryWritesTests: XCTestCase {
 
     store.performRemoteAction(.pull)
     let asked = try XCTUnwrap(store.modals.pendingRemoteConfirm, "a dirty tree asks first")
-    XCTAssertEqual(asked.followedRoot, first.work)
+    XCTAssertEqual(asked.target, .followed(root: first.work))
     XCTAssertNil(store.remoteState.inFlight)
     try await cd(store, tab, second.work)
 
-    store.runRemoteAction(asked.action, on: asked.sid, followedRoot: asked.followedRoot)
+    store.runRemoteAction(asked.action, on: asked.target)
     XCTAssertNil(store.remoteState.inFlight, "nothing runs against the second repository")
 
     // Negative control: answered while still in the repository it asked about, it runs.
     try await cd(store, tab, first.work)
-    store.runRemoteAction(asked.action, on: asked.sid, followedRoot: asked.followedRoot)
+    store.runRemoteAction(asked.action, on: asked.target)
     XCTAssertEqual(store.remoteState.inFlight, .pull)
     await store.remoteState.awaitCurrentLoad()
   }
@@ -654,7 +654,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
 
     XCTAssertEqual(store.inspectorActionTarget, .row(row), "it acts as its row, in place")
     XCTAssertEqual(store.remoteState.target?.sid, row)
-    XCTAssertNil(store.remoteState.target?.followedRoot)
+    XCTAssertNil(store.remoteState.target?.actionTarget.followedRoot)
     let result = await Self.commit(store, .row(row), message: "in place")
     guard case .ok = result else { return XCTFail("commit: \(result)") }
     await settle(store)
@@ -929,6 +929,10 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(status.followedStatuses[second]?.pr, theirs, "the revert stays off the second")
     XCTAssertNil(status.followedStatuses[first], "nothing re-creates the status of one let go")
     XCTAssertEqual(store.modals.errorMessage, "nope", "the failure is still the user's to see")
+    XCTAssertEqual(
+      store.modals.errorTitle,
+      "Couldn\u{2019}t ready for review in \((first as NSString).abbreviatingWithTildeInPath)",
+      "it names the repository it failed in, which the inspector no longer shows")
   }
 
   /// Value: protects=a pull request write whose repository's `.git` went away before it ran, still
@@ -1059,6 +1063,58 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertNil(store.remoteTarget())
     store.performRemoteAction(.push)
     XCTAssertNil(store.remoteState.inFlight)
+  }
+
+  /// Value: protects=a followed repository whose registration came back empty; fails_when=Commit,
+  /// the pull request's actions, the Room menu's items or the toolbar are offered for it, only to
+  /// fail with "no longer available"; why_new=#808 review finding 5; seam=the registration seam;
+  /// no_claim=git's own `--git-common-dir` failure
+  func testAnUnregisteredFollowedRepositoryOffersNoWrites() async throws {
+    let status = makeStatus()
+    status.resolveFollowedRegistration = { _ in nil }
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root)
+    status.githubCLIStatus = .available
+    Self.seed(Self.pullRequest(5, draft: true), on: .followed(root: root), in: status)
+
+    XCTAssertTrue(status.isFollowing(root), "the status stays, for the inspector to show")
+    XCTAssertNil(store.inspectorActionTarget)
+    XCTAssertNil(store.inspectorPullRequestTarget)
+    XCTAssertNil(store.remoteTarget())
+    XCTAssertNil(store.remoteState.target, "the toolbar let go of it")
+    let state = RoomCommandState.read(store)
+    XCTAssertFalse(state.canCommit)
+    XCTAssertNil(state.pullRequest)
+  }
+
+  /// Value: protects=pull request actions on a followed repository the app can't write to, which
+  /// `gh` writes only on GitHub, as the same repository's registered row has them; fails_when=they
+  /// are hidden with Commit, or Commit is offered with them; why_new=#808 review finding 6;
+  /// seam=AppStore, the resolve seam; no_claim=the panel's rendering
+  func testAReadOnlyFollowedRepositoryKeepsItsPullRequestActions() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    let real = store.resolveFollowedRepository
+    store.resolveFollowedRepository = { folder in
+      let found = await real(folder)
+      guard case .repository(var repository) = found else { return found }
+      repository.isWritable = false
+      return .repository(repository)
+    }
+    try await cd(store, tab, root)
+    status.githubCLIStatus = .available
+    Self.seed(Self.pullRequest(5, draft: true), on: .followed(root: root), in: status)
+
+    XCTAssertNil(store.inspectorActionTarget)
+    XCTAssertEqual(store.inspectorPullRequestTarget, .followed(root: root))
+    let state = RoomCommandState.read(store)
+    XCTAssertFalse(state.canCommit)
+    XCTAssertEqual(state.pullRequest?.target, .followed(root: root))
+    XCTAssertTrue(state.canChangeDraft)
   }
 
   /// Value: protects=a linked worktree whose main repository git couldn't name; fails_when=it is

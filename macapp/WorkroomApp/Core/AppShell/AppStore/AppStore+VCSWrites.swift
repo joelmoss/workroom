@@ -5,224 +5,238 @@ import WorkroomVCS
 
 /// The VCS write actions the status inspector offers: PR actions and merges through `gh`, and
 /// commits with their preflight. Moved out of `AppStore+WorkroomStatus.swift` as is, so that file
-/// only reads status. Coupling points: these write into `vcsStatus.workroomStatuses`
-/// (optimistically, then from a fresh probe) and use its `selectedStatusWorkItem(for:)`, its
-/// `beginCommit`/`endCommit` bookkeeping and its `refreshLocalStatus(for:skippingCreatesAndCommits:)`.
+/// only reads status. Coupling points: these write into `vcsStatus`'s statuses through its
+/// write-side lookups (`canAddress(_:)`, `writeLocation(for:)`, `setPullRequest(_:on:)`) and use its
+/// `beginCommit`/`endCommit` bookkeeping and its local and followed refreshes.
 extension AppStore {
-  /// Whether `sid` has anything a commit could record, and none is in flight: the Changes header's
-  /// commit button and Room ▸ Commit… both ask this.
-  @_disfavoredOverload
-  func canCommit(_ sid: SidebarID?) -> Bool { canCommit(sid.map(VCSActionTarget.row)) }
-
-  /// Whether `target` has anything a commit could record, and none is in flight. A followed
-  /// repository's (#808) answers from its own status, which is there only while a window follows it.
+  /// Whether `target` has anything a commit could record, and none is in flight: the Changes
+  /// header's commit button and Room ▸ Commit… both ask this. A followed repository's (#808)
+  /// answers from its own status, which is there only while a window follows it.
   func canCommit(_ target: VCSActionTarget?) -> Bool {
     guard let target, let status = vcsStatus.status(for: target), !vcsStatus.isCommitting(target)
     else { return false }
     return !(status.isClean || status.isUnknown)
   }
 
-  /// Open the commit dialog for `sid`, when it has something to commit.
-  @_disfavoredOverload
-  func requestCommit(_ sid: SidebarID?) { requestCommit(sid.map(VCSActionTarget.row)) }
-
   /// Open the commit dialog for `target`, when it has something to commit.
   func requestCommit(_ target: VCSActionTarget?) {
-    guard let target, canCommit(target) else { return }
-    switch target {
-    case .row(let sid): guard vcsStatus.selectedStatusWorkItem(for: sid) != nil else { return }
-    case .followed(let root): guard vcsStatus.followedRepositories[root] != nil else { return }
-    }
+    guard let target, canCommit(target), vcsStatus.canAddress(target) else { return }
     modals.pendingCommit = PendingCommit(target: target)
   }
 
-  /// What a version-control action in the inspector acts on: its workroom or project root, or the
-  /// repository a terminal's inspector follows (#808). A followed repository that is a registered
-  /// row's acts as that row, in place. Nil when there is no repository to act on: nothing selected,
-  /// a folder outside a repository, one git couldn't tell about, a repository this window no longer
-  /// holds, or one the app can't write to.
-  var inspectorActionTarget: VCSActionTarget? {
+  /// What a local version-control write in the inspector (a commit, the toolbar's fetch, push and
+  /// pull) acts on: its workroom or project root, or the repository a terminal's inspector follows
+  /// (#808). A followed repository that is a registered row's acts as that row, in place. Nil when
+  /// there is no repository to act on: nothing selected, a folder outside a repository, one git
+  /// couldn't tell about, a repository this window no longer holds, one whose registration came
+  /// back empty, or one the app can't write to.
+  var inspectorActionTarget: VCSActionTarget? { inspectorTarget(writingLocally: true) }
+
+  /// What a pull request action in the inspector acts on: `inspectorActionTarget`'s, and a followed
+  /// repository the app can't write to as well, since `gh` writes only on GitHub, as the same
+  /// repository's registered row offers them (review of #808, finding 6).
+  var inspectorPullRequestTarget: VCSActionTarget? { inspectorTarget(writingLocally: false) }
+
+  private func inspectorTarget(writingLocally: Bool) -> VCSActionTarget? {
     switch inspectorSubject {
     case .target(let sid): return .row(sid)
     case .followed(let followed):
-      guard let root = writableFollowedRoot(followed) else { return nil }
-      if let sid = vcsStatus.registeredSidebarID(forCanonicalRoot: root) { return .row(sid) }
-      return .followed(root: root)
+      return followedActionTarget(followed, writingLocally: writingLocally)
     case .nothing: return nil
     }
   }
 
-  /// The root of the repository `followed` is in, when a write can address it: one this window
-  /// holds, and the app can write to. Commit and the toolbar both ask it, so they can't disagree.
-  func writableFollowedRoot(_ followed: FollowedFolder) -> String? {
-    guard let repository = followed.repository, repository.isWritable,
-      let root = heldFollowedRepository, root == repository.root
+  /// What a write to `followed`'s repository addresses: one this window holds, and, for a local
+  /// write, one the app can write to. A registered row's is that row, in place, which writes
+  /// through its own work item; any other only once its registration hasn't come back empty (one
+  /// still resolving is offered: its write awaits the registration). Commit, the pull request and
+  /// the toolbar all ask it, so they can't disagree.
+  func followedActionTarget(_ followed: FollowedFolder, writingLocally: Bool) -> VCSActionTarget? {
+    guard let repository = followed.repository, let root = heldFollowedRepository,
+      root == repository.root
     else { return nil }
-    return root
+    if writingLocally, !repository.isWritable { return nil }
+    if let sid = vcsStatus.registeredSidebarID(forCanonicalRoot: root) { return .row(sid) }
+    guard !vcsStatus.unregisteredFollowedRoots.contains(root) else { return nil }
+    return .followed(root: root)
   }
 
-  /// Where a write to `target` lands, resolved when the write runs from what was captured at the
-  /// click. A followed repository's is its registration's, awaited: nil once no window follows it,
-  /// so the write is refused rather than sent wherever the terminal has gone since.
-  private func writeLocation(for target: VCSActionTarget) async throws -> RepositoryLocation {
-    switch target {
-    case .row(let sid):
-      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
-        throw RepositoryRoutingError.registrationRequired
-      }
-      return try await item.resolvedLocation()
-    case .followed(let root):
-      guard let location = await vcsStatus.followedWriteLocation(root) else {
-        throw FollowedRepositoryGone()
-      }
-      return location
-    }
+  /// The repository this window follows, when it is `sid`'s: a registered row followed in place
+  /// (#808), which no selection refresh reaches, so its followed lane is re-read after a write.
+  func rootFollowedInPlace(_ sid: SidebarID) -> String? {
+    guard let held = heldFollowedRepository,
+      vcsStatus.registeredSidebarID(forCanonicalRoot: held) == sid
+    else { return nil }
+    return held
   }
 
-  /// Run a PR write action (Phase 2b) on the selected workroom's PR: shell to `gh`, refresh the PR
-  /// on success, surface `stderr` on failure. In fixture mode it optimistically updates the seeded
-  /// status instead of spawning `gh`, so the actions menu is exercisable hermetically. Delegates the
-  /// whole lifecycle to `performPRWrite`, shared with `performMerge`.
-  @_disfavoredOverload
-  func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
-    performPRAction(action, number: number, on: .row(sid))
+  /// The followed lane a write to `target` changed: a followed repository's own, or a registered
+  /// row's this window follows in place. Nil for a row no window here follows.
+  func followedRoot(touchedBy target: VCSActionTarget) -> String? {
+    target.followedRoot ?? target.sidebarID.flatMap(rootFollowedInPlace)
   }
 
   /// Run a PR write action on `target`'s PR: a row's, or a followed repository's (#808). `target`
   /// and `number` are captured at the click, so the write goes to the PR the user acted on or is
-  /// refused, wherever the terminal has gone since.
+  /// refused, wherever the terminal has gone since. In fixture mode it optimistically updates the
+  /// seeded status instead of spawning `gh`, so the actions menu is exercisable hermetically.
   func performPRAction(_ action: PRAction, number: Int, on target: VCSActionTarget) {
-    let optimistic = { (pr: PullRequestInfo) in Self.optimisticPR(after: action, pr) }
     let title = "Couldn’t \(action.label.lowercased())"
-    switch target {
-    case .row(let sid):
-      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
-      performPRWrite(
-        arguments: action.arguments(number: number), on: item, number: number,
-        optimistic: optimistic, errorTitle: title)
-    case .followed(let root):
-      performFollowedPRWrite(
-        arguments: action.arguments(number: number), root: root, number: number,
-        optimistic: optimistic, errorTitle: title)
-    }
+    guard let write = prWrite(on: target, errorTitle: title) else { return }
+    performPRWrite(
+      write, arguments: action.arguments(number: number), number: number,
+      optimistic: { Self.optimisticPR(after: action, $0) }, errorTitle: title)
   }
 
+  /// `performPRAction(_:number:on:)` for a work item the caller built, which need not be the
+  /// row's own (a remote location, in tests).
   func performPRAction(
     _ action: PRAction, number: Int, on item: VCSStatusService.StatusWorkItem
   ) {
+    let title = "Couldn’t \(action.label.lowercased())"
+    guard let write = prWrite(on: item, errorTitle: title) else { return }
     performPRWrite(
-      arguments: action.arguments(number: number), on: item, number: number,
-      optimistic: { Self.optimisticPR(after: action, $0) },
-      errorTitle: "Couldn’t \(action.label.lowercased())")
+      write, arguments: action.arguments(number: number), number: number,
+      optimistic: { Self.optimisticPR(after: action, $0) }, errorTitle: title)
   }
 
-  /// The gh-write lifecycle shared by `performPRAction` and `performMerge` (issue #88) for a row: refuse
-  /// a PR whose number moved on since the click, capture the prior PR to restore on failure, apply the optimistic update, then —
-  /// UNLESS in fixture mode, where the optimistic flip is itself the final result — flip the
-  /// in-flight flag, build the GitHub service for the registered location (bound to its repository
-  /// identity), and run the command. On success re-probe for
-  /// GitHub's authoritative state; on failure revert the optimistic flip and surface `stderr`.
+  /// Merge `target`'s PR (issue #88), a row's or a followed repository's (#808), with `method`,
+  /// captured at the click with its number, as `performPRAction(_:number:on:)` is. The strategy is
+  /// a parameter, so it's kept apart from the state-only `PRAction` verbs. In fixture mode it
+  /// optimistically flips the PR to merged instead of spawning `gh`.
+  func performMerge(_ method: PRMergeMethod, number: Int, on target: VCSActionTarget) {
+    let title = "Couldn’t merge pull request"
+    guard let write = prWrite(on: target, errorTitle: title) else { return }
+    performPRWrite(
+      write, arguments: method.arguments(number: number), number: number,
+      optimistic: Self.optimisticMergedPR, errorTitle: title)
+  }
+
+  /// What one pull request write needs of its target, set up at the click. A row's and a followed
+  /// repository's differ only here; `performPRWrite` runs them both.
+  private struct PRWrite {
+    let target: VCSActionTarget
+    /// A row may act with no pull request in its status; a followed repository's must show the one
+    /// acted on.
+    let requiresShownPR: Bool
+    /// A row's GitHub service is built before the optimistic flip, so a routing failure flips
+    /// nothing; a followed repository's resolves through its registration when the write runs.
+    let prepare: @MainActor () throws -> @MainActor () async throws -> RepositoryGitHub
+    /// Whether the status the click saw still stands: the row's work item, or the followed hold.
+    let isCurrent: @MainActor () -> Bool
+    /// A row's result for a work item that changed is dropped; a followed repository's failure is
+    /// still the user's to see.
+    let reportsStaleFailure: Bool
+  }
+
+  /// `target`'s write, or nil once it is refused (reported, but for a row with no work item).
+  private func prWrite(on target: VCSActionTarget, errorTitle: String) -> PRWrite? {
+    switch target {
+    case .row(let sid):
+      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return nil }
+      return prWrite(on: item, errorTitle: errorTitle)
+    case .followed(let root):
+      guard vcsStatus.isFollowing(root) else {
+        failPRWrite(errorTitle, FollowedRepositoryGone().localizedDescription, on: target)
+        return nil
+      }
+      let vcsStatus = self.vcsStatus
+      let hold = vcsStatus.followedRegistration(of: root)
+      return PRWrite(
+        target: target, requiresShownPR: true,
+        prepare: {
+          let resolver = vcsStatus.statusResolver
+          return {
+            let location = try await vcsStatus.writeLocation(for: target)
+            return try RepositoryRouter.shared.registeredGitHub(for: location, resolver: resolver)
+          }
+        },
+        isCurrent: { hold != nil && vcsStatus.followedRegistration(of: root) == hold },
+        reportsStaleFailure: true)
+    }
+  }
+
+  private func prWrite(on item: VCSStatusService.StatusWorkItem, errorTitle: String) -> PRWrite? {
+    let target = VCSActionTarget.row(item.sid)
+    guard item.permitsGitHubAccess else {
+      let host = item.location?.host ?? .local
+      failPRWrite(
+        errorTitle, RepositoryRoutingError.unavailable(host).localizedDescription, on: target)
+      return nil
+    }
+    let vcsStatus = self.vcsStatus
+    return PRWrite(
+      target: target, requiresShownPR: false,
+      prepare: {
+        guard let location = item.location else {
+          throw RepositoryRoutingError.registrationRequired
+        }
+        let github = try RepositoryRouter.shared.registeredGitHub(
+          for: location, resolver: vcsStatus.statusResolver)
+        return { github }
+      },
+      isCurrent: { vcsStatus.selectedStatusWorkItem(for: item.sid) == item },
+      reportsStaleFailure: false)
+  }
+
+  /// The gh-write lifecycle shared by `performPRAction` and `performMerge` (issue #88): refuse a PR
+  /// whose number moved on since the click, capture the prior PR to restore on failure, apply the
+  /// optimistic update, then — UNLESS in fixture mode, where the optimistic flip is itself the
+  /// final result — flip the in-flight flag, resolve the GitHub service for the registered
+  /// location (bound to its repository identity), and run the command. On success re-probe for
+  /// GitHub's authoritative state; on failure revert the optimistic flip and surface `stderr`. The
+  /// status is touched afterwards only while the one the click saw stands: a followed status let go
+  /// of is never re-created, and one followed afresh since was re-read anyway.
   ///
   /// Fixture mode applies the optimistic update and stops there, before `prActionInFlight` flips —
   /// fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
   private func performPRWrite(
-    arguments: [String], on item: VCSStatusService.StatusWorkItem, number: Int,
+    _ write: PRWrite, arguments: [String], number: Int,
     optimistic: (PullRequestInfo) -> PullRequestInfo, errorTitle: String
   ) {
-    let sid = item.sid
-    guard item.permitsGitHubAccess else {
-      return failPRWrite(
-        errorTitle,
-        RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription)
-    }
-    let priorPR = vcsStatus.workroomStatuses[sid]?.pr
+    let target = write.target
+    let priorPR = vcsStatus.status(for: target)?.pr
     // The PR on screen moved on since the click: never act on a number it no longer shows.
-    if let priorPR, priorPR.number != number {
-      return failPRWrite(errorTitle, Self.pullRequestChanged)
+    if priorPR.map({ $0.number != number }) ?? write.requiresShownPR {
+      return failPRWrite(errorTitle, Self.pullRequestChanged, on: target)
     }
     // Seeded statuses have no `gh` behind them: the optimistic update below *is* the result.
     guard vcsStatus.probesRepositories else {
-      return setPullRequest(priorPR.map(optimistic), on: .row(sid))
+      return vcsStatus.setPullRequest(priorPR.map(optimistic), on: target)
     }
-    let github: RepositoryGitHub
-    do {
-      guard let location = item.location else {
-        throw RepositoryRoutingError.registrationRequired
-      }
-      github = try RepositoryRouter.shared.registeredGitHub(
-        for: location, resolver: vcsStatus.statusResolver)
-    } catch {
-      return failPRWrite(errorTitle, error.localizedDescription)
+    let github: () async throws -> RepositoryGitHub
+    do { github = try write.prepare() } catch {
+      return failPRWrite(errorTitle, error.localizedDescription, on: target)
     }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
     // "the click did nothing". Keep the prior PR to restore if `gh` fails.
-    setPullRequest(priorPR.map(optimistic), on: .row(sid))
+    vcsStatus.setPullRequest(priorPR.map(optimistic), on: target)
     prActionInFlight = true
     Task { [weak self] in
-      let r = await github.run(arguments)
-      guard let self else { return }
-      self.prActionInFlight = false
-      guard self.vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      if r.ok {
-        // Re-probe to replace the optimistic state with GitHub's authoritative one.
-        self.scheduleSelectedStatusRefresh()
-        // A registered row a terminal's inspector follows in place (#808): no selection refresh
-        // reaches it, so its followed lane asks GitHub again.
-        if let held = self.heldFollowedRepository,
-          self.vcsStatus.registeredSidebarID(forCanonicalRoot: held) == sid
-        {
-          self.vcsStatus.refreshFollowedStatus(held, gitHub: true)
-        }
-      } else {
-        // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
-        if let priorPR { self.setPullRequest(priorPR, on: .row(sid)) }
-        self.failPRWrite(errorTitle, Self.stderrMessage(r))
-      }
-    }
-  }
-
-  /// A followed repository's PR write (#808), the row lifecycle's twin: through its registration,
-  /// awaited when the write runs, so one no window follows any more is refused rather than sent to
-  /// wherever the terminal went. Its status is touched only while the hold the click saw stands: a
-  /// status let go of is never re-created, and one followed afresh since was re-read anyway.
-  private func performFollowedPRWrite(
-    arguments: [String], root: String, number: Int,
-    optimistic: (PullRequestInfo) -> PullRequestInfo, errorTitle: String
-  ) {
-    guard let hold = vcsStatus.followedRepositories[root] else {
-      return failPRWrite(errorTitle, FollowedRepositoryGone().localizedDescription)
-    }
-    guard let priorPR = vcsStatus.followedStatuses[root]?.pr, priorPR.number == number else {
-      return failPRWrite(errorTitle, Self.pullRequestChanged)
-    }
-    let target = VCSActionTarget.followed(root: root)
-    setPullRequest(optimistic(priorPR), on: target)
-    // Seeded statuses have no `gh` behind them: the optimistic update *is* the result.
-    guard vcsStatus.probesRepositories else { return }
-    let registration = hold.registration
-    let resolver = vcsStatus.statusResolver
-    prActionInFlight = true
-    Task { [weak self] in
-      guard let self else { return }
       let r: CommandResult
       do {
-        let location = try await self.writeLocation(for: target)
-        let github = try RepositoryRouter.shared.registeredGitHub(
-          for: location, resolver: resolver)
-        r = await github.run(arguments)
+        r = try await github().run(arguments)
       } catch {
         r = CommandResult(
           stdout: "", stderr: error.localizedDescription, exitCode: 1, timedOut: false)
       }
+      guard let self else { return }
       self.prActionInFlight = false
-      let held = self.vcsStatus.followedRepositories[root]?.registration
-      let current = registration != nil && held == registration
+      let current = write.isCurrent()
+      guard current || write.reportsStaleFailure else { return }
       if r.ok {
-        if current { self.vcsStatus.refreshFollowedStatus(root, gitHub: true) }
+        guard current else { return }
+        // Re-probe to replace the optimistic state with GitHub's authoritative one: the selection's
+        // for a row, and the followed lane for a followed repository or a row followed in place.
+        if target.sidebarID != nil { self.scheduleSelectedStatusRefresh() }
+        if let root = self.followedRoot(touchedBy: target) {
+          self.vcsStatus.refreshFollowedStatus(root, gitHub: true)
+        }
       } else {
-        if current { self.setPullRequest(priorPR, on: target) }
-        self.failPRWrite(errorTitle, Self.stderrMessage(r))
+        // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
+        if current, let priorPR { self.vcsStatus.setPullRequest(priorPR, on: target) }
+        self.failPRWrite(errorTitle, Self.stderrMessage(r), on: target)
       }
     }
   }
@@ -231,8 +245,14 @@ extension AppStore {
   private static let pullRequestChanged =
     "That pull request changed since it was shown. Check it and try again."
 
-  private func failPRWrite(_ title: String, _ message: String) {
-    modals.errorTitle = title
+  /// Report a failed PR write. A followed repository the inspector no longer shows is named, as
+  /// the toolbar's dialog names it: gh's stderr often names only `#N` (review of #808, finding 7).
+  private func failPRWrite(_ title: String, _ message: String, on target: VCSActionTarget) {
+    if let name = target.followedName, target.followedRoot != heldFollowedRepository {
+      modals.errorTitle = "\(title) in \(name)"
+    } else {
+      modals.errorTitle = title
+    }
     modals.errorMessage = message
   }
 
@@ -241,56 +261,25 @@ extension AppStore {
     return stderr.isEmpty ? "The gh command failed." : stderr
   }
 
-  /// Set `target`'s PR in its status, when it has a status: a row's, or a followed repository's.
-  private func setPullRequest(_ pr: PullRequestInfo?, on target: VCSActionTarget) {
-    switch target {
-    case .row(let sid):
-      guard var s = vcsStatus.workroomStatuses[sid] else { return }
-      s.pr = pr
-      vcsStatus.workroomStatuses[sid] = s
-    case .followed(let root):
-      guard var s = vcsStatus.followedStatuses[root] else { return }
-      s.pr = pr
-      vcsStatus.followedStatuses[root] = s
-    }
-  }
-
-  /// Record a commit for `sid` and refresh what it changed.
+  /// Record a commit for `target`, a row or a followed repository (#808), captured by the caller: a
+  /// terminal can `cd` to another repository while a hook runs, and the commit and every refresh
+  /// below belong to the repository the sheet was opened for.
   ///
   /// Unlike `performPRAction`, there is **no optimistic update**. A PR action flips a badge whose
   /// authority is remote and slow; a commit rewrites local state the panel reads directly, and
   /// pretending it succeeded would mean showing a clean file list for a commit a hook is still able
   /// to reject. The sheet shows progress instead, and the list changes only once it really has.
-  ///
-  /// `sid` is captured by the caller, never re-derived: `selectedTargetID` can move while a hook
-  /// runs, and every refresh below must land on the row that actually changed.
-  func performCommit(
-    _ request: VCSCommitRequest, on sid: SidebarID,
-    completion: @escaping (VCSCommitResult) -> Void
-  ) {
-    performCommit(request, on: .row(sid), completion: completion)
-  }
-
-  /// Record a commit for `target`, a row or a followed repository (#808), captured by the caller: a
-  /// terminal can `cd` to another repository while a hook runs, and the commit and every refresh
-  /// below belong to the repository the sheet was opened for.
   func performCommit(
     _ request: VCSCommitRequest, on target: VCSActionTarget,
     completion: @escaping (VCSCommitResult) -> Void
   ) {
-    let item: VCSStatusService.StatusWorkItem?
-    switch target {
-    case .row(let sid):
-      guard let found = vcsStatus.selectedStatusWorkItem(for: sid) else {
-        return completion(.failed(.other("That workroom is no longer available.")))
-      }
-      item = found
-    case .followed(let root):
-      guard vcsStatus.followedRepositories[root] != nil else {
-        return completion(.failed(.other(FollowedRepositoryGone().localizedDescription)))
-      }
-      item = nil
+    guard vcsStatus.canAddress(target) else {
+      let gone =
+        target.sidebarID == nil
+        ? FollowedRepositoryGone().localizedDescription : "That workroom is no longer available."
+      return completion(.failed(.other(gone)))
     }
+    let item = target.sidebarID.flatMap(vcsStatus.selectedStatusWorkItem(for:))
     // The services' local writer, when they have one (the fixture's `FixtureVCSWriter`, since its
     // paths aren't real repos and a live write would only ever fail), replaces only the WRITER:
     // taking an early return here instead skipped the whole store-side lane (the in-flight marks, the
@@ -311,7 +300,7 @@ extension AppStore {
             await writer.commit(path: item.path, projectRoot: local.path, request: request)
           }
         } else {
-          let location = try await self.writeLocation(for: target)
+          let location = try await self.vcsStatus.writeLocation(for: target)
           let writer = try await RepositoryRouter.shared.writer(for: location)
           root = try writer.context.requireOwnership()
           commit = { await writer.commit(request: request) }
@@ -336,19 +325,14 @@ extension AppStore {
       switch result {
       case .ok, .committedThenFailed:
         // Refresh by the CAPTURED target: the watcher lane is suppressed while the commit runs
-        // (`isCommittingProject`), so the commit's own churn never refreshes the Changes list.
-        switch target {
-        case .row(let sid):
+        // (`isCommittingProject`), so the commit's own churn never refreshes the Changes list. A
+        // followed repository's lane too, or a registered row's this window follows in place, which
+        // is the one that reads it while no workroom is selected.
+        if let sid = target.sidebarID {
           vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: false)
-          // A registered row a terminal's inspector follows in place: its followed lane too, which
-          // is the one that reads it while no workroom is selected.
-          if let held = self.heldFollowedRepository,
-            vcsStatus.registeredSidebarID(forCanonicalRoot: held) == sid
-          {
-            vcsStatus.refreshFollowedStatus(held, gitHub: false)
-          }
-        case .followed(let followed):
-          vcsStatus.refreshFollowedStatus(followed, gitHub: false)
+        }
+        if let root = self.followedRoot(touchedBy: target) {
+          vcsStatus.refreshFollowedStatus(root, gitHub: false)
         }
         // History gained a commit, and the ahead count and Push button both moved. Only refresh the
         // models that are still pointed at what we committed — otherwise switching workrooms, or a
@@ -368,11 +352,6 @@ extension AppStore {
   ///
   /// Read-only and ungated. A failed staged-content check is an explicit failure: the sheet must
   /// not authorize a commit when it cannot determine whether staged work would be discarded.
-  func stagedContentAtRisk(
-    on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
-  ) {
-    stagedContentAtRisk(on: .row(sid), files: files, completion: completion)
-  }
 
   func stagedContentAtRisk(
     on target: VCSActionTarget, files: [ChangedFile],
@@ -381,7 +360,7 @@ extension AppStore {
     guard vcsStatus.probesRepositories else { return completion(.success([])) }
     Task {
       do {
-        let location = try await self.writeLocation(for: target)
+        let location = try await self.vcsStatus.writeLocation(for: target)
         let writer = try await RepositoryRouter.shared.writer(for: location)
         completion(.success(try await writer.stagedContentAtRisk(files: files)))
       } catch { completion(.failure(error)) }
@@ -397,18 +376,13 @@ extension AppStore {
   ///
   /// Failures remain explicit and block the write until preflight succeeds.
   /// The fixture is NOT short-circuited here — `CommitFlow.prefill` seeds its own values.
-  func commitPreflight(
-    on sid: SidebarID, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
-  ) {
-    commitPreflight(on: .row(sid), completion: completion)
-  }
 
   func commitPreflight(
     on target: VCSActionTarget, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
   ) {
     Task {
       do {
-        let location = try await self.writeLocation(for: target)
+        let location = try await self.vcsStatus.writeLocation(for: target)
         let writer = try await RepositoryRouter.shared.writer(for: location)
         completion(.success(try await writer.commitPreflight()))
       } catch { completion(.failure(error)) }
@@ -443,33 +417,6 @@ extension AppStore {
       number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: pr.mergeable, mergeState: pr.mergeState)
-  }
-
-  /// Merge the selected workroom's PR (issue #88) with `method`: shell to `gh pr merge`, refresh on
-  /// success, surface `stderr` on failure. Mirrors `performPRAction` — same in-flight gate, same
-  /// `gh` repo context, same optimistic-then-authoritative flow, both via `performPRWrite` — but the
-  /// strategy is a parameter, so it's kept separate from the state-only `PRAction` verbs. In fixture
-  /// mode it optimistically flips the PR to merged instead of spawning `gh`.
-  @_disfavoredOverload
-  func performMerge(_ method: PRMergeMethod, number: Int, on sid: SidebarID) {
-    performMerge(method, number: number, on: .row(sid))
-  }
-
-  /// Merge `target`'s PR, a row's or a followed repository's (#808), captured at the click with
-  /// its number, as `performPRAction(_:number:on:)` is.
-  func performMerge(_ method: PRMergeMethod, number: Int, on target: VCSActionTarget) {
-    let title = "Couldn’t merge pull request"
-    switch target {
-    case .row(let sid):
-      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
-      performPRWrite(
-        arguments: method.arguments(number: number), on: item, number: number,
-        optimistic: Self.optimisticMergedPR, errorTitle: title)
-    case .followed(let root):
-      performFollowedPRWrite(
-        arguments: method.arguments(number: number), root: root, number: number,
-        optimistic: Self.optimisticMergedPR, errorTitle: title)
-    }
   }
 
   /// Optimistically flip the PR to merged (no `gh`): the badge turns purple and the Merge button

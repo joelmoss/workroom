@@ -914,7 +914,7 @@ final class WorkroomStatusTests: XCTestCase {
       reviewers: [])
     store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: draft)
 
-    store.performPRAction(.markReady, number: 5, on: sid)
+    store.performPRAction(.markReady, number: 5, on: .row(sid))
     // Optimistic: the draft flag is cleared the instant the action is invoked, before `gh` returns.
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.isDraft, false)
     XCTAssertTrue(store.prActionInFlight)
@@ -946,7 +946,7 @@ final class WorkroomStatusTests: XCTestCase {
         number: 7, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
         reviewers: []))
 
-    store.performPRAction(.convertToDraft, number: 7, on: sid)
+    store.performPRAction(.convertToDraft, number: 7, on: .row(sid))
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.isDraft, true)
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.state, .open)
   }
@@ -971,7 +971,7 @@ final class WorkroomStatusTests: XCTestCase {
       reviewers: [], mergeable: true)
     store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: open)
 
-    store.performMerge(.squash, number: 9, on: sid)
+    store.performMerge(.squash, number: 9, on: .row(sid))
     // Optimistic: flipped to merged (and unmergeable) the instant the action is invoked.
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.state, .merged)
     XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.mergeable, false)

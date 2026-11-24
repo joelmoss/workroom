@@ -35,8 +35,9 @@ struct PullRequestPanel: View {
           content(for: .row(sid))
         case .followed:
           // A followed repository's pull request takes a workroom's actions (#808), on its row
-          // when it is a registered one's; none where the app can't write to it.
-          content(for: store.inspectorActionTarget)
+          // when it is a registered one's, even where the app can't write the folder (`gh` writes
+          // only on GitHub).
+          content(for: store.inspectorPullRequestTarget)
         case .target, .nothing:
           inspectorMessage("Select a workroom to see its pull request.")
         }

@@ -160,7 +160,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
 
     let response: Result<VCSCommitPreflight, Error> = await withCheckedContinuation {
       continuation in
-      store.commitPreflight(on: .root(project: dir)) { continuation.resume(returning: $0) }
+      store.commitPreflight(on: .row(.root(project: dir))) { continuation.resume(returning: $0) }
     }
     let preflight = try response.get()
 

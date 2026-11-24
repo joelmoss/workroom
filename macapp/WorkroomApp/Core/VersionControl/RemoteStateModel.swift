@@ -28,15 +28,31 @@ final class RemoteStateModel: ObservableObject {
 
   /// What the model is pointed at. Carries `projectRoot` because fetch always runs there.
   struct Target: Equatable, Sendable {
-    let sid: SidebarID
+    /// What its actions act on: a sidebar row, or a repository a terminal's inspector follows that
+    /// is no row's (#808), by its canonical root. A followed one's location is resolved through
+    /// `followedLocation` on every read and action, never from the path.
+    let actionTarget: VCSActionTarget
     let path: String
     let projectRoot: String
     var location: RepositoryLocation? = nil
-    /// Set for a repository a terminal's inspector follows that is no sidebar row's (#808): its
-    /// canonical root, which is also `path`. `sid` is then the terminal's row, which names no
-    /// repository, so the root is what tells two followed repositories apart. Its location is
-    /// resolved through `followedLocation` on every read and action, never from the path.
-    var followedRoot: String? = nil
+
+    /// A sidebar row's working copy.
+    init(sid: SidebarID, path: String, projectRoot: String, location: RepositoryLocation? = nil) {
+      actionTarget = .row(sid)
+      self.path = path
+      self.projectRoot = projectRoot
+      self.location = location
+    }
+
+    /// A followed repository's, at its canonical root.
+    init(followed root: String) {
+      actionTarget = .followed(root: root)
+      path = root
+      projectRoot = root
+    }
+
+    /// The sidebar row it names, nil for a followed repository.
+    var sid: SidebarID? { actionTarget.sidebarID }
   }
 
   @Published private(set) var state: State = .idle
@@ -120,7 +136,7 @@ final class RemoteStateModel: ObservableObject {
   /// `performCommit` pairs its own `beginWrite`/`endWrite` calls.
   var writeDidStart: (@MainActor (RepositoryLocation) -> Void)?
   var writeDidFinish: (@MainActor (RepositoryLocation) -> Void)?
-  /// Where a followed repository's reads and writes land (`Target.followedRoot`): its registration's
+  /// Where a followed repository's reads and writes land (`Target.actionTarget`): its registration's
   /// location, awaited, or nil once no window follows it, which refuses the read or the action.
   /// Wired post-init to `VCSStatusService.followedWriteLocation`.
   var followedLocation: (@MainActor (String) async -> RepositoryLocation?)?
@@ -142,7 +158,7 @@ final class RemoteStateModel: ObservableObject {
 
   private func resolveWriter(_ target: Target) async throws -> VCSWriting {
     let location: RepositoryLocation
-    if let root = target.followedRoot {
+    if let root = target.actionTarget.followedRoot {
       // Registered while some window follows it, and addressed only through that registration: a
       // repository let go since the click resolves to nothing, never to wherever the path leads.
       guard let held = await followedLocation?(root) else { throw FollowedRepositoryGone() }
@@ -449,11 +465,10 @@ final class RemoteStateModel: ObservableObject {
   /// Put a failure in front of the user. The toolbar's one truncating line can't carry the message, so
   /// anything the user asked for and that failed gets the dialog. `workroom` names where it happened,
   /// and is passed only when that isn't the current selection — see `VCSFailureReport.workroom`.
-  /// What a failure dialog calls `target`: a followed repository by its root (#808), since its
-  /// `sid` is the terminal's row, which names no repository; a row by its label.
+  /// What a failure dialog calls `target`: a followed repository by its root (#808), a row by its
+  /// label.
   private func name(of target: Target) -> String? {
-    if let root = target.followedRoot { return (root as NSString).abbreviatingWithTildeInPath }
-    return describeTarget?(target.sid)
+    target.actionTarget.followedName ?? target.sid.flatMap { describeTarget?($0) }
   }
 
   private func raiseFailureReport(
@@ -504,7 +519,8 @@ final class RemoteStateModel: ObservableObject {
   func noteConflictState(
     _ conflicted: Bool, for sid: SidebarID, location: RepositoryLocation? = nil
   ) {
-    guard target?.sid == sid, target?.location == location, lastAction == .pull, lastFailure == nil
+    guard target?.actionTarget == .row(sid), target?.location == location, lastAction == .pull,
+      lastFailure == nil
     else { return }
     lastPullConflicted = conflicted
   }

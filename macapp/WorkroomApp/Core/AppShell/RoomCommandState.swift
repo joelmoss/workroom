@@ -23,21 +23,25 @@ struct RoomCommandState: Equatable {
     // without making the Commands body itself observe the whole status dictionary.
     let canReveal = store.selectedTarget.map { !$0.isMissing } ?? false
     // Commit and the pull request items act on a followed repository too, registered in place or
-    // not (#808): on what `inspectorActionTarget` names, so nowhere the app can't write to.
-    guard !store.modals.hasModalPresentation, let target = store.inspectorActionTarget else {
+    // not (#808): Commit on what `inspectorActionTarget` names, so nowhere the app can't write to;
+    // the pull request on `inspectorPullRequestTarget`'s, since `gh` writes only on GitHub.
+    guard !store.modals.hasModalPresentation else {
       return Self(
         canCommit: false, pullRequest: nil, canChangeDraft: false, canRevealInFinder: canReveal)
     }
+    let target = store.inspectorPullRequestTarget
     let pr =
       store.vcsStatus.githubCLIStatus == .available
-      ? store.vcsStatus.status(for: target)?.pr : nil
+      ? target.flatMap { store.vcsStatus.status(for: $0)?.pr } : nil
     let draftAction = pr.flatMap {
       PRAction.available(for: $0).first { $0 == .markReady || $0 == .convertToDraft }
     }
     return Self(
-      canCommit: store.canCommit(target),
-      pullRequest: pr.map {
-        PullRequest(number: $0.number, url: $0.url, draftAction: draftAction, target: target)
+      canCommit: store.canCommit(store.inspectorActionTarget),
+      pullRequest: pr.flatMap { pr in
+        target.map {
+          PullRequest(number: pr.number, url: pr.url, draftAction: draftAction, target: $0)
+        }
       },
       canChangeDraft: draftAction != nil && !store.prActionInFlight,
       canRevealInFinder: canReveal)

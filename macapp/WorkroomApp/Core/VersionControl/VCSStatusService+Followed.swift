@@ -17,6 +17,8 @@ extension HostFileWatcher: RepositoryWatching {}
 /// A repository some window's inspector follows (#807), held for as long as any window does: how
 /// many hold it, and the watches that keep its status live while they do.
 struct FollowedRepositoryHold {
+  /// Tells this hold from one taken afresh after it was let go.
+  let id = UUID()
   var holders: Int
   /// The working tree's watch, and for a linked worktree a second one on its repository's git
   /// directory, where its HEAD and refs live, outside the tree.
@@ -102,8 +104,9 @@ extension VCSStatusService {
       hold.holders += 1
       followedRepositories[key] = hold
     } else {
-      followedRepositories[key] = FollowedRepositoryHold(
-        holders: 1, watchers: [], registration: registerFollowed(key))
+      var hold = FollowedRepositoryHold(holders: 1, watchers: [])
+      hold.registration = registerFollowed(key, hold: hold.id)
+      followedRepositories[key] = hold
       if registeredSidebarID(forRepositoryRoot: key) == nil, followedStatuses[key] == nil {
         followedStatuses[key] = .unresolved
       }
@@ -128,6 +131,7 @@ extension VCSStatusService {
     for watcher in hold.watchers { watcher.stop() }
     followedRepositories[key] = nil
     followedStatuses[key] = nil
+    unregisteredFollowedRoots.remove(key)
     releaseFollowed(hold.registration)
   }
 
@@ -137,10 +141,20 @@ extension VCSStatusService {
   /// as a workroom's does (#808). One hold on the router per hold here, taken once its location is
   /// known and released by `releaseFollowed` only after that, so the two always balance: a
   /// repository let go and followed again while this runs ends with exactly the new hold's.
-  private func registerFollowed(_ key: String) -> Task<RepositoryRouter.Registration?, Never> {
+  ///
+  /// One that comes back empty is recorded in `unregisteredFollowedRoots` while `hold` stands, and
+  /// the windows are told, so they stop offering the writes it would refuse.
+  private func registerFollowed(
+    _ key: String, hold: UUID
+  ) -> Task<RepositoryRouter.Registration?, Never> {
     let router = RepositoryRouter.shared
-    return Task {
-      guard let registration = await VCSStatusService.followedRegistration(root: key) else {
+    let resolve = resolveFollowedRegistration
+    return Task { [weak self] in
+      guard let registration = await resolve(key) else {
+        if let self, self.followedRepositories[key]?.id == hold {
+          self.unregisteredFollowedRoots.insert(key)
+          for window in self.statusWindows { window.followedRegistrationDidFail(root: key) }
+        }
         return nil
       }
       router.holdFollowed(registration)
@@ -205,6 +219,56 @@ extension VCSStatusService {
     // whose registration this is may be written through.
     guard followedRepositories[root]?.registration == registration else { return nil }
     return location
+  }
+
+  /// The registration of the hold on `root`, nil when no window follows it: what a write captures
+  /// at the click, to tell later whether that hold still stands rather than one taken afresh.
+  func followedRegistration(of root: String) -> Task<RepositoryRouter.Registration?, Never>? {
+    followedRepositories[root]?.registration
+  }
+
+  // MARK: Writes
+
+  /// Whether a write to `target` has something to address: a row's work item, or a repository some
+  /// window follows. The write side's `status(for:)`.
+  func canAddress(_ target: VCSActionTarget) -> Bool {
+    switch target {
+    case .row(let sid): return selectedStatusWorkItem(for: sid) != nil
+    case .followed(let root): return isFollowing(root)
+    }
+  }
+
+  /// Where a write to `target` lands, resolved when the write runs from what was captured at the
+  /// click. A followed repository's is its registration's, awaited: refused once no window follows
+  /// it, rather than sent wherever the terminal has gone since.
+  func writeLocation(for target: VCSActionTarget) async throws -> RepositoryLocation {
+    switch target {
+    case .row(let sid):
+      guard let item = selectedStatusWorkItem(for: sid) else {
+        throw RepositoryRoutingError.registrationRequired
+      }
+      return try await item.resolvedLocation()
+    case .followed(let root):
+      guard let location = await followedWriteLocation(root) else {
+        throw FollowedRepositoryGone()
+      }
+      return location
+    }
+  }
+
+  /// Set `target`'s pull request in its status, when it has a status: a row's, or a followed
+  /// repository's own.
+  func setPullRequest(_ pr: PullRequestInfo?, on target: VCSActionTarget) {
+    switch target {
+    case .row(let sid):
+      guard var status = workroomStatuses[sid] else { return }
+      status.pr = pr
+      workroomStatuses[sid] = status
+    case .followed(let root):
+      guard var status = followedStatuses[root] else { return }
+      status.pr = pr
+      followedStatuses[root] = status
+    }
   }
 
   /// The repository a followed root's writes are serialised on, once it is registered: what the
@@ -295,15 +359,20 @@ extension VCSStatusService {
   /// Cancel-and-replace within its lane (local-only, or full), so the latest change wins; a result
   /// for a repository no window follows any more is dropped. `debounced` waits
   /// `followedProbeDebounce` first, so a burst (or a repository passed by) forks nothing.
-  func refreshFollowedStatus(_ root: String, gitHub: Bool, debounced: Bool = false) {
+  ///
+  /// Returns the probe it started, nil when it started none, for a caller that waits on the read.
+  @discardableResult
+  func refreshFollowedStatus(
+    _ root: String, gitHub: Bool, debounced: Bool = false
+  ) -> Task<Void, Never>? {
     let key = Self.canonicalPath(root)
-    guard probesRepositories, var hold = followedRepositories[key] else { return }
+    guard probesRepositories, var hold = followedRepositories[key] else { return nil }
     let registered = registeredSidebarID(forRepositoryRoot: key)
     let item = registered.flatMap(selectedStatusWorkItem(for:))
-    if let registered, isCreating(registered) { return }
+    if let registered, isCreating(registered) { return nil }
     // A followed repository's own commit keeps its read lanes off it too (#808): a `git status`
     // mid-commit contends on `index.lock`, as for a workroom.
-    if isCommittingProject(item?.sharedLocation ?? followedSharedLocation(key)) { return }
+    if isCommittingProject(item?.sharedLocation ?? followedSharedLocation(key)) { return nil }
     let resolver = statusResolver
     let debounce = debounced ? followedProbeDebounce : 0
     let task = Task { [weak self] in
@@ -345,6 +414,7 @@ extension VCSStatusService {
       hold.localProbe = task
     }
     followedRepositories[key] = hold
+    return task
   }
 
   /// Wait for every followed repository's probe in flight. For tests.
