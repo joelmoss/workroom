@@ -40,6 +40,17 @@ final class FileTreeModel: ObservableObject {
 
   private var currentPath: String?
   private var currentLocation: RepositoryLocation?
+  /// The repository folder the tree shows, relative to `currentPath` ("" for all of it): a
+  /// followed folder inside a repository (#809). The listing is the whole repository's, so a move
+  /// to another of its folders re-roots without listing again.
+  private var subfolder = ""
+  /// The last listing's tree, before `subfolder` picks the part shown.
+  private var listedRoots: [FileNode] = []
+  /// Listing a plain folder outside any repository (#809): from disk, one level at a time.
+  private var isPlain = false
+  /// A plain folder's listed directories, by tree-relative path ("" for the root).
+  private var plainListings: [String: [FileNode]] = [:]
+  private var plainTask: Task<Void, Never>?
   private let runner: StatusCommandRunning
   private var watcher: HostFileWatcher?
   private var loadTask: Task<Void, Never>?
@@ -66,6 +77,7 @@ final class FileTreeModel: ObservableObject {
 
   deinit {
     loadTask?.cancel()
+    plainTask?.cancel()
     listing?.task.cancel()
     // No `watcher?.stop()`: this model is the watcher's only owner, and `HostFileWatcher` stops its
     // watch in its own `deinit` (a nonisolated deinit can't reach the main-actor property anyway).
@@ -81,6 +93,8 @@ final class FileTreeModel: ObservableObject {
     }
     // Forgotten, so a later `activate(path:)` back to that path is not taken for a no-op.
     currentPath = nil
+    subfolder = ""
+    isPlain = false
     // No watcher refreshes a remote tree, so coming back to it is when it is read again. One this
     // app can't reach, or whose recorded path can't name a location, shows nothing, never that path
     // on this Mac.
@@ -89,10 +103,41 @@ final class FileTreeModel: ObservableObject {
     activate(location: location)
   }
 
+  /// Point the model at what a followed folder's Files section lists (#809), or `nil` to clear. A
+  /// move between folders of one repository re-roots the tree it already has, listing nothing.
+  func activate(root: FilesRoot?) {
+    switch root {
+    case nil:
+      activate(path: nil)
+    case .repository(let path, let subfolder):
+      if isPlain { forgetPath() }
+      if path == currentPath {
+        guard subfolder != self.subfolder else { return }
+        self.subfolder = subfolder
+        expanded = []
+        reroot()
+        return
+      }
+      activate(path: path, subfolder: subfolder, plain: false)
+    case .folder(let path):
+      if !isPlain { forgetPath() }
+      activate(path: path, subfolder: "", plain: true)
+    }
+  }
+
+  /// Leave the current path, so the next activation of it is not taken for a no-op: a switch
+  /// between listing modes on one path.
+  private func forgetPath() { currentPath = nil }
+
   /// Point the model at a target directory (a workroom/project root), or `nil` to clear. Starts
   /// watching it and lists it. No-op if already on this path (so re-renders don't re-list).
   /// Raw paths are the local persisted-record boundary; normalization finishes before watching.
   func activate(path: String?) {
+    if isPlain || !subfolder.isEmpty, path == currentPath { forgetPath() }
+    activate(path: path, subfolder: "", plain: false)
+  }
+
+  private func activate(path: String?, subfolder: String, plain: Bool) {
     // Compared against the RAW path, never against `currentLocation.path`: `RepositoryLocation`
     // canonicalizes (resolves symlinks — `/tmp` is `/private/tmp` on macOS), so re-selecting the
     // same on-screen target would otherwise look like a fresh activation on every re-render,
@@ -102,6 +147,8 @@ final class FileTreeModel: ObservableObject {
     loadTask?.cancel()
     cancelListing()
     currentPath = path
+    self.subfolder = subfolder
+    isPlain = plain
     expanded = []
     currentLocation = nil
     watcher?.stop()
@@ -128,6 +175,8 @@ final class FileTreeModel: ObservableObject {
     watcher?.stop()
     watcher = nil
     currentLocation = location
+    listedRoots = []
+    plainListings = [:]
     roots = []
     expanded = []
     guard let location else {
@@ -164,6 +213,7 @@ final class FileTreeModel: ObservableObject {
   /// stack that many listings on the host.
   func reload() {
     guard let location = currentLocation else { return }
+    if isPlain { return listPlain(Array(plainListings.keys) + [""], at: location) }
     if let listing, listing.location == location {
       followUp = true
       return
@@ -173,6 +223,8 @@ final class FileTreeModel: ObservableObject {
   }
 
   private func cancelListing() {
+    plainTask?.cancel()
+    plainTask = nil
     listing?.task.cancel()
     listing = nil
     followUp = false
@@ -203,7 +255,8 @@ final class FileTreeModel: ObservableObject {
   private func apply(_ result: ListResult) {
     switch result {
     case .listing(let paths):
-      roots = FileTreeBuilder.build(from: paths)
+      listedRoots = FileTreeBuilder.build(from: paths)
+      reroot()
       state = .loaded
     case .failed(let error):
       roots = []
@@ -228,22 +281,133 @@ final class FileTreeModel: ObservableObject {
     }
   }
 
-  /// Expand/collapse a directory row. No-op for files.
+  /// Expand/collapse a directory row. No-op for files. A plain folder's directory is listed the
+  /// first time it opens.
   func toggle(_ node: FileNode) {
     guard node.isDirectory else { return }
     if expanded.contains(node.path) {
       expanded.remove(node.path)
     } else {
       expanded.insert(node.path)
+      if isPlain, plainListings[node.path] == nil, let location = currentLocation {
+        listPlain([node.path], at: location)
+      }
     }
+  }
+
+  /// Show the part of the listed tree under `subfolder`: none of it when git lists nothing there
+  /// (an empty or wholly ignored folder).
+  private func reroot() {
+    var nodes = listedRoots
+    if !subfolder.isEmpty {
+      var walked = ""
+      for component in subfolder.split(separator: "/").map(String.init) {
+        walked = walked.isEmpty ? component : walked + "/" + component
+        let path = walked
+        nodes = nodes.first { $0.isDirectory && $0.path == path }?.children ?? []
+      }
+    }
+    roots = nodes
+  }
+
+  // MARK: Plain folders (#809)
+
+  /// List `directories` (tree-relative, "" for the root) of a plain folder from disk, off the main
+  /// actor, and graft them into the tree. Hidden entries are left out, as `ls` and Finder leave
+  /// them. A root that cannot be read leaves nothing to show.
+  private func listPlain(_ directories: [String], at location: RepositoryLocation) {
+    let wanted = Array(Set(directories))
+    let previous = plainTask
+    plainTask = Task { [weak self] in
+      await previous?.value
+      let listed =
+        (try? await runBlocking { Self.readPlain(wanted, under: location.path) }) ?? [:]
+      guard !Task.isCancelled, let self, self.currentLocation == location, self.isPlain else {
+        return
+      }
+      for directory in wanted { self.plainListings[directory] = listed[directory] }
+      guard self.plainListings[""] != nil else {
+        self.roots = []
+        self.state = .unavailable
+        return
+      }
+      self.roots = self.plainTree("")
+      self.state = .loaded
+    }
+  }
+
+  /// The plain folder's tree below `directory`, from what has been listed: an unlisted directory
+  /// has no children yet.
+  private func plainTree(_ directory: String) -> [FileNode] {
+    (plainListings[directory] ?? []).map { node in
+      guard node.isDirectory else { return node }
+      return FileNode(
+        name: node.name, path: node.path, isDirectory: true, children: plainTree(node.path))
+    }
+  }
+
+  /// Read each of `directories` under `root`; a directory that cannot be read is missing from the
+  /// result.
+  nonisolated static func readPlain(_ directories: [String], under root: String) -> [String:
+    [FileNode]]
+  {
+    var result: [String: [FileNode]] = [:]
+    let manager = FileManager.default
+    for directory in directories {
+      let url =
+        directory.isEmpty
+        ? URL(fileURLWithPath: root, isDirectory: true)
+        : URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent(directory)
+      guard
+        let entries = try? manager.contentsOfDirectory(
+          at: url, includingPropertiesForKeys: [.isDirectoryKey],
+          options: [.skipsHiddenFiles])
+      else { continue }
+      let nodes = entries.map { entry -> FileNode in
+        let name = entry.lastPathComponent
+        let path = directory.isEmpty ? name : directory + "/" + name
+        let isDirectory =
+          (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        return FileNode(
+          name: name, path: path, isDirectory: isDirectory, children: isDirectory ? [] : nil)
+      }
+      result[directory] = FileTreeBuilder.sorted(nodes)
+    }
+    return result
   }
 
   private func startWatching(_ path: String) {
     let watcher = HostFileWatcher { [weak self] changed, overflow in
-      if Self.isRelevantChange(changed, overflow: overflow) { self?.reload() }
+      guard let self else { return }
+      // A plain folder can be `~`, whose watch never rests: only a change in a listed directory
+      // re-reads it.
+      if self.isPlain {
+        if overflow || Self.touchesListed(changed, root: path, listed: Set(self.plainListings.keys))
+        {
+          self.reload()
+        }
+      } else if Self.isRelevantChange(changed, overflow: overflow) {
+        self.reload()
+      }
     }
     watcher.start(path: path)
     self.watcher = watcher
+  }
+
+  /// Whether any of `changed` (absolute paths, as the watch reports them) is an entry of a listed
+  /// directory of the plain folder at `root`. The watch may name `/private/var` for `/var`.
+  nonisolated static func touchesListed(_ changed: [String], root: String, listed: Set<String>)
+    -> Bool
+  {
+    let roots = [root, "/private" + root]
+    return changed.contains { path in
+      for base in roots where path == base || path.hasPrefix(base + "/") {
+        let relative = String(path.dropFirst(min(path.count, base.count + 1)))
+        let parent = (relative as NSString).deletingLastPathComponent
+        if listed.contains(parent) || listed.contains(relative) { return true }
+      }
+      return false
+    }
   }
 
   /// Ignore pure VCS-internal churn (git writing `.git/`) so the tree doesn't self-trigger an endless

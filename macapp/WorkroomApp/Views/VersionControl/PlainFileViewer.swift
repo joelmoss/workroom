@@ -59,7 +59,7 @@ struct PlainFileViewer: View {
         if isFocused && !showingPreview { FileFindBar(model: find) }
       }
       .background(ThemeFill.background)
-      .task(id: descriptor.path) {
+      .task(id: directory + "\u{1F}" + descriptor.path) {
         previewRendered = false  // a new file means a new render to wait for
         let loaded = await loader.load(
           path: descriptor.path, directory: directory, location: repositoryLocation,

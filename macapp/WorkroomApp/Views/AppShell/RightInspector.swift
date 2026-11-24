@@ -74,7 +74,8 @@ struct RightInspector: View {
       collapsed: subs.map { collapsedValue(for: $0) },
       // History hosts its body in fill mode (it scrolls itself via SwiftUI) so its divergence
       // expander animates cleanly; the other sections keep the default NSScrollView hosting.
-      fills: subs.map { $0 == .history },
+      // Files fills too, so its followed-folder breadcrumb stays pinned above the list (#809).
+      fills: subs.map { $0 == .history || $0 == .files },
       sectionKey: store.activeInspectorSection.rawValue,
       // The section layout is GLOBAL, not per-workroom, so this key is constant: switching workrooms
       // must not trigger the controller's workroom-switch redistribute (only a section change, via

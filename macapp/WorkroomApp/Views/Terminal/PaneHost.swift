@@ -39,7 +39,7 @@ protocol PaneHost: AnyObject, Sendable {
   var vcsReader: (@Sendable (URL) throws -> LocalVCSProviding)? { get }
   func openFilePreview(path: String, for target: TerminalTarget)
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget)
-  func openFileInEditor(path: String)
+  func openFileInEditor(path: String, root: String?)
   func selectChangesetFile(_ path: String?, tab tabID: TerminalTab.ID, in target: TerminalTarget)
 
   // MARK: Status bar and coding agent

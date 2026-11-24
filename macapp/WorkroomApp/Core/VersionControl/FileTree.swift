@@ -19,11 +19,16 @@ struct FileDescriptor: Equatable, Hashable, Sendable {
   /// True while this is the target's single preview tab (italic chip, replaced by the next preview);
   /// false once persisted ("Keep Open" / double-click / opened persistently).
   var isPreview: Bool
+  /// The folder `path` is relative to when it is not the tab's target's own: a file opened from the
+  /// Files tree of a folder a terminal's inspector follows (#809), relative to its repository's
+  /// root, or to a plain folder outside one. Nil: the target's.
+  var root: String? = nil
 
-  /// Two descriptors address the *same* file tab when they point at the same path — the identity used
-  /// to dedupe (re-select an already-open file) and to retarget the preview. The preview flag is
-  /// deliberately excluded, mirroring `DiffDescriptor.sameFile`.
-  func sameFile(as other: FileDescriptor) -> Bool { path == other.path }
+  /// Two descriptors address the *same* file tab when they point at the same file — the identity
+  /// used to dedupe (re-select an already-open file) and to retarget the preview. The preview flag is
+  /// deliberately excluded, mirroring `DiffDescriptor.sameFile`; the root is not, since one relative
+  /// path in two folders is two files.
+  func sameFile(as other: FileDescriptor) -> Bool { path == other.path && root == other.root }
 }
 
 extension FileDescriptor: ContentDescriptor {
@@ -133,6 +138,9 @@ enum FileTreeBuilder {
         .sorted(by: FileTreeBuilder.order)
     }
   }
+
+  /// `nodes` in the tree's order.
+  static func sorted(_ nodes: [FileNode]) -> [FileNode] { nodes.sorted(by: order) }
 
   /// Directories before files; within a group, case-insensitive alphabetical, ties broken by the
   /// exact name so the order is total (stable across runs).

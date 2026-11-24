@@ -240,7 +240,7 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   }
 
   /// The Files inspector's ⌘-click, which acts on a window's selected workroom; it has none.
-  func openFileInEditor(path: String) {}
+  func openFileInEditor(path: String, root: String?) {}
 
   func selectChangesetFile(_ path: String?, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
     terminals.setChangesetSelectedPath(path, forTab: tabID, in: target)
