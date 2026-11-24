@@ -166,6 +166,51 @@ final class InspectorSubjectTests: XCTestCase {
     XCTAssertEqual(second.inspectorSubject, .nothing)
   }
 
+  // MARK: Something to inspect
+
+  /// Value: protects=a selected workroom or project root can be inspected, even before its first
+  /// tab opens, so the activity bar and the View menu's inspector items stay as they were for
+  /// workrooms; fails_when=either reads as nothing to inspect; why_new=#803 activity bar;
+  /// seam=AppStore.selectionIsInspectable; no_claim=what the panes show
+  func testAWorkroomOrAProjectCanBeInspected() throws {
+    let store = makeStore()
+    store.selectedTargetID = workroom
+    store.selectionStatusTask?.cancel()
+    XCTAssertTrue(store.selectionIsInspectable, "a workroom with no tab yet")
+
+    try open(root, in: store)
+    XCTAssertTrue(store.selectionIsInspectable, "a project root")
+  }
+
+  /// Value: protects=a window with no projects, only a standalone terminal or a terminal group,
+  /// can open the inspector, which follows that terminal's folder; fails_when=a terminal row reads
+  /// as nothing to inspect because the app has no project; why_new=#803 activity bar;
+  /// seam=AppStore.selectionIsInspectable; no_claim=the folder it follows
+  func testATerminalWithNoProjectsCanBeInspected() throws {
+    projects.projects = []
+    let store = makeStore()
+    store.newTerminalInSelectedTarget()
+    XCTAssertTrue(try XCTUnwrap(store.selectedTargetID).isStandaloneTerminal)
+    XCTAssertTrue(store.selectionIsInspectable, "a standalone terminal")
+
+    let group = try XCTUnwrap(store.newTerminalGroup(named: "Ops"))
+    guard case .terminalGroup = group else { return XCTFail("\(group) is not a terminal group") }
+    XCTAssertEqual(store.selectedTargetID, group)
+    XCTAssertTrue(store.selectionIsInspectable, "a terminal group")
+  }
+
+  /// Value: protects=no selection and the Quick Terminal's row leave nothing to inspect, so the
+  /// activity bar hides its panes and the View menu's inspector items disable; fails_when=either
+  /// can be inspected; why_new=#803 activity bar; seam=AppStore.selectionIsInspectable;
+  /// no_claim=the Quick Terminal panel
+  func testNoSelectionOrTheQuickTerminalCannotBeInspected() throws {
+    let store = makeStore()
+    XCTAssertFalse(store.selectionIsInspectable, "no selection")
+
+    store.selectedTargetID = builtIn
+    XCTAssertFalse(store.selectionIsInspectable, "the Quick Terminal's row")
+  }
+
   // MARK: Status
 
   /// Value: protects=Changes and Pull Request find a workroom's existing status through the

@@ -52,6 +52,9 @@ struct MenuStateAdapter: ViewModifier {
           hasProjects: !store.projectStore.projects.isEmpty,
           // `hasSidebarContent`: the Projects toggle, on for a window with only terminals (#657).
           hasSidebarContent: store.sidebarHasContent,
+          // `selectionIsInspectable`: the Inspector item and its panes, on for a terminal with no
+          // project, whose inspector follows its folder (#803).
+          selectionIsInspectable: store.selectionIsInspectable,
           // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a
           // workroom to split BESIDE. Deliberately NOT gated on `modal`, for the same reason
           // `hasProjects` isn't — a disabled item drops its key equivalent, and these chords must
@@ -128,6 +131,7 @@ private struct MenuStateValues: ViewModifier {
   let hasWaitingTerminals: Bool
   let hasProjects: Bool
   let hasSidebarContent: Bool
+  let selectionIsInspectable: Bool
   let hasWorkroomAnchor: Bool
   let canNavigateBack: Bool
   let canNavigateForward: Bool
@@ -154,6 +158,7 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.hasWaitingTerminals, hasWaitingTerminals)
       .focusedSceneValue(\.hasProjects, hasProjects)
       .focusedSceneValue(\.hasSidebarContent, hasSidebarContent)
+      .focusedSceneValue(\.selectionIsInspectable, selectionIsInspectable)
       .focusedSceneValue(\.hasWorkroomAnchor, hasWorkroomAnchor)
       .focusedSceneValue(\.canNavigateBack, canNavigateBack)
       .focusedSceneValue(\.canNavigateForward, canNavigateForward)

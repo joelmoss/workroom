@@ -28,10 +28,11 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     super.tearDown()
   }
 
-  private func launchedApp() -> XCUIApplication {
+  private func launchedApp(extraArgs: [String] = []) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestStandaloneTerminals", "1"]
+    app.launchArguments += extraArgs
     app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
@@ -177,5 +178,40 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     XCTAssertTrue(
       message.hasPrefix("Not a git repository"),
       "Changes says \"Not a git repository\", got: \(message)")
+  }
+
+  /// A window with no projects, only a terminal: its activity bar shows Details, Changes and Files
+  /// as a workroom's does, a click opens the inspector, and View ▸ Inspector is enabled (#803).
+  /// Before the terminal opens, with nothing selected, the rail has no panes and the item is off.
+  func testAWindowWithOnlyATerminalCanOpenItsInspector() {
+    app = launchedApp(extraArgs: [
+      "-WorkroomUITestNoProjects", "1", "-WorkroomUITestOnboarding", "hide",
+    ])
+
+    let newTerminal = element("EmptyStateNewTerminal")
+    XCTAssertTrue(newTerminal.waitForExistence(timeout: 20), "the no-projects empty state")
+    XCTAssertTrue(element("activityBar.settings").waitForExistence(timeout: 10), "the rail")
+    XCTAssertFalse(element("activitySection.files").exists, "nothing selected: no panes")
+    let view = app.menuBars.menuBarItems["View"]
+    view.click()
+    XCTAssertFalse(view.menuItems["Inspector"].isEnabled, "nothing selected to inspect")
+    app.typeKey(.escape, modifierFlags: [])
+
+    newTerminal.click()
+    XCTAssertTrue(
+      element("terminal.statusBar.cwd").waitForExistence(timeout: 30),
+      "the new terminal's shell reports its folder")
+    for raw in ["details", "changes", "files"] {
+      XCTAssertTrue(
+        element("activitySection.\(raw)").waitForExistence(timeout: 10),
+        "the rail shows \(raw) for a terminal with no project")
+    }
+    showSection("files", header: "Files")
+
+    view.click()
+    for title in ["Inspector", "Details", "Changes", "History", "Pull Request", "Files"] {
+      XCTAssertTrue(view.menuItems[title].isEnabled, "View ▸ \(title) is enabled for the terminal")
+    }
+    app.typeKey(.escape, modifierFlags: [])
   }
 }
