@@ -347,7 +347,6 @@ extension VCSStatusService {
   }
 
   private func startWatching(_ key: String) {
-    guard probesRepositories else { return }
     let outside = Self.gitDirectoryIsOutsideTree(key)
     // A repository at the home folder (dotfiles) or a disk's root is a tree that never rests
     // (`~/Library`): watch only its git directory, so a commit or `git switch` still lands, and a
@@ -435,8 +434,12 @@ extension VCSStatusService {
     _ root: String, gitHub: Bool, debounced: Bool = false
   ) -> Task<Void, Never>? {
     let key = Self.canonicalPath(root)
-    guard probesRepositories, var hold = followedRepositories[key] else { return nil }
+    // Probed even under seeded statuses: a followed folder is a real repository (the UI-test
+    // fixture's are throwaway ones its shell makes), where a seeded row's path is not one.
+    guard var hold = followedRepositories[key] else { return nil }
     let registered = registeredSidebarID(forRepositoryRoot: key)
+    // A registered row keeps its seeded status, as its own lanes leave it.
+    if registered != nil, !probesRepositories { return nil }
     let item = registered.flatMap(selectedStatusWorkItem(for:))
     if let registered, isCreating(registered) { return nil }
     // A followed repository's own commit keeps its read lanes off it too (#808): a `git status`
@@ -458,6 +461,11 @@ extension VCSStatusService {
       guard let self, !Task.isCancelled, self.followedRepositories[key] != nil else { return }
       self.mergeFollowedStatus(fresh, root: key, registered: registered)
       guard gitHub, fresh.failure == nil, item?.permitsGitHubAccess ?? true else { return }
+      // Seeded statuses have no `gh` behind them (`refreshGitHubCLI` no-ops), so a followed
+      // repository there never reaches GitHub: it settles as having no pull request.
+      guard self.probesRepositories else {
+        return self.applyFollowedGitHub(.pullRequest(.absent), root: key, registered: registered)
+      }
       let location: RepositoryLocation
       do {
         if let item {

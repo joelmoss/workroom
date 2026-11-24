@@ -42,9 +42,13 @@ final class VCSStatusService: ObservableObject {
   /// services before any window exists.
   @ObservationIgnored private let seededStatuses: (@MainActor () -> AppServices.SeededStatuses)?
 
-  init(projectStore: ProjectStore) {
+  init(
+    projectStore: ProjectStore,
+    seededStatuses: (@MainActor () -> AppServices.SeededStatuses)? = AppServices.current
+      .seededStatuses
+  ) {
     self.projectStore = projectStore
-    seededStatuses = AppServices.current.seededStatuses
+    self.seededStatuses = seededStatuses
     let ciResultCache = GitHubCIResultCache()
     self.ciResultCache = ciResultCache
     statusResolver = WorkroomStatusResolver(ciCache: ciResultCache)

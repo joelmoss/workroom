@@ -1729,6 +1729,14 @@ import WorkroomVCS
     /// workroom dirs aren't real repos, so `HistoryModel` / `ChangesetDetailView` read from this instead
     /// of the repository router — the History → changeset click-through then runs hermetically.
     static let vcsProvider: LocalVCSProviding = FixtureVCSProvider()
+
+    /// The fixture's reader for `root`: a real repository's own history (a terminal's followed
+    /// repository, which the test's shell makes), else the canned `vcsProvider` for the fixture's
+    /// paths, which are plain temp folders.
+    @Sendable static func vcsReader(for root: URL) -> LocalVCSProviding {
+      let git = root.appendingPathComponent(".git").path
+      return FileManager.default.fileExists(atPath: git) ? GitProvider() : vcsProvider
+    }
   }
 
   /// Deterministic `LocalVCSProviding` for UI-test fixture mode (see `UITestFixture.vcsProvider`). Per-file
@@ -2006,7 +2014,7 @@ import WorkroomVCS
     @MainActor static var fixture: AppServices {
       var services = AppServices.live
       services.cli = UITestFixture.scriptedCreate ? ScriptedCreateCLI.shared : WorkroomCLI.shared
-      services.vcsReader = { _ in UITestFixture.vcsProvider }
+      services.vcsReader = UITestFixture.vcsReader(for:)
       services.vcsWriter = { _ in FixtureVCSWriter() }
       // An automatic fetch would race whatever the test is asserting, so it never runs.
       services.makeRemoteState = {

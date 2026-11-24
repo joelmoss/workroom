@@ -100,6 +100,15 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     XCTAssertTrue(shown.waitForExistence(timeout: 10), "\(header) shows")
   }
 
+  /// Expands section `title` when its header says it is collapsed (the Dev defaults keep it).
+  private func expand(_ title: String) {
+    let header = element("inspector.header.\(title)")
+    XCTAssertTrue(header.waitForExistence(timeout: 10), "\(title)'s header")
+    if header.label.contains(", collapsed") { header.click() }
+    XCTAssertTrue(
+      poll(timeout: 5) { !header.label.contains(", collapsed") }, "\(title) is expanded")
+  }
+
   func testTheInspectorFollowsAStandaloneTerminalIntoARepositoryAndOutOfIt() {
     app = launchedApp()
 
@@ -119,7 +128,8 @@ final class FollowedFolderInspectorUITests: XCTestCase {
       "d=$(mktemp -d) && mkdir -p \"$d/wr811-repo/src\" && echo hi > \"$d/wr811-repo/src/hello.txt\""
         + " && echo n > \"$d/notes.txt\" && cd \"$d/wr811-repo\" && git init -q -b wr811-branch"
         + " && git add -A && git -c user.name=WR -c user.email=wr@example.invalid"
-        + " -c commit.gpgsign=false commit -qm init && cd src")
+        + " -c commit.gpgsign=false commit -qm 'wr811 first commit'"
+        + " && echo edited > src/hello.txt && cd src")
     let src = waitForCwd(endingWith: "/wr811-repo/src")
     let repo = (src as NSString).deletingLastPathComponent
 
@@ -146,6 +156,22 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     XCTAssertTrue(
       element(prefix: "files.file.", suffix: "hello.txt").waitForExistence(timeout: 10),
       "Files lists the folder's file")
+
+    // Changes lists the repository's own edit, and History its own commit, read for real (the
+    // fixture's seeded statuses and canned history are for its workrooms only).
+    showSection("changes", header: "Changes")
+    expand("Changes")
+    XCTAssertTrue(
+      element("changes.file.src/hello.txt").waitForExistence(timeout: 20),
+      "Changes lists the repository's modified file")
+    expand("History")
+    let rows = app.descendants(matching: .any).matching(identifier: "HistoryRow")
+    let ours = rows.matching(NSPredicate(format: "label ENDSWITH %@", ", wr811 first commit"))
+    XCTAssertTrue(ours.firstMatch.waitForExistence(timeout: 20), "History shows the repo's commit")
+    XCTAssertFalse(
+      rows.matching(NSPredicate(format: "label CONTAINS %@", "Fixture commit")).firstMatch.exists,
+      "and not the fixture's canned commits")
+    showSection("files", header: "Files")
 
     // Out of the repository: Files lists the plain folder, and Changes says it isn't a repository.
     run("cd \"$d\"")

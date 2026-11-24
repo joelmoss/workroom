@@ -34,6 +34,8 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     private let onGitHub: Bool
     /// The branch each `gh pr list` run asked about.
     let pullRequestLists = Mutex<[String?]>([])
+    /// How many times `gh` ran at all.
+    let gitHubRuns = Mutex(0)
     init(onGitHub: Bool) { self.onGitHub = onGitHub }
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
@@ -41,6 +43,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
       guard executable == "gh" else {
         return await real.run(executable, args, in: directory, timeout: timeout)
       }
+      gitHubRuns.withLock { $0 += 1 }
       if args.prefix(2) == ["pr", "list"] {
         let branch = args.firstIndex(of: "--head").map { args.index(after: $0) }
           .flatMap { args.indices.contains($0) ? args[$0] : nil }
@@ -92,8 +95,11 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     runner.pullRequestLists.withLock { $0 }
   }
 
-  private func makeStatus(onGitHub: Bool = false, debounce: TimeInterval = 0) -> VCSStatusService {
-    let status = VCSStatusService(projectStore: projects)
+  private func makeStatus(
+    onGitHub: Bool = false, debounce: TimeInterval = 0,
+    seeded: (@MainActor () -> AppServices.SeededStatuses)? = nil
+  ) -> VCSStatusService {
+    let status = VCSStatusService(projectStore: projects, seededStatuses: seeded)
     runner = GitHubRunner(onGitHub: onGitHub)
     status.statusResolver = WorkroomStatusResolver(runner: runner)
     status.followedProbeDebounce = debounce
@@ -261,6 +267,43 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     let followed = try XCTUnwrap(status.status(for: store.inspectorSubject))
     XCTAssertNil(followed.pr)
     XCTAssertNotNil(followed.prCheckedAt, "the section settles as having no pull request")
+  }
+
+  /// Value: protects=the UI-test fixture's followed repositories (QA of #803); fails_when=seeded
+  /// statuses stop a followed repository's probe, so Changes and Pull Request say "Checking…"
+  /// forever, or a followed repository there reaches `gh`; why_new=#803 QA; seam=VCSStatusService
+  /// with seeded statuses; no_claim=History (the fixture's reader), registered workrooms
+  func testSeededStatusesStillProbeAFollowedRepositoryButNeverAskGitHub() async throws {
+    let status = makeStatus(
+      onGitHub: true,
+      seeded: {
+        AppServices.SeededStatuses(root: .unresolved, workroom: .unresolved, gitHubCLI: nil)
+      })
+    XCTAssertFalse(status.probesRepositories, "the fixture's workrooms stay seeded")
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+
+    try await cd(store, tab, repo("app", branch: "feature/x") + "/src")
+
+    XCTAssertEqual(changedPaths(store), ["src/a.txt"])
+    let followed = try XCTUnwrap(status.status(for: store.inspectorSubject))
+    XCTAssertNil(followed.pr)
+    XCTAssertNotNil(followed.prCheckedAt, "Pull Request settles as having none")
+    XCTAssertEqual(runner.gitHubRuns.withLock { $0 }, 0, "gh never runs under seeded statuses")
+  }
+
+  /// Value: protects=History for the UI-test fixture's followed repositories (QA of #803);
+  /// fails_when=the fixture's reader serves its canned commits for a real repository, or reads a
+  /// fixture path (not a repository) for real; why_new=#803 QA; seam=AppServices.fixture.vcsReader;
+  /// no_claim=the History panel's rendering
+  func testTheFixturesReaderReadsARealRepositoryForRealAndAFixturePathCanned() throws {
+    let read = try XCTUnwrap(AppServices.fixture.vcsReader)
+    let root = URL(fileURLWithPath: repo("app"))
+    XCTAssertEqual(try read(root).log(root: root, limit: 10).commits.map(\.summary), ["base"])
+
+    let plain = URL(fileURLWithPath: folder("plain"))
+    XCTAssertEqual(
+      try read(plain).log(root: plain, limit: 10).commits.first?.summary, "Fixture commit 1")
   }
 
   /// Value: protects=a registered workroom's repository showing in place (AC 2); fails_when=the
