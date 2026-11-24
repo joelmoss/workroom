@@ -143,14 +143,14 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     await flush(hosting)
     XCTAssertNotNil(item("Commit…", in: NSApp.mainMenu), "must host the real Room menu")
     store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true), into: selected)
-    XCTAssertTrue(store.canCommit(selected), "fixture must have committable changes")
+    XCTAssertTrue(store.canCommit(.row(selected)), "fixture must have committable changes")
     await flush(hosting)
     guard commitEnabledWhileOpen(window) == true else {
       return XCTFail(
         "menu did not enable Commit; active=\(NSApp.isActive), key=\(window.isKeyWindow), "
           + "visible=\(window.isVisible), canBecomeKey=\(window.canBecomeKey), "
           + "policy=\(NSApp.activationPolicy().rawValue), policyChanged=\(policyChanged), activation=\(activationRequested), "
-          + "canCommit=\(store.canCommit(selected)), modal=\(store.modals.hasModalPresentation), "
+          + "canCommit=\(store.canCommit(.row(selected))), modal=\(store.modals.hasModalPresentation), "
           + "inspected=\(String(describing: store.inspectorTargetID)), passes=\(WorkroomCommands.bodyPasses), "
           + "nativeItems=\(items("Commit…", in: NSApp.mainMenu).map { $0.isEnabled })")
     }

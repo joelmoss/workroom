@@ -264,6 +264,13 @@ extension AppStore {
     if remoteToolbarShown { remoteState.refresh(force: true) }
   }
 
+  /// The repository this window follows turned out unregistered: the toolbar lets go of it, as
+  /// Commit and the pull request's actions already have (they read `unregisteredFollowedRoots`).
+  func followedRegistrationDidFail(root: String) {
+    guard heldFollowedRepository == root else { return }
+    focusRemoteStateIfShown()
+  }
+
   /// The resolve couldn't tell which repository `folder` is in (a timeout, a repository git
   /// refused). A re-read of the folder already shown keeps what it shows; any other folder, and one
   /// still pending, shows as itself, undetermined, never as the repository the terminal was in before (re-review R1).

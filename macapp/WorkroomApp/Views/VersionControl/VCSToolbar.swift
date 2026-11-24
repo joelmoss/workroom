@@ -119,7 +119,7 @@ struct VCSToolbar: View {
     guard let target = model.target else { return false }
     return VCSSyncPresenter.pullConflicted(
       lastPullConflicted: model.lastPullConflicted,
-      statusConflicted: vcsStatus.status(for: target)?.conflicted == true)
+      statusConflicted: vcsStatus.status(for: target.actionTarget)?.conflicted == true)
   }
 
   var body: some View {
@@ -186,7 +186,7 @@ struct VCSToolbar: View {
   /// Read through the one accessor every branch-showing surface uses, so this can't disagree with the
   /// status bar or the sidebar.
   private var branchName: String? {
-    model.target.flatMap { store.branchName(for: $0.sid) }
+    model.target?.sid.flatMap { store.branchName(for: $0) }
   }
 
   /// Hands straight to the store, which owns the dirty-tree confirmation gate.

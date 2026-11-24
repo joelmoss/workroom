@@ -512,16 +512,13 @@ final class AppStore: ObservableObject {
     switch inspectorSubject {
     case .target(let sid): return remoteTarget(for: sid)
     case .followed(let followed):
-      // A terminal's followed repository (#808): the one this window holds, so its registration
-      // is there to write through, and only where Commit is offered too. A registered row's is that
-      // row's own target, in place.
-      guard let root = writableFollowedRoot(followed), let sid = selectedTargetID else {
-        return nil
+      // A terminal's followed repository (#808): where Commit is offered, so the toolbar can't
+      // disagree with it. A registered row's is that row's own target, in place.
+      switch followedActionTarget(followed, writingLocally: true) {
+      case .row(let sid): return remoteTarget(for: sid)
+      case .followed(let root): return RemoteStateModel.Target(followed: root)
+      case nil: return nil
       }
-      if let registered = vcsStatus.registeredSidebarID(forCanonicalRoot: root) {
-        return remoteTarget(for: registered)
-      }
-      return RemoteStateModel.Target(sid: sid, path: root, projectRoot: root, followedRoot: root)
     case .nothing: return nil
     }
   }
@@ -748,28 +745,21 @@ final class AppStore: ObservableObject {
     guard let target = remoteState.target else { return }
     // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
     // will stash and reapply, which is worth saying before it happens.
-    if action == .pull, vcsStatus.status(for: target)?.dirty == true {
-      modals.pendingRemoteConfirm = PendingVCSAction(
-        action: action, sid: target.sid, followedRoot: target.followedRoot)
+    if action == .pull, vcsStatus.status(for: target.actionTarget)?.dirty == true {
+      modals.pendingRemoteConfirm = PendingVCSAction(action: action, target: target.actionTarget)
       return
     }
-    runRemoteAction(action, on: target.sid, followedRoot: target.followedRoot)
+    runRemoteAction(action, on: target.actionTarget)
   }
 
   /// Run a confirmed action against the workroom it was confirmed FOR.
   ///
-  /// The `sid` is checked rather than trusted: the confirmation dialog is not modal to the sidebar, so
-  /// the selection can move while it is open. Re-deriving the target at click time would silently run
-  /// the pull against a different workroom than the one the dirty-tree warning described.
-  ///
-  /// `followedRoot` is checked the same way for a followed repository (#808): its `sid` is the
-  /// terminal's row, which stays put while the shell `cd`s to another repository.
-  func runRemoteAction(
-    _ action: VCSRemoteAction, on sid: SidebarID, followedRoot: String? = nil
-  ) {
-    guard let target = remoteState.target, target.sid == sid,
-      target.followedRoot == followedRoot
-    else { return }
+  /// The target is checked rather than trusted: the confirmation dialog is not modal to the sidebar,
+  /// so the selection can move while it is open, or a terminal's shell `cd` to another repository
+  /// (#808). Re-deriving the target at click time would silently run the pull against a different
+  /// workroom than the one the dirty-tree warning described.
+  func runRemoteAction(_ action: VCSRemoteAction, on target: VCSActionTarget) {
+    guard remoteState.target?.actionTarget == target else { return }
     guard vcsAllowsRemoteActions else { return }
     remoteState.perform(action, setUpstream: remoteState.snapshot?.tracking?.gone == true)
   }
@@ -915,28 +905,26 @@ final class AppStore: ObservableObject {
     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
     // every branch-showing surface reads through `branchName(for:)`.
     self.remoteState.onBranchResolved = { [weak self] target, name in
-      // A followed repository's branch is its folder's resolve's: `target.sid` there is the
-      // terminal's row, which caches no branch.
-      guard let self, target.followedRoot == nil,
-        self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      // A followed repository's branch is its folder's resolve's: it names no row to cache it on.
+      guard let self, let sid = target.sid,
+        self.vcsStatus.selectedStatusWorkItem(for: sid)?.location == target.location
       else { return }
-      self.setResolvedBranchName(name, for: target.sid)
+      self.setResolvedBranchName(name, for: sid)
     }
     self.remoteState.onDidMutate = { [weak self] action, target in
       guard let self else { return }
-      if let root = target.followedRoot {
+      if let root = target.actionTarget.followedRoot {
         return self.handleFollowedRemoteMutation(action, root: root, target: target)
       }
-      guard self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      guard let sid = target.sid,
+        self.vcsStatus.selectedStatusWorkItem(for: sid)?.location == target.location
       else { return }
       // A registered row a terminal's inspector follows in place (#808): no selection refresh
       // reaches it, so its followed lane re-reads it.
-      if let held = self.heldFollowedRepository,
-        self.vcsStatus.registeredSidebarID(forCanonicalRoot: held) == target.sid
-      {
+      if let held = self.rootFollowedInPlace(sid) {
         return self.handleFollowedRemoteMutation(action, root: held, target: target)
       }
-      self.handleRemoteMutation(action, on: target.sid, location: target.location)
+      self.handleRemoteMutation(action, on: sid, location: target.location)
     }
     self.remoteState.followedLocation = { [vcsStatus = self.vcsStatus] root in
       await vcsStatus.followedWriteLocation(root)
@@ -3103,8 +3091,7 @@ final class AppStore: ObservableObject {
     guard action != .fetch else { return }
     // The local read at once, for the conflict flag below; then its pull request and CI, which a
     // push or a pull may have moved.
-    vcsStatus.refreshFollowedStatus(root, gitHub: false)
-    let refresh = vcsStatus.followedRepositories[root]?.localProbe
+    let refresh = vcsStatus.refreshFollowedStatus(root, gitHub: false)
     vcsStatus.refreshFollowedStatus(root, gitHub: true, debounced: true)
     guard remoteState.target == target else { return }
     if historySectionShown { commitHistory.refresh() }
@@ -3113,7 +3100,7 @@ final class AppStore: ObservableObject {
       await refresh?.value
       guard let self else { return }
       self.remoteState.noteConflictState(
-        self.vcsStatus.status(for: target)?.conflicted == true, for: target)
+        self.vcsStatus.status(for: target.actionTarget)?.conflicted == true, for: target)
     }
   }
 

@@ -89,7 +89,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
     var results: [VCSCommitResult] = []
     await withCheckedContinuation { continuation in
-      store.performCommit(request, on: sid) {
+      store.performCommit(request, on: .row(sid)) {
         results.append($0)
         continuation.resume()
       }
@@ -125,7 +125,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/missing-project", name: "feat")
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
     let result: VCSCommitResult = await withCheckedContinuation { continuation in
-      store.performCommit(request, on: sid) { continuation.resume(returning: $0) }
+      store.performCommit(request, on: .row(sid)) { continuation.resume(returning: $0) }
     }
     guard case .failed = result else { return XCTFail("unregistered write succeeded") }
     XCTAssertFalse(store.vcsStatus.isCommitting(sid))
@@ -161,28 +161,29 @@ extension AppStoreWritingProjectTests {
     let root = SidebarID.root(project: "/proj")
 
     XCTAssertFalse(store.canCommit(nil), "nothing inspected")
-    XCTAssertFalse(store.canCommit(wr), "no status read yet")
+    XCTAssertFalse(store.canCommit(.row(wr)), "no status read yet")
     store.vcsStatus.workroomStatuses[wr] = WorkroomStatus(dirty: false)
-    XCTAssertFalse(store.canCommit(wr), "clean")
+    XCTAssertFalse(store.canCommit(.row(wr)), "clean")
     store.vcsStatus.workroomStatuses[wr] = .unresolved
-    XCTAssertFalse(store.canCommit(wr), "unknown")
+    XCTAssertFalse(store.canCommit(.row(wr)), "unknown")
     store.vcsStatus.workroomStatuses[.project("/proj")] = WorkroomStatus(dirty: true)
-    XCTAssertFalse(store.canCommit(.project("/proj")), "a group header has no status to commit")
+    XCTAssertFalse(
+      store.canCommit(.row(.project("/proj"))), "a group header has no status to commit")
 
     store.vcsStatus.workroomStatuses[wr] = WorkroomStatus(dirty: true)
     store.vcsStatus.workroomStatuses[root] = WorkroomStatus(dirty: true)
-    XCTAssertTrue(store.canCommit(wr))
-    XCTAssertTrue(store.canCommit(root))
+    XCTAssertTrue(store.canCommit(.row(wr)))
+    XCTAssertTrue(store.canCommit(.row(root)))
 
     store.vcsStatus.committingTargets.insert(wr)
-    XCTAssertFalse(store.canCommit(wr), "a commit is already in flight")
-    store.requestCommit(wr)
+    XCTAssertFalse(store.canCommit(.row(wr)), "a commit is already in flight")
+    store.requestCommit(.row(wr))
     XCTAssertNil(store.modals.pendingCommit)
 
     store.vcsStatus.committingTargets.remove(wr)
     store.requestCommit(nil)
     XCTAssertNil(store.modals.pendingCommit)
-    store.requestCommit(wr)
+    store.requestCommit(.row(wr))
     XCTAssertEqual(store.modals.pendingCommit, PendingCommit(sid: wr))
   }
 }

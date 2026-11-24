@@ -16,6 +16,18 @@ enum VCSActionTarget: Hashable, Sendable {
     if case .row(let sid) = self { return sid }
     return nil
   }
+
+  /// The followed repository's canonical root, nil for a row.
+  var followedRoot: String? {
+    if case .followed(let root) = self { return root }
+    return nil
+  }
+
+  /// What a failure dialog calls a followed repository: its root, `~`-abbreviated. Nil for a row,
+  /// which goes by its label.
+  var followedName: String? {
+    followedRoot.map { ($0 as NSString).abbreviatingWithTildeInPath }
+  }
 }
 
 /// A write addressed a followed repository no window follows any more: the terminal moved to
