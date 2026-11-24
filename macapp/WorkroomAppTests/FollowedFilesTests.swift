@@ -1,5 +1,7 @@
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom
@@ -199,6 +201,58 @@ final class FollowedFilesTests: XCTestCase {
     write(plain + "/notes.txt")
     let plainRead = await FileContentLoader.loadOutcome(directory: plain, relative: "notes.txt")
     XCTAssertEqual(plainRead, .text("x\n"))
+  }
+
+  /// The followed target's open file tabs.
+  private func fileTabs(_ store: AppStore) throws -> [FileDescriptor] {
+    let target = try XCTUnwrap(store.selectedTarget)
+    return store.terminals.tabs(for: target).compactMap { tab -> FileDescriptor? in
+      if case .file(let descriptor) = tab.content { return descriptor }
+      return nil
+    }
+  }
+
+  /// Value: protects=a changed file opened in the app reading the repository Changes lists
+  /// (final pass of #803); fails_when=it reads Files' root, which a browse kept across a re-resolve
+  /// (`reresolveFollowedFolder` keeps `filesBrowse`) can leave on another folder, so the tab shows
+  /// another file or none; why_new=#807 handoff; seam=AppStore; no_claim=the viewer's read
+  func testAChangedFileOpenedInTheAppReadsTheFollowedRepository() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root + "/src")
+    guard case .followed(let followed) = store.inspectorSubject else {
+      return XCTFail("the inspector follows the terminal's folder")
+    }
+    let folder = followed.folder
+    let target = try XCTUnwrap(store.selectedTargetID?.targetID)
+    store.filesBrowse = FilesBrowse(
+      target: target, folder: folder, root: .folder(scratch.appendingPathComponent("other").path))
+
+    store.openChangedFileInApp(ChangedFile(path: "src/main.swift", change: .modified))
+
+    XCTAssertEqual(try fileTabs(store).map(\.root), [root])
+  }
+
+  /// Value: protects=a followed repository's diff pane opening its working file from that
+  /// repository (final pass of #803); fails_when=the pane's "Open File" drops the diff's root, so
+  /// the file tab reads the terminal's own folder; why_new=#807 handoff; seam=AppStore +
+  /// `TabContent.fileRoot`, what the pane's toolbar and chip menu pass; no_claim=the button itself
+  func testADiffPanesOpenFileKeepsItsRepository() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root + "/src")
+    let target = try XCTUnwrap(store.selectedTarget)
+    let diff = TabContent.diff(
+      DiffDescriptor(
+        path: "src/main.swift", change: .modified, source: .gitWorktree, isPreview: true,
+        repositoryRoot: root))
+
+    store.openFilePreview(path: try XCTUnwrap(diff.filePath), root: diff.fileRoot, for: target)
+    await eventually { (try? self.fileTabs(store).isEmpty) == false }
+
+    XCTAssertEqual(try fileTabs(store).map(\.root), [root])
   }
 
   /// Value: protects=an ignored folder inside a repository listing its files (review finding);
@@ -446,5 +500,70 @@ final class FollowedFilesTests: XCTestCase {
 
     try await cd(store, tab, plain)
     XCTAssertEqual(names(store), ["notes.txt"])
+  }
+
+  // MARK: A wedged mount
+
+  /// Value: protects=a wedged mount costing one blocked read of a plain folder, not one per watch
+  /// event, and the tree not spinning for good (final pass); fails_when=the disk read has no
+  /// timeout, so every re-read blocks another GCD thread and Files stays "loading";
+  /// why_new=#803 final pass; seam=FileTreeModel with a disk read that blocks; no_claim=the
+  /// existence check (its own test)
+  func testAStuckPlainFolderReadTimesOutAndBlocksOneRead() async throws {
+    let plain = scratch.appendingPathComponent("stuck-\(UUID().uuidString)").path
+    write(plain + "/notes.txt")
+    let gate = DispatchSemaphore(value: 0)
+    let blocks = Mutex(true)
+    let reads = Mutex(0)
+    let model = FileTreeModel(
+      diskReadTimeout: 0.1,
+      readDirectories: { directories, root in
+        reads.withLock { $0 += 1 }
+        if blocks.withLock({ $0 }) { gate.wait() }
+        return FileTreeModel.readPlain(directories, under: root)
+      })
+    defer {
+      blocks.withLock { $0 = false }
+      gate.signal()
+    }
+
+    model.activate(root: .folder(plain))
+    await eventually { model.state == .unavailable }
+    for _ in 0..<4 { model.reload() }
+    try await Task.sleep(for: .milliseconds(800))
+
+    XCTAssertEqual(reads.withLock { $0 }, 1, "one blocked read, joined by every re-read")
+    XCTAssertEqual(model.state, .unavailable)
+
+    blocks.withLock { $0 = false }
+    gate.signal()
+    // The blocked read's entry clears once it returns, so a later re-read lists the folder.
+    for _ in 0..<100 where model.state != .loaded {
+      model.reload()
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(model.state, .loaded)
+    XCTAssertEqual(model.roots.map(\.name), ["notes.txt"])
+  }
+
+  /// Value: protects=a folder whose existence check never returns showing as unavailable
+  /// (final pass); fails_when=the check runs with no timeout, so Files says "loading" for as long
+  /// as the mount is wedged; why_new=#803 final pass; seam=FileTreeModel with a stat that blocks;
+  /// no_claim=the disk read (its own test)
+  func testAStuckExistenceCheckTimesOut() async throws {
+    let plain = scratch.appendingPathComponent("stuck-\(UUID().uuidString)").path
+    write(plain + "/notes.txt")
+    let gate = DispatchSemaphore(value: 0)
+    let model = FileTreeModel(
+      diskReadTimeout: 0.1,
+      isFolder: { _ in
+        gate.wait()
+        return true
+      })
+    defer { gate.signal() }
+
+    model.activate(root: .folder(plain))
+
+    await eventually { model.state == .unavailable }
   }
 }

@@ -95,9 +95,28 @@ final class FileTreeModel: ObservableObject {
   /// Where listings are routed; tests pass one whose remote hosts connect nothing.
   private let router: RepositoryRouter
 
-  init(runner: StatusCommandRunning = StatusCommandRunner(), router: RepositoryRouter = .shared) {
+  /// How long a stat or a disk read of the tree's folder may take: a stale network mount blocks one
+  /// until the kernel gives up. Each runs under `GitRepositoryProbe.blockingRead`, so a read still
+  /// blocked is joined rather than started again.
+  private let diskReadTimeout: TimeInterval
+  /// Whether a path is a folder on disk. A seam for tests.
+  private let isFolder: @Sendable (String) -> Bool
+  /// Reads directories of a plain folder from disk (`readPlain`). A seam for tests.
+  private let readDirectories: @Sendable ([String], String) -> [String: [FileNode]]
+
+  init(
+    runner: StatusCommandRunning = StatusCommandRunner(), router: RepositoryRouter = .shared,
+    diskReadTimeout: TimeInterval = 3,
+    isFolder: @escaping @Sendable (String) -> Bool = GitRepositoryProbe.isFolder,
+    readDirectories: @escaping @Sendable ([String], String) -> [String: [FileNode]] = {
+      FileTreeModel.readPlain($0, under: $1)
+    }
+  ) {
     self.runner = runner
     self.router = router
+    self.diskReadTimeout = diskReadTimeout
+    self.isFolder = isFolder
+    self.readDirectories = readDirectories
   }
 
   deinit {
@@ -234,13 +253,13 @@ final class FileTreeModel: ObservableObject {
     // A remote tree is listed by its daemon, and not watched: `HostFileWatcher` watches local paths
     // only, so it refreshes on reactivation and Reload.
     guard location.host == .local else { return reload() }
-    loadTask = Task { [weak self] in
+    loadTask = Task { [weak self, isFolder, diskReadTimeout] in
+      // Keyed as the probe keys its own folder stat, so the two join on a wedged mount. One that
+      // outruns the timeout reads as unavailable.
       let exists =
-        (try? await runBlocking {
-          var directory: ObjCBool = false
-          return FileManager.default.fileExists(atPath: location.path, isDirectory: &directory)
-            && directory.boolValue
-        }) ?? false
+        await GitRepositoryProbe.blockingRead(
+          "folder\u{0}\(location.path)", timeout: diskReadTimeout, { isFolder(location.path) })
+        ?? false
       guard !Task.isCancelled, let self, self.currentLocation == location else { return }
       guard exists else {
         self.state = .unavailable
@@ -376,16 +395,29 @@ final class FileTreeModel: ObservableObject {
   /// List `directories` (tree-relative, "" for the root) from disk, off the main actor, and graft
   /// them into the tree from `diskBase` down. Hidden entries are left out, as `ls` and Finder leave
   /// them. A base that cannot be read leaves nothing to show.
+  ///
+  /// The read runs under the timeout, joining one of the same directories still blocked (a wedged
+  /// mount), so a burst of watch events blocks one thread, not one each. A read that outruns it
+  /// keeps whatever the tree shows; with nothing listed yet, the folder is unavailable.
   private func listPlain(_ directories: [String], at location: RepositoryLocation) {
-    let wanted = Array(Set(directories))
+    // Sorted, so the same directories make the same key.
+    let wanted = Array(Set(directories)).sorted()
+    let key = (["plain", location.path] + wanted).joined(separator: "\u{0}")
     let previous = plainTask
-    plainTask = Task { [weak self] in
+    plainTask = Task { [weak self, readDirectories, diskReadTimeout] in
       await previous?.value
-      let listed =
-        (try? await runBlocking { Self.readPlain(wanted, under: location.path) }) ?? [:]
+      let listed = await GitRepositoryProbe.blockingRead(
+        key, timeout: diskReadTimeout, { readDirectories(wanted, location.path) })
       guard !Task.isCancelled, let self, self.currentLocation == location,
         let base = self.diskBase
       else { return }
+      guard let listed else {
+        if self.plainListings[base] == nil {
+          self.setRoots([])
+          self.state = .unavailable
+        }
+        return
+      }
       for directory in wanted { self.plainListings[directory] = listed[directory] }
       guard self.plainListings[base] != nil else {
         self.setRoots([])

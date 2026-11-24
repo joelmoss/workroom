@@ -21,9 +21,14 @@ enum FocusedTabSelection: Equatable {
 
   /// The focused tab's content identity for the selected workroom, or `nil` when nothing is selected,
   /// the selection has no tabs, or the focused tab is a terminal (no inspector row corresponds to it).
+  /// A changeset matches on its commit alone, as its tab does (`ChangesetDescriptor.sameChangeset`).
   case changeset(commitID: String)
-  case diff(path: String, source: DiffSource)
-  case file(path: String)
+  /// `root` is the diff's repository when it is not the tab's target's own (a followed
+  /// repository's, #807), as `DiffDescriptor.sameFile` keys on it: one terminal can follow several
+  /// repositories, each with its own `src/a.txt`.
+  case diff(path: String, source: DiffSource, root: String? = nil)
+  /// `root` is the folder the path is relative to when it is not the target's (#809).
+  case file(path: String, root: String? = nil)
 
   /// Resolve the focused content tab for `store`'s selected workroom.
   ///
@@ -55,17 +60,27 @@ enum FocusedTabSelection: Equatable {
     return nil
   }
 
-  /// Whether this selection is `path`'s diff from `source`, or `path`'s file tab. The Changes panel's
-  /// rule, unchanged: a file tab has no revision, so it matches on path alone, while a diff keeps
-  /// `source` so the same path from the worktree vs a commit selects the right row.
-  func selectsChangedFile(path: String, source: DiffSource) -> Bool {
+  /// Whether this selection is `path`'s diff from `source`, or `path`'s file tab, in the repository
+  /// at `root` (nil: the target's own). The Changes panel's rule: a file tab has no revision, so it
+  /// matches on path alone, while a diff keeps `source` so the same path from the worktree vs a
+  /// commit selects the right row. Both keep the root, so a tab from repository A never selects the
+  /// same-path row while the inspector shows repository B.
+  func selectsChangedFile(path: String, source: DiffSource, root: String? = nil) -> Bool {
     switch self {
-    case .diff(let selectedPath, let selectedSource):
-      return selectedPath == path && selectedSource == source
-    case .file(let selectedPath):
-      return selectedPath == path
+    case .diff(let selectedPath, let selectedSource, let selectedRoot):
+      return selectedPath == path && selectedSource == source && selectedRoot == root
+    case .file(let selectedPath, let selectedRoot):
+      return selectedPath == path && selectedRoot == root
     case .changeset:
       return false
     }
+  }
+
+  /// The repository root the Changes panel's rows are relative to under `subject`, as their tabs
+  /// name it (`AppStore.followedRepositoryRoot`): a followed folder's repository, else nil for the
+  /// target's own.
+  static func changedFileRoot(for subject: InspectorSubject) -> String? {
+    guard case .followed(let followed) = subject else { return nil }
+    return followed.repository?.root
   }
 }
