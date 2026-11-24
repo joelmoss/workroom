@@ -521,6 +521,7 @@ struct SidebarIconGlyph: View {
   let hovering: Bool
   var font: Font = .system(size: 11)
   @Environment(\.themeTokens) private var tokens
+  @Environment(\.sidebarHoverReveal) private var reveal
 
   var body: some View {
     Image(systemName: systemImage)
@@ -534,6 +535,7 @@ struct SidebarIconGlyph: View {
           .fill(tokens.hover.opacity(hovering ? 1 : 0))
           .frame(width: SidebarRowMetrics.hoverWell, height: SidebarRowMetrics.hoverWell)
       }
+      .opacity(reveal)
       .contentShape(Rectangle())
   }
 }
@@ -879,6 +881,7 @@ struct DeleteRowButton: View {
   let action: () -> Void
   @State private var hovering = false
   @Environment(\.themeTokens) private var tokens
+  @Environment(\.sidebarHoverReveal) private var reveal
 
   var body: some View {
     Button(action: action) {
@@ -890,6 +893,7 @@ struct DeleteRowButton: View {
           RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.failure.opacity(hovering ? 0.18 : 0))
         )
+        .opacity(reveal)
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
