@@ -30,11 +30,14 @@ struct FilesPanel: View {
     // clears), only while Files is the active activity-bar section. Re-runs on either change, and
     // for a followed folder on every folder change and breadcrumb browse; `activate` no-ops when
     // already on a local path, so re-selecting the same target is instant; a remote tree has no
-    // watcher, so it is listed again.
+    // watcher, so it is listed again. While Files isn't shown (another section, or the inspector
+    // hidden, which unmounts this) the tree stops watching, and it catches up once on its return.
     .task(id: activationKey) {
-      guard store.activeInspectorSection == .files else { return }
+      guard store.activeInspectorSection == .files else { return model.pause() }
       store.activateFileTree()
+      model.resume()
     }
+    .onDisappear { model.pause() }
   }
 
   /// The section's loader: while the tree lists, and once a followed folder's repository has been
