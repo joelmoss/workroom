@@ -32,9 +32,9 @@ import SwiftUI
 ///   "Show scroll bars" preference).
 /// - **fill** (`fillsBody`): the body hosting view instead FILLS the pane below the header and is
 ///   expected to scroll ITSELF (a SwiftUI `ScrollView`). This bypasses the `.intrinsicContentSize` →
-///   `NSScrollView` bridge, so an inline height animation inside the body (the History pane's
-///   divergence expander) is driven entirely by SwiftUI and can't fight AppKit's scroll-container
-///   resize-anchoring — the source of the visible content shift the bridge produced.
+///   `NSScrollView` bridge, so an inline height animation inside the body is driven entirely by
+///   SwiftUI and can't fight AppKit's scroll-container resize-anchoring — the source of the visible
+///   content shift the bridge produced.
 ///
 /// When collapsed, the body is hidden and the enclosing split pins the pane to the header height.
 final class InspectorPaneViewController: NSViewController {
