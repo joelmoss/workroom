@@ -218,6 +218,24 @@ final class TerminalGroupFollowsFocusTests: XCTestCase {
     await settle(store)
     XCTAssertEqual(followed(store)?.folder, root + "/src")
     XCTAssertEqual(provider.logRoots.count, reads, "the same repository reads no log")
+
+    // The split's panes: a click (`focus`) and the keyboard (`focusAdjacentPane`) move focus.
+    let pane = try XCTUnwrap(store.terminals.tabs(for: group).first { $0.id != tab.id })
+    let other = repo("other")
+    store.terminals.focus(pane.id, for: group)
+    try await cd(store, pane, other)
+    XCTAssertEqual(followed(store)?.repository?.root, other, "a click into the other pane")
+    XCTAssertTrue(store.terminals.focusAdjacentPane(.left, for: group))
+    await settle(store)
+    XCTAssertEqual(followed(store)?.repository?.root, root, "the keyboard back to the first")
+    XCTAssertEqual(provider.logRoots.last, root)
+  }
+
+  /// Value: protects=the Quick Terminal's group never following a folder (story 30), whatever its
+  /// panel's selection; fails_when=`followsFolder` takes every group; why_new=#806; seam=AppStore;
+  /// no_claim=none
+  func testTheQuickTerminalsGroupFollowsNoFolder() {
+    XCTAssertFalse(AppStore.followsFolder(.terminalGroup(TargetID.quickTerminalGroupID)))
   }
 
   /// Value: protects=the subject matching the window's selection after a terminal leaves the group
