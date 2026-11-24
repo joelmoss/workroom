@@ -344,7 +344,8 @@ final class FileTreeModel: ObservableObject {
         return
       }
       self.watchRoot = location.path
-      if !self.paused { self.startWatching(location.path) }
+      // Hidden before its watch started: unwatched from here on, so its return re-lists.
+      if self.paused { self.dirty = true } else { self.startWatching(location.path) }
       self.reload()
     }
   }
@@ -441,8 +442,13 @@ final class FileTreeModel: ObservableObject {
   private func apply(_ result: TreeListing, at location: RepositoryLocation) {
     switch result {
     case .unchanged:
-      // The same output as the tree shown: nothing to build or publish.
-      if state != .loaded { state = .loaded }
+      // The same output as the tree shown: nothing to build or publish. A folder git lists
+      // nothing under is read from disk, which git's output says nothing about.
+      if readsSubfolderFromDisk {
+        reroot()
+      } else if state != .loaded {
+        state = .loaded
+      }
     case .tree(let built):
       let replaced = listedRoots
       listedRoots = built.roots

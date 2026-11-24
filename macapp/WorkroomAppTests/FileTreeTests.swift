@@ -555,24 +555,47 @@ final class FileTreeModelPerfTests: XCTestCase {
     defer { model.activate(location: nil) }
     model.activate(location: try await RepositoryLocation.local(a))
     await waitUntil { model.state == .loaded && model.isWatching }
+    try await Task.sleep(for: .milliseconds(200))
 
     model.pause()
     XCTAssertFalse(model.isWatching)
+    let paused = runner.calls
     model.resume()
-    await waitUntil { runner.calls == 2 }
+    await waitUntil { runner.calls == paused + 1 }
     XCTAssertTrue(model.isWatching)
     model.resume()
     try await Task.sleep(for: .milliseconds(150))
-    XCTAssertEqual(runner.calls, 2, "a resume with no pause lists nothing")
+    XCTAssertEqual(runner.calls, paused + 1, "a resume with no pause lists nothing")
 
+    // As `FilesPanel` does on its return: activate, then resume.
     model.pause()
+    let switched = runner.calls
     model.activate(location: try await RepositoryLocation.local(b))
-    await waitUntil { model.roots.map(\.name) == ["b.txt"] }
-    XCTAssertFalse(model.isWatching, "nothing watches while paused")
     model.resume()
-    await waitUntil { model.isWatching }
+    await waitUntil { model.roots.map(\.name) == ["b.txt"] && model.isWatching }
     try await Task.sleep(for: .milliseconds(150))
-    XCTAssertEqual(runner.calls, 3, "a fresh activation already listed, so the re-show doesn't")
+    XCTAssertEqual(
+      runner.calls, switched + 1, "a fresh activation already listed, so the re-show doesn't")
+  }
+
+  /// Value: protects=a re-list leaving git's output alone still refreshing a followed folder read
+  /// from disk (an ignored `build`); fails_when=the identical-output skip leaves it stale or
+  /// blank; why_new=#812 perf; seam=FileTreeModel with a canned runner; no_claim=FSEvents
+  func testAnUnchangedListingStillReReadsAnIgnoredFolder() async throws {
+    let a = try checkout("a")
+    try FileManager.default.createDirectory(
+      atPath: a + "/build", withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: a + "/build/out.o", contents: Data())
+    let runner = ListingRunner(["a": "src/x.swift\0"])
+    let model = FileTreeModel(runner: runner)
+    defer { model.activate(path: nil) }
+
+    model.activate(root: .repository(root: a, subfolder: "build"))
+    await waitUntil { model.roots.map(\.name) == ["out.o"] }
+    FileManager.default.createFile(atPath: a + "/build/new.o", contents: Data())
+    model.reload()
+    await waitUntil { model.roots.map(\.name) == ["new.o", "out.o"] }
+    XCTAssertEqual(model.state, .loaded)
   }
 
   /// Value: protects=the Files watch deciding off the main actor what a change means (F3);
