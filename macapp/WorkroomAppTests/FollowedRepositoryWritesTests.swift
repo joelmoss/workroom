@@ -391,6 +391,67 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(changedPaths(store), ["a.txt"], "the second repository's own change still shows")
   }
 
+  /// Value: protects=a followed repository whose `.git` was removed underneath, still followed
+  /// (no watch event has re-resolved it yet); fails_when=the write runs anyway and git, finding
+  /// no repository at the root, commits into the repository AROUND it; why_new=#808 (the
+  /// registration skips the unregistered path's `.git` check); seam=AppStore + RemoteStateModel,
+  /// a repository nested in another; no_claim=the re-resolve that follows a watch event (#807)
+  func testARepositoryRemovedUnderneathIsNeverWrittenThroughToTheOneAroundIt() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let outer = repo("outer")
+    sh("git commit -qam outer-edit", in: outer)
+    let inner = clone("outer/inner").work
+    try "edited\n".write(toFile: inner + "/a.txt", atomically: true, encoding: .utf8)
+    try await cd(store, tab, inner)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    XCTAssertEqual(target, .followed(root: inner))
+    XCTAssertTrue(store.canCommit(target))
+    XCTAssertTrue(store.remoteState.canPush)
+    let files = try XCTUnwrap(status.status(for: target)?.changedFiles)
+
+    try FileManager.default.removeItem(atPath: inner + "/.git")
+
+    let result: VCSCommitResult = await withCheckedContinuation { done in
+      store.performCommit(
+        VCSCommitRequest(message: "stray", files: files, mode: .commit), on: target
+      ) { done.resume(returning: $0) }
+    }
+    XCTAssertEqual(result, .failed(.other("That repository is no longer available.")))
+    await act(store, .push)
+    XCTAssertEqual(
+      store.remoteState.lastFailure, .other("That repository is no longer available."))
+    XCTAssertEqual(head(outer), "outer-edit", "the repository around it gains no commit")
+    XCTAssertEqual(sh("git diff --cached --name-only", in: outer).out, "", "nor a staged file")
+  }
+
+  /// Value: protects=the actions coming back when the selection returns to the terminal with no
+  /// `cd` (the review of #807's finding 1 class: they depend on the hold matching the subject);
+  /// fails_when=after leaving and reselecting, the commit button or the toolbar has no target;
+  /// why_new=#808; seam=AppStore; no_claim=the sidebar
+  func testReselectingTheTerminalBringsItsActionsBack() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root)
+    let row = try XCTUnwrap(store.selectedTargetID)
+
+    store.selectedTargetID = nil
+    await settle(store)
+    XCTAssertNil(store.inspectorActionTarget)
+    XCTAssertNil(store.remoteState.target)
+    store.selectedTargetID = row
+    await settle(store)
+
+    XCTAssertEqual(store.inspectorActionTarget, .followed(root: root))
+    XCTAssertEqual(store.remoteState.target?.followedRoot, root)
+    let result = await Self.commit(store, .followed(root: root), message: "after returning")
+    guard case .ok = result else { return XCTFail("commit: \(result)") }
+    XCTAssertEqual(head(root), "after returning")
+  }
+
   // MARK: Races with a `cd`
 
   /// Value: protects=a commit racing a `cd` to another repository; fails_when=the commit, its

@@ -189,11 +189,16 @@ extension VCSStatusService {
   /// never whichever repository the terminal has moved to.
   func followedWriteLocation(_ root: String) async -> RepositoryLocation? {
     guard let registration = followedRepositories[root]?.registration else { return nil }
-    let registered = await registration.value
-    // Let go of while it was awaited, and perhaps followed again under a new hold: only the hold
+    guard let location = await registration.value?.location else { return nil }
+    // Its `.git` may be gone since it was followed, with no watch event in yet to say so: the
+    // registration skips the check an unregistered read makes, so it is made here, and git is
+    // never run at a root that is no repository's any more.
+    let url = URL(fileURLWithPath: location.path, isDirectory: true)
+    guard (try? await runBlocking({ isGitRepo(at: url) })) == true else { return nil }
+    // Let go of while this waited, and perhaps followed again under a new hold: only the hold
     // whose registration this is may be written through.
     guard followedRepositories[root]?.registration == registration else { return nil }
-    return registered?.location
+    return location
   }
 
   /// The repository a followed root's writes are serialised on, once it is registered: what the
