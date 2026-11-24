@@ -938,8 +938,6 @@ fn relay_command(socket: &Path) -> Command {
 /// its own filter overrides, including a driver configured before the next request.
 #[test]
 fn working_status_skips_unneeded_diff_and_rediscovers_filters() {
-    use std::os::unix::fs::PermissionsExt;
-
     let workspace = Workspace::new("status-process-count");
     let root = workspace.dir.join("repo");
     std::fs::create_dir_all(&root).unwrap();
@@ -976,12 +974,10 @@ fn working_status_skips_unneeded_diff_and_rediscovers_filters() {
     let bin = workspace.dir.join("bin");
     std::fs::create_dir(&bin).unwrap();
     let shim = bin.join("git");
-    std::fs::write(
+    common::write_executable(
         &shim,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WORKROOM_BENCH_GIT_LOG\"\nexec \"$WORKROOM_BENCH_REAL_GIT\" \"$@\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let log = workspace.dir.join("git.log");
     let sentinel = workspace.dir.join("filter-ran");
     let mut search_path = vec![bin];

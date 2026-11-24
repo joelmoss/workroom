@@ -372,12 +372,10 @@ fn a_check_that_never_finishes_is_refused_after_its_timeout() {
     let shell = detached_session(&socket, session, "STILL-CHECKING");
 
     let hangs = workspace.dir.join("hangs-forever");
-    std::fs::write(
+    write_executable(
         &hangs,
         "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then exec sleep 30; fi\nexit 70\n",
-    )
-    .expect("script");
-    std::fs::set_permissions(&hangs, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     let started = Instant::now();
     let output = hand_off(&socket, &hangs, true);
@@ -408,15 +406,13 @@ fn a_check_that_floods_stderr_is_refused_with_a_bounded_reason() {
     let mut daemon = start_daemon(&socket);
 
     let loud = workspace.dir.join("loud-daemon");
-    std::fs::write(
+    write_executable(
         &loud,
         "#!/bin/sh
 head -c 2000000 /dev/zero | tr '\\0' x >&2
 exit 1
 ",
-    )
-    .expect("script");
-    std::fs::set_permissions(&loud, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     let output = hand_off(&socket, &loud, true);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -455,12 +451,10 @@ fn a_second_hand_off_while_one_is_checking_waits_for_it() {
     let shell = detached_session(&socket, session, "ONE-AT-A-TIME");
 
     let slow = workspace.dir.join("slow-checker");
-    std::fs::write(
+    write_executable(
         &slow,
         "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 2; exit 1; fi\nexit 70\n",
-    )
-    .expect("script");
-    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     let socket_for_first = socket.clone();
     let first = std::thread::spawn(move || hand_off(&socket_for_first, &slow, true));
@@ -591,15 +585,13 @@ fn a_binary_that_dies_while_restoring_loses_every_session() {
 
     // Passes the check by handing it to the real binary, then dies as the new program.
     let dying = workspace.dir.join("dying-daemon");
-    std::fs::write(
+    write_executable(
         &dying,
         format!(
             "#!/bin/sh\nif [ \"$1\" = handoff-check ] || [ \"$1\" = protocol ]; then exec '{}' \"$@\"; fi\nexit 70\n",
             daemon_binary().display()
         ),
-    )
-    .expect("script");
-    std::fs::set_permissions(&dying, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     let output = hand_off(&socket, &dying, false);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -660,15 +652,13 @@ fn a_hand_off_nobody_is_waiting_for_is_called_off() {
     let shell = detached_session(&socket, session, "KEPT-SCREEN");
 
     let slow = workspace.dir.join("slow-daemon");
-    std::fs::write(
+    write_executable(
         &slow,
         format!(
             "#!/bin/sh\nif [ \"$1\" = protocol ]; then exec '{0}' \"$@\"; fi\nif [ \"$1\" = handoff-check ]; then sleep 1; exec '{0}' \"$@\"; fi\nexit 70\n",
             daemon_binary().display()
         ),
-    )
-    .expect("script");
-    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     let mut stream = greeted(&socket);
     ask_to_hand_off(&mut stream, &slow);
@@ -782,15 +772,13 @@ fn a_client_that_connects_during_a_hand_off_is_attached_by_the_new_program() {
 
     // Checks slowly, then becomes the real daemon.
     let slow = workspace.dir.join("slow-daemon");
-    std::fs::write(
+    write_executable(
         &slow,
         format!(
             "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 1; fi\nexec '{}' \"$@\"\n",
             daemon_binary().display()
         ),
-    )
-    .expect("script");
-    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     let handing_off = {
         let socket = socket.clone();
@@ -953,12 +941,10 @@ fn a_hand_off_asked_for_during_another_is_refused() {
     let mut daemon = start_daemon(&socket);
 
     let slow = workspace.dir.join("slow-checker");
-    std::fs::write(
+    write_executable(
         &slow,
         "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 2; exit 1; fi\nexit 70\n",
-    )
-    .expect("script");
-    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
 
     // Both greeted before either asks: once one asks, the daemon accepts nobody new.
     let mut first = greeted(&socket);

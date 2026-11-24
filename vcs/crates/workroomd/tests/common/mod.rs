@@ -40,6 +40,63 @@ pub fn copy_daemon_binary(to: &Path) {
     );
 }
 
+/// `bytes` at `path`, executable, for a test to run or hand to a daemon to run.
+///
+/// Linux refuses to exec a file some process still has open for writing (ETXTBSY, "Text file
+/// busy"). A test thread that forks while this one holds the file open hands its child that
+/// descriptor until the child execs, so a file this process wrote can be busy when another
+/// process (a daemon the test started, which cannot retry) runs it. The bytes are written to a
+/// draft and put in place by a `cp` child, so this process never holds the executable open for
+/// writing (#715), and the mode is set once `cp` has exited. A test that runs the file itself also
+/// goes through [`spawn_retrying`] or [`output_retrying`].
+pub fn write_executable(path: &Path, bytes: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut draft = path.as_os_str().to_owned();
+    draft.push(".draft");
+    let draft = PathBuf::from(draft);
+    {
+        let mut file = std::fs::File::create(&draft).expect("create the draft");
+        file.write_all(bytes.as_ref()).expect("write the draft");
+        file.sync_all().expect("sync the draft");
+    }
+    let status = Command::new("cp")
+        .arg(&draft)
+        .arg(path)
+        .status()
+        .expect("run cp");
+    assert!(status.success(), "cp the draft to {}", path.display());
+    std::fs::remove_file(&draft).expect("remove the draft");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// `attempt` again while it fails because the file it runs is busy (ETXTBSY), for up to 10 s.
+fn retrying_busy<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut wait = Duration::from_millis(2);
+    loop {
+        match attempt() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// `command` started, tried again while its program is busy.
+pub fn spawn_retrying(command: &mut Command) -> std::io::Result<Child> {
+    retrying_busy(|| command.spawn())
+}
+
+/// `command` run to completion, tried again while its program is busy.
+pub fn output_retrying(command: &mut Command) -> std::io::Result<std::process::Output> {
+    retrying_busy(|| command.output())
+}
+
 /// A spawned daemon or attach client that is killed when the test ends, panic or not.
 ///
 /// Every test here already finishes with `let _ = daemon.kill()`, and that line does not run when an

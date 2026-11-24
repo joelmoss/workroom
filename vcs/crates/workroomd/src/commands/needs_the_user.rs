@@ -250,7 +250,6 @@ fn executable_path(pid: i32) -> Option<String> {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
-    use std::os::unix::fs::PermissionsExt;
     use std::process::{Child, Command, Stdio};
 
     /// A folder this test made, removed with what is in it when the test ends.
@@ -289,17 +288,13 @@ mod tests {
         fn new(scratch: &Scratch, name: &str) -> Tree {
             let program = scratch.0.join(name);
             std::fs::create_dir_all(program.parent().expect("folder")).expect("folders");
-            std::fs::write(&program, format!("#!/bin/sh\n{SLEEP}")).expect("script");
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod");
+            crate::util::test_exec::write_executable(&program, format!("#!/bin/sh\n{SLEEP}"));
             Tree::of(Command::new(&program))
         }
 
         /// `command`, which runs [`SLEEP`].
         fn of(mut command: Command) -> Tree {
-            let mut top = command
-                .stdout(Stdio::piped())
-                .spawn()
+            let mut top = crate::util::test_exec::spawn(command.stdout(Stdio::piped()))
                 .expect("start the tree");
             let mut line = String::new();
             BufReader::new(top.stdout.take().expect("stdout"))
@@ -413,8 +408,10 @@ mod tests {
         // Its bytes only. `fs::copy` (copyfile) carries a system binary's HFS compression over, as
         // a `com.apple.decmpfs` attribute codesign then fails on ("Attribute not found") when the
         // machine is busy.
-        std::fs::write(&native, std::fs::read(shell).expect("read the shell")).expect("copy it");
-        std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        crate::util::test_exec::write_executable(
+            &native,
+            std::fs::read(shell).expect("read the shell"),
+        );
         // macOS kills a copy of a system binary signed as Apple's; signed afresh it runs.
         #[cfg(target_os = "macos")]
         {
