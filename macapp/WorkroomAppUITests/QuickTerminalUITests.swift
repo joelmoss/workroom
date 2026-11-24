@@ -200,10 +200,17 @@ final class QuickTerminalUITests: XCTestCase {
       waitForCount(tabs(in: workroom), workroomTabsBefore), "the window opened no terminal")
     XCTAssertTrue(panes(in: workroom).firstMatch.exists, "and still shows its workroom")
     // Listing its terminal under it, its row folds as the other groups' do: hovered, the chevron
-    // stands in its glyph's column.
+    // sits after its name and clear of the trailing "+".
     row.hover()
     XCTAssertTrue(fold.waitForExistence(timeout: 6), "a chevron once it lists a terminal")
-    XCTAssertLessThan(fold.frame.maxX, row.frame.minX + 30, "in the rows' leading glyph column")
+    let name = row.staticTexts["Quick Terminals"].firstMatch
+    XCTAssertTrue(name.exists, "the group's name on its row")
+    XCTAssertGreaterThanOrEqual(fold.frame.minX, name.frame.maxX, "after the name")
+    let plus = workroom.descendants(matching: .any)
+      .matching(identifier: "sidebar.group.new.group:51C10A7E-0D4F-4E6A-9B2C-000000000001")
+      .firstMatch
+    XCTAssertTrue(plus.exists, "New Terminal in Group on its row")
+    XCTAssertLessThan(fold.frame.maxX, plus.frame.minX, "clear of the trailing column")
   }
 
   /// The Quick Terminal's sidebar row, the built-in group's.
