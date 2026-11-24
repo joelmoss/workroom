@@ -340,10 +340,11 @@ app-test-preflight: ## Check Makefile/workflow invariants and benchmark failure 
 APP_SCRIPT_TESTS_SKIP ?=
 APP_SCRIPT_TESTS := $(sort $(filter-out macapp/Scripts/test-invariants_test.sh $(APP_SCRIPT_TESTS_SKIP),$(wildcard macapp/Scripts/*_test.sh)))
 
-app-test-scripts: app-test-preflight ## Run every macapp/Scripts/*_test.sh, then gui-lock_test.py and vendor-ghostty-themes_test.py (after app-test-preflight)
+app-test-scripts: app-test-preflight ## Run every macapp/Scripts/*_test.sh, then gui-lock_test.py, vendor-ghostty-themes_test.py and check-main-actor-fs_test.py (after app-test-preflight)
 	@for script in $(APP_SCRIPT_TESTS); do echo "sh $$script"; sh "$$script" || exit $$?; done
 	python3 macapp/Scripts/gui-lock_test.py
 	python3 macapp/Scripts/vendor-ghostty-themes_test.py
+	python3 macapp/Scripts/check-main-actor-fs_test.py
 
 app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck on PATH)
 	shellcheck -x -P SCRIPTDIR macapp/Scripts/*.sh
@@ -374,8 +375,11 @@ APP_SWIFT_PATHS := WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessi
 app-format: ## Format Swift sources in place (swift-format)
 	cd macapp && xcrun swift-format format --in-place --parallel --recursive $(APP_SWIFT_PATHS)
 
-app-lint: ## Lint Swift with swift-format (--strict)
+# check-main-actor-fs.py: no synchronous file-system call in the git and inspector code outside a
+# bounded off-main read or its allowlist (docs/macapp-perf-facts.md). swift-format has no custom rules.
+app-lint: ## Lint Swift with swift-format (--strict), then check-main-actor-fs.py
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive $(APP_SWIFT_PATHS)
+	python3 macapp/Scripts/check-main-actor-fs.py
 
 # A recipe, not prerequisites, so `make -j` can't lint while the format is still rewriting files.
 app-check: ## Format Swift in place, then lint it strictly (app-format + app-lint)
