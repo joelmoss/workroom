@@ -390,8 +390,8 @@ final class StandaloneFollowsFolderTests: XCTestCase {
       GitRepositoryProbe(discoveryRunner: CannedRunner(result: result))
     }
 
-    // git's own answer for a repository owned by someone else, canned: a git built without its test
-    // hooks (CI's) ignores GIT_TEST_ASSUME_DIFFERENT_OWNER, so real git can't produce it everywhere.
+    // git's own answer for a repository owned by someone else, canned: on CI, real git with
+    // GIT_TEST_ASSUME_DIFFERENT_OWNER=1 still returned the repository, so it can't produce it there.
     let refused = await probe(
       CommandResult(
         stdout: "",
@@ -432,7 +432,12 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     try await cd(store, tab, app)
     let fails = Mutex(true)
     let resolves = Mutex(0)
-    store.followedFolderRetryDelay = { _ in .milliseconds(300) }
+    let retries = Gate()
+    let streaks = Mutex<[Int]>([])
+    store.followedFolderRetryWait = { streak in
+      streaks.withLock { $0.append(streak) }
+      await retries.pass()
+    }
     store.resolveFollowedRepository = { folder in
       resolves.withLock { $0 += 1 }
       if fails.withLock({ $0 }) { return .unknown }
@@ -453,10 +458,49 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     await store.followedFolderResolved()
     XCTAssertEqual(resolves.withLock { $0 }, 1, "events before the retry run no git")
 
-    fails.withLock { $0 = false }
+    retries.open()
     await store.followedFolderRetried()
+    XCTAssertEqual(resolves.withLock { $0 }, 2, "the retry asks again")
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, true, "and still can't tell")
+
+    fails.withLock { $0 = false }
+    retries.open()
+    await store.followedFolderRetried()
+    XCTAssertEqual(streaks.withLock { $0 }, [1, 2], "each retry counts the failures before it")
+    XCTAssertEqual(
+      [1, 2, 3, 6, 9].map(AppStore.followedFolderRetryDelay),
+      [.seconds(2), .seconds(4), .seconds(8), .seconds(60), .seconds(60)],
+      "and waits longer for each, up to a minute")
     XCTAssertEqual(followed(store)?.repository?.root, refused, "the retry resolves it")
     XCTAssertEqual(followed(store)?.repositoryUndetermined, false)
+  }
+
+  /// One waiter let through per `open()`, whichever comes first.
+  private final class Gate: Sendable {
+    private let state = Mutex<(permits: Int, waiters: [CheckedContinuation<Void, Never>])>((0, []))
+    func pass() async {
+      await withCheckedContinuation { continuation in
+        let passes = state.withLock { s -> Bool in
+          if s.permits > 0 {
+            s.permits -= 1
+            return true
+          }
+          s.waiters.append(continuation)
+          return false
+        }
+        if passes { continuation.resume() }
+      }
+    }
+    func open() {
+      let waiter = state.withLock { s -> CheckedContinuation<Void, Never>? in
+        if s.waiters.isEmpty {
+          s.permits += 1
+          return nil
+        }
+        return s.waiters.removeFirst()
+      }
+      waiter?.resume()
+    }
   }
 
   /// Value: negative control for R1: protects=a re-read of the folder already shown keeping its
@@ -468,7 +512,7 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     let tab = try await openTerminal(store)
     let app = repo("app")
     try await cd(store, tab, app)
-    store.followedFolderRetryDelay = { _ in .seconds(3600) }
+    store.followedFolderRetryWait = { _ in try? await Task.sleep(for: .seconds(3600)) }
     store.resolveFollowedRepository = { _ in .unknown }
 
     store.reresolveFollowedFolder()
@@ -508,10 +552,12 @@ final class StandaloneFollowsFolderTests: XCTestCase {
 
     blocks.withLock { $0 = false }
     gate.signal()
+    // The blocked read's entry clears once it returns, and is shared by every probe. A default
+    // timeout here, so a slow git spawn on a loaded runner never reads as couldn't tell.
     var discovered = GitRepositoryProbe.Discovery.unknown
     for _ in 0..<100 where discovered == .unknown {
       try await Task.sleep(for: .milliseconds(20))
-      discovered = await probe.discoverRepository(containing: app)
+      discovered = await GitRepositoryProbe().discoverRepository(containing: app)
     }
     guard case .repository(let found) = discovered else {
       return XCTFail("once the read returns, the folder resolves: \(discovered)")

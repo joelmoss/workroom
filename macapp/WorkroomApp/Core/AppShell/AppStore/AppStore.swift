@@ -244,10 +244,14 @@ final class AppStore: ObservableObject {
   @ObservationIgnored var followedFolderRetryTask: Task<Void, Never>?
   /// How many resolves in a row couldn't tell, per folder: what spaces out its retries.
   @ObservationIgnored var followedFolderUndeterminedStreak: [String: Int] = [:]
-  /// How long to wait before retrying a folder whose resolve couldn't tell `streak` times in a row.
-  /// A seam for tests.
-  @ObservationIgnored var followedFolderRetryDelay: @Sendable (_ streak: Int) -> Duration = {
-    streak in .seconds(min(60, 2 << min(streak - 1, 5)))
+  /// Wait before retrying a folder whose resolve couldn't tell `streak` times in a row: 2 s,
+  /// doubling to 60 s. A seam for tests.
+  @ObservationIgnored var followedFolderRetryWait: @Sendable (_ streak: Int) async -> Void = {
+    streak in try? await Task.sleep(for: AppStore.followedFolderRetryDelay(streak))
+  }
+  /// How long `followedFolderRetryWait` waits by default.
+  nonisolated static func followedFolderRetryDelay(_ streak: Int) -> Duration {
+    .seconds(min(60, 2 << min(max(streak, 1) - 1, 5)))
   }
   /// What each folder resolved to last, so returning to a terminal shows its repository at once,
   /// before the fresh resolve (for a branch switched meanwhile) lands.

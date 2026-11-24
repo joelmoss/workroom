@@ -182,10 +182,10 @@ extension AppStore {
     }
     let streak = (followedFolderUndeterminedStreak[folder] ?? 0) + 1
     followedFolderUndeterminedStreak[folder] = streak
-    let delay = followedFolderRetryDelay(streak)
+    let wait = followedFolderRetryWait
     followedFolderRetryTask?.cancel()
     followedFolderRetryTask = Task { [weak self] in
-      try? await Task.sleep(for: delay)
+      await wait(streak)
       guard let self, !Task.isCancelled, let request = self.followedFolderRequest,
         request.target == target, request.folder == folder
       else { return }
