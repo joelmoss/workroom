@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 
 /// The folder a window's inspector follows for a Terminals-section target (#803, ADR 0081), and
 /// which target it was resolved for, so a value never outlives its selection.
@@ -69,6 +70,8 @@ extension AppStore {
       return false
     }
     followedFolderRequest = (target, folder)
+    // A folder change, or another terminal: Files snaps back to following it.
+    filesBrowse = nil
     var changed = false
     // A folder seen before shows straight away. A new one keeps the target's last folder showing
     // until it resolves, so a `cd` never blanks the inspector.
@@ -80,7 +83,11 @@ extension AppStore {
     let resolve = resolveFollowedRepository
     followedFolderTask?.cancel()
     followedFolderTask = Task { [weak self] in
-      let discovery = await resolve(folder)
+      var discovery = await resolve(folder)
+      // Placed off the main actor: it reads the folder's real path.
+      if case .repository(let found) = discovery {
+        discovery = .repository((try? await runBlocking { found.placed(in: folder) }) ?? found)
+      }
       guard let self, !Task.isCancelled else { return }
       // A later request (another folder, another target) has taken over.
       let current = self.followedFolderRequest.map { $0.target == target && $0.folder == folder }

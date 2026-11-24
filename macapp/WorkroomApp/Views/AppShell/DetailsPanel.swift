@@ -425,7 +425,7 @@ struct InspectorWorkroomHeader: View {
   /// sections below.
   private func followedHeader(_ followed: FollowedFolder) -> some View {
     let repository = followed.repository
-    let path = repository?.root ?? followed.folder
+    let path = repository?.displayRoot ?? followed.folder
     let shownPath = StatusBarCwdSegment.abbreviate(path)
     let name = shownPath == "~" ? "~" : (path as NSString).lastPathComponent
     let branch = repository.map { $0.branch ?? "Detached HEAD" }

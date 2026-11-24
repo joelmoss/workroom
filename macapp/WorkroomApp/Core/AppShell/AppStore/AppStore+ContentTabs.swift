@@ -39,7 +39,11 @@ extension AppStore {
   /// definition. It is WRONG for anything attached to a specific pane — see the overload below.
   func openFilePreview(path: String) {
     guard let target = selectedTarget else { return }
-    openFilePreview(path: path, for: target)
+    let root = filesFileRoot
+    whenHostLayoutRestored(target) { [terminals] target in
+      terminals.openFilePreview(
+        FileDescriptor(path: path, isPreview: true, root: root), for: target)
+    }
   }
 
   /// Open a repo file as `target`'s preview content tab — for callers that belong to a particular
@@ -60,8 +64,10 @@ extension AppStore {
   /// nothing's selected.
   func openFilePersistent(path: String) {
     guard let target = selectedTarget else { return }
+    let root = filesFileRoot
     whenHostLayoutRestored(target) { [terminals] target in
-      terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
+      terminals.openFilePersistent(
+        FileDescriptor(path: path, isPreview: false, root: root), for: target)
     }
   }
 
@@ -106,6 +112,17 @@ extension AppStore {
   /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
   /// section), reusing the shared editor path. No-op if nothing's selected.
   func openFileInEditor(path: String) {
+    openFileInEditor(path: path, root: filesFileRoot)
+  }
+
+  /// Open a file in the external editor, relative to `root` when given (a file of a followed
+  /// folder's tree, #809), else to the selected target's folder.
+  func openFileInEditor(path: String, root: String?) {
+    if let root {
+      TerminalLinkOpener.openFilePath(
+        (root as NSString).appendingPathComponent(path), cwd: nil, project: root)
+      return
+    }
     guard let target = selectedTarget else { return }
     Self.openWorkroomFile(relativePath: path, for: target)
   }

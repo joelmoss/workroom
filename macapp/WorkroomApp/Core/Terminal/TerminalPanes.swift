@@ -338,7 +338,7 @@ extension TabSession {
         key: key, kind: Self.fileKind,
         file: FilePayload(
           path: descriptor.path, isPreview: descriptor.isPreview,
-          markdownPreview: tab.markdownPreviewOverride))
+          markdownPreview: tab.markdownPreviewOverride, root: descriptor.root))
     case .changeset(let descriptor):
       self.init(
         key: key, kind: Self.changesetKind,
@@ -365,7 +365,8 @@ extension TabSession {
           path: payload.path, change: change, source: source, isPreview: payload.isPreview))
     case Self.fileKind:
       guard let payload = file else { return nil }
-      return .file(FileDescriptor(path: payload.path, isPreview: payload.isPreview))
+      return .file(
+        FileDescriptor(path: payload.path, isPreview: payload.isPreview, root: payload.root))
     case Self.changesetKind:
       guard let payload = changeset else { return nil }
       return .changeset(

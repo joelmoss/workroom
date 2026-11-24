@@ -542,7 +542,8 @@ struct PaneLeafView: View {
       // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
       // diff leaf, so "Keep Open"/Close behave identically on a previewed file.
       let file = PlainFileViewer(
-        descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
+        descriptor: descriptor, directory: descriptor.root ?? target.path,
+        repositoryLocation: descriptor.root == nil ? target.remoteLocation : nil,
         isFocused: focused,
         previewOverride: tab?.markdownPreviewOverride,
         find: host.contentFind
