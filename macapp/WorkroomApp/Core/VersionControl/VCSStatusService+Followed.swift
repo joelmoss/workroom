@@ -781,6 +781,7 @@ extension VCSStatusService {
       // which holds the worktree's HEAD and the refs a commit or `git switch` moves.
       guard outside else {
         self.followedRepositories[key]?.watchesGitDirectory = true
+        self.followedWatchWentLive(key)
         return
       }
       // Its own git directory (`worktrees/<name>`) and the repository's, in one run.
@@ -809,7 +810,16 @@ extension VCSStatusService {
       metadata.start(path: directory)
       self.followedRepositories[key]?.watchers.append(metadata)
       self.followedRepositories[key]?.watchesGitDirectory = true
+      self.followedWatchWentLive(key)
     }
+  }
+
+  /// The watches on `key` now cover its git directory and its tree: each window holding it checks
+  /// the answers it cached before then (#812 perf review A, N3).
+  private func followedWatchWentLive(_ key: String) {
+    let coverage = followedWatchCoverage(key)
+    guard coverage.gitDirectory, coverage.tree else { return }
+    for window in statusWindows { window.followedWatchDidGoLive(root: key) }
   }
 
   /// Watch `path` for the followed repository at `key`: its tree, or only its git directory.
@@ -872,6 +882,14 @@ extension VCSStatusService {
       hold.staleLocal = hold.staleLocal || change.readsStatus
       hold.staleGitHub = hold.staleGitHub || change.asksGitHub
       followedRepositories[key] = hold
+      // No window follows it, so none re-resolves; but every one forgets what its folders in it
+      // resolved to, so a return inside the grace reads the moved branch afresh rather than
+      // trust an answer the change made stale (#812 perf review A, I3).
+      if change.metadata {
+        for window in statusWindows {
+          window.followedRepositoryDidChange(root: key, metadata: true)
+        }
+      }
       return
     }
     let demand = takeFollowedReadDemand(key)
@@ -905,15 +923,21 @@ extension VCSStatusService {
   }
 
   /// What a delivery from a linked worktree's watch on its repository's git directory asks
-  /// (#812 perf review, I5): its own HEAD, `FETCH_HEAD` and index under `gitDirectory`
-  /// (`worktrees/<name>`), and the shared refs and `packed-refs`. Everything else there is the
-  /// main checkout's or a sibling worktree's, or objects, and asks nothing.
+  /// (#812 perf review, I5): its own HEAD, `FETCH_HEAD`, index, reftable, merge, rebase and
+  /// cherry-pick state and `info` under `gitDirectory` (`worktrees/<name>`), and the shared refs,
+  /// `packed-refs`, reftable, `config` and `info/exclude`. Everything else there is the main
+  /// checkout's or a sibling worktree's, or objects, and asks nothing.
+  ///
+  /// The fallback FSEvents watcher names a directory, with a trailing slash (`…/worktrees/wt/`,
+  /// `…/.git/`): that is the directory itself, so it counts as everything in it (review A, I2).
   nonisolated static func followedChange(
     paths: [String], overflow: Bool, gitDirectory: String, commonDirectory: String
   ) -> FollowedRepositoryChange {
     guard !overflow, !paths.isEmpty else { return .everything }
     var change = FollowedRepositoryChange()
-    for path in paths {
+    for spelled in paths {
+      var path = Substring(spelled)
+      while path.count > 1, path.hasSuffix("/") { path = path.dropLast() }
       if path == gitDirectory || path == commonDirectory {
         change.add(.gitEntry)
       } else if gitDirectory == commonDirectory, path.hasPrefix(gitDirectory + "/") {
@@ -923,11 +947,12 @@ extension VCSStatusService {
       } else if path.hasPrefix(gitDirectory + "/") {
         let rest = path.dropFirst(gitDirectory.count + 1).split(separator: "/")
         let kind = gitDirectoryPathKind(rest[...])
-        change.add(["HEAD", "FETCH_HEAD", "index"].contains(rest.first) ? kind : .ignored)
+        change.add(rest.first.map(Self.linkedWorktreeOwnEntries.contains) == true ? kind : .ignored)
       } else if path.hasPrefix(commonDirectory + "/") {
         let rest = path.dropFirst(commonDirectory.count + 1).split(separator: "/")
         let kind = gitDirectoryPathKind(rest[...])
-        change.add(["refs", "packed-refs"].contains(rest.first) ? kind : .ignored)
+        change.add(
+          rest.first.map(Self.linkedWorktreeSharedEntries.contains) == true ? kind : .ignored)
       } else {
         // Spelled apart from what git named: rather than go deaf, it counts as everything.
         return .everything
@@ -935,6 +960,19 @@ extension VCSStatusService {
     }
     return change
   }
+
+  /// What in a linked worktree's own git directory (`worktrees/<name>`) is its own: its HEAD and
+  /// per-worktree refs (a reftable), its index, and its merge, rebase, cherry-pick and revert
+  /// state and sparse-checkout, which change what its status reports.
+  nonisolated private static let linkedWorktreeOwnEntries: Set<Substring> = [
+    "HEAD", "FETCH_HEAD", "index", "reftable", "MERGE_HEAD", "rebase-merge", "rebase-apply",
+    "CHERRY_PICK_HEAD", "REVERT_HEAD", "info",
+  ]
+  /// What in a repository's shared git directory a linked worktree reads: the refs (files,
+  /// `packed-refs` or a reftable), the config and the excludes (`info/exclude`).
+  nonisolated private static let linkedWorktreeSharedEntries: Set<Substring> = [
+    "refs", "packed-refs", "reftable", "config", "info",
+  ]
 
   /// What a path inside a git directory is, given its components below it.
   nonisolated private static func gitDirectoryPathKind(
@@ -944,7 +982,10 @@ extension VCSStatusService {
     if rest.last?.hasSuffix(".lock") == true { return .ignored }
     switch first {
     case "refs": return rest.dropFirst().first == "heads" ? .localBranch : .ref
-    case "HEAD", "packed-refs", "FETCH_HEAD": return .ref
+    // A reftable (`git init --ref-format=reftable`) keeps HEAD and every ref in its tables, so a
+    // `git switch` writes only `reftable/tables.list` and a table: a ref, never a local branch
+    // only, since HEAD may be what moved (review A, I1).
+    case "HEAD", "packed-refs", "FETCH_HEAD", "reftable": return .ref
     case "index": return .status
     // Objects, reflogs, a sibling worktree's own directory, and what a commit or gc leaves.
     case "objects", "logs", "worktrees", "COMMIT_EDITMSG", "ORIG_HEAD", "gc.log", "gc.pid",

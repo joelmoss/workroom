@@ -72,6 +72,14 @@ final class FollowedFolderTracker {
   /// live watch, if any (`AppStore.followedWatchVouches`). Its answer re-checks once it lands,
   /// unless it lands in that repository.
   var finishedDuringResolve: String??
+  /// A command of the followed tab finished while `task` waited out a burst (`cd a; cd b;
+  /// git switch x`): the folder it settles on is resolved even with a fresh answer cached, since
+  /// the command may have moved it (#812 perf review A, N2). Kept across the burst's further
+  /// requests, cleared once it is consumed or a request ends the burst.
+  var finishedDuringBurst = false
+  /// The check of the answers cached before the held repository's watch went live
+  /// (`AppStore.followedWatchDidGoLive`).
+  var liveCheckTask: Task<Void, Never>?
   /// The cheap re-check a finished command runs (`AppStore.recheckFollowedFolder`).
   var recheckTask: Task<Void, Never>?
   /// The canonical root of the repository the window's inspector follows, as it holds it in
@@ -119,6 +127,7 @@ final class FollowedFolderTracker {
     request = nil
     followedTab = nil
     holdDeferred = false
+    finishedDuringBurst = false
     cancelResolve()
   }
 
@@ -142,12 +151,51 @@ final class FollowedFolderTracker {
   }
 
   /// This window now holds `root`: an answer for it that just landed is vouched for by its watch
-  /// from here on.
-  func holding(_ root: String) {
+  /// from here on, but only when that watch is `live` already (a re-follow in the grace, another
+  /// window's hold). One that isn't yet would miss a change before it starts, so its answers wait
+  /// for `AppStore.followedWatchDidGoLive` to check them (#812 perf review A, N3).
+  func holding(_ root: String, live: Bool) {
+    guard live else { return }
     let now = now()
     cache.updateEach { _, entry in
       if entry.repository?.root == root, !entry.watched, now - entry.at < .seconds(1) {
         entry.watched = true
+      }
+    }
+  }
+
+  /// The answers in `root` cached while its watch was not yet live, and still fresh: what its
+  /// going live checks.
+  func unvouchedAnswers(in root: String) -> [String: FollowedFolder.Repository] {
+    let now = now()
+    var answers: [String: FollowedFolder.Repository] = [:]
+    cache.updateEach { folder, entry in
+      if let repository = entry.repository, repository.root == root, !entry.watched,
+        now - entry.at < FollowedFolderTracker.cacheFreshness
+      {
+        answers[folder] = repository
+      }
+    }
+    return answers
+  }
+
+  /// `answers` were checked once the watch went live and still hold: vouched for from here on.
+  func vouch(_ answers: [String: FollowedFolder.Repository]) {
+    cache.updateEach { folder, entry in
+      if let repository = answers[folder], entry.repository == repository { entry.watched = true }
+    }
+  }
+
+  /// A command finished in a pane at `folder`: forget its answer and every answer in a repository
+  /// containing it (a `git switch` there moves them all), but those `vouched` for by a live watch,
+  /// which reports the change itself (#812 perf review A, N1).
+  func forgetAnswers(around folder: String, vouched: (String) -> Bool) {
+    cache.removeAll { key, entry in
+      guard let repository = entry.repository else { return key == folder }
+      if entry.watched, vouched(repository.root) { return false }
+      if key == folder { return true }
+      return [repository.root, repository.displayRoot].contains {
+        folder == $0 || folder.hasPrefix($0 + "/")
       }
     }
   }
@@ -318,6 +366,7 @@ extension AppStore {
       && (followedFolder.lastRequestAt.map { now - $0 < FollowedFolderTracker.burstWindow }
         ?? false)
     if !rereads { followedFolder.lastRequestAt = now }
+    if !burst { followedFolder.finishedDuringBurst = false }
     followedFolder.request = (target, folder)
     // A folder change, or another terminal: Files snaps back to following it. A re-read of the
     // same folder keeps a folder Files is browsing (a save must not snap it back), and writes
@@ -386,7 +435,11 @@ extension AppStore {
           self.focusHistoryIfShown()
           self.focusRemoteStateIfShown()
         }
-        if let cached = self.followedFolder.cache[folder], self.followedFolderCacheIsTrusted(cached)
+        // A command finished meanwhile may have moved it: resolved afresh, cache or not.
+        let finished = self.followedFolder.finishedDuringBurst
+        self.followedFolder.finishedDuringBurst = false
+        if !finished, let cached = self.followedFolder.cache[folder],
+          self.followedFolderCacheIsTrusted(cached)
         {
           self.followedFolder.phase = .idle
           return
@@ -445,21 +498,22 @@ extension AppStore {
   func followedCommandFinished(tab: TerminalTab.ID) {
     guard followedFolder.request != nil else { return }
     guard tab == followedFolder.followedTab else {
-      // A background pane: nothing it ran re-reads the followed folder, but its own folder's
-      // answer is forgotten unless a watch vouches for it, so focusing it resolves afresh.
+      // A background pane: nothing it ran re-reads the followed folder, but the answers for its
+      // folder and its repository are forgotten unless a watch vouches for them, so focusing any
+      // of them resolves afresh.
       if let target = selectedTarget, let other = terminals.tab(tab, for: target),
-        case .terminal(let state) = other.content,
-        case let cwd = state.cwd ?? state.launchDirectory,
-        let entry = followedFolder.cache[cwd],
-        !(entry.watched && entry.repository.map { followedWatchVouches(for: $0.root) } == true)
+        case .terminal(let state) = other.content
       {
-        followedFolder.cache[cwd] = nil
+        followedFolder.forgetAnswers(around: state.cwd ?? state.launchDirectory) {
+          followedWatchVouches(for: $0)
+        }
       }
       return
     }
     switch followedFolder.phase {
-    // A resolve waiting out a burst runs after this command, so it reads what it did.
-    case .waiting: return
+    // A resolve waiting out a burst runs after this command: it reads what it did, even where a
+    // fresh answer is cached.
+    case .waiting: followedFolder.finishedDuringBurst = true
     case .resolving:
       let held = followedFolder.heldRepository.flatMap { followedWatchVouches(for: $0) ? $0 : nil }
       followedFolder.finishedDuringResolve = .some(held)
@@ -560,7 +614,41 @@ extension AppStore {
     followedFolder.heldRepository = root
     if let root {
       vcsStatus.follow(root)
-      followedFolder.holding(root)
+      followedFolder.holding(root, live: followedWatchVouches(for: root))
+    }
+  }
+
+  /// The watch on followed repository `root` went live: the answers in it cached before then are
+  /// checked once with no `git` (whether HEAD still names their branch), and vouched for when it
+  /// does. When it doesn't (a `git switch` before the watch started), they are forgotten and the
+  /// folder is resolved afresh (#812 perf review A, N3).
+  func followedWatchDidGoLive(root: String) {
+    guard followedWatchVouches(for: root) else { return }
+    let answers = followedFolder.unvouchedAnswers(in: root)
+    guard let gitDir = answers.values.lazy.compactMap(\.gitDir).first else {
+      if !answers.isEmpty { followedRepositoryDidChange(root: root, metadata: true) }
+      return
+    }
+    let timeout = GitRepositoryProbe().timeout
+    let previous = followedFolder.liveCheckTask
+    followedFolder.liveCheckTask = Task { [weak self] in
+      await previous?.value
+      let head = await GitRepositoryProbe.blockingRead(
+        "livecheck\u{0}\(gitDir)", timeout: timeout
+      ) { GitRepositoryProbe.headBranch(gitDir: gitDir) }
+      guard let self else { return }
+      let holds = answers.values.allSatisfy { repository in
+        switch head {
+        case .branch(let name): name == repository.branch
+        case .detached: repository.branch == nil
+        case .unreadable, nil: false
+        }
+      }
+      if holds, self.followedWatchVouches(for: root) {
+        self.followedFolder.vouch(answers)
+      } else if !holds {
+        self.followedRepositoryDidChange(root: root, metadata: true)
+      }
     }
   }
 
@@ -630,10 +718,16 @@ extension AppStore {
   func followedFolderResolved() async {
     // Until nothing more is in flight: a re-check can start a resolve, and a resolve a re-check.
     while true {
-      let (task, recheck) = (followedFolder.task, followedFolder.recheckTask)
+      let (task, recheck, live) =
+        (followedFolder.task, followedFolder.recheckTask, followedFolder.liveCheckTask)
       await task?.value
       await recheck?.value
-      if followedFolder.task == task, followedFolder.recheckTask == recheck { return }
+      await live?.value
+      if followedFolder.task == task, followedFolder.recheckTask == recheck,
+        followedFolder.liveCheckTask == live
+      {
+        return
+      }
     }
   }
 

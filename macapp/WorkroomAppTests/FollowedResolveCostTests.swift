@@ -291,6 +291,134 @@ final class FollowedResolveCostTests: XCTestCase {
     XCTAssertEqual(followed.repository?.branch, "topic")
   }
 
+  /// Value: protects=a `git switch` while focus is in another repository showing on return
+  /// inside the unfollow grace (#812 perf review A, I3); fails_when=the grace swallows the
+  /// change its watch saw, so the return trusts the answer cached before it; why_new=review;
+  /// seam=the recording watch + AppStore's resolve seam; no_claim=the 10 s figure
+  func testAChangeInTheUnfollowGraceIsReadOnReturn() async throws {
+    let store = makeStore()
+    store.vcsStatus.followedUnfollowGrace = 3600
+    let tab = try await openTerminal(store)
+    let a = repo("a")
+    let b = repo("b")
+    try await cd(store, tab, a)
+    let watch = try XCTUnwrap(watchers.last { $0.path == a })
+    try await cd(store, tab, b)
+    XCTAssertFalse(store.vcsStatus.isFollowing(a), "a lingers in its grace")
+
+    sh("git switch -q -c topic", in: a)
+    watch.onChange([a + "/.git/HEAD"], false)
+    await settle(store)
+    let before = resolveCount
+    try await cd(store, tab, a)
+
+    XCTAssertEqual(resolveCount, before + 1, "the return reads it afresh")
+    guard case .followed(let followed) = store.inspectorSubject else { return XCTFail() }
+    XCTAssertEqual(followed.repository?.branch, "topic")
+  }
+
+  private final class GatedStat: Sendable {
+    private let gate = DispatchSemaphore(value: 0)
+    var stat: @Sendable (String) -> Bool {
+      { [self] path in
+        _ = gate.wait(timeout: .now() + 10)
+        return VCSStatusService.gitDirectoryIsOutsideTree(path)
+      }
+    }
+    func release() { gate.signal() }
+  }
+
+  /// Value: protects=an answer resolved before its repository's watch went live never being
+  /// vouched for by it (#812 perf review A, N3); fails_when=a `git switch` between the resolve and
+  /// the watch going live stays unseen; why_new=review; seam=the watch setup's stat seam (gated) +
+  /// AppStore's resolve seam; no_claim=a real FSEvents stream's start-up
+  func testAnAnswerFromBeforeTheWatchWentLiveIsCheckedOnceItIs() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    let gated = GatedStat()
+    store.vcsStatus.followedStatTimeout = 30
+    store.vcsStatus.followedGitFileStat = gated.stat
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(root + "/src")
+    await store.followedFolderResolved()
+    XCTAssertEqual(store.heldFollowedRepository, root)
+    XCTAssertFalse(store.followedWatchVouches(for: root), "the watch isn't live yet")
+
+    // A switch in the gap, which no watch reports.
+    sh("git switch -q -c topic", in: root)
+    gated.release()
+    await settle(store)
+
+    guard case .followed(let followed) = store.inspectorSubject else { return XCTFail() }
+    XCTAssertEqual(followed.repository?.branch, "topic")
+    // Past freshness, the answer read once the watch was live stands with no git.
+    let later = ContinuousClock.now + .seconds(60)
+    store.followedFolder.now = { later }
+    let before = resolveCount
+    try await cd(store, tab, root + "/src/lib")
+    try await cd(store, tab, root + "/src")
+    XCTAssertEqual(resolveCount, before + 1, "only the new folder resolves")
+  }
+
+  /// Value: protects=a `git switch` in a background pane forgetting every answer in its
+  /// repository (#812 perf review A, N1); fails_when=only the pane's own folder is forgotten, so
+  /// focusing another folder of that repository trusts the old branch; why_new=review;
+  /// seam=AppStore's finished-command handler + resolve seam; no_claim=OSC 133 itself
+  func testABackgroundPanesFinishedCommandForgetsItsRepositorysAnswers() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let a = repo("a")
+    let b = repo("b")
+    try await cd(store, tab, a)
+    // Split: the standalone terminal becomes a group of two panes, the new one focused.
+    store.splitFocusedRight()
+    await section.regroupsSettled()
+    await settle(store)
+    let group = try XCTUnwrap(store.selectedTarget)
+    let other = try XCTUnwrap(store.terminals.focusedTab(for: group))
+    XCTAssertNotEqual(other.id, tab.id)
+    XCTAssertNotNil(store.terminals.tab(tab.id, for: group), "the first pane is in the group")
+    try await cd(store, other, b)
+    // The background pane moves into a folder of `a` never resolved, and switches its branch.
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(a + "/src/lib")
+    sh("git switch -q -c topic", in: a)
+    try finishCommand(store, tab)
+    await settle(store)
+    let before = resolveCount
+
+    try await cd(store, other, a)
+
+    XCTAssertEqual(resolveCount, before + 1, "`a`'s answer was forgotten")
+    guard case .followed(let followed) = store.inspectorSubject else { return XCTFail() }
+    XCTAssertEqual(followed.repository?.branch, "topic")
+  }
+
+  /// Value: protects=`cd a; cd b; git switch x` showing `x` (#812 perf review A, N2);
+  /// fails_when=a command finishing while a burst waits is dropped and the settled folder's fresh
+  /// answer is trusted; why_new=review; seam=AppStore's finished-command handler + resolve seam;
+  /// no_claim=the burst window's length
+  func testACommandFinishedDuringACdBurstIsReadOnceItSettles() async throws {
+    let store = makeStore()
+    store.vcsStatus.followedUnfollowGrace = 0
+    let tab = try await openTerminal(store)
+    let a = repo("a")
+    let b = repo("b")
+    try await cd(store, tab, b)
+    try await cd(store, tab, a)
+    sh("git switch -q -c topic", in: b)
+    let surface = try XCTUnwrap(store.terminals.surface(tab))
+
+    surface.handlePwd(a + "/src")
+    surface.handlePwd(b)
+    XCTAssertEqual(store.followedFolder.phase, .waiting, "a burst")
+    try finishCommand(store, tab)
+    await settle(store)
+
+    guard case .followed(let followed) = store.inspectorSubject else { return XCTFail() }
+    XCTAssertEqual(followed.folder, b)
+    XCTAssertEqual(followed.repository?.branch, "topic")
+  }
+
   // MARK: Bursts
 
   /// Value: protects=a loop of `cd`s spawning and following only the folder it settles on (VCS

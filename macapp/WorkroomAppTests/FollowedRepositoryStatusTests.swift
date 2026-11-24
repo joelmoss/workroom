@@ -1283,6 +1283,74 @@ final class FollowedRepositoryStatusTests: XCTestCase {
       "a submodule's git directory is its own and its repository's")
   }
 
+  /// Value: protects=a `git switch` in a reftable repository re-resolving the folder and asking
+  /// GitHub (#812 perf review A, I1); fails_when=a reftable table or `tables.list` write counts
+  /// as a status change only, in a repository or a linked worktree's own or shared directory;
+  /// why_new=the switch writes no HEAD file there; seam=the change classifiers; no_claim=the
+  /// daemon's delivery
+  func testAReftableWriteCountsAsARefChange() {
+    let r = "/r"
+    let all = FollowedRepositoryChange(readsStatus: true, asksGitHub: true, metadata: true)
+    let none = FollowedRepositoryChange(readsStatus: false, asksGitHub: false, metadata: false)
+    // What git 2.54 writes for `git switch` under `--ref-format=reftable` (observed).
+    let tables = [r + "/.git/reftable/tables.list", r + "/.git/reftable/0x01-0x04-eda58e32.ref"]
+    for path in tables {
+      let change = VCSStatusService.followedChange(paths: [path], overflow: false)
+      XCTAssertEqual(change, all, path)
+      XCTAssertFalse(change.movesOnlyLocalBranches, "a table write may be HEAD moving")
+    }
+    XCTAssertEqual(
+      VCSStatusService.followedChange(
+        paths: [r + "/.git/reftable/tables.list.lock"], overflow: false), none)
+    func linked(_ paths: [String]) -> FollowedRepositoryChange {
+      VCSStatusService.followedChange(
+        paths: paths, overflow: false, gitDirectory: r + "/.git/worktrees/wt",
+        commonDirectory: r + "/.git")
+    }
+    XCTAssertEqual(linked([r + "/.git/worktrees/wt/reftable/tables.list"]), all, "its own HEAD")
+    XCTAssertEqual(linked([r + "/.git/reftable/tables.list"]), all, "the shared refs")
+    XCTAssertEqual(linked([r + "/.git/worktrees/other/reftable/tables.list"]), none)
+  }
+
+  /// Value: protects=a linked worktree's `git switch`, `pack-refs`, merge, rebase and excludes
+  /// landing under the fallback FSEvents watcher and the daemon alike (#812 perf review A, I2 +
+  /// N4); fails_when=a directory-level path (`…/worktrees/wt/`, `…/.git/`) or a worktree's own
+  /// merge or rebase state, `info/exclude` or `info/sparse-checkout` asks nothing; why_new=review;
+  /// seam=the linked-worktree change classifier; no_claim=FSEvents itself
+  func testALinkedWorktreeCountsDirectoryLevelPathsAndItsOwnState() {
+    let r = "/r"
+    let own = r + "/.git/worktrees/wt"
+    func linked(_ paths: [String]) -> FollowedRepositoryChange {
+      VCSStatusService.followedChange(
+        paths: paths, overflow: false, gitDirectory: own, commonDirectory: r + "/.git")
+    }
+    let all = FollowedRepositoryChange(readsStatus: true, asksGitHub: true, metadata: true)
+    let local = FollowedRepositoryChange(readsStatus: true, asksGitHub: false, metadata: false)
+    let none = FollowedRepositoryChange(readsStatus: false, asksGitHub: false, metadata: false)
+    // FSEvents with no file events names the directory, with a trailing slash.
+    XCTAssertEqual(linked([own + "/"]), all, "its own HEAD may have moved")
+    XCTAssertEqual(linked([r + "/.git/"]), all, "`packed-refs` may have moved")
+    XCTAssertEqual(linked([r + "/.git/refs/heads/"]), all)
+    XCTAssertEqual(linked([r + "/.git/worktrees/other/"]), none, "a sibling's")
+    XCTAssertEqual(linked([r + "/.git/objects/ab/"]), none)
+    // The daemon names the files.
+    XCTAssertEqual(linked([own + "/HEAD"]), all)
+    XCTAssertEqual(linked([r + "/.git/packed-refs"]), all)
+    for state in [
+      "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge/done", "rebase-apply/next",
+      "info/sparse-checkout",
+    ] {
+      XCTAssertEqual(linked([own + "/" + state]), local, state)
+    }
+    for directory in ["rebase-merge/", "rebase-apply/", "info/"] {
+      XCTAssertEqual(linked([own + "/" + directory]), local, directory)
+    }
+    XCTAssertEqual(linked([r + "/.git/info/exclude"]), local, "its excludes")
+    XCTAssertEqual(linked([r + "/.git/info/"]), local)
+    XCTAssertEqual(linked([r + "/.git/worktrees/other/MERGE_HEAD"]), none, "a sibling's merge")
+    XCTAssertEqual(linked([r + "/.git/MERGE_HEAD"]), none, "the main checkout's merge")
+  }
+
   /// Value: protects=an object or reflog write costing nothing (perf I6); fails_when=it re-reads
   /// the status or asks GitHub; why_new=#812 perf review; seam=VCSStatusService change handler;
   /// no_claim=the classifier's every path (above)

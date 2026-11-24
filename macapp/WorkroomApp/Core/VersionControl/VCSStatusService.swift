@@ -844,6 +844,13 @@ protocol VCSStatusWindow: AnyObject {
   /// (`unregisteredFollowedRoots`): a window following it stops, or starts again, offering its
   /// writes (review of #808, finding 5).
   func followedRegistrationDidChange(root: String)
+  /// The watches on followed repository `root` now cover its git directory and its tree: a window
+  /// holding it checks what it cached before then (#812 perf review A, N3).
+  func followedWatchDidGoLive(root: String)
+}
+
+extension VCSStatusWindow {
+  func followedWatchDidGoLive(root: String) {}
 }
 
 /// The three resolvers a status sweep and `RepositoryGitHub` use, built over one command runner so a
