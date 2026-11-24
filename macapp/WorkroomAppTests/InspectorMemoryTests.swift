@@ -337,6 +337,71 @@ final class InspectorMemoryTests: XCTestCase {
     XCTAssertEqual(offset, 300, "restored once the content is there")
   }
 
+  /// Value: protects=a restored offset being let go once it is reached, so a list that grows
+  /// afterwards (a status update adding changes) never snaps back to it (#812 perf-ui nit);
+  /// fails_when=every resize until the user's first live scroll scrolls back to the remembered
+  /// offset; why_new=#812; seam=InspectorPaneViewController; no_claim=a real trackpad scroll
+  func testARestoredOffsetIsLetGoOnceReached() throws {
+    let memory = InspectorScrollMemory()
+    let pane = InspectorPaneViewController()
+    pane.view.frame = NSRect(x: 0, y: 0, width: 300, height: 200)
+    let scroll = try XCTUnwrap(pane.view.subviews.compactMap { $0 as? NSScrollView }.first)
+    func show(_ height: CGFloat, under key: InspectorMemoryKey) {
+      pane.setContent(
+        header: AnyView(EmptyView()),
+        body: AnyView(Color.clear.frame(width: 300, height: height)), collapsed: false)
+      pane.remembersScroll(under: key, in: memory)
+      pane.view.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      pane.view.layoutSubtreeIfNeeded()
+    }
+    var offset: CGFloat { scroll.contentView.bounds.origin.y }
+    let a = InspectorMemoryKey.section(.changes, .repository(root: "/a"))
+    let b = InspectorMemoryKey.section(.changes, .repository(root: "/b"))
+    memory.remember(300, under: a)
+
+    show(2000, under: b)
+    show(2000, under: a)
+    XCTAssertEqual(offset, 300, "restored")
+    // Moved without a live scroll (a row scrolled into view, a key press), then the list grows.
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 100))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    show(2600, under: a)
+    XCTAssertEqual(offset, 100, "a list growing after the restore stays where it is")
+  }
+
+  /// Value: protects=the scroll memory's bound (#812 F7): a long session's folders can't grow it
+  /// without end, and browsing many folders never evicts repositories' section offsets;
+  /// fails_when=it keeps every folder, or Files' folders push out Changes' offsets;
+  /// why_new=#812 perf F7; seam=InspectorScrollMemory; no_claim=—
+  func testScrollMemoryKeepsTheMostRecentPerKind() {
+    let memory = InspectorScrollMemory()
+    let changes = InspectorMemoryKey.section(.changes, .repository(root: "/a"))
+    memory.remember(40, under: changes)
+    let folders = InspectorScrollMemory.folderCapacity + 10
+    for i in 0..<folders {
+      memory.remember(CGFloat(i), under: .files(fileRoot: "/r", path: "f\(i)"))
+    }
+    XCTAssertNil(memory.offset(under: .files(fileRoot: "/r", path: "f0")), "the oldest goes")
+    XCTAssertEqual(
+      memory.offset(under: .files(fileRoot: "/r", path: "f\(folders - 1)")),
+      CGFloat(folders - 1))
+    XCTAssertEqual(memory.offset(under: changes), 40, "a repository's offset is apart")
+  }
+
+  /// Value: protects=a closed terminal tab not being remembered as its target's last focused one
+  /// (#812 F7); fails_when=the per-target map keeps a tab, or a target, that is gone;
+  /// why_new=#812 perf F7; seam=AppStore; no_claim=which tab the inspector follows next
+  func testAClosedTabIsNotRememberedAsLastFocused() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let target = try XCTUnwrap(store.selectedTarget)
+    XCTAssertEqual(store.followedFolder.lastFocusedTerminalTab[target.id], tab.id)
+
+    store.terminals.closeTab(tab.id, for: target)
+    await eventually { store.followedFolder.lastFocusedTerminalTab[target.id] == nil }
+  }
+
   /// Value: protects=Changes' and History's selection surviving a round trip between
   /// repositories (AC 1); fails_when=a repository switch drops or replaces the focused content
   /// tab the selected row is read from; why_new=#810; seam=AppStore; no_claim=row highlighting

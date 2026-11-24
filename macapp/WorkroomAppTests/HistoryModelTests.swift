@@ -123,6 +123,30 @@ final class HistoryModelTests: XCTestCase {
     XCTAssertTrue(m.reachedEnd, "all commits loaded ⇒ reachedEnd")
   }
 
+  /// Value: protects=a revisited followed repository keeping the commits its History had grown to,
+  /// so the list (and the scroll restored over it) doesn't shrink back to one page; fails_when=the
+  /// revisit reloads only the first page; why_new=#812 perf F5; seam=HistoryModel.focus
+  /// (remembering:); no_claim=the cache's bound
+  func testARevisitReloadsAsManyCommitsAsWereKept() async {
+    let other = URL(fileURLWithPath: "/tmp/wr-history-other")
+    let m = model(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 2)
+    m.focus(url, remembering: true)
+    await m.awaitCurrentLoad()
+    m.loadMore()
+    await m.awaitCurrentLoad()
+    m.loadMore()
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 6)
+
+    m.focus(other, remembering: true)
+    await m.awaitCurrentLoad()
+    m.focus(url, remembering: true)
+    XCTAssertEqual(m.commits.count, 6, "the kept window shows at once")
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 6, "and the revisit's read keeps all of it")
+    XCTAssertEqual(m.state, .loaded)
+  }
+
   // MARK: window cap (bounds the per-refresh read, not the drawing — WORKROOM-2B)
 
   private func capped(_ provider: some LocalVCSProviding, pageSize: Int, maxWindow: Int)

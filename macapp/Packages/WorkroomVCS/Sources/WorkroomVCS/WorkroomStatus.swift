@@ -273,7 +273,15 @@ public struct PresenceEquatable<Value: Sendable>: Equatable, Sendable {
 public struct WorkroomStatus: Equatable, Sendable {
   public var dirty: Bool?
   public var conflicted: Bool = false
-  public var changedFiles: [ChangedFile]?
+  public var changedFiles: [ChangedFile]? {
+    // A new list is a whole one: nothing of it is left out.
+    didSet { omittedChangedFiles = 0 }
+  }
+  /// How many changed files `changedFiles` leaves out: a recalled status (`recalled`) keeps only
+  /// the first of a huge list, until its fresh read replaces it. 0 for a status read live.
+  public private(set) var omittedChangedFiles = 0
+  /// How many files have changed, counting any `changedFiles` leaves out.
+  public var changedFileCount: Int { (changedFiles?.count ?? 0) + omittedChangedFiles }
   /// Working-tree line counts vs the last commit, summed per-file patch stats.
   /// `nil` ⇒ not resolved; both 0 ⇒ no line delta (e.g. only untracked files, which git omits).
   ///
@@ -315,6 +323,16 @@ public struct WorkroomStatus: Equatable, Sendable {
 
   /// Not yet probed (first render before the sweep resolves it).
   public static let unresolved = WorkroomStatus()
+
+  /// This status as a revisit's first paint keeps it: its first `limit` changed files, counting
+  /// the rest, so a huge dirty tree can't hold its whole list while nobody looks at it (#812).
+  public func recalled(keepingFiles limit: Int) -> WorkroomStatus {
+    guard let files = changedFiles, files.count > limit else { return self }
+    var kept = self
+    kept.changedFiles = Array(files.prefix(max(0, limit)))
+    kept.omittedChangedFiles = changedFileCount - kept.changedFiles!.count
+    return kept
+  }
 
   public var isUnknown: Bool { dirty == nil }
   public var isClean: Bool { dirty == false && !conflicted }
