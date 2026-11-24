@@ -212,8 +212,9 @@ extension AppStore {
     pendingSessionRecovery = false
     let terminals = terminals
     Task { [weak self] in
+      guard let present = await self?.presentTargetPaths() else { return }
       await PersistentSessionRecovery.recover(in: terminals) { [weak self] in
-        self?.reattachesLocally($0) ?? false
+        self?.reattachesLocally($0, present: present) ?? false
       }
     }
   }
@@ -281,11 +282,29 @@ extension AppStore {
 
   /// Whether `targetID`'s restored panes may reattach to this Mac's live sessions: a target that
   /// still exists, is local, and opens here (`TerminalPanes.materializeLivePersistentSessions`).
-  /// The path is stat-ed too: the first load, which the restore runs in, reads config only and
-  /// never flags a missing directory.
-  func reattachesLocally(_ targetID: TerminalTarget.ID) -> Bool {
-    guard let target = terminalTarget(forID: targetID), !target.isMissing else { return false }
-    return FileManager.default.fileExists(atPath: target.path)
+  /// Its path must be in `present` too (`presentTargetPaths`): the first load, which the restore
+  /// runs in, reads config only and never flags a missing directory. The target is looked up live,
+  /// so one that goes or moves during recovery stops reattaching.
+  func reattachesLocally(_ targetID: TerminalTarget.ID, present: Set<String>) -> Bool {
+    guard let target = terminalTarget(forID: targetID), !target.isMissing,
+      target.remoteHost == nil
+    else { return false }
+    return present.contains(target.path)
+  }
+
+  /// Which of the held targets' local paths exist, stat-ed at once off the main actor, each under
+  /// `reattachStatTimeout`: a path on a stalled mount reads as gone, so its panes start fresh
+  /// shells. A target with no tabs, or one that only appears later, is not stat-ed and so doesn't
+  /// reattach.
+  func presentTargetPaths() async -> Set<String> {
+    let paths = Set(
+      terminals.heldTargetIDs.compactMap { id -> String? in
+        guard let target = terminalTarget(forID: id), !target.isMissing,
+          target.remoteHost == nil
+        else { return nil }
+        return target.path
+      })
+    return await FolderPresence.existing(paths, timeout: reattachStatTimeout, stat: reattachStat)
   }
 
   /// Restores `target`'s held-back session (`deferredTargetSessions`) once its workroom is

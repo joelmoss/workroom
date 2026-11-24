@@ -859,6 +859,12 @@ final class AppStore: ObservableObject {
   /// terminals do, so its subject would read nothing in between; the move re-points it at the end.
   @ObservationIgnored var isMovingTerminalsInPlace = false
   @ObservationIgnored var pendingSessionRecovery = false
+  /// How long session recovery's stat of a restored target's folder may take before its panes
+  /// start fresh shells (`presentTargetPaths`).
+  @ObservationIgnored var reattachStatTimeout: TimeInterval = 3
+  /// Session recovery's stat of a restored target's folder, blocking. A seam for tests; nil for
+  /// the disk.
+  @ObservationIgnored var reattachStat: (@Sendable (String) -> Bool)?
   /// Saved targets held back from the restore (#253): remote workrooms this app couldn't reach
   /// then. Each is written back with every save, and restored whole once its workroom is
   /// reachable and opens its first pane (`restoreDeferredSession`).

@@ -98,8 +98,8 @@ On #812 Codex needed three review rounds to find these calls.
 `GitRepositoryProbe.blockingRead` closure (`boundedRead` for async work, `localLocation` for a
 repository location), off the main actor under a timeout. The only other way through is an entry in
 `macapp/Scripts/main-actor-fs-allowlist.txt` with a one-line reason. A `nonisolated` function gets
-no exemption, because a synchronous one runs on its caller's actor. The allowlist tags the main-actor
-calls that predate the check as `grandfathered`.
+no exemption, because a synchronous one runs on its caller's actor. A synchronous caller that needs an
+answer at once reads a last-known one refreshed off the main actor (`FolderPresence`).
 
 ## Reading the engine's source
 

@@ -1264,14 +1264,17 @@ final class SessionRestoreTests: XCTestCase {
             host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())),
         ])
     ]
-    XCTAssertTrue(store.reattachesLocally(TargetID.root(project: here)))
+    // What recovery's stat found: everything but the missing paths, the remote one included.
+    let present: Set<String> = [here, "/home/workroom/r"]
+    XCTAssertTrue(store.reattachesLocally(TargetID.root(project: here), present: present))
     XCTAssertTrue(
-      store.reattachesLocally(TargetID.workroom(project: here, name: "local")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "local"), present: present))
     XCTAssertFalse(
-      store.reattachesLocally(TargetID.workroom(project: here, name: "remote")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "remote"), present: present))
     XCTAssertFalse(
-      store.reattachesLocally(TargetID.workroom(project: here, name: "gone")))
-    XCTAssertFalse(store.reattachesLocally(TargetID.root(project: "/no/such/project")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "gone"), present: present))
+    XCTAssertFalse(
+      store.reattachesLocally(TargetID.root(project: "/no/such/project"), present: present))
     // The first load reads config only, so a missing directory carries no warning yet.
     store.projectStore.projects[0] = Project(
       path: here, vcs: "git",
@@ -1279,6 +1282,6 @@ final class SessionRestoreTests: XCTestCase {
         Workroom(name: "moved", path: "/no/such/workroom", vcsName: "workroom/moved", warnings: [])
       ])
     XCTAssertFalse(
-      store.reattachesLocally(TargetID.workroom(project: here, name: "moved")))
+      store.reattachesLocally(TargetID.workroom(project: here, name: "moved"), present: present))
   }
 }

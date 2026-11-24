@@ -30,19 +30,27 @@ enum CommandLineInstaller {
 
   // MARK: Status
 
-  /// Whether `/usr/local/bin/workroom` is already a symlink to this app's bundled binary.
-  static func status() -> Status {
-    guard let source = try? WorkroomCLI.bundledBinaryURL() else { return .notInstalled }
-    let fm = FileManager.default
-    let path = symlinkURL.path
-    if let dest = try? fm.destinationOfSymbolicLink(atPath: path) {
-      let resolved =
-        dest.hasPrefix("/")
-        ? dest
-        : symlinkURL.deletingLastPathComponent().appendingPathComponent(dest).path
-      return resolved == source.path ? .installed : .conflict(dest)
+  /// Whether `/usr/local/bin/workroom` is already a symlink to this app's bundled binary, read off
+  /// the main actor under `timeout`: nil when the read outruns it. `read` stands in for the disk in
+  /// tests.
+  static func status(
+    at path: String = symlinkURL.path, timeout: TimeInterval = 3,
+    read: (@Sendable () -> Status)? = nil
+  ) async -> Status? {
+    await GitRepositoryProbe.blockingRead("cli-status\u{0}\(path)", timeout: timeout) {
+      if let read { return read() }
+      guard let source = try? WorkroomCLI.bundledBinaryURL() else { return .notInstalled }
+      let fm = FileManager.default
+      if let dest = try? fm.destinationOfSymbolicLink(atPath: path) {
+        let resolved =
+          dest.hasPrefix("/")
+          ? dest
+          : URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(dest)
+            .path
+        return resolved == source.path ? .installed : .conflict(dest)
+      }
+      return fm.fileExists(atPath: path) ? .conflict(path) : .notInstalled
     }
-    return fm.fileExists(atPath: path) ? .conflict(path) : .notInstalled
   }
 
   // MARK: Install (non-interactive core)
@@ -103,9 +111,10 @@ enum CommandLineInstaller {
   // MARK: Interactive (menu) entry point
 
   /// Runs the install with native UI: a no-op confirmation when already installed, the system
-  /// admin prompt when needed, and a result alert. Call from the menu command.
+  /// admin prompt when needed, and a result alert. Call from the menu command. A status that can't
+  /// be read in time installs anyway: relinking an installed command changes nothing.
   @MainActor static func runFromMenu() async {
-    if case .installed = status() {
+    if case .installed = await status() {
       presentAlert(
         style: .informational, title: "Command Already Installed",
         message:
