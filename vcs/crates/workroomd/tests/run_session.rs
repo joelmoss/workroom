@@ -792,10 +792,7 @@ fn a_run_session_starts_after_the_daemons_own_file_is_gone_or_is_no_daemon() {
 
         std::fs::remove_file(&binary).expect("take the file away");
         if replace {
-            std::fs::write(&binary, "#!/bin/sh\necho 'a Go CLI' >&2\nexit 1\n").unwrap();
-            let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-            std::fs::set_permissions(&binary, permissions).unwrap();
+            common::write_executable(&binary, "#!/bin/sh\necho 'a Go CLI' >&2\nexit 1\n");
         }
         let (_client, mut reader) = start_run(&socket, session, "echo RUN-\"\"STARTED; sleep 30");
         let seen = reader

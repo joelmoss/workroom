@@ -7,7 +7,6 @@
 mod common;
 
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -809,8 +808,7 @@ fn a_cli_only_update_reaches_every_panes_workroom() {
     let staged = app.join(".workroom.new");
     let mut bytes = std::fs::read(common::daemon_binary()).unwrap();
     bytes.push(b'\n');
-    std::fs::write(&staged, &bytes).unwrap();
-    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::write_executable(&staged, &bytes);
     std::fs::rename(&staged, &source).unwrap();
 
     let mut after = attach_with_only(&socket, "b4b4b4b4-0000-4000-8000-000000000002", &env);
@@ -5459,15 +5457,12 @@ struct FakeAgent {
 impl FakeAgent {
     /// Writes the program as `name` in a folder of its own under `dir`, made here.
     fn new(dir: &Path, name: &str) -> FakeAgent {
-        use std::os::unix::fs::PermissionsExt;
         let folder = (0..)
             .map(|attempt| dir.join(format!("agent-{name}-{attempt}")))
             .find(|folder| std::fs::create_dir(folder).is_ok())
             .expect("a folder for the agent");
         let program = folder.join(name);
-        std::fs::write(&program, common::FAKE_AGENT).expect("write the agent");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .expect("make the agent runnable");
+        common::write_executable(&program, common::FAKE_AGENT);
         FakeAgent { program }
     }
 

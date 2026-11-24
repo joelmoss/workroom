@@ -29,15 +29,12 @@ fn fill(workspace: &Path, configure: bool) -> String {
     std::fs::write(&global, "").unwrap();
     let helper = |name: &str, password: &str| {
         let path = workspace.join(name);
-        std::fs::write(
+        common::write_executable(
             &path,
             format!(
                 "#!/bin/sh\ntest \"$1\" = get && printf 'username=u\\npassword={password}\\n'\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        );
         path
     };
     helper("git-credential-boxd", "boxd");

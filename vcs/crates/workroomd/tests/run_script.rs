@@ -1,7 +1,9 @@
 //! `workroomd run-script` as the app runs it, a process of its own: its output arrives while the
 //! script is still running, and a SIGTERM to it (the app ending its carrier) ends the script's tree.
+#[allow(dead_code)] // not every helper is used here
+mod common;
+
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -111,8 +113,7 @@ fn a_script_finds_workroom_on_its_path_after_the_logins_own_entries() {
     let root = std::env::temp_dir().join(format!("wr-run-script-path-{}", std::process::id()));
     std::fs::create_dir(&root).expect("a scratch folder of this run's own");
     let script = root.join("workroom_setup");
-    std::fs::write(&script, "#!/bin/sh\necho \"PATH=$PATH\"\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::write_executable(&script, "#!/bin/sh\necho \"PATH=$PATH\"\n");
     let output = Command::new(daemon_binary())
         .args(["run-script", "--dir"])
         .arg(&root)
@@ -159,8 +160,7 @@ fn a_script_gets_what_the_login_shell_selects_in_the_workroom() {
     )
     .unwrap();
     let script = root.join("workroom_setup");
-    std::fs::write(&script, "#!/bin/sh\necho \"$SELECTED_FOR\"\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::write_executable(&script, "#!/bin/sh\necho \"$SELECTED_FOR\"\n");
 
     let output = Command::new(daemon_binary())
         .args(["run-script", "--dir"])
@@ -184,15 +184,13 @@ fn output_streams_while_the_script_runs_and_a_sigterm_ends_its_tree() {
     let dir = scratch("it");
     let pidfile = dir.join("child.pid");
     let script = dir.join("workroom_setup");
-    std::fs::write(
+    common::write_executable(
         &script,
         format!(
             "#!/bin/sh\nsleep 60 &\necho $! > {}\necho started\nwait\n",
             pidfile.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
     let mut daemon = Spawned(
         Command::new(daemon_binary())

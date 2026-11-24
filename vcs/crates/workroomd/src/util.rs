@@ -155,4 +155,6 @@ pub fn ready_to_fork() {
 }
 
 #[cfg(test)]
+pub(crate) mod test_exec;
+#[cfg(test)]
 mod tests;
