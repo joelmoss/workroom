@@ -81,7 +81,7 @@ extension AppStore {
   /// refused, wherever the terminal has gone since. In fixture mode it optimistically updates the
   /// seeded status instead of spawning `gh`, so the actions menu is exercisable hermetically.
   func performPRAction(_ action: PRAction, number: Int, on target: VCSActionTarget) {
-    let title = "Couldn’t \(action.label.lowercased())"
+    let title = "Couldn't \(action.label.lowercased())"
     guard let write = prWrite(on: target, errorTitle: title) else { return }
     performPRWrite(
       write, arguments: action.arguments(number: number), number: number,
@@ -93,7 +93,7 @@ extension AppStore {
   func performPRAction(
     _ action: PRAction, number: Int, on item: VCSStatusService.StatusWorkItem
   ) {
-    let title = "Couldn’t \(action.label.lowercased())"
+    let title = "Couldn't \(action.label.lowercased())"
     guard let write = prWrite(on: item, errorTitle: title) else { return }
     performPRWrite(
       write, arguments: action.arguments(number: number), number: number,
@@ -105,7 +105,7 @@ extension AppStore {
   /// a parameter, so it's kept apart from the state-only `PRAction` verbs. In fixture mode it
   /// optimistically flips the PR to merged instead of spawning `gh`.
   func performMerge(_ method: PRMergeMethod, number: Int, on target: VCSActionTarget) {
-    let title = "Couldn’t merge pull request"
+    let title = "Couldn't merge pull request"
     guard let write = prWrite(on: target, errorTitle: title) else { return }
     performPRWrite(
       write, arguments: method.arguments(number: number), number: number,

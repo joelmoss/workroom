@@ -493,6 +493,120 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     store.followedFolder.retryTask?.cancel()
   }
 
+  // MARK: Delayed loader
+
+  /// Value: protects=a slow repository lookup showing the sections' loader after a short delay, and
+  /// dropping it on the answer (#803 polish); fails_when=the loader shows at once, never shows, or
+  /// outlives the answer; why_new=#803 owner's UI decision; seam=AppStore; no_claim=the panels'
+  /// rendering
+  func testASlowLookupShowsTheLoaderOnlyAfterTheDelay() async throws {
+    let store = makeStore()
+    let delay = Gate()
+    let lookup = Gate()
+    store.followedFolderLoaderWait = { await delay.pass() }
+    store.resolveFollowedRepository = { _ in
+      await lookup.pass()
+      return .notARepository
+    }
+
+    store.newTerminalInSelectedTarget()
+    XCTAssertEqual(followed(store)?.repositoryPending, true)
+    XCTAssertFalse(store.followedFolderLoaderShown, "blank before the delay")
+
+    delay.open()
+    await store.followedFolderLoaderElapsed()
+    XCTAssertTrue(store.followedFolderLoaderShown, "the loader after it")
+
+    lookup.open()
+    await store.followedFolderResolved()
+    XCTAssertEqual(followed(store)?.repositoryPending, false)
+    XCTAssertFalse(store.followedFolderLoaderShown, "gone with the answer")
+    XCTAssertEqual(FollowedFolderTracker.loaderDelay, .milliseconds(300))
+  }
+
+  /// Value: protects=a fast answer never flashing the loader (#803 polish); fails_when=the delay
+  /// elapsing after the answer still shows it; why_new=#803 owner's UI decision; seam=AppStore;
+  /// no_claim=the panels' rendering
+  func testAFastLookupNeverShowsTheLoader() async throws {
+    let store = makeStore()
+    let delay = Gate()
+    store.followedFolderLoaderWait = { await delay.pass() }
+    store.resolveFollowedRepository = { _ in .notARepository }
+
+    store.newTerminalInSelectedTarget()
+    let wait = try XCTUnwrap(store.followedFolder.loaderTask, "the delay starts with the lookup")
+    await store.followedFolderResolved()
+    delay.open()
+    await wait.value
+
+    XCTAssertFalse(store.followedFolderLoaderShown)
+  }
+
+  /// Value: protects=the loader staying up across a cd while still pending, and restarting its
+  /// delay after the terminal is left mid-lookup (#803 polish); fails_when=a cd blinks the loader
+  /// off, or a return shows it at once; why_new=#803 owner's UI decision; seam=AppStore;
+  /// no_claim=the panels' rendering
+  func testTheLoaderSurvivesACdAndRestartsAfterLeavingTheTerminal() async throws {
+    let store = makeStore()
+    let delay = Gate()
+    let lookup = Gate()
+    store.followedFolderLoaderWait = { await delay.pass() }
+    store.resolveFollowedRepository = { _ in
+      await lookup.pass()
+      return .notARepository
+    }
+    store.newTerminalInSelectedTarget()
+    let target = try XCTUnwrap(store.selectedTarget)
+    let terminal = try XCTUnwrap(store.selectedTargetID)
+    let tab = try XCTUnwrap(store.terminals.tabs(for: target).first)
+    delay.open()
+    await store.followedFolderLoaderElapsed()
+    XCTAssertTrue(store.followedFolderLoaderShown)
+
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(folder("elsewhere"))
+    XCTAssertEqual(followed(store)?.repositoryPending, true)
+    XCTAssertTrue(store.followedFolderLoaderShown, "a cd while pending keeps the loader")
+
+    store.terminals.addTab(for: try XCTUnwrap(store.target(for: workroom)))
+    store.selectedTargetID = workroom
+    XCTAssertFalse(store.followedFolderLoaderShown)
+    store.selectedTargetID = terminal
+    XCTAssertEqual(followed(store)?.repositoryPending, true)
+    XCTAssertFalse(store.followedFolderLoaderShown, "a return waits out the delay again")
+    delay.open()
+    await store.followedFolderLoaderElapsed()
+    XCTAssertTrue(store.followedFolderLoaderShown)
+
+    for _ in 0..<3 { lookup.open() }
+    await store.followedFolderResolved()
+    XCTAssertFalse(store.followedFolderLoaderShown)
+  }
+
+  /// Value: protects=a lookup that can't tell dropping the loader for its message (#803 polish);
+  /// fails_when=the undetermined folder keeps the loader up; why_new=#803 owner's UI decision;
+  /// seam=AppStore; no_claim=the retry
+  func testALookupThatCannotTellDropsTheLoader() async throws {
+    let store = makeStore()
+    let delay = Gate()
+    let lookup = Gate()
+    store.followedFolderLoaderWait = { await delay.pass() }
+    store.followedFolderRetryWait = { _ in try? await Task.sleep(for: .seconds(3600)) }
+    store.resolveFollowedRepository = { _ in
+      await lookup.pass()
+      return .unknown
+    }
+    store.newTerminalInSelectedTarget()
+    delay.open()
+    await store.followedFolderLoaderElapsed()
+    XCTAssertTrue(store.followedFolderLoaderShown)
+
+    lookup.open()
+    await store.followedFolderResolved()
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, true)
+    XCTAssertFalse(store.followedFolderLoaderShown)
+    store.followedFolder.retryTask?.cancel()
+  }
+
   /// One waiter let through per `open()`, whichever comes first.
   private final class Gate: Sendable {
     private let state = Mutex<(permits: Int, waiters: [CheckedContinuation<Void, Never>])>((0, []))

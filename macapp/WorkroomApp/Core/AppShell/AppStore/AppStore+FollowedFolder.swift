@@ -40,6 +40,8 @@ final class FollowedFolderTracker {
   /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
   /// content tab with no folder of its own.
   var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
+  /// The target the loader's delay (`loaderTask`) runs, or ran, for: nil while none is pending.
+  var loaderTarget: TargetID?
   /// The innermost git repository containing a folder on this Mac, or that there is none, or that
   /// git could not tell. A seam for tests.
   var resolve: @Sendable (String) async -> GitRepositoryProbe.Discovery = { folder in
@@ -48,6 +50,17 @@ final class FollowedFolderTracker {
     await ShellEnvironment.settled()
     return await GitRepositoryProbe().discoverRepository(containing: folder)
   }
+
+  /// The delay before the inspector's sections show their loader for a folder whose repository is
+  /// still pending, running or elapsed (`AppStore.followedFolderLoaderShown`).
+  var loaderTask: Task<Void, Never>?
+  /// Wait before the sections show their loader for a pending repository, so a fast answer never
+  /// flashes it. A seam for tests.
+  var loaderWait: @Sendable () async -> Void = {
+    try? await Task.sleep(for: FollowedFolderTracker.loaderDelay)
+  }
+  /// How long `loaderWait` waits by default.
+  nonisolated static let loaderDelay: Duration = .milliseconds(300)
 
   /// How long `retryWait` waits by default.
   nonisolated static func retryDelay(_ streak: Int) -> Duration {
@@ -112,6 +125,50 @@ extension AppStore {
     set { followedFolder.resolve = newValue }
   }
 
+  /// The loader's delay (`FollowedFolderTracker.loaderWait`). For tests.
+  var followedFolderLoaderWait: @Sendable () async -> Void {
+    get { followedFolder.loaderWait }
+    set { followedFolder.loaderWait = newValue }
+  }
+
+  /// Whether Changes, Pull Request, History and Files show their loader: the followed folder's
+  /// repository is still pending, and has been for `FollowedFolderTracker.loaderDelay`. Before
+  /// that they stay blank, so a fast answer never flashes a loader.
+  var followedFolderLoaderShown: Bool {
+    guard followedFolderLoaderElapsedFlag, case .followed(let followed) = inspectorSubject else {
+      return false
+    }
+    return followed.repositoryPending
+  }
+
+  /// Start the loader's delay when a lookup is pending and none runs, and end it once the lookup
+  /// has answered, the terminal is left, or another target is followed. A pending lookup that is
+  /// asked again (a `cd` while it runs) keeps the delay, or the loader it shows.
+  private func syncFollowedFolderLoader() {
+    let pending =
+      followedFolder.request != nil && followedFolderState?.folder.repositoryPending == true
+    let target = pending ? followedFolderState?.target : nil
+    if followedFolder.loaderTarget != target {
+      followedFolder.loaderTask?.cancel()
+      followedFolder.loaderTask = nil
+      followedFolder.loaderTarget = nil
+      if followedFolderLoaderElapsedFlag { followedFolderLoaderElapsedFlag = false }
+    }
+    guard pending, followedFolder.loaderTarget == nil else { return }
+    followedFolder.loaderTarget = target
+    let wait = followedFolder.loaderWait
+    followedFolder.loaderTask = Task { [weak self] in
+      await wait()
+      guard let self, !Task.isCancelled,
+        self.followedFolderState?.folder.repositoryPending == true
+      else { return }
+      self.followedFolderLoaderElapsedFlag = true
+    }
+  }
+
+  /// Wait for the loader's delay. For tests.
+  func followedFolderLoaderElapsed() async { await followedFolder.loaderTask?.value }
+
   /// The retry's wait (`FollowedFolderTracker.retryWait`). For tests.
   var followedFolderRetryWait: @Sendable (_ streak: Int) async -> Void {
     get { followedFolder.retryWait }
@@ -169,6 +226,7 @@ extension AppStore {
     guard let folder = followedTerminalFolder(), let target = selectedTarget?.id else {
       // Left the terminal: the next return resolves again, for a branch switched meanwhile.
       followedFolder.stop()
+      syncFollowedFolderLoader()
       return false
     }
     if followedFolder.isRequested(target: target, folder: folder) { return false }
@@ -223,6 +281,7 @@ extension AppStore {
         self.holdFollowedRepository()
       }
     }
+    syncFollowedFolderLoader()
     return changed
   }
 
@@ -334,6 +393,7 @@ extension AppStore {
     guard followedFolderState != state else { return false }
     followedFolderState = state
     holdFollowedRepository()
+    syncFollowedFolderLoader()
     return true
   }
 

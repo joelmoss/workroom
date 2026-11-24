@@ -181,8 +181,8 @@ struct FilesBreadcrumbSegment: View {
     switch role {
     case .ancestor: return "Show \(path) in Files"
     case .shown: return "Files shows \(path)"
-    case .terminalShown: return "The terminal’s folder: \(path)"
-    case .terminalBrowsedAway: return "Back to the terminal’s folder: \(path)"
+    case .terminalShown: return "The terminal's folder: \(path)"
+    case .terminalBrowsedAway: return "Back to the terminal's folder: \(path)"
     }
   }
 
@@ -190,8 +190,8 @@ struct FilesBreadcrumbSegment: View {
     switch role {
     case .ancestor: return "folder"
     case .shown: return "shown in Files"
-    case .terminalShown: return "the terminal’s folder, shown in Files"
-    case .terminalBrowsedAway: return "the terminal’s folder, not shown in Files"
+    case .terminalShown: return "the terminal's folder, shown in Files"
+    case .terminalBrowsedAway: return "the terminal's folder, not shown in Files"
     }
   }
 }

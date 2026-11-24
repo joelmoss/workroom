@@ -141,7 +141,7 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     let leaf = element("files.breadcrumb.1")
     XCTAssertEqual(waitForLabel(base) { $0 == "wr811-repo" }, "wr811-repo", "based at the root")
     XCTAssertEqual(waitForLabel(leaf) { $0 == "src" }, "src", "ending at the terminal's folder")
-    XCTAssertEqual(leaf.value as? String, "the terminal’s folder, shown in Files")
+    XCTAssertEqual(leaf.value as? String, "the terminal's folder, shown in Files")
     XCTAssertFalse(element("files.breadcrumb.2").exists, "nothing past the terminal's folder")
     XCTAssertTrue(
       element(prefix: "files.file.", suffix: "hello.txt").waitForExistence(timeout: 10),

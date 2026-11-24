@@ -20,8 +20,9 @@ struct PullRequestPanel: View {
   var body: some View {
     Group {
       if case .followed(let followed) = store.inspectorSubject, followed.repositoryPending {
-        // Its repository is still resolving (ms): wait without a message, then show it.
-        EmptyView()
+        // Its repository is still resolving: blank at first, so a fast answer never flashes a
+        // loader, then the section's own loader.
+        if store.followedFolderLoaderShown { checkingMessage } else { EmptyView() }
       } else if case .followed(let followed) = store.inspectorSubject,
         followed.repository == nil
           || vcsStatus.status(for: store.inspectorSubject)?.failure?.meansNoRepository == true
@@ -129,13 +130,19 @@ struct PullRequestPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  /// The section's loader: while the pull request is looked up, and once a followed folder's
+  /// repository has been pending a moment.
+  private var checkingMessage: some View {
+    inspectorCheckingMessage(help: "Looking up the pull request")
+  }
+
   @ViewBuilder
   /// `target`: what the pull request's actions act on; nil (a repository the app can't write to)
   /// shows none.
   private func content(for target: VCSActionTarget?) -> some View {
     let status = vcsStatus.status(for: store.inspectorSubject)
     if status?.prCheckedAt == nil {
-      inspectorMessage("Checking\u{2026}")
+      checkingMessage
     } else if let status {
       // GitHub status for the branch: the PR (or "no PR"), and — only when there's an actual PR —
       // its CI checks: a summary line plus one row per individual check (issue #75). A branch with

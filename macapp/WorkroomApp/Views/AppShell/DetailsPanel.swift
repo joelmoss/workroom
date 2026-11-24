@@ -457,8 +457,8 @@ struct InspectorWorkroomHeader: View {
       followed.repositoryUndetermined
         ? NotARepositoryMessage.help(path: followed.folder, undetermined: true)
         : followed.isOutsideRepository
-          ? "The terminal’s folder, \(followed.folder), is not in a git repository"
-          : "The terminal’s folder: \(followed.folder)"
+          ? "The terminal's folder, \(followed.folder), is not in a git repository"
+          : "The terminal's folder: \(followed.folder)"
     )
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(

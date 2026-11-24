@@ -867,7 +867,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
 
     XCTAssertEqual(runner.writes.count, 1)
     XCTAssertEqual(status.followedStatuses[root]?.pr, draft)
-    XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t ready for review")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn't ready for review")
     XCTAssertEqual(store.modals.errorMessage, "nope")
   }
 
@@ -933,7 +933,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(store.modals.errorMessage, "nope", "the failure is still the user's to see")
     XCTAssertEqual(
       store.modals.errorTitle,
-      "Couldn\u{2019}t ready for review in \((first as NSString).abbreviatingWithTildeInPath)",
+      "Couldn't ready for review in \((first as NSString).abbreviatingWithTildeInPath)",
       "it names the repository it failed in, which the inspector no longer shows")
   }
 
