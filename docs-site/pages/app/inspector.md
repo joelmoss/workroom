@@ -35,8 +35,8 @@ The inspector is on for these terminals as it is for a workroom: <kbd>⌘B</kbd>
 
 Where the folder is inside a Git repository, the inspector shows that repository, whichever folder of it you are in:
 
-- The header shows the repository's folder name, with its branch and the folder's path, `~`-relative, beneath. It has no **Workroom actions** menu, because a followed folder is not a workroom.
-- **Details** shows **Running on** and the folder's **Path**. It has none of a workroom's host options or ports.
+- The header shows the repository's folder name, with its branch and the repository root's path, `~`-relative, beneath. It names the root, not the subfolder you are in. It has no **Workroom actions** menu, because a followed folder is not a workroom.
+- **Details** shows **Running on** and, under **Folder**, the terminal's own folder. It has none of a workroom's host options or ports.
 - **History** lists the repository's commits, as for a workroom.
 - **Changes** and **Pull Request** read the repository live, and work as they do for a workroom, so you can [commit](#commit), [push, pull and sync](#push-pull-and-sync), and use the pull request's buttons and menu. It reads the pull request with the GitHub CLI as before. The repository's status updates as files change, and as you `git switch` or commit in the terminal.
 - A repository that is also one of your workrooms or projects shows that workroom's own status, and a write goes through it.
@@ -45,7 +45,7 @@ Changing folder within the same repository does not reload anything. Moving into
 
 ### Not a repository
 
-A folder in no Git repository says **Not a git repository** in **Changes**, **History** and **Pull Request**, with the folder beneath. If Git cannot tell which repository the folder is in, because the volume is slow or disconnected or the folder belongs to another user, the message is **Couldn't read the repository**, with a tooltip that says why. Workroom tries again shortly. **Files** still lists the folder either way.
+A folder in no Git repository says **Not a git repository** in **Changes**, **History** and **Pull Request**, with the folder beneath. If Git cannot tell which repository the folder is in, because the volume is slow or disconnected or the folder belongs to another user, the message is **Couldn't read the repository**, with a tooltip that says why. Workroom tries again shortly. **Files** still lists the folder either way. With no repository to act on, the branch and sync bar above **Changes** is hidden, and so is the **Commit** button.
 
 ### Files follows the folder
 
