@@ -16,11 +16,11 @@ SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-main-ac
 
 
 class CheckTests(unittest.TestCase):
-    def run_check(self, source, allowlist=""):
+    def run_check(self, source, allowlist="", folder="VersionControl"):
         with tempfile.TemporaryDirectory() as root:
-            os.makedirs(os.path.join(root, "VersionControl"))
-            os.makedirs(os.path.join(root, "AppShell"))
-            with open(os.path.join(root, "VersionControl", "Model.swift"), "w") as f:
+            for scanned in ("VersionControl", "AppShell", "Terminal"):
+                os.makedirs(os.path.join(root, scanned))
+            with open(os.path.join(root, folder, "Model.swift"), "w") as f:
                 f.write(source)
             allow = os.path.join(root, "allow.txt")
             with open(allow, "w") as f:
@@ -36,6 +36,15 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("VersionControl/Model.swift:4: `fileExists` in `f`", err)
         self.assertIn("GitRepositoryProbe.blockingRead", err)
+
+    def test_the_terminal_code_is_scanned_too(self):
+        source = "@MainActor final class M {\n  func f(_ p: String) -> Bool { fm.fileExists(atPath: p) }\n}\n"
+        code, err = self.run_check(source, folder="Terminal")
+        self.assertEqual(code, 1)
+        self.assertIn("Terminal/Model.swift:2: `fileExists` in `f`", err)
+        allowed = self.run_check(
+            source, "Terminal/Model.swift | f | fileExists | off-main: a test\n", folder="Terminal")
+        self.assertEqual(allowed, (0, ""))
 
     def test_every_listed_call_is_caught(self):
         calls = ["realpath(p, nil)", "fm.attributesOfItem(atPath: p)",

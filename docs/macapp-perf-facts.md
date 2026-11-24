@@ -94,12 +94,15 @@ On #812 Codex needed three review rounds to find these calls.
 `make app-lint` (and so CI's `app` job) runs `macapp/Scripts/check-main-actor-fs.py`, which flags
 `realpath(`, `.fileExists(`, `.attributesOfItem(`, `.contentsOfDirectory(`, `.resourceValues(`,
 `resolvingSymlinksInPath`, `RepositoryLocation.local(` and `canonicalPath(` under
-`Core/VersionControl` and `Core/AppShell`. The fix is to run the call inside a
+`Core/VersionControl`, `Core/AppShell` and `Core/Terminal`. The fix is to run the call inside a
 `GitRepositoryProbe.blockingRead` closure (`boundedRead` for async work, `localLocation` for a
 repository location), off the main actor under a timeout. The only other way through is an entry in
 `macapp/Scripts/main-actor-fs-allowlist.txt` with a one-line reason. A `nonisolated` function gets
 no exemption, because a synchronous one runs on its caller's actor. A synchronous caller that needs an
-answer at once reads a last-known one refreshed off the main actor (`FolderPresence`).
+answer at once reads a last-known one refreshed off the main actor (`FolderPresence`), and an async
+path that builds on that answer, such as a restore, awaits a fresh check first
+(`TerminalsSection.checkStartingFolders`). The allowlist tags the `Core/Terminal` calls that predate
+its scan as `grandfathered`.
 
 ## Reading the engine's source
 

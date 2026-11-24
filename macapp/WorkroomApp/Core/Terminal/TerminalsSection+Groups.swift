@@ -46,19 +46,30 @@ struct TerminalGroup: Hashable, Sendable {
   }
 
   /// Where its new terminals start: its starting folder while that is still a folder, else "New
-  /// terminals open in". A folder that has gone never leaves the group's terminals without a home
-  /// (a restore reattaches only to a target whose path exists).
-  @MainActor var workingDirectory: String {
-    if let startingFolder {
-      var isDirectory: ObjCBool = false
-      let path = (startingFolder as NSString).expandingTildeInPath
-      if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-        isDirectory.boolValue
-      {
-        return path
-      }
+  /// terminals open in". A folder that has gone, or sits on a stalled volume, never leaves the
+  /// group's terminals without a home (a restore reattaches only to a target whose path exists).
+  /// It reads `presence`'s last answer, so the main actor never stats the folder; one not checked
+  /// yet is taken as there while its check runs.
+  @MainActor func workingDirectory(presence: FolderPresence = .shared) -> String {
+    guard let path = startingPath, presence.isFolder(path) else {
+      return TerminalsSection.newTerminalDirectory()
     }
-    return TerminalsSection.newTerminalDirectory()
+    return path
+  }
+
+  /// `workingDirectory(presence:)` from a fresh, bounded check, for a caller that can wait for one.
+  @MainActor func checkedWorkingDirectory(presence: FolderPresence = .shared) async -> String {
+    guard let path = startingPath, await presence.check(path) else {
+      return TerminalsSection.newTerminalDirectory()
+    }
+    return path
+  }
+
+  /// Its starting folder with `~` expanded, or nil when it has none.
+  var startingPath: String? {
+    guard let startingFolder else { return nil }
+    let path = (startingFolder as NSString).expandingTildeInPath
+    return path.isEmpty ? nil : path
   }
 }
 
@@ -66,6 +77,17 @@ struct TerminalGroup: Hashable, Sendable {
 /// Every edit is keyed by the group's target and takes plain values, so a prompt, an inline field
 /// or a test all reach the same rule.
 extension TerminalsSection {
+  /// Checks the starting folder of each group among `ids` afresh, at once, off the main actor
+  /// (`folderPresence`), so a target built after it starts where that folder's answer says: a
+  /// session recovery runs this before it reads the groups' targets.
+  func checkStartingFolders(of ids: some Sequence<TargetID>) async {
+    let presence = folderPresence
+    let checks = Set(ids.compactMap { group($0)?.startingPath }).map { path in
+      Task { await presence.check(path) }
+    }
+    for check in checks { _ = await check.value }
+  }
+
   /// The group `id` names while it is listed, else nil.
   func group(_ id: TargetID) -> TerminalGroup? {
     for case .group(let group) in rows where TargetID.terminalGroup(group.id) == id {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flags synchronous file-system calls in the app's git and inspector code (`make app-lint`).
+"""Flags synchronous file-system calls in the app's git, inspector and terminal code (`make app-lint`).
 
     python3 macapp/Scripts/check-main-actor-fs.py [--root DIR] [--allowlist FILE]
 
@@ -29,7 +29,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.join(HERE, "..", "WorkroomApp", "Core")
 DEFAULT_ALLOWLIST = os.path.join(HERE, "main-actor-fs-allowlist.txt")
-SCANNED = ("VersionControl", "AppShell")
+SCANNED = ("VersionControl", "AppShell", "Terminal")
 
 # Matched by method name, whatever the receiver (`fm.fileExists`, `entry.resourceValues`).
 CALLS = (

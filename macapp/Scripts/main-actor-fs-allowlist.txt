@@ -1,11 +1,12 @@
-# Synchronous file-system calls in Core/VersionControl and Core/AppShell that check-main-actor-fs.py
-# lets through. Format: <file under WorkroomApp/Core> | <enclosing function> | <call> | <reason>.
+# Synchronous file-system calls in Core/VersionControl, Core/AppShell and Core/Terminal that
+# check-main-actor-fs.py lets through. Format: <file under WorkroomApp/Core> | <enclosing function> | <call> | <reason>.
 # A new call belongs in GitRepositoryProbe.blockingRead/boundedRead, not here. Each reason starts
 # with its kind:
 #   off-main:      only ever runs off the main actor
 #   known:         on the main actor, a documented exception
 #   unbounded:     RepositoryLocation.local resolves on GCD (runBlocking), so the main actor never
 #                  blocks, but the await has no timeout: GitRepositoryProbe.localLocation bounds it
+#   grandfathered: on the main actor and undocumented; predates the Core/Terminal scan, unfixed
 
 VersionControl/FileServices.swift | realPath | realpath | off-main: only from readVerified, which NativeFileProvider.read runs in runBlocking
 VersionControl/FilesBreadcrumb.swift | realPath | realpath | off-main: only from Repository.placed(in:), which GitRepositoryProbe.placed runs in blockingRead
@@ -36,3 +37,16 @@ VersionControl/RepositoryRouter.swift | prepare | RepositoryLocation.local | unb
 VersionControl/VCSStatusService.swift | resolvedLocation | RepositoryLocation.local | unbounded: StatusWorkItem's fallback when the router has no location
 VersionControl/WorkingStatusResolver.swift | resolveLocal | RepositoryLocation.local | unbounded: WorkingStatusResolver is a nonisolated Sendable struct
 AppShell/AppStore/AppStore+VCSWrites.swift | performCommit | RepositoryLocation.local | unbounded: AppStore is @MainActor
+
+Terminal/Session/DaemonHandOff.swift | mustMove | resolvingSymlinksInPath | off-main: only from handOff, which start runs in Task.detached
+Terminal/Session/DaemonHandOff.swift | run | fileExists | off-main: only from handOff, which start runs in Task.detached
+Terminal/GhosttyApp.swift | resolveResources | fileExists | grandfathered: @MainActor GhosttyApp stats the app bundle's terminfo once at startup; local, never user-set
+Terminal/GhosttyApp.swift | pruneDeadTestConfigs | contentsOfDirectory | grandfathered: DEBUG test runs only, lists this process's local temporary directory
+Terminal/GhosttyResources.swift | bundledURL | fileExists | grandfathered: stats the app bundle's ghostty resources at startup (GhosttyApp, CLI main); local
+Terminal/SavedLayoutStore.swift | read | fileExists | grandfathered: the launch's synchronous read of session.json in Application Support; local
+Terminal/SavedLayoutStore.swift | read | attributesOfItem | grandfathered: the same launch read's size cap on session.json; local
+Terminal/Session/PersistentSessionPaths.swift | prepareDirectory | fileExists | grandfathered: the session socket's own folder (Application Support or /tmp), from @MainActor PersistentSessionService; local
+Terminal/Session/PersistentSessionService.swift | existingSocketPath | fileExists | grandfathered: @MainActor, stats the session socket in its own local folder
+Terminal/TerminalLinkOpener.swift | resolveExistingFile | fileExists | grandfathered: the ⌘-hover cursor and ⌘-click stat a terminal's path synchronously; needs a cached, async resolve
+Terminal/TerminalLinkOpener.swift | resolveLocalFile | fileExists | grandfathered: a file:// link's ⌘-click, as resolveExistingFile
+Terminal/TerminalPanes.swift | restoredCwd | fileExists | grandfathered: the synchronous restore stats each saved pane's folder; needs the restore to await a FolderPresence check first

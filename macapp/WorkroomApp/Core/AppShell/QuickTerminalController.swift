@@ -142,8 +142,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   static func target(in section: TerminalsSection = .shared) -> TerminalTarget {
     let group = section.quickTerminal
     return TerminalTarget(
-      id: targetID, title: group.name ?? "Quick Terminal", path: group.workingDirectory,
-      unavailability: nil)
+      id: targetID, title: group.name ?? "Quick Terminal",
+      path: group.workingDirectory(presence: section.folderPresence), unavailability: nil)
   }
   nonisolated static let targetID: TerminalTarget.ID = .quickTerminal
   /// Its symbol in a Move to… menu: a panel sliding in from the top.
@@ -409,7 +409,9 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     await sessionService.prepareBackend()
     defer { pendingSession = nil }
     // Its folder is stat-ed off the main actor, once, before anything is restored: a stalled
-    // mount costs the restore `restoreStatTimeout` and its panes start fresh shells.
+    // mount costs the restore `restoreStatTimeout` and its panes start fresh shells. The group's
+    // starting folder is checked first, so a stalled one starts in "New terminals open in".
+    _ = await section.quickTerminal.checkedWorkingDirectory(presence: section.folderPresence)
     let path = Self.target(in: section).path
     let reattaches = await FolderPresence.exists(
       path, timeout: restoreStatTimeout, stat: restoreStat)
