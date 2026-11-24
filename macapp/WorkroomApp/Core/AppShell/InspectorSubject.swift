@@ -56,5 +56,15 @@ struct FollowedFolder: Equatable, Sendable {
     var branch: String?
     /// Whether the app can write to it (commit, push), not only read it.
     var isWritable: Bool
+    /// The folder's path within `root` ("" at the root, no trailing slash), from the folder's real
+    /// path: what the Files section and its breadcrumb read, since the shell's spelling of the
+    /// folder need not start with git's spelling of the root (#809).
+    var subfolder: String = ""
+    /// `root` as the shell spells it (`~/dev/app` for a `~/dev` symlinked elsewhere, `/tmp/x` for
+    /// `/private/tmp/x`), nil when it is spelled as `root`. Display only: `root` is the identity.
+    var spelledRoot: String? = nil
+
+    /// The root as the header, Details and the Files breadcrumb show it.
+    var displayRoot: String { spelledRoot ?? root }
   }
 }

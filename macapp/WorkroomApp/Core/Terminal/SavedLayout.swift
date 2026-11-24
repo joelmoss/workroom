@@ -376,6 +376,8 @@ struct FilePayload: Codable, Hashable, Sendable {
   var isPreview: Bool
   /// The per-tab Markdown source/preview override, nil for the default (rendered).
   var markdownPreview: Bool?
+  /// The folder `path` is relative to, when not the target's own (#809).
+  var root: String? = nil
 }
 
 struct ChangesetPayload: Codable, Hashable, Sendable {

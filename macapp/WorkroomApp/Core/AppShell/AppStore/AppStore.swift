@@ -231,6 +231,9 @@ final class AppStore: ObservableObject {
   /// and which target it was resolved for, so a value never outlives its selection. Written only by
   /// `refreshFollowedFolder`; read through `inspectorSubject`.
   var followedFolderState: FollowedFolderState?
+  /// The folder this window's Files section was browsed to from its breadcrumb (#809), nil while it
+  /// shows the followed folder. Cleared by the terminal's next folder change (snap-back).
+  var filesBrowse: FilesBrowse?
   /// What `refreshFollowedFolder` last asked to resolve: the target and its terminal's folder, so a
   /// repeat (every focus or tab event re-asks) runs no `git`.
   @ObservationIgnored var followedFolderRequest: (target: TargetID, folder: String)?
@@ -246,10 +249,11 @@ final class AppStore: ObservableObject {
   /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
   /// content tab with no folder of its own.
   @ObservationIgnored var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
-  /// The innermost git repository containing a folder on this Mac, nil outside one. A seam for tests.
+  /// The innermost git repository containing a folder on this Mac, or that there is none, or that
+  /// git could not tell. A seam for tests.
   @ObservationIgnored var resolveFollowedRepository:
-    @Sendable (String) async -> FollowedFolder.Repository? = { folder in
-      await GitRepositoryProbe().repository(containing: folder)
+    @Sendable (String) async -> GitRepositoryProbe.Discovery = { folder in
+      await GitRepositoryProbe().discoverRepository(containing: folder)
     }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate

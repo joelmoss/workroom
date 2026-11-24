@@ -1135,7 +1135,7 @@ extension View {
           Divider()
         }
         Button {
-          host.openFileInEditor(path: descriptor.path)
+          host.openFileInEditor(path: descriptor.path, root: descriptor.root)
         } label: {
           Label("Open File in…", systemImage: "doc.text")
         }

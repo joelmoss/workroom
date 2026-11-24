@@ -344,6 +344,151 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     XCTAssertFalse(plain.ok, "a plain read in a subfolder still stops at the ceiling")
   }
 
+  /// Returns one canned result for every command.
+  private struct CannedRunner: StatusCommandRunning {
+    let result: CommandResult
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    { result }
+  }
+
+  /// Real git, as a repository owned by someone else sees it: git refuses it (`safe.directory`).
+  private struct DifferentOwnerRunner: StatusCommandRunning {
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    { await run(executable, args, in: directory, timeout: timeout, environment: [:]) }
+    func run(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+      environment: [String: String]
+    ) async -> CommandResult {
+      await StatusCommandRunner().run(
+        executable, args, in: directory, timeout: timeout,
+        environment: environment.merging(["GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"]) { $1 })
+    }
+  }
+
+  /// Real git with no per-call environment, as the daemon-routed runner has none.
+  private struct NoEnvironmentRunner: StatusCommandRunning {
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    { await StatusCommandRunner().run(executable, args, in: directory, timeout: timeout) }
+  }
+
+  /// Value: protects=the followed repository being the one the folder is in (review finding 1);
+  /// fails_when=a `core.worktree` pointing elsewhere makes the folder resolve to an unrelated
+  /// repository, or to a plain folder shown as a detached checkout; why_new=#805 review;
+  /// seam=GitRepositoryProbe over real git; no_claim=a submodule (its own test keeps it resolving)
+  func testAWorkTreeSetElsewhereIsNotTheFolderRepository() async throws {
+    let other = repo("other")
+    let plain = folder("plain")
+    let pointsAtRepo = repo("holder")
+    sh("git config core.worktree \(other)", in: pointsAtRepo)
+    let pointsAtPlain = repo("holder2")
+    sh("git config core.worktree \(plain)", in: pointsAtPlain)
+    let probe = GitRepositoryProbe()
+
+    let atRepo = await probe.discoverRepository(containing: folder("holder/sub"))
+    let atPlain = await probe.discoverRepository(containing: folder("holder2/sub"))
+
+    XCTAssertEqual(atRepo, .notARepository, "not the unrelated repository its work tree names")
+    XCTAssertEqual(atPlain, .notARepository, "not a plain folder read as a detached checkout")
+    let own = await probe.repository(containing: other + "/src")
+    XCTAssertEqual(own?.root, other, "the work tree's own repository still resolves from inside")
+  }
+
+  /// Value: protects=telling "not a repository" from "couldn't tell" (review finding 3);
+  /// fails_when=a timeout, a failed spawn or a refused (dubious-ownership) repository reads as no
+  /// repository; why_new=#805 review; seam=GitRepositoryProbe; no_claim=the inspector's copy
+  func testCouldNotTellIsNotNotARepository() async throws {
+    let app = repo("app")
+    func probe(_ result: CommandResult) -> GitRepositoryProbe {
+      GitRepositoryProbe(discoveryRunner: CannedRunner(result: result))
+    }
+
+    let refused = await GitRepositoryProbe(discoveryRunner: DifferentOwnerRunner())
+      .discoverRepository(containing: app + "/src")
+    let timedOut = await probe(
+      CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
+    ).discoverRepository(containing: app)
+    let notLaunched = await probe(
+      CommandResult(stdout: "", stderr: "", exitCode: CommandResult.launchFailed, timedOut: false)
+    ).discoverRepository(containing: app)
+    let plain = await GitRepositoryProbe().discoverRepository(containing: folder("plain"))
+    let insideGitDir = await GitRepositoryProbe().discoverRepository(containing: app + "/.git")
+    let gone = await GitRepositoryProbe().discoverRepository(containing: app + "/no-such-folder")
+
+    XCTAssertEqual(refused, .unknown, "git refused a repository it found")
+    XCTAssertEqual(timedOut, .unknown)
+    XCTAssertEqual(
+      notLaunched, .unknown, "the folder is there, so git failing to start says nothing")
+    XCTAssertEqual(plain, .notARepository)
+    XCTAssertEqual(insideGitDir, .notARepository)
+    XCTAssertEqual(gone, .notARepository)
+  }
+
+  /// Value: protects=the inspector keeping what it showed when a resolve can't tell (finding 3);
+  /// fails_when=an unknown resolve shows, or is cached as, "Not a git repository", or is never
+  /// retried; why_new=#805 review; seam=AppStore; no_claim=what triggers the retry
+  func testAResolveThatCannotTellKeepsTheSubjectAndRetries() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let app = repo("app")
+    let refused = repo("refused")
+    try await cd(store, tab, app)
+    let fails = Mutex(true)
+    store.resolveFollowedRepository = { folder in
+      if fails.withLock({ $0 }) { return .unknown }
+      return await GitRepositoryProbe().discoverRepository(containing: folder)
+    }
+
+    try await cd(store, tab, refused)
+    XCTAssertEqual(followed(store)?.repository?.root, app, "the last subject stands")
+    XCTAssertNil(store.followedRepositoryCache[refused], "and nothing is cached for the folder")
+
+    fails.withLock { $0 = false }
+    store.refreshFollowedFolder()
+    await store.followedFolderResolved()
+    XCTAssertEqual(followed(store)?.repository?.root, refused, "the next event resolves again")
+  }
+
+  /// Value: protects=the resolve finding a repository above the folder over any runner (finding 5);
+  /// fails_when=a runner that drops the per-call environment (the daemon's) makes every subfolder
+  /// read as no repository; why_new=#805 review; seam=GitRepositoryProbe; no_claim=the daemon
+  func testTheResolveLooksAboveTheFolderWhateverTheProbesRunner() async throws {
+    let root = repo("app")
+
+    let resolved = await GitRepositoryProbe(runner: NoEnvironmentRunner())
+      .repository(containing: root + "/src/lib")
+
+    XCTAssertEqual(resolved?.root, root)
+  }
+
+  /// Value: protects=the user's own discovery limits (finding 6); fails_when=a shell's
+  /// `GIT_CEILING_DIRECTORIES` (a dotfiles repository at $HOME) is overridden, so the inspector
+  /// shows a repository the user's prompt doesn't; why_new=#805 review; seam=GitRepositoryProbe;
+  /// no_claim=how the login shell is probed
+  func testTheUsersCeilingIsHonoured() async throws {
+    let home = repo("home")
+    let downloads = folder("home/Downloads")
+
+    let limited = await GitRepositoryProbe(discoveryEnvironment: {
+      GitRepositoryProbe.discoveryLimits(
+        inherited: [:], probed: ["GIT_CEILING_DIRECTORIES": home])
+    }).discoverRepository(containing: downloads)
+    let unlimited = await GitRepositoryProbe(discoveryEnvironment: {
+      GitRepositoryProbe.discoveryLimits(inherited: [:], probed: [:])
+    }).repository(containing: downloads)
+
+    XCTAssertEqual(limited, .notARepository)
+    XCTAssertEqual(unlimited?.root, home, "negative control: with no ceiling it finds $HOME's")
+    XCTAssertEqual(
+      GitRepositoryProbe.discoveryLimits(
+        inherited: ["GIT_CEILING_DIRECTORIES": "/a"],
+        probed: ["GIT_CEILING_DIRECTORIES": "/b", "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1"]),
+      ["GIT_CEILING_DIRECTORIES": "/a", "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1"],
+      "the app's own environment wins over the probed shell's, as for network commands")
+  }
+
   // MARK: Selection
 
   /// Value: protects=straight-away switches (stories 31, 32); fails_when=going back to the
