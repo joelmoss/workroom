@@ -75,13 +75,22 @@ extension AppStore {
     let resolve = resolveFollowedRepository
     followedFolderTask?.cancel()
     followedFolderTask = Task { [weak self] in
-      let repository = await resolve(folder)
+      let discovery = await resolve(folder)
       guard let self, !Task.isCancelled else { return }
-      self.followedRepositoryCache[folder] = .some(repository)
       // A later request (another folder, another target) has taken over.
-      guard let request = self.followedFolderRequest, request.target == target,
-        request.folder == folder
-      else { return }
+      let current = self.followedFolderRequest.map { $0.target == target && $0.folder == folder }
+      let repository: FollowedFolder.Repository?
+      switch discovery {
+      case .repository(let found): repository = found
+      case .notARepository: repository = nil
+      case .unknown:
+        // Git couldn't tell (a timeout, a refused repository): what shows stands, nothing is
+        // cached, and the next focus or tab event asks again.
+        if current == true { self.followedFolderRequest = nil }
+        return
+      }
+      self.followedRepositoryCache[folder] = .some(repository)
+      guard current == true else { return }
       let state = FollowedFolderState(
         target: target, folder: FollowedFolder(folder: folder, repository: repository))
       if self.setFollowedFolder(state) {

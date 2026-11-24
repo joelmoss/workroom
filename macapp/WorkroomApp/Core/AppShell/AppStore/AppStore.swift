@@ -238,10 +238,11 @@ final class AppStore: ObservableObject {
   /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
   /// content tab with no folder of its own.
   @ObservationIgnored var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
-  /// The innermost git repository containing a folder on this Mac, nil outside one. A seam for tests.
+  /// The innermost git repository containing a folder on this Mac, or that there is none, or that
+  /// git could not tell. A seam for tests.
   @ObservationIgnored var resolveFollowedRepository:
-    @Sendable (String) async -> FollowedFolder.Repository? = { folder in
-      await GitRepositoryProbe().repository(containing: folder)
+    @Sendable (String) async -> GitRepositoryProbe.Discovery = { folder in
+      await GitRepositoryProbe().discoverRepository(containing: folder)
     }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
