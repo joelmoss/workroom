@@ -7,6 +7,7 @@ import HostDrivers
 import SyntaxHighlighting
 import WorkroomDomain
 import WorkroomGit
+import WorkroomSystem
 import WorkroomVCS
 
 // **Debug only, by construction (ADR 0022).** A Release build compiles none of this file, so it
@@ -1887,6 +1888,14 @@ import WorkroomVCS
 
     func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
       if UITestFixture.syncReadFailure { return .failed(.locked(nil)) }
+      // A real repository (a terminal's followed one, which the test's shell makes) reads its own
+      // branch and sync state, as `vcsReader(for:)` reads its history; the fixture's own paths
+      // are plain temp folders, which serve the seeded state. Actions stay canned either way.
+      if FileManager.default.fileExists(atPath: path + "/.git") {
+        return await CLIVCSWriter(
+          runner: StatusCommandRunner(), makeProvider: { _ in GitProvider() }, gate: .shared
+        ).remoteState(path: path, projectRoot: projectRoot)
+      }
       return UITestFixture.remoteState.map { .state($0) } ?? .absent
     }
 

@@ -311,6 +311,28 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(head(work), "theirs")
   }
 
+  /// Value: protects=the branch bar names a followed repository's branch, as a workroom's does
+  /// (round-2 QA: it read "Current Branch —" while the header said `main`); fails_when=the bar's
+  /// branch is read only through a sidebar row, which a followed repository has none of;
+  /// why_new=QA round 2; seam=AppStore + RemoteStateModel; no_claim=the bar's rendering
+  func testTheBranchBarNamesAFollowedRepositorysBranch() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let (work, _) = clone("origin")
+    try await cd(store, tab, work)
+
+    let target = try XCTUnwrap(store.remoteState.target)
+    XCTAssertEqual(target.actionTarget.followedRoot, work)
+    XCTAssertEqual(store.toolbarBranchName(for: target), "main")
+
+    sh("git checkout -q -b feature/bar", in: work)
+    store.reresolveFollowedFolder(forgetting: work)
+    store.remoteState.refresh(force: true)
+    await settle(store)
+    XCTAssertEqual(store.toolbarBranchName(for: store.remoteState.target), "feature/bar")
+  }
+
   // MARK: Refusals
 
   /// Value: protects=no write outside a repository; fails_when=a folder in no repository offers a

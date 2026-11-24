@@ -171,6 +171,16 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     XCTAssertFalse(
       rows.matching(NSPredicate(format: "label CONTAINS %@", "Fixture commit")).firstMatch.exists,
       "and not the fixture's canned commits")
+    // The branch bar names the repository's branch, read for real as a workroom's is, and its
+    // sync cell reads the repository rather than saying there is none (QA round 2).
+    let branch = element("vcs.toolbar.branch")
+    let named = waitForLabel(branch) { $0.hasSuffix(": wr811-branch") }
+    XCTAssertTrue(named.hasSuffix(": wr811-branch"), "the branch bar's branch, got: \(named)")
+    let sync = element("vcs.toolbar.sync")
+    XCTAssertTrue(sync.waitForExistence(timeout: 10), "the sync cell")
+    XCTAssertTrue(
+      poll(timeout: 10) { !sync.label.contains("No repository") && !sync.label.isEmpty },
+      "the sync cell reads the repository, got: \(sync.label)")
     showSection("files", header: "Files")
 
     // Out of the repository: Files lists the plain folder, and Changes says it isn't a repository.

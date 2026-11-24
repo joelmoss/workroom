@@ -187,7 +187,7 @@ struct VCSToolbar: View {
   /// Read through the one accessor every branch-showing surface uses, so this can't disagree with the
   /// status bar or the sidebar.
   private var branchName: String? {
-    model.target?.sid.flatMap { store.branchName(for: $0) }
+    store.toolbarBranchName(for: model.target)
   }
 
   /// Hands straight to the store, which owns the dirty-tree confirmation gate.

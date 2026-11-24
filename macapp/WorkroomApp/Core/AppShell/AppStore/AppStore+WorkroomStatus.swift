@@ -66,6 +66,24 @@ extension AppStore {
     return branchName(for: sid)
   }
 
+  /// The branch the VCS toolbar's branch bar shows for `target`. A row's goes through
+  /// `branchName(for:)`. A followed repository names no row, so its comes from the toolbar's own
+  /// read of it, as a row's resolved name does, else from what its folder resolved to, which is
+  /// what the header shows (QA round 2 of #803: the bar read "—" beside a header saying `main`).
+  func toolbarBranchName(for target: RemoteStateModel.Target?) -> String? {
+    guard let target else { return nil }
+    guard let root = target.actionTarget.followedRoot else {
+      return target.sid.flatMap { branchName(for: $0) }
+    }
+    if remoteState.target == target, let name = remoteState.snapshot?.current.name, !name.isEmpty {
+      return name
+    }
+    guard case .followed(let followed) = inspectorSubject, let repository = followed.repository,
+      repository.root == root
+    else { return nil }
+    return repository.branch
+  }
+
   /// **The** answer to "what branch is this?", for every surface that shows one: the status
   /// bar (`branchLabel(for:)`), the Changes panel header, the sidebar's project root row, and the VCS
   /// toolbar. Four surfaces previously each derived it, which meant they could disagree on screen.
