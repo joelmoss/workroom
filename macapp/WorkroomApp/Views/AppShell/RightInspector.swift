@@ -103,8 +103,8 @@ struct RightInspector: View {
     }
   }
 
-  /// Whether the inspector's target has anything a commit could record.
-  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorTargetID) }
+  /// Whether the inspector's subject has anything a commit could record.
+  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorSubject.sidebarID) }
 
   private var commitButtonHelp: String {
     canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
@@ -137,7 +137,7 @@ struct RightInspector: View {
               systemImage: "checkmark.circle", help: commitButtonHelp,
               disabled: !canCommitSelectedTarget
             ) {
-              store.requestCommit(store.inspectorTargetID)
+              store.requestCommit(store.inspectorSubject.sidebarID)
             }
             .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
@@ -249,7 +249,7 @@ struct RightInspector: View {
   /// remaining actions can still be opened in the browser.
   @ViewBuilder private var prActionsMenu: some View {
     if vcsStatus.githubCLIStatus == .available, let pr = selectedStatus?.pr,
-      let sid = store.selectedTargetID
+      let sid = store.inspectorSubject.sidebarID
     {
       let actions = PRAction.available(for: pr)
       Menu {
@@ -294,12 +294,10 @@ struct RightInspector: View {
     tokens.border.frame(height: 1)
   }
 
-  /// The selected workroom's status, or nil when a non-target (project) or nothing is selected —
+  /// The status of the inspector's subject, or nil when it is a non-target (project) or nothing —
   /// drives the header indicators so a collapsed section still shows state.
   private var selectedStatus: WorkroomStatus? {
-    guard let sid = store.inspectorTargetID else { return nil }
-    if case .project = sid { return nil }
-    return vcsStatus.workroomStatuses[sid]
+    vcsStatus.status(for: store.inspectorSubject)
   }
 
   /// Changes header indicator: how many files changed (a capsule count) and the working-tree line counts

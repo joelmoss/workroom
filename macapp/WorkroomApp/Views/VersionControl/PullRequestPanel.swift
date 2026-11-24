@@ -8,7 +8,7 @@ import WorkroomVCS
 /// workroom's branch — its full (wrapping) title, review decision, per-reviewer rows, and CI
 /// checks. The PR's state + number + open-in-browser link live in the section header's number badge
 /// (see `RightInspector.prNumberLink`, issue #77), not here. Reads
-/// `store.selectedTargetID` + `vcsStatus.workroomStatuses[sid].pr`, which a slow `gh pr list` probe
+/// `store.inspectorSubject` + its status's `pr` in `vcsStatus`, which a slow `gh pr list` probe
 /// fills on selection (like CI). Covers the same edge states as the Changes panel: nothing
 /// selected, a project (non-target), still-probing, and no PR for the branch.
 struct PullRequestPanel: View {
@@ -22,10 +22,13 @@ struct PullRequestPanel: View {
       if vcsStatus.githubCLIStatus != .available {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
         ghWarning(vcsStatus.githubCLIStatus)
-      } else if let sid = store.inspectorTargetID, sid.isStatusable {
-        content(for: sid)
       } else {
-        inspectorMessage("Select a workroom to see its pull request.")
+        switch store.inspectorSubject {
+        case .target(let sid) where sid.isStatusable:
+          content(for: sid)
+        case .target, .followed, .nothing:
+          inspectorMessage("Select a workroom to see its pull request.")
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -113,7 +116,7 @@ struct PullRequestPanel: View {
 
   @ViewBuilder
   private func content(for sid: SidebarID) -> some View {
-    let status = vcsStatus.workroomStatuses[sid]
+    let status = vcsStatus.status(for: store.inspectorSubject)
     if status?.prCheckedAt == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {

@@ -190,9 +190,8 @@ struct HistoryPanelAdapter: View {
 
   private var inputs: HistoryPanelInputs {
     HistoryPanelInputs(
-      hasTarget: store.inspectorTargetID != nil,
-      activationKey: (store.inspectorTargetID?.targetID?.encoded ?? "")
-        + "\u{1F}\(store.historySectionShown)",
+      hasTarget: store.inspectorSubject.sidebarID != nil,
+      activationKey: store.inspectorSubject.repositoryKey + "\u{1F}\(store.historySectionShown)",
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
         FocusedTabSelection.current(store: store)?.changesetCommitID

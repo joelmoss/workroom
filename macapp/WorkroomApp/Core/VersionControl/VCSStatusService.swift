@@ -167,6 +167,16 @@ final class VCSStatusService: ObservableObject {
   /// The windows that cache what a local status says, in the order they registered.
   @ObservationIgnored private var windows = WeakList<any VCSStatusWindow>()
 
+  /// The version-control status of what an inspector is about: what its Changes and Pull Request
+  /// sections, and the indicators beside them, show. A workroom or a project root resolves to its
+  /// own entry in `workroomStatuses`; a project's header row is no working copy, so it has none.
+  func status(for subject: InspectorSubject) -> WorkroomStatus? {
+    switch subject {
+    case .target(let sid): return sid.isStatusable ? workroomStatuses[sid] : nil
+    case .followed, .nothing: return nil
+    }
+  }
+
   /// Hand `window` every local status merged while it lives. Idempotent.
   func register(_ window: any VCSStatusWindow) {
     windows.insert(window)

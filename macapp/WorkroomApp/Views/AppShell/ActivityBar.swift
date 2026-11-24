@@ -62,11 +62,10 @@ struct ActivityBar: View {
   }
 
   /// Whether the inspector's current target has an uncommitted working tree — drives the Changes
-  /// icon's dirty dot. Keyed off `inspectorTargetID` (nil when the selection has no open tabs, so the
-  /// Changes pane is empty and the dot stays hidden), matching what the pane actually shows.
+  /// icon's dirty dot. Keyed off the inspector's subject (nothing when the selection has no open
+  /// tabs, so the Changes pane is empty and the dot stays hidden), matching what the pane shows.
   private var changesDirty: Bool {
-    guard let id = store.inspectorTargetID else { return false }
-    return vcsStatus.workroomStatuses[id]?.dirty == true
+    vcsStatus.status(for: store.inspectorSubject)?.dirty == true
   }
 }
 

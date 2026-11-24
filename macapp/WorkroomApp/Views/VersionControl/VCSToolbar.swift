@@ -173,11 +173,9 @@ struct VCSToolbar: View {
     .task(id: activationKey) { model.activate(store.remoteTarget()) }
   }
 
-  /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the target's identity rather
+  /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the subject's identity rather
   /// than the whole `Target`, which carries paths that never change independently of it.
-  private var activationKey: String {
-    store.inspectorTargetID?.targetID?.encoded ?? ""
-  }
+  private var activationKey: String { store.inspectorSubject.repositoryKey }
 
   /// Full-bleed, unlike `TitlebarDivider` (a 14pt inline group rule) — it's what makes the three cells
   /// read as segments rather than as a row of controls.

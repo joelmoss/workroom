@@ -226,12 +226,12 @@ struct ChangedFileActions {
   var openInEditor: (ChangedFile) -> Void
 }
 
-/// What the Changes panel shows from the window: the inspector's workroom and, read lazily, the
+/// What the Changes panel shows from the window: the inspector's subject and, read lazily, the
 /// focused content tab.
 struct ChangesPanelInputs {
-  /// The inspector's target row (`AppStore.inspectorTargetID`), nil when nothing is shown.
-  var targetID: SidebarID?
-  /// That row's target, nil once it has gone.
+  /// What the inspector is about (`AppStore.inspectorSubject`).
+  var subject: InspectorSubject
+  /// Its sidebar item's target, nil once it has gone.
   var target: TerminalTarget?
   /// What the focused content tab shows. A closure, called only while the file list renders, so the
   /// focused-tab and `TerminalPanes` reads stay the panel's own (see `ChangesPanel.fileList`).
@@ -239,7 +239,7 @@ struct ChangesPanelInputs {
 }
 
 /// The Changes section body: the selected workroom's branch, sync state, working-tree changes
-/// (relative to HEAD), and CI. Reads its inputs' target + `vcsStatus.workroomStatuses`.
+/// (relative to HEAD), and CI. Reads its inputs' target + the subject's status in `vcsStatus`.
 /// Covers the empty/edge states the design review enumerated: nothing selected, a project
 /// (non-target), missing directory, still-loading, unknown (probe failed), and clean.
 ///
@@ -254,19 +254,21 @@ struct ChangesPanel: View {
 
   var body: some View {
     Group {
-      if let sid = inputs.targetID, sid.isStatusable {
-        content(for: sid)
-      } else {
+      switch inputs.subject {
+      case .target(let sid) where sid.isStatusable:
+        content
+      case .target, .followed, .nothing:
         inspectorMessage("Select a workroom to see its changes.")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  /// Read here, in the panel, so a status sweep re-runs the panel and not its adapter.
   @ViewBuilder
-  private func content(for sid: SidebarID) -> some View {
+  private var content: some View {
     let target = inputs.target
-    let status = vcsStatus.workroomStatuses[sid]
+    let status = vcsStatus.status(for: inputs.subject)
     // `terminalUnavailability`: a remote workroom this app reaches has its changes read on its host.
     if let reason = target?.terminalUnavailability {
       inspectorMessage("\(reason.title).")
@@ -363,18 +365,18 @@ struct ChangesPanel: View {
 
 /// Builds `ChangesPanel`'s inputs and actions from the window's `AppStore`.
 ///
-/// It reads the inspector's target, as the panel's body did; the focused tab and the statuses are
+/// It reads the inspector's subject, as the panel's body did; the focused tab and the statuses are
 /// read by the panel, so a terminal pulse reaches the panel and not this, and a status sweep re-runs
 /// the panel alone.
 struct ChangesPanelAdapter: View {
   @EnvironmentObject var store: AppStore
 
   var body: some View {
-    let targetID = store.inspectorTargetID
+    let subject = store.inspectorSubject
     ChangesPanel(
       inputs: ChangesPanelInputs(
-        targetID: targetID,
-        target: targetID.flatMap { $0.isStatusable ? store.target(for: $0) : nil },
+        subject: subject,
+        target: subject.sidebarID.flatMap { $0.isStatusable ? store.target(for: $0) : nil },
         // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
         selection: { [store] in
           FocusedTabSelection.current(store: store)
@@ -436,7 +438,7 @@ func inspectorMessage(_ text: String) -> some View {
       lastChecked: Date())
     return ChangesPanel(
       inputs: ChangesPanelInputs(
-        targetID: sid, target: target,
+        subject: .target(sid), target: target,
         selection: { .diff(path: "Sources/Auth/Token.swift", source: .gitWorktree) }),
       actions: ChangedFileActions(
         openDiff: { _, _, _ in }, openInApp: { _ in }, openInEditor: { _ in })

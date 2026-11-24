@@ -87,7 +87,8 @@ struct DetailsPanel: View {
   /// them, or on the provider's defaults.
   @ViewBuilder
   private func hostOptions(_ target: TerminalTarget) -> some View {
-    if let sid = store.inspectorTargetID, let (workroom, _) = store.workroomAndProject(for: sid),
+    if let sid = store.inspectorSubject.sidebarID,
+      let (workroom, _) = store.workroomAndProject(for: sid),
       let made = workroom.host?.madeWith, !made.isProviderDefault
     {
       if let image = made.image, let imageKind = target.hostPlace?.hostImageKind {
@@ -105,7 +106,7 @@ struct DetailsPanel: View {
   /// repository's devcontainer.json has moved on, since a change applies to new workrooms only.
   @ViewBuilder
   private func devContainer(_ target: TerminalTarget) -> some View {
-    if case .container = target.hostPlace, let sid = store.inspectorTargetID,
+    if case .container = target.hostPlace, let sid = store.inspectorSubject.sidebarID,
       let (workroom, project) = store.workroomAndProject(for: sid),
       let record = workroom.host?.container, let digest = record.configDigest
     {
@@ -128,7 +129,7 @@ extension DetailsPanel {
   /// which Settings ▸ Remote Hosts ▸ Railway shows too.
   @ViewBuilder
   fileprivate func railway(_ target: TerminalTarget) -> some View {
-    if target.hostPlace == .railway, let sid = store.inspectorTargetID {
+    if target.hostPlace == .railway, let sid = store.inspectorSubject.sidebarID {
       // Always drawn, so the ledger is read as the pane appears.
       RailwayHostNote(sid: sid)
         .task(id: sid) { await lostCreates.refresh() }
@@ -142,7 +143,7 @@ extension DetailsPanel {
   /// the app quit, or the pane went, before it was answered.
   @ViewBuilder
   fileprivate func pendingSetup() -> some View {
-    if let sid = store.inspectorTargetID,
+    if let sid = store.inspectorSubject.sidebarID,
       let (workroom, project) = store.workroomAndProject(for: sid),
       store.lifecycle.isSetupPending(workroom, inProject: project.path)
     {
@@ -391,7 +392,7 @@ extension DetailsPanel {
 }
 
 /// The right sidebar's title, above every pane: the workroom the whole sidebar is about, and its
-/// project. It follows the same target the panes do (`inspectorTarget`), so it never names a
+/// project. It follows the same subject the panes do (`inspectorSubject`), so it never names a
 /// workroom they aren't showing.
 struct InspectorWorkroomHeader: View {
   @EnvironmentObject var store: AppStore
@@ -400,7 +401,7 @@ struct InspectorWorkroomHeader: View {
   var body: some View {
     HStack(spacing: 6) {
       Group {
-        if let sid = store.inspectorTargetID, let target = store.inspectorTarget {
+        if let sid = store.inspectorSubject.sidebarID, let target = store.inspectorTarget {
           // `project / workroom`, as the pane title bar and the tab chips write it; a root is its
           // project's name alone.
           // Led by the glyph the sidebar and tab bar mark it with: a house for a root.
@@ -425,7 +426,7 @@ struct InspectorWorkroomHeader: View {
       .accessibilityElement(children: .combine)
       .accessibilityIdentifier("inspector.workroomHeader")
       Spacer(minLength: 0)
-      if let sid = store.inspectorTargetID { actions(sid) }
+      if let sid = store.inspectorSubject.sidebarID { actions(sid) }
     }
     .padding(.leading, 12)
     .padding(.trailing, 4)

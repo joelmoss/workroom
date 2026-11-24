@@ -13,7 +13,7 @@ struct FilesPanel: View {
 
   var body: some View {
     Group {
-      if store.inspectorTargetID == nil {
+      if store.inspectorSubject.sidebarID == nil {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than list a stale workroom.
         InlineMessage("No open terminal", systemImage: "folder")
@@ -41,7 +41,7 @@ struct FilesPanel: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Point the tree at the inspector's active target (nil once all its tabs close → the tree
+    // Point the tree at the inspector's subject (nothing once all its tabs close → the tree
     // clears), only while Files is the active activity-bar section. Re-runs on either change;
     // `activate` no-ops when already on a local path, so re-selecting the same target is instant; a
     // remote tree has no watcher, so it is listed again.
@@ -53,8 +53,7 @@ struct FilesPanel: View {
   }
 
   private var activationKey: String {
-    "\(store.inspectorTargetID?.targetID?.encoded ?? "")"
-      + "\u{1F}\(store.activeInspectorSection == .files)"
+    store.inspectorSubject.folderKey + "\u{1F}\(store.activeInspectorSection == .files)"
   }
 
   /// `LazyVStack`, not `VStack`: rows are fixed-height (single-line, truncated — no soft-wrap, unlike

@@ -485,13 +485,17 @@ final class AppStore: ObservableObject {
     remoteState.focus(remoteTarget())
   }
 
-  /// The toolbar's target, resolved from the inspector's active target. `nil` when nothing statusable
+  /// The toolbar's target, resolved from the inspector's subject. `nil` when nothing statusable
   /// is selected, or when the target's project has gone away.
   ///
   /// A `.project` row is deliberately not statusable — it's the collapsible header, not a working copy —
   /// so it resolves to nil and the toolbar shows its "no workroom selected" state.
   func remoteTarget() -> RemoteStateModel.Target? {
-    guard let sid = inspectorTargetID else { return nil }
+    let sid: SidebarID
+    switch inspectorSubject {
+    case .target(let item): sid = item
+    case .followed, .nothing: return nil
+    }
     let projectPath: String
     let path: String
     switch sid {
@@ -1317,15 +1321,34 @@ final class AppStore: ObservableObject {
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
 
-  /// The target the inspector reflects: the selection, but only while it has open tabs
-  /// (`selectionHasTabs`). `nil` ⇒ the inspector shows its empty state. History/Changes/PR key on
-  /// this, not `selectedTargetID`, so they empty when all tabs close.
-  /// Nil for a Terminals-section row too: a terminal with no project has nothing to inspect.
-  var inspectorTargetID: SidebarID? {
-    guard selectionHasTabs, selectedTargetID?.isInTerminalsSection == false else { return nil }
-    return selectedTargetID
+  /// What this window's inspector is about (#803): the one value its header and every section
+  /// read. It is the selection, but only while it has open tabs (`selectionHasTabs`), so the
+  /// sections empty when all its tabs close. `.nothing` ⇒ the inspector shows its empty state.
+  /// Nothing for a Terminals-section row too: a terminal with no project has nothing to inspect.
+  /// The Quick Terminal's group is a Terminals-section row, and is named on its own because it is
+  /// nothing by a rule of its own: the group is its panel's, and no window selects it
+  /// (`selectionDidChange`).
+  ///
+  /// Computed from the selection and `selectionHasTabs` alone, so a reader observes those two and
+  /// nothing else of the store.
+  var inspectorSubject: InspectorSubject {
+    guard selectionHasTabs, let sid = selectedTargetID, sid.targetID != .quickTerminal,
+      !sid.isInTerminalsSection
+    else { return .nothing }
+    return .target(sid)
   }
-  var inspectorTarget: TerminalTarget? { inspectorTargetID.flatMap(target(for:)) }
+
+  /// The sidebar item the inspector is about: the subject's, nil for a followed folder and for
+  /// nothing. What an action keyed by a sidebar item takes (the workroom's menu, a commit, a pull
+  /// request action).
+  var inspectorTargetID: SidebarID? { inspectorSubject.sidebarID }
+  /// That sidebar item's target, nil once it has gone.
+  var inspectorTarget: TerminalTarget? {
+    switch inspectorSubject {
+    case .target(let sid): return target(for: sid)
+    case .followed, .nothing: return nil
+    }
+  }
 
   /// Recompute `selectionHasTabs` — call after a selection change or a tab add/remove. Guarded so it
   /// only publishes (re-renders the inspector) on an actual transition.
