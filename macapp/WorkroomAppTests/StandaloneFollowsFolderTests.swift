@@ -1,0 +1,411 @@
+import Synchronization
+import WorkroomDomain
+import WorkroomSystem
+import WorkroomVCS
+import XCTest
+
+@testable import Workroom
+
+/// A standalone terminal's inspector follows its terminal's folder (#805, ADR 0081): the subject is
+/// the folder the shell is in (OSC 7, else the folder it started in) and the innermost git
+/// repository containing it, and History reads that repository. Real throwaway repositories on
+/// disk; the folder arrives through the surface's pwd handler, as a shell's report does.
+@MainActor
+final class StandaloneFollowsFolderTests: XCTestCase {
+  private let projects = ProjectStore()
+  private let section = TerminalsSection()
+  private let workroom = SidebarID.workroom(project: "/p", name: "a")
+  private var scratch: URL!
+
+  override func setUp() async throws {
+    try await super.setUp()
+    try XCTSkipIf(
+      sh("command -v git", in: NSTemporaryDirectory()).exit != 0, "git is not installed")
+    projects.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [Workroom(name: "a", path: "/p/a", vcsName: "workroom/a", warnings: [])])
+    ]
+    // Canonical (`/private/var/...`), as git names a repository's root: `realpath`, not
+    // `resolvingSymlinksInPath`, which strips `/private` back off.
+    let made = FileManager.default.temporaryDirectory
+      .appendingPathComponent("follows-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+    let canonical = try XCTUnwrap(realpath(made.path, nil))
+    defer { free(canonical) }
+    scratch = URL(fileURLWithPath: String(cString: canonical))
+  }
+
+  override func tearDown() async throws {
+    if let scratch { try? FileManager.default.removeItem(at: scratch) }
+    try await super.tearDown()
+  }
+
+  // MARK: Store
+
+  private final class CountingProvider: LocalVCSProviding, Sendable {
+    private let roots = Mutex<[String]>([])
+    /// The roots History read a log of, in order.
+    var logRoots: [String] { roots.withLock { $0 } }
+    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
+      roots.withLock { $0.append(root.path) }
+      return VCSHistoryPage(commits: [], reachedEnd: true)
+    }
+    func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+      throw VCSError.io("x")
+    }
+    func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+      throw VCSError.io("x")
+    }
+    func workingFileDiff(root: URL, path: String) async throws -> String { throw VCSError.io("x") }
+    func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
+    func currentRef(root: URL) async throws -> VCSRef { .none }
+  }
+
+  private let provider = CountingProvider()
+
+  /// A window store with History showing, its log read through `provider`.
+  /// `realHistory`: History reads through the repository router, as the app does, not `provider`.
+  private func makeStore(realHistory: Bool = false) -> AppStore {
+    let store = AppStore(
+      projectStore: projects, terminalsSection: section,
+      commitHistory: realHistory
+        ? HistoryModel() : HistoryModel(resolve: { [provider] _ in provider }))
+    store.confirmOnCloseOverrideForTesting = false
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.terminals.recordUnrecognizedTool = { _ in }
+    store.terminals.recency = SwitcherRecency()
+    store.terminals.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned },
+      retag: { _, _ in true })
+    store.inspectorVisibleOverrideForTesting = true
+    store.isolatesInspectorSectionForTesting = true
+    store.isolatesInspectorLayoutForTesting = true
+    store.activeInspectorSection = .changes
+    store.historySectionCollapsed = false
+    return store
+  }
+
+  /// Open a standalone terminal in `store` and return its one terminal tab.
+  private func openTerminal(_ store: AppStore) async throws -> TerminalTab {
+    store.newTerminalInSelectedTarget()
+    let target = try XCTUnwrap(store.selectedTarget)
+    guard case .standalone = target.id else { throw XCTSkip("not a standalone terminal") }
+    await store.followedFolderResolved()
+    return try XCTUnwrap(store.terminals.tabs(for: target).first)
+  }
+
+  /// The shell in `tab` reports `folder` (OSC 7); wait for its repository to resolve.
+  private func cd(_ store: AppStore, _ tab: TerminalTab, _ folder: String) async throws {
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(folder)
+    await store.followedFolderResolved()
+    await store.commitHistory.awaitCurrentLoad()
+  }
+
+  private func followed(
+    _ store: AppStore, file: StaticString = #filePath, line: UInt = #line
+  ) -> FollowedFolder? {
+    guard case .followed(let followed) = store.inspectorSubject else {
+      XCTFail("subject is \(store.inspectorSubject)", file: file, line: line)
+      return nil
+    }
+    return followed
+  }
+
+  // MARK: Repositories on disk
+
+  @discardableResult
+  private func sh(_ cmd: String, in dir: String) -> (out: String, exit: Int32) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/sh")
+    p.arguments = ["-c", cmd]
+    p.currentDirectoryURL = URL(fileURLWithPath: dir)
+    var env = ProcessInfo.processInfo.environment
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    env["GIT_AUTHOR_NAME"] = "T"
+    env["GIT_AUTHOR_EMAIL"] = "t@e.com"
+    env["GIT_COMMITTER_NAME"] = "T"
+    env["GIT_COMMITTER_EMAIL"] = "t@e.com"
+    env["PATH"] = ShellEnvironment.path()
+    p.environment = env
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = pipe
+    try? p.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
+  }
+
+  /// A folder under the scratch directory, made.
+  private func folder(_ name: String) -> String {
+    let path = scratch.appendingPathComponent(name).path
+    try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+    return path
+  }
+
+  /// A git repository with one commit on `branch`, and a `src/lib` folder inside it.
+  private func repo(_ name: String, branch: String = "main") -> String {
+    let dir = folder(name)
+    sh("git init -q -b \(branch) .", in: dir)
+    try? FileManager.default.createDirectory(
+      atPath: dir + "/src/lib", withIntermediateDirectories: true)
+    try? "x\n".write(toFile: dir + "/src/lib/a.txt", atomically: true, encoding: .utf8)
+    sh("git add -A && git commit -qm base", in: dir)
+    return dir
+  }
+
+  // MARK: Following a cd
+
+  /// Value: protects=the inspector naming the repo the shell is in (stories 1, 2, 18);
+  /// fails_when=a standalone terminal still has nothing to inspect, or names the folder's own path
+  /// rather than the repo's root; why_new=#805; seam=AppStore; no_claim=the header's rendering
+  func testACdIntoARepositoryFollowsItsFolderAndRepository() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app", branch: "feature/x")
+
+    try await cd(store, tab, root + "/src")
+
+    let subject = followed(store)
+    XCTAssertEqual(subject?.folder, root + "/src")
+    XCTAssertEqual(subject?.repository?.root, root)
+    XCTAssertEqual(subject?.repository?.branch, "feature/x")
+    XCTAssertEqual(subject?.repository?.isWritable, true)
+    XCTAssertNil(store.inspectorTargetID, "a followed folder is no sidebar item")
+    XCTAssertEqual(store.inspectorHistoryTarget?.path, root, "History reads the repository")
+    XCTAssertEqual(provider.logRoots.last, root)
+  }
+
+  /// Value: protects=History not reloading on a cd inside one repo, and switching on a cd into
+  /// another (stories 3, 4); fails_when=a same-repo cd re-reads the log, or a repo switch keeps the
+  /// old one; why_new=#805; seam=AppStore + HistoryModel; no_claim=Changes and Pull Request (#807)
+  func testACdWithinARepositoryKeepsHistoryAndACdToAnotherSwitchesIt() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let first = repo("one")
+    let second = repo("two")
+
+    try await cd(store, tab, first)
+    let reads = provider.logRoots.count
+    let key = store.inspectorSubject.repositoryKey
+
+    try await cd(store, tab, first + "/src/lib")
+    XCTAssertEqual(followed(store)?.folder, first + "/src/lib", "the folder follows")
+    XCTAssertEqual(store.inspectorSubject.repositoryKey, key)
+    XCTAssertEqual(provider.logRoots.count, reads, "a cd within one repository reads no log")
+
+    try await cd(store, tab, second + "/src")
+    XCTAssertEqual(followed(store)?.repository?.root, second)
+    XCTAssertEqual(provider.logRoots.last, second, "History switches to the new repository")
+  }
+
+  /// Value: protects=the not-a-repo state (story 19); fails_when=a plain folder reads as a repo,
+  /// or History keeps the last repo; why_new=#805; seam=AppStore; no_claim=its copy
+  func testAFolderOutsideAnyRepositoryHasNoRepository() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let plain = folder("plain/deeper")
+    try await cd(store, tab, repo("app"))
+
+    try await cd(store, tab, plain)
+
+    let subject = followed(store)
+    XCTAssertEqual(subject?.folder, plain)
+    XCTAssertNil(subject?.repository)
+    XCTAssertNil(store.inspectorHistoryTarget, "History has no repository to read")
+    XCTAssertNil(store.commitHistory.root, "and empties")
+  }
+
+  /// Value: protects=the innermost repo winning (stories 25, 26); fails_when=a nested repo, a
+  /// linked worktree or a submodule resolves to its outer repository; why_new=#805;
+  /// seam=AppStore over real git; no_claim=git's own resolution beyond these three shapes
+  func testTheInnermostRepositoryWinsForNestedWorktreeAndSubmodule() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let outer = repo("outer")
+    // A repository nested inside another's working tree, not a submodule.
+    let nested = outer + "/vendor/inner"
+    try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
+    sh("git init -q -b main . && git commit -q --allow-empty -m base", in: nested)
+    // A linked worktree of `outer`, on a branch of its own.
+    let worktree = scratch.appendingPathComponent("outer-wt").path
+    sh("git worktree add -q -b wt \(worktree)", in: outer)
+    // A submodule of a fresh superproject.
+    let superproject = repo("super")
+    let library = repo("library")
+    sh(
+      "git -c protocol.file.allow=always submodule add -q \(library) lib && git commit -qm sub",
+      in: superproject)
+
+    try await cd(store, tab, nested)
+    XCTAssertEqual(followed(store)?.repository?.root, nested, "a nested repository")
+
+    try await cd(store, tab, worktree + "/src")
+    XCTAssertEqual(followed(store)?.repository?.root, worktree, "a linked worktree")
+    XCTAssertEqual(followed(store)?.repository?.branch, "wt", "on its own branch")
+
+    try await cd(store, tab, superproject + "/lib/src")
+    XCTAssertEqual(followed(store)?.repository?.root, superproject + "/lib", "a submodule")
+  }
+
+  /// Value: protects=the launch-folder fallback (story 27); fails_when=a shell that hasn't
+  /// reported a folder leaves the inspector empty; why_new=#805; seam=AppStore; no_claim=which
+  /// folder new terminals open in (Settings)
+  func testAShellThatHasNotReportedAFolderFollowsTheFolderItStartedIn() async throws {
+    let store = makeStore()
+    _ = try await openTerminal(store)
+
+    XCTAssertEqual(followed(store)?.folder, TerminalsSection.newTerminalDirectory())
+  }
+
+  /// Value: protects=the inspector keeping the last local folder after an `ssh` (story 34);
+  /// fails_when=a remote command's reports blank or move the subject; why_new=#805; seam=AppStore
+  /// (libghostty sends no pwd for a foreign host, so only the command's own events arrive);
+  /// no_claim=libghostty's filtering
+  func testAnSshSessionKeepsTheLastLocalFolder() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root)
+    let before = store.inspectorSubject
+
+    let surface = try XCTUnwrap(store.terminals.surface(tab))
+    surface.onEvent?(.titleChanged("ssh build-host"))
+    surface.onEvent?(.commandFinished(0))
+    await store.followedFolderResolved()
+
+    XCTAssertEqual(store.inspectorSubject, before)
+  }
+
+  /// Value: protects=a commit opened from a followed repo's History reading that repo (story 1);
+  /// fails_when=its changeset tab reads the folder the terminal opened in; why_new=#805;
+  /// seam=AppStore's content tabs; no_claim=the detail view's own load
+  func testACommitOpenedFromFollowedHistoryReadsTheFollowedRepository() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root + "/src")
+    let target = try XCTUnwrap(store.selectedTarget)
+
+    store.openChangesetPersistent(commitID: "abc", title: "base")
+
+    let opened = store.terminals.tabs(for: target).compactMap { tab -> ChangesetDescriptor? in
+      if case .changeset(let changeset) = tab.content { return changeset }
+      return nil
+    }
+    XCTAssertEqual(opened.map(\.repositoryRoot), [root])
+    XCTAssertEqual(
+      followed(store)?.repository?.root, root,
+      "with the changeset focused, the terminal it was opened from is still followed")
+  }
+
+  /// Value: protects=History loading a followed repo's log through the app's real read path, for
+  /// a plain repo, a linked worktree and a submodule (stories 1, 25, 26); fails_when=the router
+  /// can't read an unregistered root whose `.git` is a file; why_new=#805; seam=AppStore +
+  /// HistoryModel over the repository router; no_claim=paging
+  func testHistoryReadsAFollowedRepositorysLogThroughTheRouter() async throws {
+    let store = makeStore(realHistory: true)
+    let tab = try await openTerminal(store)
+    let plain = repo("plain")
+    let worktree = scratch.appendingPathComponent("plain-wt").path
+    sh("git worktree add -q -b wt \(worktree) && git commit -q --allow-empty -m one", in: plain)
+    sh("git commit -q --allow-empty -m wt-only", in: worktree)
+    let superproject = repo("super")
+    sh(
+      "git -c protocol.file.allow=always submodule add -q \(repo("library")) lib"
+        + " && git commit -qm sub", in: superproject)
+
+    for (folder, summary) in [
+      (plain + "/src", "one"), (worktree, "wt-only"), (superproject + "/lib", "base"),
+    ] {
+      try await cd(store, tab, folder)
+      XCTAssertEqual(
+        store.commitHistory.commits.first?.summary, summary, "the log of \(folder)'s repository")
+    }
+  }
+
+  /// Value: protects=every other git read keeping the ceiling that stops it finding an ANCESTOR
+  /// repository (negative control for lifting it in the one resolve); fails_when=the lift leaks
+  /// into the runner, so a commit aimed at a broken workroom lands in its parent; why_new=#805;
+  /// seam=GitRepositoryProbe + StatusCommandRunner; no_claim=the daemon-routed runner
+  func testOnlyTheFollowedResolveLooksAboveItsFolder() async throws {
+    let root = repo("app")
+    let sub = root + "/src/lib"
+
+    let resolved = await GitRepositoryProbe().repository(containing: sub)
+    let plain = await StatusCommandRunner().run(
+      "git", ["rev-parse", "--show-toplevel"], in: sub, timeout: 5)
+
+    XCTAssertEqual(resolved?.root, root, "the resolve finds the repository above the folder")
+    XCTAssertFalse(plain.ok, "a plain read in a subfolder still stops at the ceiling")
+  }
+
+  // MARK: Selection
+
+  /// Value: protects=straight-away switches (stories 31, 32); fails_when=going back to the
+  /// terminal waits on a resolve, or the workroom inspector changes; why_new=#805;
+  /// seam=AppStore; no_claim=the panels' rendering
+  func testWorkroomToTerminalToWorkroomShowsTheRightSubjectAtOnce() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let terminal = try XCTUnwrap(store.selectedTargetID)
+    let root = repo("app")
+    try await cd(store, tab, root)
+    store.terminals.addTab(for: try XCTUnwrap(store.target(for: workroom)))
+
+    store.selectedTargetID = workroom
+    XCTAssertEqual(store.inspectorSubject, .target(workroom))
+    XCTAssertEqual(store.inspectorHistoryTarget?.path, "/p/a")
+
+    store.selectedTargetID = terminal
+    XCTAssertEqual(followed(store)?.repository?.root, root, "at once, before any resolve")
+    XCTAssertEqual(store.inspectorHistoryTarget?.path, root)
+
+    store.selectedTargetID = workroom
+    XCTAssertEqual(store.inspectorSubject, .target(workroom))
+  }
+
+  /// Value: protects=per-window subjects and the Quick Terminal's exclusion (stories 28, 30);
+  /// fails_when=one window's cd, or a Quick Terminal pane's, moves another window's inspector;
+  /// why_new=#805; seam=AppStore + QuickTerminalHost; no_claim=the panel's own status bar
+  func testOtherWindowsAndTheQuickTerminalLeaveTheSubjectAlone() async throws {
+    let first = makeStore()
+    let tab = try await openTerminal(first)
+    let root = repo("app")
+    try await cd(first, tab, root)
+    let second = makeStore()
+    second.terminals.addTab(for: try XCTUnwrap(second.target(for: workroom)))
+    second.selectedTargetID = workroom
+    let panel = makeQuickTerminalHost(notifications: NotificationCenterStore(), section: section)
+    let quick = panel.terminals.addTab(for: panel.target)
+
+    try await cd(first, tab, repo("other"))
+    XCTAssertEqual(second.inspectorSubject, .target(workroom), "the other window stays put")
+
+    let firstSubject = first.inspectorSubject
+    try XCTUnwrap(panel.terminals.surface(quick)).handlePwd(root)
+    await first.followedFolderResolved()
+    XCTAssertEqual(first.inspectorSubject, firstSubject, "the Quick Terminal feeds no window")
+    XCTAssertEqual(second.inspectorSubject, .target(workroom))
+  }
+
+  /// Value: protects=the subject emptying when the terminal closes (story 36); fails_when=a
+  /// closed terminal's folder lingers; why_new=#805; seam=AppStore; no_claim=the successor's own
+  /// inspector beyond its subject
+  func testClosingTheTerminalStopsFollowingIt() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    try await cd(store, tab, repo("app"))
+    let target = try XCTUnwrap(store.selectedTarget)
+
+    store.terminals.closeTab(tab.id, for: target)
+
+    if case .followed = store.inspectorSubject {
+      XCTFail("still following a closed terminal")
+    }
+  }
+}

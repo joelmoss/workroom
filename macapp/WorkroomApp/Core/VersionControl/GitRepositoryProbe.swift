@@ -56,6 +56,27 @@ struct GitRepositoryProbe: Sendable {
     }
   }
 
+  /// The innermost git repository containing `folder` on this Mac, as `git rev-parse
+  /// --show-toplevel` answers it, so a linked worktree and a submodule are each their own; nil
+  /// outside one, or when the folder is gone. What an inspector following a terminal reads (#803).
+  func repository(containing folder: String) async -> FollowedFolder.Repository? {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else { return nil }
+    // The one git run that must discover a repository ABOVE its working directory, which the
+    // runner's `GIT_CEILING_DIRECTORIES` forbids every other caller: lifted (empty: no ceiling).
+    // It only names the root; every read and write after it runs at that root, under the ceiling.
+    let r = await runner.run(
+      "git", GitCommand.hardening + ["rev-parse", "--show-toplevel"], in: folder, timeout: timeout,
+      environment: ["GIT_CEILING_DIRECTORIES": ""])
+    let root = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard r.ok, !root.isEmpty else { return nil }
+    return FollowedFolder.Repository(
+      root: root, branch: await localBranch(path: root, branch: nil),
+      isWritable: FileManager.default.isWritableFile(atPath: root))
+  }
+
   // MARK: Local-only derivation (a local host reads these from its own checkout)
 
   /// The branch a PR/CI probe keys off, for a **local** host: the stage-1 branch when known; else

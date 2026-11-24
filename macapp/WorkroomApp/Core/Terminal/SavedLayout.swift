@@ -382,6 +382,8 @@ struct ChangesetPayload: Codable, Hashable, Sendable {
   var isPreview: Bool
   /// The selected file within the commit.
   var selectedPath: String?
+  /// The repository the commit is in, when not the target's own folder (#805).
+  var repositoryRoot: String? = nil
 }
 
 /// One pane. Flat with optional payloads rather than an enum-with-associated-values on purpose: an

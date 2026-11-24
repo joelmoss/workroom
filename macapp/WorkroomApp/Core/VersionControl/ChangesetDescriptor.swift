@@ -17,6 +17,9 @@ struct ChangesetDescriptor: Equatable, Hashable, Sendable {
   /// `sameChangeset`): selecting a file mutates this in place, keeping the tab. `nil` ⇒ the detail
   /// defaults to the first file. Backs back/forward restore of the in-commit file selection.
   var selectedPath: String?
+  /// The repository the commit is in, when it is not the tab's target's own folder: a commit from
+  /// the History of a folder a terminal's inspector follows (#805). Non-identity. Nil: the target's.
+  var repositoryRoot: String? = nil
 
   /// Two descriptors address the *same* changeset tab when they point at the same commit — the
   /// identity used to dedupe (re-select an already-open commit) and to retarget the preview. The

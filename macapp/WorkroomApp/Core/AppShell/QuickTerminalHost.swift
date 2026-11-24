@@ -115,7 +115,8 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
       }
     // No navigation history, workroom split or selection to follow a content change, a pane count
     // or a surface focus. Its saved layout follows `paneWillChange`, which every pane change sends.
-    case .tabContentChanged, .paneCountChanged, .surfaceFocused:
+    // And no inspector to follow a folder change: the Quick Terminal never feeds one (#803).
+    case .tabContentChanged, .paneCountChanged, .surfaceFocused, .cwdChanged:
       break
     // Pop-out panes (issue #172), as a window's store opens and closes them.
     case .paneDetached(_, let tabID, let screenPoint):

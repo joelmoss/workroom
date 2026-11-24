@@ -48,6 +48,9 @@ struct HistoryPanel: View {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
         InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
+      } else if let folder = inputs.notARepository {
+        // A terminal's followed folder outside any repository (#805): no log to read.
+        NotARepositoryMessage(path: folder)
       } else {
         switch model.state {
         case .idle:
@@ -155,6 +158,9 @@ struct HistoryPanelInputs {
   /// Changes when the inspector's target changes or the History section shows or hides; the panel
   /// re-runs `HistoryPanelActions.activate` on each.
   var activationKey: String
+  /// The folder a terminal's inspector follows, when it is in no git repository (#805): the pane
+  /// says so instead of reading a log. Nil for a workroom, a project, or a folder in a repository.
+  var notARepository: String? = nil
   /// The commit id of the focused changeset tab, or `nil`.
   ///
   /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
@@ -190,13 +196,22 @@ struct HistoryPanelAdapter: View {
 
   private var inputs: HistoryPanelInputs {
     HistoryPanelInputs(
-      hasTarget: store.inspectorSubject.sidebarID != nil,
+      hasTarget: store.inspectorSubject != .nothing,
       activationKey: store.inspectorSubject.repositoryKey + "\u{1F}\(store.historySectionShown)",
+      notARepository: notARepository,
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
         FocusedTabSelection.current(store: store)?.changesetCommitID
       }
     )
+  }
+
+  /// The followed folder, when it is in no repository.
+  private var notARepository: String? {
+    guard case .followed(let followed) = store.inspectorSubject, followed.repository == nil else {
+      return nil
+    }
+    return followed.folder
   }
 
   private var actions: HistoryPanelActions {
@@ -208,7 +223,7 @@ struct HistoryPanelAdapter: View {
         // where `focus` would no-op on the unchanged root. The store's eager `focus` on selection
         // still fires first; `activate`'s settled-state guard means this won't double that fresh
         // load.
-        store.commitHistory.activate(target: store.inspectorTarget)
+        store.commitHistory.activate(target: store.inspectorHistoryTarget)
       },
       // `[store]` + `Self.title` on purpose: the capture list is what makes this closure
       // behaviour-constant, which is what lets `HistoryRow.==` exclude it.

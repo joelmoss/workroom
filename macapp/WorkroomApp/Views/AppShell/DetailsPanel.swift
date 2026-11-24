@@ -20,11 +20,24 @@ struct DetailsPanel: View {
     Group {
       if let target = store.inspectorTarget {
         details(target)
+      } else if case .followed(let followed) = store.inspectorSubject {
+        followedDetails(followed)
       } else {
         inspectorMessage("Select a workroom to see where it runs.")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// A standalone terminal's (#805): where it runs, which is this Mac (ADR 0077), and the folder
+  /// its shell is in, laid out as a workroom's host and path are.
+  private func followedDetails(_ followed: FollowedFolder) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      fact("Running on", "This Mac")
+      fact("Folder", followed.folder, copyable: true)
+        .accessibilityIdentifier("details.followedFolder")
+    }
+    .padding(12)
   }
 
   @ViewBuilder
@@ -399,6 +412,66 @@ struct InspectorWorkroomHeader: View {
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
+    if case .followed(let followed) = store.inspectorSubject {
+      followedHeader(followed)
+    } else {
+      targetHeader
+    }
+  }
+
+  /// A followed folder's (#805): the repository's folder name, with its branch and its `~`-relative
+  /// path beneath; outside a repository, the folder's name over its path. Its two lines sit in
+  /// the one fixed height every header variant takes (`height`), so a switch never moves the
+  /// sections below.
+  private func followedHeader(_ followed: FollowedFolder) -> some View {
+    let repository = followed.repository
+    let path = repository?.root ?? followed.folder
+    let shownPath = StatusBarCwdSegment.abbreviate(path)
+    let name = shownPath == "~" ? "~" : (path as NSString).lastPathComponent
+    let branch = repository.map { $0.branch ?? "Detached HEAD" }
+    // The glyph leads the name, on its baseline, and the second line hangs under the name, so
+    // both lines start at one x however wide the glyph draws.
+    return HStack(alignment: .firstTextBaseline, spacing: 4) {
+      Image(systemName: "folder").font(.callout).foregroundStyle(tokens.fgMuted)
+      VStack(alignment: .leading, spacing: 0) {
+        Text(name).font(.callout).foregroundStyle(tokens.fg)
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+          if let branch {
+            Text(branch).foregroundStyle(tokens.fgMuted).layoutPriority(1)
+            Text("·").foregroundStyle(.tertiary)
+          }
+          Text(shownPath).foregroundStyle(tokens.fgMuted).truncationMode(.middle)
+        }
+        .font(.caption2)
+      }
+    }
+    .lineLimit(1)
+    .truncationMode(.tail)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.leading, 12)
+    .padding(.trailing, 4)
+    .frame(height: Self.height)
+    .background(WorkroomPaneCardBackground(highlighted: true))
+    .contentShape(Rectangle())
+    .help(
+      repository == nil
+        ? "The terminal's folder, \(followed.folder), is not in a git repository"
+        : "The terminal's folder: \(followed.folder)"
+    )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(
+      repository == nil
+        ? "Following folder \(name), not a git repository, at \(shownPath)"
+        : "Following repository \(name), on \(branch ?? ""), at \(shownPath)"
+    )
+    .accessibilityIdentifier("inspector.workroomHeader")
+  }
+
+  /// Every header variant's height: the workroom's actions button's 26pt target and 6pt above and
+  /// below it, which a followed folder's two lines (callout over caption2) fit inside.
+  static let height: CGFloat = 38
+
+  private var targetHeader: some View {
     HStack(spacing: 6) {
       Group {
         if let sid = store.inspectorSubject.sidebarID, let target = store.inspectorTarget {
@@ -430,9 +503,8 @@ struct InspectorWorkroomHeader: View {
     }
     .padding(.leading, 12)
     .padding(.trailing, 4)
-    // The actions button's 26pt target plus this is the header's height, with or without it.
-    .frame(minHeight: 26)
-    .padding(.vertical, 6)
+    // One height with or without the actions button, and for a followed folder's two lines.
+    .frame(height: Self.height)
     // The sidebar's title, not one more section, so it stands out from their grey `surface` by
     // colour alone, at the same type size: the focused workroom card's accent fill, always, as the
     // project sidebar's selected row wears it too. It drops the accent with the window's focus, as

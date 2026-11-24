@@ -223,6 +223,26 @@ final class AppStore: ObservableObject {
   /// add/remove hooks, so the inspector re-renders when the answer flips rather than on every
   /// change to the selected target's tabs, which a `terminals.tabCount` read would observe.
   private(set) var selectionHasTabs = false
+  /// The folder this window's inspector follows for the selected Terminals-section target (#803),
+  /// and which target it was resolved for, so a value never outlives its selection. Written only by
+  /// `refreshFollowedFolder`; read through `inspectorSubject`.
+  var followedFolderState: FollowedFolderState?
+  /// What `refreshFollowedFolder` last asked to resolve: the target and its terminal's folder, so a
+  /// repeat (every focus or tab event re-asks) runs no `git`.
+  @ObservationIgnored var followedFolderRequest: (target: TargetID, folder: String)?
+  /// The resolve in flight for `followedFolderRequest`.
+  @ObservationIgnored var followedFolderTask: Task<Void, Never>?
+  /// What each folder resolved to last, so returning to a terminal shows its repository at once,
+  /// before the fresh resolve (for a branch switched meanwhile) lands.
+  @ObservationIgnored var followedRepositoryCache: [String: FollowedFolder.Repository?] = [:]
+  /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
+  /// content tab with no folder of its own.
+  @ObservationIgnored var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
+  /// The innermost git repository containing a folder on this Mac, nil outside one. A seam for tests.
+  @ObservationIgnored var resolveFollowedRepository:
+    @Sendable (String) async -> FollowedFolder.Repository? = { folder in
+      await GitRepositoryProbe().repository(containing: folder)
+    }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
   /// the sidebar's `List` until some *other* state changes (e.g. the pointer moving over a row), so
@@ -444,9 +464,9 @@ final class AppStore: ObservableObject {
   /// Nothing has to re-trigger this when the inspector opens: `RootView` builds `InspectorColumn`
   /// inside `if showInspector`, so opening it CONSTRUCTS `HistoryPanel`, whose `.task` calls
   /// `HistoryModel.activate` — the same load, at the moment it's first worth doing.
-  private func focusHistoryIfShown() {
+  func focusHistoryIfShown() {
     guard inspectorIsVisible, historySectionShown else { return }
-    commitHistory.focus(target: inspectorTarget)
+    commitHistory.focus(target: inspectorHistoryTarget)
   }
 
   /// Forward the ports the selected remote workroom's dev container declares, once a launch
@@ -477,7 +497,7 @@ final class AppStore: ObservableObject {
   /// Same gate, and the same reason, as `focusHistoryIfShown`: a `focus` here is not a cheap pointer
   /// move but two or three `git` processes, so without this every selection change would read a
   /// repo for a toolbar nobody can see.
-  private func focusRemoteStateIfShown() {
+  func focusRemoteStateIfShown() {
     guard inspectorIsVisible, remoteToolbarShown else {
       remoteState.focus(nil)
       return
@@ -1050,6 +1070,10 @@ final class AppStore: ObservableObject {
     // navigation.
     case .surfaceFocused(let targetID):
       focusWorkroomMemberFromSurface(targetID)
+    // The inspector follows the selected terminal's folder (#803): only the selection's matters.
+    case .cwdChanged(let targetID, _):
+      guard self.selectedTargetID?.targetID == targetID else { return }
+      self.refreshFollowedFolder()
     // Effective focus is the one authority for reading a terminal's notifications (#358).
     case .terminalSeen(_, let tabID):
       notifications.dismiss(tab: tabID)
@@ -1332,10 +1356,15 @@ final class AppStore: ObservableObject {
   /// Computed from the selection and `selectionHasTabs` alone, so a reader observes those two and
   /// nothing else of the store.
   var inspectorSubject: InspectorSubject {
-    guard selectionHasTabs, let sid = selectedTargetID, sid.targetID != .quickTerminal,
-      !sid.isInTerminalsSection
+    guard selectionHasTabs, let sid = selectedTargetID, let id = sid.targetID,
+      id != .quickTerminal
     else { return .nothing }
-    return .target(sid)
+    guard sid.isInTerminalsSection else { return .target(sid) }
+    // A Terminals-section target follows its terminal's folder once that has resolved.
+    guard Self.followsFolder(sid), let state = followedFolderState, state.target == id else {
+      return .nothing
+    }
+    return .followed(state.folder)
   }
 
   /// The sidebar item the inspector is about: the subject's, nil for a followed folder and for
@@ -1354,8 +1383,11 @@ final class AppStore: ObservableObject {
   /// only publishes (re-renders the inspector) on an actual transition.
   func refreshSelectionHasTabs() {
     let has = selectedTarget.map { terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
-    guard has != selectionHasTabs else { return }
-    selectionHasTabs = has
+    let flipped = has != selectionHasTabs
+    if flipped { selectionHasTabs = has }
+    // Every caller is a selection, focus or tab change, which can each move the followed folder.
+    let followedMoved = updateFollowedFolder()
+    guard flipped || followedMoved else { return }
     // A tab opening (or the last one closing) for the selected workroom flips `inspectorTargetID`
     // (nil↔id). Re-point History from here so it loads the instant its target appears, instead of
     // waiting on the panel's own `.task` to re-fire — which doesn't happen reliably across the

@@ -344,7 +344,8 @@ extension TabSession {
         key: key, kind: Self.changesetKind,
         changeset: ChangesetPayload(
           commitID: descriptor.commitID, title: descriptor.title,
-          isPreview: descriptor.isPreview, selectedPath: descriptor.selectedPath))
+          isPreview: descriptor.isPreview, selectedPath: descriptor.selectedPath,
+          repositoryRoot: descriptor.repositoryRoot))
     }
   }
 
@@ -370,7 +371,7 @@ extension TabSession {
       return .changeset(
         ChangesetDescriptor(
           commitID: payload.commitID, title: payload.title, isPreview: payload.isPreview,
-          selectedPath: payload.selectedPath))
+          selectedPath: payload.selectedPath, repositoryRoot: payload.repositoryRoot))
     default:
       return nil
     }
@@ -854,6 +855,9 @@ final class TerminalPanes {
     /// edit or by focus moving between a split and a solo tab, and the operation that did it has
     /// finished. A workroom split it sits in re-evens to match.
     case paneCountChanged(TerminalTarget.ID, along: SplitOrientation?)
+    /// A terminal's shell reported a new working directory (OSC 7), already written to its
+    /// `TerminalState.cwd`. A window's inspector follows the folder of the terminal it shows (#803).
+    case cwdChanged(TerminalTarget.ID, TerminalTab.ID)
   }
 
   /// The panes each target showed across each axis (`shownSlots`) at its last `reconcileOcclusion`.
@@ -2925,6 +2929,7 @@ final class TerminalPanes {
       liveState.titleChanged(title, tab: tabID, target: targetID)
     case .cwdChanged(let cwd):
       liveState.cwdChanged(cwd, tab: tabID, target: targetID)
+      onEvent?(.cwdChanged(targetID, tabID))
     case .commandFinished(let exitCode):
       // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)
       // ignores it.

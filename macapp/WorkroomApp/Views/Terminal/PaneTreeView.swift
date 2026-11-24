@@ -558,7 +558,7 @@ struct PaneLeafView: View {
       // reuses DiffViewer via a `.commit` source). Same rounded clip + chip context menu as the other
       // content leaves, so "Keep Open"/Close/split behave identically.
       let detail = ChangesetDetailView(
-        descriptor: descriptor, directory: target.path,
+        descriptor: descriptor, directory: descriptor.repositoryRoot ?? target.path,
         repositoryLocation: target.remoteLocation,
         isFocused: focused, find: host.contentFind,
         vcsReader: host.vcsReader, cannedDiffs: host.cannedDiffs,

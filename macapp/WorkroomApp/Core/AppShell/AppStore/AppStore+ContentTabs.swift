@@ -70,7 +70,8 @@ extension AppStore {
   /// nothing's selected.
   func openChangesetPreview(commitID: String, title: String) {
     guard let target = selectedTarget else { return }
-    let changeset = ChangesetDescriptor(commitID: commitID, title: title, isPreview: true)
+    let changeset = ChangesetDescriptor(
+      commitID: commitID, title: title, isPreview: true, repositoryRoot: followedRepositoryRoot)
     whenHostLayoutRestored(target) { [terminals] target in
       terminals.openContentPreview(changeset, for: target)
     }
@@ -80,7 +81,8 @@ extension AppStore {
   /// No-op if nothing's selected.
   func openChangesetPersistent(commitID: String, title: String) {
     guard let target = selectedTarget else { return }
-    let changeset = ChangesetDescriptor(commitID: commitID, title: title, isPreview: false)
+    let changeset = ChangesetDescriptor(
+      commitID: commitID, title: title, isPreview: false, repositoryRoot: followedRepositoryRoot)
     whenHostLayoutRestored(target) { [terminals] target in
       terminals.openContentPersistent(changeset, for: target)
     }

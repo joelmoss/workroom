@@ -32,3 +32,5 @@ Rejected: ⌘D on a standalone terminal opening a second standalone terminal bes
 Source: [`CONTEXT.md`](../../CONTEXT.md) (Target, Standalone terminal, Terminal group, Terminal name, Quick Terminal), the prototype on branch `prototype/terminal-groups` (`macapp/Prototypes/terminal-groups.prototype.html?variant=B`).
 
 Amended 2026-11-21 (#652): owner decisions that supersede the issue's stories. A group goes with its last terminal even when named (stories 24–25); the owner chose it. Closing a window holding a standalone terminal asks only while the close-a-terminal confirmation is on (story 34): turning that off is the user's choice not to be asked. A terminal's default title, a workroom's included, is its program and folder ("zsh ~"), read from the foreground process, before "Terminal N".
+
+Amended 2026-11-23 (#803, ADR 0081): the inspector is no longer among the things that do not apply. A standalone terminal or terminal group's inspector follows its focused terminal's folder and the git repository containing it; the targets themselves still have no project, branch, worktree, run commands or host.
