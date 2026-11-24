@@ -96,7 +96,9 @@ final class HistoryModel: ObservableObject {
       state = .idle
       return
     }
-    load(limit: pageSize)
+    // As many as were kept, as `refresh()` re-reads what is shown: one page would shrink a window
+    // the user had grown, and the scroll restored over it with it (#812 F5).
+    load(limit: min(max(pageSize, commits.count), maxWindow))
   }
 
   func focus(location: RepositoryLocation?) {
