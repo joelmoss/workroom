@@ -262,7 +262,8 @@ struct ChangesPanel: View {
         if followed.repository == nil
           || vcsStatus.status(for: inputs.subject)?.failure?.meansNoRepository == true
         {
-          NotARepositoryMessage(path: followed.folder)
+          NotARepositoryMessage(
+            path: followed.folder, undetermined: followed.repositoryUndetermined)
         } else {
           content
         }

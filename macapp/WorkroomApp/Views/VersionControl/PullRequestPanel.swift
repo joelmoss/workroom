@@ -24,7 +24,8 @@ struct PullRequestPanel: View {
           || vcsStatus.status(for: store.inspectorSubject)?.failure?.meansNoRepository == true
       {
         // A terminal's followed folder in no repository (#807): no branch to have a pull request.
-        NotARepositoryMessage(path: followed.folder)
+        NotARepositoryMessage(
+          path: followed.folder, undetermined: followed.repositoryUndetermined)
       } else if vcsStatus.githubCLIStatus != .available {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
         ghWarning(vcsStatus.githubCLIStatus)

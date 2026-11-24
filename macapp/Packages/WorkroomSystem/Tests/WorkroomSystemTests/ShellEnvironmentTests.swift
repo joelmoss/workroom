@@ -436,6 +436,28 @@ final class ShellEnvironmentTests: XCTestCase {
       ShellEnvironment.environment()["GIT_TERMINAL_PROMPT"], "0", "overrides still applied last")
   }
 
+  /// Value: protects=a read that needs the user's environment waiting for the launch probe already
+  /// running, without starting one (#805 re-review R3); fails_when=the followed-folder resolve
+  /// reads the floor (no `GIT_CEILING_DIRECTORIES`) while the launch probe is still out, and finds
+  /// a `$HOME` dotfiles repository; seam=ShellEnvironment over a stub shell; no_claim=the resolve
+  func testSettledWaitsForTheProbeInFlightAndStartsNone() async throws {
+    let counter = tmp.appendingPathComponent("spawns").path
+    let stub = try stubShell(
+      reportingEnv:
+        "sleep 0.5; printf 'PATH=/probed/bin'; printf '\\000'; printf 'GIT_CEILING_DIRECTORIES=/probed'",
+      prelude: "echo x >> \(counter)", name: "settling-shell")
+
+    await ShellEnvironment.settled()
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: counter), "with no probe out, it starts none")
+
+    let refreshing = Task { await ShellEnvironment.refresh(shell: stub) }
+    try await Task.sleep(for: .milliseconds(150))
+    await ShellEnvironment.settled()
+    XCTAssertEqual(ShellEnvironment.environment()["GIT_CEILING_DIRECTORIES"], "/probed")
+    _ = await refreshing.value
+  }
+
   func testConcurrentReadsDuringRefreshDoNotCrash() async throws {
     let stub = try stubShell(
       reportingEnv: "sleep 0.2; printf 'PATH=/probed/bin'", name: "slow-shell")

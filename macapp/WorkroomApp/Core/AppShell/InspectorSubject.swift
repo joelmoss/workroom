@@ -46,8 +46,13 @@ enum InspectorSubject: Equatable, Sendable {
 struct FollowedFolder: Equatable, Sendable {
   /// The focused terminal's folder: its live working directory, else the folder it started in.
   var folder: String
-  /// The innermost git repository containing `folder`, nil outside one.
+  /// The innermost git repository containing `folder`, nil outside one and while
+  /// `repositoryUndetermined`.
   var repository: Repository?
+  /// Whether git couldn't tell which repository `folder` is in, if any (a timeout, a repository it
+  /// refused): `repository` is nil, but the folder is not known to be outside one. Nothing reads or
+  /// writes a repository for it until a retry tells.
+  var repositoryUndetermined = false
 
   struct Repository: Equatable, Sendable {
     /// The repository's root: the top level of the working tree `folder` is in.

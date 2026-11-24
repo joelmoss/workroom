@@ -49,8 +49,9 @@ struct HistoryPanel: View {
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
         InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
       } else if let folder = inputs.notARepository {
-        // A terminal's followed folder outside any repository (#805): no log to read.
-        NotARepositoryMessage(path: folder)
+        // A terminal's followed folder outside any repository (#805), or in one git couldn't tell:
+        // no log to read.
+        NotARepositoryMessage(path: folder, undetermined: inputs.repositoryUndetermined)
       } else {
         switch model.state {
         case .idle:
@@ -161,6 +162,8 @@ struct HistoryPanelInputs {
   /// The folder a terminal's inspector follows, when it is in no git repository (#805): the pane
   /// says so instead of reading a log. Nil for a workroom, a project, or a folder in a repository.
   var notARepository: String? = nil
+  /// Whether git couldn't tell which repository `notARepository` is in, rather than answering none.
+  var repositoryUndetermined = false
   /// The commit id of the focused changeset tab, or `nil`.
   ///
   /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
@@ -199,6 +202,7 @@ struct HistoryPanelAdapter: View {
       hasTarget: store.inspectorSubject != .nothing,
       activationKey: store.inspectorSubject.repositoryKey + "\u{1F}\(store.historySectionShown)",
       notARepository: notARepository,
+      repositoryUndetermined: repositoryUndetermined,
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
         FocusedTabSelection.current(store: store)?.changesetCommitID
@@ -212,6 +216,12 @@ struct HistoryPanelAdapter: View {
       return nil
     }
     return followed.folder
+  }
+
+  /// Whether git couldn't tell which repository the followed folder is in.
+  private var repositoryUndetermined: Bool {
+    guard case .followed(let followed) = store.inspectorSubject else { return false }
+    return followed.repositoryUndetermined
   }
 
   private var actions: HistoryPanelActions {

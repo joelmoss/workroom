@@ -16,6 +16,9 @@ struct GitRepositoryProbe: Sendable {
   let discoveryRunner: StatusCommandRunning
   /// The discovery limits `discoverRepository` runs with. A seam for tests.
   let discoveryEnvironment: @Sendable () -> [String: String]
+  /// Whether a path is a folder on disk, which a stale network mount can block indefinitely. A seam
+  /// for tests.
+  let isFolder: @Sendable (String) -> Bool
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
@@ -24,8 +27,10 @@ struct GitRepositoryProbe: Sendable {
     discoveryEnvironment: @escaping @Sendable () -> [String: String] = {
       GitRepositoryProbe.discoveryLimits(
         inherited: ProcessInfo.processInfo.environment, probed: ShellEnvironment.environment())
-    }
+    },
+    isFolder: @escaping @Sendable (String) -> Bool = GitRepositoryProbe.isFolder
   ) {
+    self.isFolder = isFolder
     self.runner = runner
     self.discoveryRunner = discoveryRunner
     self.discoveryEnvironment = discoveryEnvironment
@@ -100,13 +105,9 @@ struct GitRepositoryProbe: Sendable {
   func discoverRepository(containing folder: String) async -> Discovery {
     // Every stat runs on GCD under the timeout: a stale network mount blocks one indefinitely.
     guard
-      let isFolder = await stat({
-        var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory)
-          && isDirectory.boolValue
-      })
+      let exists = await stat("folder\u{0}\(folder)", { [isFolder] in isFolder(folder) })
     else { return .unknown }
-    guard isFolder else { return .notARepository }
+    guard exists else { return .notARepository }
     let found = await discoveryRunner.run(
       "git", GitCommand.hardening + ["rev-parse", "--show-toplevel", "--absolute-git-dir"],
       in: folder, timeout: timeout, environment: discoveryEnvironment())
@@ -122,17 +123,26 @@ struct GitRepositoryProbe: Sendable {
       return .notARepository
     }
     guard
-      let (isRepository, isWritable) = await stat({
-        (
-          isGitRepo(at: URL(fileURLWithPath: root)),
-          FileManager.default.isWritableFile(atPath: root)
-        )
-      })
+      let (isRepository, isWritable) = await stat(
+        "root\u{0}\(root)",
+        {
+          (
+            isGitRepo(at: URL(fileURLWithPath: root)),
+            FileManager.default.isWritableFile(atPath: root)
+          )
+        })
     else { return .unknown }
     guard isRepository else { return .notARepository }
     return .repository(
       FollowedFolder.Repository(
         root: root, branch: await localBranch(path: root, branch: nil), isWritable: isWritable))
+  }
+
+  /// Whether `path` is a folder on disk.
+  @Sendable static func isFolder(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+      && isDirectory.boolValue
   }
 
   /// The discovery limits the resolve runs with: the user's own `GIT_CEILING_DIRECTORIES` (a
@@ -153,14 +163,55 @@ struct GitRepositoryProbe: Sendable {
   /// runner's `LC_ALL=C`), rather than that it couldn't tell.
   private static func notARepository(_ r: CommandResult) -> Bool {
     guard r.exitCode == CommandResult.gitFatal, !r.timedOut, !r.signaled else { return false }
-    return r.stderr.contains("not a git repository")
+    // Only git's own "no work tree here": `not a git repository: <path>` names a `.git` file whose
+    // git directory isn't there (an unmounted volume), which a remount can change (re-review R4).
+    return r.stderr.contains("not a git repository (or any")
       || r.stderr.contains("must be run in a work tree")
   }
 
-  /// `work` off the cooperative pool, nil when it outruns `timeout`.
-  private func stat<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T? {
-    try? await withTimeout(seconds: timeout) { try await runBlocking { work() } }
+  /// `found` with `folder` placed in it (`Repository.placed(in:)`), read off the cooperative pool
+  /// under the timeout, as every stat here is; nil when the read outruns it.
+  func placed(_ found: FollowedFolder.Repository, in folder: String) async
+    -> FollowedFolder.Repository?
+  {
+    let root = found.root
+    // Keyed on the root and folder alone, so a joined read never carries another resolve's branch.
+    guard
+      let placement = await Self.blockingRead(
+        "place\u{0}\(root)\u{0}\(folder)", timeout: timeout,
+        {
+          FollowedFolder.Repository(root: root, isWritable: false).placed(in: folder)
+        })
+    else { return nil }
+    var placed = found
+    placed.subfolder = placement.subfolder
+    placed.spelledRoot = placement.spelledRoot
+    return placed
   }
+
+  /// `work` off the cooperative pool, nil when it outruns `timeout`.
+  private func stat<T: Sendable>(_ key: String, _ work: @escaping @Sendable () -> T) async -> T? {
+    await Self.blockingRead(key, timeout: timeout, work)
+  }
+
+  /// `work` on GCD under `timeout`, nil when it outruns it. A read of `key` still blocked from an
+  /// earlier call (any probe's) is joined rather than started again: a stale network mount blocks
+  /// its GCD thread until the kernel gives up, and a thread per ask would drain the global pool
+  /// every `runBlocking` read shares (re-review R2). A key names the read and its path, so the
+  /// joined read computes the same thing.
+  static func blockingRead<T: Sendable>(
+    _ key: String, timeout: TimeInterval, _ work: @escaping @Sendable () -> T
+  ) async -> T? {
+    let read = blockingReads.join(key) { () async throws -> any Sendable in
+      try await runBlocking { work() }
+    }
+    let value: (any Sendable)? = try? await withTimeout(seconds: timeout) {
+      () async throws -> any Sendable in try await read.value
+    }
+    return value as? T
+  }
+
+  private static let blockingReads = BlockingReads()
 
   // MARK: Local-only derivation (a local host reads these from its own checkout)
 
@@ -202,5 +253,34 @@ struct GitRepositoryProbe: Sendable {
     }
     guard let branchName, !branchName.isEmpty else { return nil }
     return branchName
+  }
+}
+
+/// The blocking reads in flight, by key, for `GitRepositoryProbe.blockingRead`. An entry lasts
+/// until its closure actually returns, however many callers gave up waiting on it.
+private final class BlockingReads: @unchecked Sendable {
+  private let lock = NSLock()
+  private var reads: [String: Task<any Sendable, Error>] = [:]
+
+  /// The read of `key` in flight, else `work` started as it.
+  func join(_ key: String, _ work: @escaping @Sendable () async throws -> any Sendable)
+    -> Task<any Sendable, Error>
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    if let read = reads[key] { return read }
+    // Its `finish` takes the lock, so it can't run before the entry is in.
+    let read = Task<any Sendable, Error> { [self] in
+      defer { finish(key) }
+      return try await work()
+    }
+    reads[key] = read
+    return read
+  }
+
+  private func finish(_ key: String) {
+    lock.lock()
+    defer { lock.unlock() }
+    reads[key] = nil
   }
 }

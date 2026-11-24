@@ -6,6 +6,7 @@ import DevContainer
 import Foundation
 import SwiftUI
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 
 /// One window's state and actions. Production builds one store per window (issue #70); the
@@ -239,6 +240,15 @@ final class AppStore: ObservableObject {
   @ObservationIgnored var followedFolderRequest: (target: TargetID, folder: String)?
   /// The resolve in flight for `followedFolderRequest`.
   @ObservationIgnored var followedFolderTask: Task<Void, Never>?
+  /// The retry of a resolve that couldn't tell, for `followedFolderRequest`.
+  @ObservationIgnored var followedFolderRetryTask: Task<Void, Never>?
+  /// How many resolves in a row couldn't tell, per folder: what spaces out its retries.
+  @ObservationIgnored var followedFolderUndeterminedStreak: [String: Int] = [:]
+  /// How long to wait before retrying a folder whose resolve couldn't tell `streak` times in a row.
+  /// A seam for tests.
+  @ObservationIgnored var followedFolderRetryDelay: @Sendable (_ streak: Int) -> Duration = {
+    streak in .seconds(min(60, 2 << min(streak - 1, 5)))
+  }
   /// What each folder resolved to last, so returning to a terminal shows its repository at once,
   /// before the fresh resolve (for a branch switched meanwhile) lands.
   @ObservationIgnored var followedRepositoryCache: [String: FollowedFolder.Repository?] = [:]
@@ -253,7 +263,10 @@ final class AppStore: ObservableObject {
   /// git could not tell. A seam for tests.
   @ObservationIgnored var resolveFollowedRepository:
     @Sendable (String) async -> GitRepositoryProbe.Discovery = { folder in
-      await GitRepositoryProbe().discoverRepository(containing: folder)
+      // The user's `GIT_CEILING_DIRECTORIES` comes from the launch shell probe: a resolve before it
+      // lands would read past it (a `$HOME` dotfiles repository) and cache that (re-review R3).
+      await ShellEnvironment.settled()
+      return await GitRepositoryProbe().discoverRepository(containing: folder)
     }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate

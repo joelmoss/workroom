@@ -454,15 +454,19 @@ struct InspectorWorkroomHeader: View {
     .background(WorkroomPaneCardBackground(highlighted: true))
     .contentShape(Rectangle())
     .help(
-      repository == nil
-        ? "The terminal's folder, \(followed.folder), is not in a git repository"
-        : "The terminal's folder: \(followed.folder)"
+      followed.repositoryUndetermined
+        ? NotARepositoryMessage.help(path: followed.folder, undetermined: true)
+        : repository == nil
+          ? "The terminal's folder, \(followed.folder), is not in a git repository"
+          : "The terminal's folder: \(followed.folder)"
     )
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(
-      repository == nil
-        ? "Following folder \(name), not a git repository, at \(shownPath)"
-        : "Following repository \(name), on \(branch ?? ""), at \(shownPath)"
+      followed.repositoryUndetermined
+        ? "Following folder \(name), repository unreadable, at \(shownPath)"
+        : repository == nil
+          ? "Following folder \(name), not a git repository, at \(shownPath)"
+          : "Following repository \(name), on \(branch ?? ""), at \(shownPath)"
     )
     .accessibilityIdentifier("inspector.workroomHeader")
   }

@@ -352,21 +352,6 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     { result }
   }
 
-  /// Real git, as a repository owned by someone else sees it: git refuses it (`safe.directory`).
-  private struct DifferentOwnerRunner: StatusCommandRunning {
-    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-      async -> CommandResult
-    { await run(executable, args, in: directory, timeout: timeout, environment: [:]) }
-    func run(
-      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
-      environment: [String: String]
-    ) async -> CommandResult {
-      await StatusCommandRunner().run(
-        executable, args, in: directory, timeout: timeout,
-        environment: environment.merging(["GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"]) { $1 })
-    }
-  }
-
   /// Real git with no per-call environment, as the daemon-routed runner has none.
   private struct NoEnvironmentRunner: StatusCommandRunning {
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
@@ -405,8 +390,16 @@ final class StandaloneFollowsFolderTests: XCTestCase {
       GitRepositoryProbe(discoveryRunner: CannedRunner(result: result))
     }
 
-    let refused = await GitRepositoryProbe(discoveryRunner: DifferentOwnerRunner())
-      .discoverRepository(containing: app + "/src")
+    // git's own answer for a repository owned by someone else, canned: a git built without its test
+    // hooks (CI's) ignores GIT_TEST_ASSUME_DIFFERENT_OWNER, so real git can't produce it everywhere.
+    let refused = await probe(
+      CommandResult(
+        stdout: "",
+        stderr: "fatal: detected dubious ownership in repository at '\(app)'\n"
+          + "To add an exception for this directory, call:\n\n"
+          + "\tgit config --global --add safe.directory \(app)\n",
+        exitCode: CommandResult.gitFatal, timedOut: false)
+    ).discoverRepository(containing: app + "/src")
     let timedOut = await probe(
       CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
     ).discoverRepository(containing: app)
@@ -426,29 +419,118 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     XCTAssertEqual(gone, .notARepository)
   }
 
-  /// Value: protects=the inspector keeping what it showed when a resolve can't tell (finding 3);
-  /// fails_when=an unknown resolve shows, or is cached as, "Not a git repository", or is never
-  /// retried; why_new=#805 review; seam=AppStore; no_claim=what triggers the retry
-  func testAResolveThatCannotTellKeepsTheSubjectAndRetries() async throws {
+  /// Value: protects=the subject naming the folder the terminal is in when git can't tell (re-review
+  /// R1); fails_when=a `cd` into a folder git can't read keeps showing the previous folder's
+  /// repository (History, Details and writes addressing the wrong repository), the undetermined
+  /// state is cached, every event re-runs git, or it is never retried; why_new=#805 re-review;
+  /// seam=AppStore; no_claim=the copy the panels show
+  func testAFolderThatCannotTellShowsItselfUndeterminedAndRetries() async throws {
     let store = makeStore()
     let tab = try await openTerminal(store)
     let app = repo("app")
     let refused = repo("refused")
     try await cd(store, tab, app)
     let fails = Mutex(true)
+    let resolves = Mutex(0)
+    store.followedFolderRetryDelay = { _ in .milliseconds(300) }
     store.resolveFollowedRepository = { folder in
+      resolves.withLock { $0 += 1 }
       if fails.withLock({ $0 }) { return .unknown }
       return await GitRepositoryProbe().discoverRepository(containing: folder)
     }
 
     try await cd(store, tab, refused)
-    XCTAssertEqual(followed(store)?.repository?.root, app, "the last subject stands")
+    XCTAssertEqual(followed(store)?.folder, refused, "the subject moves to the new folder")
+    XCTAssertNil(followed(store)?.repository, "not the previous folder's repository")
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, true)
+    XCTAssertNil(store.inspectorHistoryTarget, "History addresses no repository")
+    XCTAssertNil(store.followedRepositoryRoot)
     XCTAssertNil(store.followedRepositoryCache[refused], "and nothing is cached for the folder")
 
-    fails.withLock { $0 = false }
+    // Focus and tab events meanwhile wait for the retry rather than each re-running git.
+    store.refreshFollowedFolder()
     store.refreshFollowedFolder()
     await store.followedFolderResolved()
-    XCTAssertEqual(followed(store)?.repository?.root, refused, "the next event resolves again")
+    XCTAssertEqual(resolves.withLock { $0 }, 1, "events before the retry run no git")
+
+    fails.withLock { $0 = false }
+    await store.followedFolderRetried()
+    XCTAssertEqual(followed(store)?.repository?.root, refused, "the retry resolves it")
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, false)
+  }
+
+  /// Value: negative control for R1: protects=a re-read of the folder already shown keeping its
+  /// repository when git can't tell this time; fails_when=a transient timeout on a re-read (a
+  /// watch event, a finished command) blanks the repository shown; why_new=#805 re-review;
+  /// seam=AppStore; no_claim=the retry's timing
+  func testAReReadThatCannotTellKeepsTheRepositoryShown() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let app = repo("app")
+    try await cd(store, tab, app)
+    store.followedFolderRetryDelay = { _ in .seconds(3600) }
+    store.resolveFollowedRepository = { _ in .unknown }
+
+    store.reresolveFollowedFolder()
+    await store.followedFolderResolved()
+
+    XCTAssertEqual(followed(store)?.repository?.root, app)
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, false)
+    store.followedFolderRetryTask?.cancel()
+  }
+
+  /// Value: protects=a wedged mount costing one blocked thread, not one per event (re-review R2);
+  /// fails_when=every resolve of a folder whose stat never returns blocks another GCD thread, until
+  /// the global pool starves History and status reads; why_new=#805 re-review;
+  /// seam=GitRepositoryProbe with a stat that blocks; no_claim=git runs (the runner kills those)
+  func testAStuckFolderBlocksOneReadHoweverOftenItIsAsked() async throws {
+    let app = repo("app")
+    let gate = DispatchSemaphore(value: 0)
+    let blocks = Mutex(true)
+    let stats = Mutex(0)
+    let probe = GitRepositoryProbe(
+      timeout: 0.1,
+      isFolder: { path in
+        stats.withLock { $0 += 1 }
+        if blocks.withLock({ $0 }) { gate.wait() }
+        return GitRepositoryProbe.isFolder(path)
+      })
+    defer {
+      blocks.withLock { $0 = false }
+      gate.signal()
+    }
+
+    for _ in 0..<5 {
+      let discovered = await probe.discoverRepository(containing: app)
+      XCTAssertEqual(discovered, .unknown, "the stat outruns its timeout")
+    }
+    XCTAssertEqual(stats.withLock { $0 }, 1, "one blocked read, joined by every later ask")
+
+    blocks.withLock { $0 = false }
+    gate.signal()
+    var discovered = GitRepositoryProbe.Discovery.unknown
+    for _ in 0..<100 where discovered == .unknown {
+      try await Task.sleep(for: .milliseconds(20))
+      discovered = await probe.discoverRepository(containing: app)
+    }
+    guard case .repository(let found) = discovered else {
+      return XCTFail("once the read returns, the folder resolves: \(discovered)")
+    }
+    XCTAssertEqual(found.root, app)
+  }
+
+  /// Value: protects=an unreachable main repository reading as "couldn't tell" (re-review R4);
+  /// fails_when=a linked worktree whose `.git` file names a git directory that isn't there (an
+  /// unmounted volume) is cached as no repository for the session; why_new=#805 re-review;
+  /// seam=GitRepositoryProbe over real git; no_claim=a plain folder (its own test)
+  func testAWorktreeWhoseRepositoryIsUnreachableCannotTell() async throws {
+    let orphan = folder("orphan")
+    try "gitdir: /nonexistent/\(UUID().uuidString)\n".write(
+      toFile: orphan + "/.git", atomically: true, encoding: .utf8)
+
+    let discovered = await GitRepositoryProbe().discoverRepository(containing: orphan)
+
+    XCTAssertEqual(discovered, .unknown)
   }
 
   /// Value: protects=the resolve finding a repository above the folder over any runner (finding 5);

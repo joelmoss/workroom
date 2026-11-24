@@ -64,6 +64,8 @@ extension AppStore {
       followedFolderRequest = nil
       followedFolderTask?.cancel()
       followedFolderTask = nil
+      followedFolderRetryTask?.cancel()
+      followedFolderRetryTask = nil
       return false
     }
     if let request = followedFolderRequest, request.target == target, request.folder == folder {
@@ -82,11 +84,15 @@ extension AppStore {
     }
     let resolve = resolveFollowedRepository
     followedFolderTask?.cancel()
+    followedFolderRetryTask?.cancel()
+    followedFolderRetryTask = nil
     followedFolderTask = Task { [weak self] in
       var discovery = await resolve(folder)
-      // Placed off the main actor: it reads the folder's real path.
+      // Placed off the main actor, under the probe's timeout: it reads the folder's real path, which
+      // a stale mount can block. A placement that can't finish can't tell where the folder is.
       if case .repository(let found) = discovery {
-        discovery = .repository((try? await runBlocking { found.placed(in: folder) }) ?? found)
+        discovery =
+          await GitRepositoryProbe().placed(found, in: folder).map { .repository($0) } ?? .unknown
       }
       guard let self, !Task.isCancelled else { return }
       // A later request (another folder, another target) has taken over.
@@ -96,11 +102,10 @@ extension AppStore {
       case .repository(let found): repository = found
       case .notARepository: repository = nil
       case .unknown:
-        // Git couldn't tell (a timeout, a refused repository): what shows stands, nothing is
-        // cached, and the next focus or tab event asks again.
-        if current == true { self.followedFolderRequest = nil }
+        if current == true { self.followedFolderCouldNotTell(target: target, folder: folder) }
         return
       }
+      self.followedFolderUndeterminedStreak[folder] = nil
       self.followedRepositoryCache[folder] = .some(repository)
       guard current == true else { return }
       let state = FollowedFolderState(
@@ -159,8 +164,44 @@ extension AppStore {
     if remoteToolbarShown { remoteState.refresh(force: true) }
   }
 
+  /// The resolve couldn't tell which repository `folder` is in (a timeout, a repository git
+  /// refused). A re-read of the folder already shown keeps what it shows; any other folder shows as
+  /// itself, undetermined, never as the repository the terminal was in before (re-review R1).
+  /// Nothing is cached, and the request stands, so focus and tab events run nothing until a retry,
+  /// spaced out the longer the folder keeps failing: a wedged mount is asked at a bounded rate.
+  private func followedFolderCouldNotTell(target: TargetID, folder: String) {
+    if followedFolderState?.target != target || followedFolderState?.folder.folder != folder {
+      let state = FollowedFolderState(
+        target: target,
+        folder: FollowedFolder(folder: folder, repository: nil, repositoryUndetermined: true))
+      if setFollowedFolder(state) {
+        holdFollowedRepository()
+        focusHistoryIfShown()
+        focusRemoteStateIfShown()
+      }
+    }
+    let streak = (followedFolderUndeterminedStreak[folder] ?? 0) + 1
+    followedFolderUndeterminedStreak[folder] = streak
+    let delay = followedFolderRetryDelay(streak)
+    followedFolderRetryTask?.cancel()
+    followedFolderRetryTask = Task { [weak self] in
+      try? await Task.sleep(for: delay)
+      guard let self, !Task.isCancelled, let request = self.followedFolderRequest,
+        request.target == target, request.folder == folder
+      else { return }
+      self.reresolveFollowedFolder()
+    }
+  }
+
   /// Wait for the followed folder's resolve in flight. For tests.
   func followedFolderResolved() async { await followedFolderTask?.value }
+
+  /// Wait for the scheduled retry of a resolve that couldn't tell, and the resolve it starts. For
+  /// tests.
+  func followedFolderRetried() async {
+    await followedFolderRetryTask?.value
+    await followedFolderResolved()
+  }
 
   /// Publish `state` only when it differs, so an unchanged resolve re-renders nothing.
   private func setFollowedFolder(_ state: FollowedFolderState) -> Bool {
