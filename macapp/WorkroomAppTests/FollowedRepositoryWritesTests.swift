@@ -1087,6 +1087,13 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     let state = RoomCommandState.read(store)
     XCTAssertFalse(state.canCommit)
     XCTAssertNil(state.pullRequest)
+
+    // Followed again, it registers afresh: the refusal lasted only as long as its hold.
+    status.resolveFollowedRegistration = { await VCSStatusService.followedRegistration(root: $0) }
+    try await cd(store, tab, folder("elsewhere"))
+    try await cd(store, tab, root)
+    XCTAssertEqual(store.inspectorActionTarget, .followed(root: root))
+    XCTAssertEqual(store.remoteState.target?.actionTarget, .followed(root: root))
   }
 
   /// Value: protects=pull request actions on a followed repository the app can't write to, which
