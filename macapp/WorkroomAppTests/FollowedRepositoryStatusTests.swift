@@ -324,7 +324,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
       return XCTFail("subject is \(store.inspectorSubject)")
     }
     let row = SidebarID.root(project: projects.projects[0].id)
-    XCTAssertEqual(status.registeredSidebarID(forRepositoryRoot: root), row)
+    XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: root), row)
     XCTAssertEqual(status.status(for: store.inspectorSubject), status.workroomStatuses[row])
     XCTAssertEqual(changedPaths(store), ["src/a.txt"])
     XCTAssertTrue(status.followedStatuses.isEmpty)
@@ -350,7 +350,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     try await cd(store, tab, root)
 
     let row = SidebarID.workroom(project: "/p", name: "a")
-    XCTAssertEqual(status.registeredSidebarID(forRepositoryRoot: root), row)
+    XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: root), row)
     XCTAssertEqual(status.workroomStatuses[row]?.changedFiles?.map(\.path), ["src/a.txt"])
     XCTAssertTrue(status.followedStatuses.isEmpty)
   }
@@ -740,6 +740,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertEqual(counted.withLock { $0 }, before)
     projects.projects.append(Project(path: folder("later"), vcs: "git", workrooms: []))
     XCTAssertNotNil(status.status(for: store.inspectorSubject))
+    await status.registeredIndexSettled()
     XCTAssertGreaterThan(counted.withLock { $0 }, before, "a new project rebuilds the index")
   }
 
@@ -969,5 +970,146 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     status.unfollow(root)
     await status.followedRegistrationsSettled()
     await status.followedStatusSettled()
+  }
+
+  // MARK: Off the main actor (Codex on #812)
+
+  /// A canonicaliser that records any call made on the main thread, and stalls on `stalled` until
+  /// released, as a hung network mount would.
+  final class GuardedCanonicaliser: Sendable {
+    let stalled: String?
+    private let gate = DispatchSemaphore(value: 0)
+    let onMainThread = Mutex<[String]>([])
+    init(stalled: String? = nil) { self.stalled = stalled }
+    var canonicalise: @Sendable (String) -> String {
+      { [self] path in
+        if Thread.isMainThread { onMainThread.withLock { $0.append(path) } }
+        if path == stalled { _ = gate.wait(timeout: .now() + 5) }
+        return VCSStatusService.canonicalPath(path)
+      }
+    }
+    func release() { for _ in 0..<8 { gate.signal() } }
+  }
+
+  /// Value: protects=a stalled registered project never freezing a follow (Codex on #812, thread
+  /// 4681358213); fails_when=the registered-path index runs `realpath` on the main actor, or one
+  /// stalled entry keeps the rest of the index from landing; why_new=review;
+  /// seam=VCSStatusService follow + lookup + the canonicaliser (stalled, main-thread guarded);
+  /// no_claim=a real network mount
+  func testAStalledRegisteredProjectNeverBlocksFollowingAHealthyRepository() async throws {
+    let healthy = repo("app")
+    let stalled = folder("stalled")
+    let status = makeStatus()
+    let guarded = GuardedCanonicaliser(stalled: stalled)
+    defer { guarded.release() }
+    status.canonicalise = guarded.canonicalise
+    status.registeredPathTimeout = 0.2
+    projects.projects = [
+      Project(path: stalled, vcs: "git", workrooms: []),
+      Project(path: healthy, vcs: "git", workrooms: []),
+    ]
+
+    let started = Date()
+    status.follow(healthy)
+    _ = status.status(forFollowedRoot: healthy)
+    XCTAssertLessThan(Date().timeIntervalSince(started), 1, "follow and a read return at once")
+    await status.registeredIndexSettled()
+
+    XCTAssertEqual(guarded.onMainThread.withLock { $0 }, [], "no realpath on the main actor")
+    XCTAssertEqual(
+      status.registeredSidebarID(forCanonicalRoot: healthy), .root(project: healthy),
+      "the healthy entry lands though another stalled")
+    XCTAssertEqual(
+      status.registeredSidebarID(forCanonicalRoot: stalled), .root(project: stalled),
+      "a timed-out entry falls back to its literal path")
+    status.unfollow(healthy)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
+
+  /// Value: protects=a followed repository's status source following the registered index
+  /// (Codex on #812); fails_when=a rebuild that registers the root leaves its own status behind,
+  /// a probe in flight across the switch lands in the source it left, or the watch is dropped;
+  /// why_new=the index builds off the main actor; seam=VCSStatusService follow + the project
+  /// list; no_claim=the sidebar's rendering
+  func testARebuildMovesAFollowedRepositoryInPlaceAndBack() async throws {
+    let root = repo("app")
+    let status = makeStatus()
+    status.follow(root)
+    await status.followedStatusSettled()
+    XCTAssertEqual(status.followedStatuses[root]?.changedFiles?.map(\.path), ["src/a.txt"])
+
+    // A probe in flight across the switch, held by its debounce.
+    status.followedProbeDebounce = 5
+    let stale = status.refreshFollowedStatus(root, gitHub: true, debounced: true)
+    status.followedProbeDebounce = 0
+    projects.projects = [Project(path: root, vcs: "git", workrooms: [])]
+    await status.followedStatusSettled()
+    await stale?.value
+
+    let row = SidebarID.root(project: root)
+    XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: root), row)
+    XCTAssertNil(status.followedStatuses[root], "in place: no status of its own")
+    XCTAssertEqual(status.workroomStatuses[row]?.changedFiles?.map(\.path), ["src/a.txt"])
+    XCTAssertEqual(status.status(forFollowedRoot: root), status.workroomStatuses[row])
+    XCTAssertEqual(watchers.filter { !$0.stopped }.map(\.path), [root], "its watch stands")
+
+    projects.projects = []
+    await status.followedStatusSettled()
+
+    XCTAssertNil(status.registeredSidebarID(forCanonicalRoot: root))
+    XCTAssertEqual(status.followedStatuses[root]?.changedFiles?.map(\.path), ["src/a.txt"])
+    XCTAssertNotNil(status.followedStatuses[root]?.prCheckedAt, "its own probe ran again")
+    XCTAssertEqual(watchers.filter { !$0.stopped }.map(\.path), [root])
+    status.unfollow(root)
+    XCTAssertTrue(watchers.allSatisfy(\.stopped))
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
+
+  /// Value: protects=holds, watches and router registrations balancing through follow and
+  /// unfollow storms while an index build is stalled (Codex on #812); fails_when=a build landing
+  /// re-routes a repository no window follows, leaves a followed one's own status behind once it
+  /// is registered, or touches the file system on the main actor; why_new=the index builds off
+  /// the main actor; seam=VCSStatusService follow/unfollow + the canonicaliser (stalled);
+  /// no_claim=a real network mount
+  func testFollowAndUnfollowStormsWhileARebuildIsInFlight() async throws {
+    let one = repo("one")
+    let two = repo("two")
+    let status = makeStatus()
+    let guarded = GuardedCanonicaliser(stalled: one)
+    defer { guarded.release() }
+    status.canonicalise = guarded.canonicalise
+    status.registeredPathTimeout = 5
+    projects.projects = [Project(path: one, vcs: "git", workrooms: [])]
+    status.rebuildRegisteredIndex()
+
+    for _ in 0..<20 {
+      status.follow(one)
+      status.follow(two)
+      status.unfollow(one)
+    }
+    status.follow(one)
+    XCTAssertNil(status.registeredSidebarID(forCanonicalRoot: one), "the build is still out")
+    guarded.release()
+    await status.followedStatusSettled()
+    await status.followedWatchesSettled()
+
+    XCTAssertEqual(guarded.onMainThread.withLock { $0 }, [], "no realpath on the main actor")
+    XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: one), .root(project: one))
+    XCTAssertNil(status.followedStatuses[one], "in place once the build lands")
+    XCTAssertEqual(status.followedStatuses[two]?.changedFiles?.map(\.path), ["src/a.txt"])
+    XCTAssertEqual(
+      Set(watchers.filter { !$0.stopped }.map(\.path)), [one, two], "one watch each")
+
+    for _ in 0..<20 { status.unfollow(two) }
+    status.unfollow(one)
+    XCTAssertFalse(status.isFollowing(one) || status.isFollowing(two))
+    XCTAssertTrue(watchers.allSatisfy(\.stopped))
+    XCTAssertTrue(status.followedStatuses.isEmpty)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+    XCTAssertNil(RepositoryRouter.shared.localLocation(for: one), "every router hold released")
+    XCTAssertNil(RepositoryRouter.shared.localLocation(for: two))
   }
 }

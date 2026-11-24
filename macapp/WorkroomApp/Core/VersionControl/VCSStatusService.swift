@@ -52,6 +52,7 @@ final class VCSStatusService: ObservableObject {
     let ciResultCache = GitHubCIResultCache()
     self.ciResultCache = ciResultCache
     statusResolver = WorkroomStatusResolver(ciCache: ciResultCache)
+    observeRegisteredPaths()
   }
 
   // MARK: Status
@@ -155,11 +156,22 @@ final class VCSStatusService: ObservableObject {
   /// The home folder, canonical, which no followed repository's tree watch covers
   /// (`HostFileWatcher.isTooBroadToWatch`). A seam for tests.
   @ObservationIgnored var watchHome: String = VCSStatusService.canonicalPath(NSHomeDirectory())
-  /// Resolves a path's symlinks (`canonicalPath`). A seam for tests, which count it.
-  @ObservationIgnored var canonicalise: (String) -> String = VCSStatusService.canonicalPath
-  /// The registered project roots and local workrooms by canonical path, and the projects it was
-  /// built from: rebuilt when they change, so a status read never touches the file system.
-  @ObservationIgnored var registeredIndex: (projects: [Project], ids: [String: SidebarID])?
+  /// Resolves a registered path's symlinks (`canonicalPath`) while the registered-path index is
+  /// built, off the main actor under `registeredPathTimeout`. A seam for tests, which count it or
+  /// stall it.
+  @ObservationIgnored var canonicalise: @Sendable (String) -> String = {
+    VCSStatusService.canonicalPath($0)
+  }
+  /// How long one registered path's `realpath` may take before the index takes its literal path.
+  @ObservationIgnored var registeredPathTimeout: TimeInterval = 3
+  /// The registered project roots and local workrooms by canonical path, as last built
+  /// (`rebuildRegisteredIndex`), so a status read never touches the file system. Observed: a
+  /// rebuild landing moves what a followed repository's sections and actions read.
+  var registeredIndex: RegisteredPathIndex?
+  /// The index build in flight, the latest asked for, and the project list it is for.
+  @ObservationIgnored var registeredIndexBuild: (projects: [Project], task: Task<Void, Never>)?
+  /// The generation of the latest index build asked for: a build lands only over an older one.
+  @ObservationIgnored var registeredIndexGeneration = 0
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check; refreshed by `refreshGitHubCLI`. Drives the Pull

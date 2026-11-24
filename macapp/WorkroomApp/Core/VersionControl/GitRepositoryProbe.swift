@@ -211,6 +211,30 @@ struct GitRepositoryProbe: Sendable {
     return value as? T
   }
 
+  /// `work`, which runs its own blocking part on GCD, joined by `key` and bounded by `timeout` as
+  /// `blockingRead` is: nil when it outruns it.
+  static func boundedRead<T: Sendable>(
+    _ key: String, timeout: TimeInterval, _ work: @escaping @Sendable () async -> T
+  ) async -> T? {
+    let read = blockingReads.join(key) { () async throws -> any Sendable in await work() }
+    let value: (any Sendable)? = try? await withTimeout(seconds: timeout) {
+      () async throws -> any Sendable in try await read.value
+    }
+    return value as? T
+  }
+
+  /// `path` as a local repository location (`RepositoryLocation.local`, which resolves its
+  /// symlinks), joined and bounded, so a stalled mount costs its caller `timeout`. Nil when it
+  /// can't be told in time, or is no usable path.
+  static func localLocation(_ path: String, timeout: TimeInterval = 3) async
+    -> RepositoryLocation?
+  {
+    let location = await boundedRead("location\u{0}\(path)", timeout: timeout) {
+      try? await RepositoryLocation.local(path)
+    }
+    return location ?? nil
+  }
+
   private static let blockingReads = BlockingReads()
 
   // MARK: Local-only derivation (a local host reads these from its own checkout)

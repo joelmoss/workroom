@@ -108,7 +108,8 @@ private final class WatchCore: @unchecked Sendable {
       return (self.task, self.fallback)
     }
     task?.cancel()
-    fallback?.stop()
+    // Behind any start of it still queued (`streamQueue`).
+    if let fallback { Self.streamQueue.async { fallback.stop() } }
   }
 
   private func current(_ generation: Int) -> Bool {
@@ -121,14 +122,21 @@ private final class WatchCore: @unchecked Sendable {
     Task { @MainActor in onChange(paths, overflow) }
   }
 
-  /// Start the local FSEvents fallback.
+  /// Where every fallback's FSEvents stream starts and stops: one serial queue, never the main
+  /// actor.
   ///
-  /// **On the main actor, always.** `WorkroomFileWatcher` is main-thread-only by contract, and this
-  /// used to call it from the cooperative pool: several watchers starting at once (a window opening
-  /// arms one per project) then ran `FSEventStreamStart` concurrently, which crashes inside
-  /// CoreFoundation (`CFFileDescriptorEnableCallBacks`, SIGBUS). Hopping to the main actor also makes
-  /// the liveness check and the start atomic with `stop()`, which the owners call from there: a `stop()`
-  /// that lands first leaves nothing to start, and one that lands after stops what this started.
+  /// **One at a time, always.** Several watchers starting at once (a window opening arms one per
+  /// project) once ran `FSEventStreamStart` concurrently from the cooperative pool, which crashes
+  /// inside CoreFoundation (`CFFileDescriptorEnableCallBacks`, SIGBUS); `WorkroomFileWatcher` is
+  /// one-thread-at-a-time by contract, and this is that thread. It is not the main actor: creating
+  /// and starting a stream reads its path, which a stalled network mount blocks, and the windows
+  /// must never wait on that (Codex on #812). A stalled start holds this queue, not the app.
+  ///
+  /// Serial, it also makes the liveness check and the start atomic with `stop()`: a `stop()` that
+  /// lands first leaves nothing to start, and one that lands after queues its stop behind the start.
+  static let streamQueue = DispatchQueue(label: "com.developwithstyle.workroom.fswatch.streams")
+
+  /// Start the local FSEvents fallback, on `streamQueue`.
   private func startFallback(path: String, generation: Int) async {
     let watcher: WorkroomFileWatcher? = lock.withLock {
       guard self.generation == generation, fallback == nil else { return nil }
@@ -139,7 +147,7 @@ private final class WatchCore: @unchecked Sendable {
       return watcher
     }
     guard let watcher else { return }
-    await MainActor.run {
+    Self.streamQueue.async { [self] in
       let live = lock.withLock { self.generation == generation && fallback === watcher }
       if live { watcher.start(path: path) }
     }
@@ -155,7 +163,7 @@ private final class WatchCore: @unchecked Sendable {
       return fallback
     }
     guard let stopped else { return false }
-    await MainActor.run { stopped.stop() }
+    Self.streamQueue.async { stopped.stop() }
     return true
   }
 

@@ -21,8 +21,9 @@ import Foundation
 /// VCS-internal churn (e.g. git writing under `.git/`, which would otherwise self-trigger).
 /// One watch at a time — `start(path:)` replaces any prior watch and resets coalescing state;
 /// `stop()` tears down the stream and cancels any pending trailing emit.
-// `@unchecked Sendable`: main-thread-only by contract (`start`/`stop`), so a watcher crosses threads
-// only to be used on the main actor, as `HostFileWatcher`'s fallback hands it there.
+// `@unchecked Sendable`: one thread at a time by contract (`start`/`stop`), so a watcher crosses
+// threads only to be used on one serial queue, as `HostFileWatcher`'s fallback hands it to its
+// stream queue (never the main actor: a stream's start reads its path, which a stalled mount blocks).
 final class WorkroomFileWatcher: @unchecked Sendable {
   private var stream: FSEventStreamRef?
   private var watchedPath: String?

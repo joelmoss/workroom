@@ -43,6 +43,20 @@ struct FollowedRepositoryHold {
   var registrationRetry: Task<Void, Never>? = nil
 }
 
+/// The registered project roots and local workrooms by canonical path (`VCSStatusService
+/// .rebuildRegisteredIndex`): what tells a followed repository that is a registered row's apart
+/// from any other, with no file system access at the read.
+struct RegisteredPathIndex: Equatable {
+  /// The project list it was built from.
+  let projects: [Project]
+  let ids: [String: SidebarID]
+  /// The registered paths whose `realpath` timed out, indexed by their literal path until a build
+  /// resolves them.
+  let timedOut: Set<String>
+  /// Which build this is (`registeredIndexGeneration`): a build lands only over an older one.
+  let generation: Int
+}
+
 /// One GitHub probe result, for whichever status it lands in.
 enum GitHubStatusUpdate {
   case ci(CIResolution, checkedAt: Date)
@@ -68,27 +82,127 @@ extension VCSStatusService {
     return String(cString: resolved)
   }
 
-  /// The registered project root or local workroom whose path is `root`, compared canonically.
-  func registeredSidebarID(forRepositoryRoot root: String) -> SidebarID? {
-    registeredSidebarID(forCanonicalRoot: canonicalise(root))
+  /// The registered row whose canonical path is `root`, already canonical (git names a repository
+  /// by its real path). A read of the last finished registered-path index, touching no file
+  /// system (review of #807, finding 4; Codex on #812): until the first build lands it finds no
+  /// row, and between a change to the projects and its rebuild it finds the previous list's.
+  func registeredSidebarID(forCanonicalRoot root: String) -> SidebarID? {
+    registeredIndex?.ids[root]
   }
 
-  /// The registered row whose canonical path is `root`, already canonical (git names a repository
-  /// by its real path). Reads an index of the registered paths, built once per change to the
-  /// projects, so the inspector's reads run no `realpath` (review of #807, finding 4).
-  func registeredSidebarID(forCanonicalRoot root: String) -> SidebarID? {
+  // MARK: Registered-path index
+
+  /// Rebuild the registered-path index whenever the projects change, and once now.
+  func observeRegisteredPaths() {
+    withObservationTracking {
+      _ = projectStore.projects
+    } onChange: { [weak self] in
+      // Called before the list changes: re-read it, and re-arm, once it has.
+      Task { @MainActor [weak self] in self?.observeRegisteredPaths() }
+    }
+    rebuildRegisteredIndex()
+  }
+
+  /// Build the registered-path index for the current projects off the main actor: every path's
+  /// `realpath` at once, each under the bounded read `GitRepositoryProbe.blockingRead`, so a
+  /// stalled mount costs its own entry `registeredPathTimeout` and the rest of the index still
+  /// builds. A path that timed out is indexed by its literal path, and the next build retries it.
+  ///
+  /// Nothing when a build for this list is in flight, or one landed with every path resolved.
+  func rebuildRegisteredIndex() {
     let projects = projectStore.projects
-    if let index = registeredIndex, index.projects == projects { return index.ids[root] }
-    var ids: [String: SidebarID] = [:]
+    if let build = registeredIndexBuild, build.projects == projects { return }
+    if let index = registeredIndex, index.projects == projects, index.timedOut.isEmpty { return }
+    registeredIndexGeneration += 1
+    let generation = registeredIndexGeneration
     // Reversed, so the first registration of a path wins, as the scan this replaced did.
+    var entries: [(path: String, id: SidebarID)] = []
     for project in projects.reversed() {
       for workroom in project.workrooms.reversed() where !workroom.isRemote {
-        ids[canonicalise(workroom.path)] = .workroom(project: project.id, name: workroom.name)
+        entries.append((workroom.path, .workroom(project: project.id, name: workroom.name)))
       }
-      ids[canonicalise(project.path)] = .root(project: project.id)
+      entries.append((project.path, .root(project: project.id)))
     }
-    registeredIndex = (projects, ids)
-    return ids[root]
+    let (canonicalise, timeout) = (self.canonicalise, registeredPathTimeout)
+    let paths = Set(entries.map(\.path))
+    let task = Task { [weak self] in
+      let resolved = await withTaskGroup(of: (String, String?).self) { group in
+        for path in paths {
+          group.addTask {
+            let real = await GitRepositoryProbe.blockingRead(
+              "realpath\u{0}\(path)", timeout: timeout, { canonicalise(path) })
+            return (path, real)
+          }
+        }
+        var resolved: [String: String?] = [:]
+        for await (path, real) in group { resolved[path] = real }
+        return resolved
+      }
+      var ids: [String: SidebarID] = [:]
+      for entry in entries {
+        ids[(resolved[entry.path] ?? nil) ?? entry.path] = entry.id
+      }
+      let timedOut = Set(resolved.filter { $0.value == nil }.keys)
+      self?.installRegisteredIndex(
+        RegisteredPathIndex(
+          projects: projects, ids: ids, timedOut: timedOut, generation: generation))
+    }
+    registeredIndexBuild = (projects, task)
+  }
+
+  /// A build landed: it replaces an older index, never a newer one. Every followed repository
+  /// whose registered row it changes is re-routed (`rerouteFollowed`).
+  private func installRegisteredIndex(_ index: RegisteredPathIndex) {
+    if registeredIndexBuild?.projects == index.projects,
+      index.generation == registeredIndexGeneration
+    {
+      registeredIndexBuild = nil
+    }
+    guard index.generation > (registeredIndex?.generation ?? 0) else { return }
+    let before = registeredIndex
+    registeredIndex = index
+    for key in followedRepositories.keys where before?.ids[key] != index.ids[key] {
+      rerouteFollowed(key, registered: index.ids[key])
+    }
+  }
+
+  /// A followed repository's registered row changed under it: its status source switches between
+  /// the row's, in place, and its own (`followedStatuses`).
+  ///
+  /// Its hold, its router registration and its watches stand: they are the repository's, by root,
+  /// the same in either mode. Its probes in flight are cancelled and asked again for the new
+  /// source, and a result from one already past its last `await` is dropped by its own check that
+  /// the row it captured is still the root's (`refreshFollowedStatus`), so a stale read never lands
+  /// in the source it left. A write captured at the click as `.row(sid)` resolves the row's own
+  /// work item, refused once the row is gone; one captured as `.followed(root)` writes through the
+  /// hold's registration, the same repository on disk. Both serialise on the same shared location
+  /// (`isCommittingProject`), so a commit through either keeps the other's reads off it (ADR 0081).
+  private func rerouteFollowed(_ key: String, registered: SidebarID?) {
+    guard var hold = followedRepositories[key] else { return }
+    hold.probe?.cancel()
+    hold.probe = nil
+    hold.localProbe?.cancel()
+    hold.localProbe = nil
+    followedRepositories[key] = hold
+    if registered != nil {
+      // Kept for a revisit, as an unfollow keeps it.
+      if let last = followedStatuses[key], last != .unresolved {
+        recentFollowedStatuses.store(last, for: key)
+      }
+      followedStatuses[key] = nil
+    } else if followedStatuses[key] == nil {
+      followedStatuses[key] = recentFollowedStatuses.value(for: key) ?? .unresolved
+    }
+    refreshFollowedStatus(key, gitHub: true)
+    // Commit and the toolbar address the row, or the repository, now.
+    for window in statusWindows { window.followedRegistrationDidChange(root: key) }
+  }
+
+  /// Wait for the registered-path index to be built for the current projects, starting the build
+  /// when the change's observation hasn't yet. For tests.
+  func registeredIndexSettled() async {
+    rebuildRegisteredIndex()
+    while let build = registeredIndexBuild { await build.task.value }
   }
 
   /// A followed repository's status: its registered row's when it has one, else its own. `root` is
@@ -113,6 +227,8 @@ extension VCSStatusService {
   /// Balanced by one `unfollow(_:)`.
   func follow(_ root: String) {
     let key = root
+    // A registered path that timed out last build is tried again, off the main actor.
+    rebuildRegisteredIndex()
     if var hold = followedRepositories[key] {
       hold.holders += 1
       followedRepositories[key] = hold
@@ -246,7 +362,8 @@ extension VCSStatusService {
   nonisolated static func followedRegistration(root: String) async
     -> RepositoryRouter.Registration?
   {
-    guard let location = try? await RepositoryLocation.local(root) else { return nil }
+    // Every read here is bounded: a stalled mount comes back empty, and is retried (Codex on #812).
+    guard let location = await GitRepositoryProbe.localLocation(root) else { return nil }
     var shared = location
     let path = location.path
     // Bounded and joined with the watch setup's stat of the same `.git` (`gitFileReadKey`).
@@ -260,7 +377,8 @@ extension VCSStatusService {
       let directory = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) as NSString
       guard r.ok, directory.length > 0 else { return nil }
       if directory.lastPathComponent == ".git" {
-        guard let main = try? await RepositoryLocation.local(directory.deletingLastPathComponent)
+        guard
+          let main = await GitRepositoryProbe.localLocation(directory.deletingLastPathComponent)
         else { return nil }
         shared = main
       }
@@ -279,7 +397,10 @@ extension VCSStatusService {
     // registration skips the check an unregistered read makes, so it is made here, and git is
     // never run at a root that is no repository's any more.
     let url = URL(fileURLWithPath: location.path, isDirectory: true)
-    guard (try? await runBlocking({ isGitRepo(at: url) })) == true else { return nil }
+    // Bounded: a stalled mount refuses the write rather than hang it (Codex on #812).
+    let isRepository = await GitRepositoryProbe.blockingRead(
+      "isrepo\u{0}\(location.path)", timeout: 3, { isGitRepo(at: url) })
+    guard isRepository == true else { return nil }
     // Let go of while this waited, and perhaps followed again under a new hold: only the hold
     // whose registration this is may be written through.
     guard followedRepositories[root]?.registration == registration else { return nil }
@@ -487,7 +608,10 @@ extension VCSStatusService {
         } else {
           await resolver.working.resolveLocal(path: key)
         }
-      guard let self, !Task.isCancelled, self.followedRepositories[key] != nil else { return }
+      // Dropped once the index has moved the root to another source (`rerouteFollowed`).
+      guard let self, !Task.isCancelled, self.followedRepositories[key] != nil,
+        self.registeredSidebarID(forCanonicalRoot: key) == registered
+      else { return }
       self.mergeFollowedStatus(fresh, root: key, registered: registered)
       guard gitHub, fresh.failure == nil, item?.permitsGitHubAccess ?? true else { return }
       // Seeded statuses have no `gh` behind them (`refreshGitHubCLI` no-ops), so a followed
@@ -495,18 +619,19 @@ extension VCSStatusService {
       guard self.probesRepositories else {
         return self.applyFollowedGitHub(.pullRequest(.absent), root: key, registered: registered)
       }
-      let location: RepositoryLocation
-      do {
+      let resolved: RepositoryLocation? =
         if let item {
-          location = try await item.resolvedLocation()
+          try? await item.resolvedLocation()
         } else {
-          location = try await RepositoryLocation.local(key)
+          await GitRepositoryProbe.localLocation(key)
         }
-      } catch { return }
+      guard let location = resolved else { return }
       await self.probeGitHub(
         location: location, branch: fresh.branchForCI, settlesUnreachable: true,
         isCurrent: { [weak self] in
-          !Task.isCancelled && self?.followedRepositories[key] != nil
+          guard let self, !Task.isCancelled else { return false }
+          return self.followedRepositories[key] != nil
+            && self.registeredSidebarID(forCanonicalRoot: key) == registered
         },
         apply: { [weak self] update in
           self?.applyFollowedGitHub(update, root: key, registered: registered)
@@ -525,6 +650,8 @@ extension VCSStatusService {
 
   /// Wait for every followed repository's probe in flight. For tests.
   func followedStatusSettled() async {
+    // A rebuild landing re-routes, and re-probes, what it moves.
+    await registeredIndexSettled()
     for hold in followedRepositories.values {
       await hold.probe?.value
       await hold.localProbe?.value
