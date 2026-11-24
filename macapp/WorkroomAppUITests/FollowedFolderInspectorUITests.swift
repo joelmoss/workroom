@@ -216,6 +216,46 @@ final class FollowedFolderInspectorUITests: XCTestCase {
       "Changes says \"Not a git repository\", got: \(message)")
   }
 
+  /// A slow repository lookup (`-WorkroomUITestFollowedLookupDelay`): on the terminal's first
+  /// folder, which shows at once with its repository pending, the sections show their loader once
+  /// it has been pending a moment, and it gives way to the folder's content when the answer lands.
+  /// (A `cd` keeps the last folder showing until the new one resolves, so only a first visit has a
+  /// pending repository to show a loader for.)
+  func testASlowRepositoryLookupShowsTheLoaderThenTheContent() {
+    app = launchedApp(extraArgs: ["-WorkroomUITestFollowedLookupDelay", "5"])
+
+    // Files open on the fixture's workroom first, so the terminal's first folder lands in it.
+    XCTAssertTrue(element("activitySection.files").waitForExistence(timeout: 20))
+    showSection("files", header: "Files")
+    let loader = element("inspector.pendingRepository")
+    XCTAssertFalse(loader.exists, "a workroom has no followed folder to wait on")
+
+    let row = element("sidebar.standalone.\(standalone)")
+    XCTAssertTrue(row.waitForExistence(timeout: 20), "the fixture's standalone terminal")
+    row.click()
+    let clicked = Date()
+    XCTAssertTrue(
+      loader.waitForExistence(timeout: 5),
+      "Files shows its loader while the folder's repository is looked up")
+    XCTAssertEqual(loader.label, "Listing files", "the Files section's own loader")
+    XCTAssertTrue(element("workroom.tab.\(standalone)").isSelected, "the terminal is selected")
+
+    let header = element("inspector.workroomHeader")
+    XCTAssertTrue(
+      poll(timeout: 20) { !loader.exists }, "the loader gives way once the 5 s lookup lands")
+    // A lower bound only, which a slow runner can't break: the loader held for the lookup.
+    let held = Date().timeIntervalSince(clicked)
+    XCTAssertGreaterThan(held, 4, "the loader waits out the injected delay, gone after \(held) s")
+    let said = waitForLabel(header) { $0.hasPrefix("Following ") }
+    XCTAssertTrue(said.hasPrefix("Following "), "the header follows the folder, got: \(said)")
+    let listed = app.descendants(matching: .any).matching(
+      NSPredicate(
+        format: "identifier BEGINSWITH %@ OR identifier BEGINSWITH %@", "files.file.", "files.dir.")
+    ).firstMatch
+    XCTAssertTrue(listed.waitForExistence(timeout: 10), "Files lists the terminal's folder")
+    XCTAssertFalse(loader.exists, "and the loader is gone")
+  }
+
   /// A window with no projects, only a terminal: its activity bar shows Details, Changes and Files
   /// as a workroom's does, a click opens the inspector, and View ▸ Inspector is enabled (#803).
   /// Before the terminal opens, with nothing selected, the rail has no panes and the item is off.

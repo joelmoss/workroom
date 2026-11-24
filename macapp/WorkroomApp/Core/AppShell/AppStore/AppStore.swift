@@ -1026,6 +1026,15 @@ final class AppStore: ObservableObject {
         }
       }
     }
+    // A slow repository lookup for a followed folder, when the services ask for one.
+    let lookupDelay = services.followedLookupDelay
+    if lookupDelay > .zero {
+      let lookup = followedFolder.resolve
+      followedFolder.resolve = { folder in
+        try? await Task.sleep(for: lookupDelay)
+        return await lookup(folder)
+      }
+    }
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
     loadInspectorState()

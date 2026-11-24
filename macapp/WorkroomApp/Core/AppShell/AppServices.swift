@@ -41,6 +41,9 @@ struct AppServices {
   var hostLayoutStore: @Sendable (HostID) async throws -> HostLayoutStore
   /// A host's live sessions, for the host layout's append rule.
   var hostSessions: @Sendable (HostID) async throws -> [SessionDescriptor]
+  /// Added before each lookup of a followed folder's repository (`FollowedFolderTracker.resolve`),
+  /// so a slow lookup, and the inspector's delayed loader, can be seen. Zero waits for nothing.
+  var followedLookupDelay: Duration = .zero
 
   /// Diffs served without a repository: the diff for a descriptor and its new-side content.
   struct CannedDiffs {

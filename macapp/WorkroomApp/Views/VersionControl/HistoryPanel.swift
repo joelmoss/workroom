@@ -51,7 +51,11 @@ struct HistoryPanel: View {
       } else if inputs.repositoryPending {
         // A followed folder whose repository is still resolving: blank at first, so a fast answer
         // never flashes a loader, then the section's own loader.
-        if inputs.showsPendingLoader { loadingIndicator } else { EmptyView() }
+        if inputs.showsPendingLoader {
+          loadingIndicator.accessibilityIdentifier(pendingRepositoryLoaderID)
+        } else {
+          EmptyView()
+        }
       } else if let folder = inputs.notARepository {
         // A terminal's followed folder outside any repository (#805), or in one git couldn't tell:
         // no log to read.

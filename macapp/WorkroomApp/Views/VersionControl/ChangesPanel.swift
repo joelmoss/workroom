@@ -273,7 +273,11 @@ struct ChangesPanel: View {
         if followed.repositoryPending {
           // Its repository is still resolving: blank at first, so a fast answer never flashes a
           // loader, then the section's own loader.
-          if inputs.showsPendingLoader { checkingMessage } else { EmptyView() }
+          if inputs.showsPendingLoader {
+            checkingMessage.accessibilityIdentifier(pendingRepositoryLoaderID)
+          } else {
+            EmptyView()
+          }
         } else if followed.repository == nil
           || vcsStatus.status(for: inputs.subject)?.failure?.meansNoRepository == true
         {
@@ -467,6 +471,10 @@ func inspectorMessage(_ text: String) -> some View {
 /// The inspector's "Checking…" loader line, shared by the Changes and Pull Request panels: what
 /// they show while a status is read, and once a followed folder's repository has been pending a
 /// moment. `help` is its tooltip and accessibility label.
+/// The accessibility identifier of a section's loader for a followed folder whose repository is
+/// still pending (`AppStore.followedFolderLoaderShown`), the same in every section.
+let pendingRepositoryLoaderID = "inspector.pendingRepository"
+
 func inspectorCheckingMessage(help: String) -> some View {
   inspectorMessage("Checking\u{2026}")
     .help(help)
