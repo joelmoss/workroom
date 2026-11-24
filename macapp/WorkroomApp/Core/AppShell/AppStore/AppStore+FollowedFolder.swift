@@ -12,10 +12,15 @@ struct FollowedFolderState: Equatable {
 /// focused terminal's live working directory (OSC 7), else the folder it started in. Only this
 /// window's selection feeds it, and the Quick Terminal never does (its panes are its panel's).
 extension AppStore {
-  /// Whether `sid`'s inspector follows its terminal's folder: a standalone terminal.
+  /// Whether `sid`'s inspector follows its terminal's folder: a standalone terminal, or a terminal
+  /// group, which follows its focused terminal (#806). Never the Quick Terminal's group, which no
+  /// window selects and `followedTerminalFolder` names on its own.
   static func followsFolder(_ sid: SidebarID) -> Bool {
-    if case .standalone = sid { return true }
-    return false
+    switch sid {
+    case .standalone: return true
+    case .terminalGroup: return sid.targetID != .quickTerminal
+    default: return false
+    }
   }
 
   /// The folder the selected target's terminal is in, nil when the inspector follows nothing.

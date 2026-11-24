@@ -74,14 +74,17 @@ extension AppStore {
     else { return }
     let tabs = terminals.tabs(for: from).map(\.id)
     isMovingTerminalsInPlace = true
-    defer { isMovingTerminalsInPlace = false }
     replaceTarget(old, with: new)
     for tab in tabs {
       notifications.repoint(tab: tab, to: newID, in: paneMoveOrigin)
       guard let handOff = terminals.handOffTab(tab, from: from, to: into) else { continue }
       terminals.adopt(handOff)
     }
+    isMovingTerminalsInPlace = false
+    // The inspector held still through the move (#806); it follows the moved terminals from here.
     refreshSelectionHasTabs()
+    focusHistoryIfShown()
+    focusRemoteStateIfShown()
     markSessionDirty()
   }
 
