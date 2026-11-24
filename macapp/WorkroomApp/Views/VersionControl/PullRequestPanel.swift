@@ -32,11 +32,11 @@ struct PullRequestPanel: View {
       } else {
         switch store.inspectorSubject {
         case .target(let sid) where sid.isStatusable:
-          content(for: sid)
+          content(for: .row(sid))
         case .followed:
-          // A followed repository's pull request is read-only here: #808 gave it the Changes
-          // actions (commit, push, pull, fetch), not the pull request's.
-          content(for: nil)
+          // A followed repository's pull request takes a workroom's actions (#808), on its row
+          // when it is a registered one's; none where the app can't write to it.
+          content(for: store.inspectorActionTarget)
         case .target, .nothing:
           inspectorMessage("Select a workroom to see its pull request.")
         }
@@ -126,8 +126,9 @@ struct PullRequestPanel: View {
   }
 
   @ViewBuilder
-  /// `sid`: what the pull request's actions act on; nil (a followed repository's) shows none.
-  private func content(for sid: SidebarID?) -> some View {
+  /// `target`: what the pull request's actions act on; nil (a repository the app can't write to)
+  /// shows none.
+  private func content(for target: VCSActionTarget?) -> some View {
     let status = vcsStatus.status(for: store.inspectorSubject)
     if status?.prCheckedAt == nil {
       inspectorMessage("Checking\u{2026}")
@@ -137,9 +138,9 @@ struct PullRequestPanel: View {
       // no PR shows just "No pull request" (no CI rows).
       VStack(alignment: .leading, spacing: 8) {
         if let pr = status.pr {
-          if let sid {
-            readyForReviewButton(pr: pr, sid: sid)
-            mergeButton(pr: pr, sid: sid)
+          if let target {
+            readyForReviewButton(pr: pr, target: target)
+            mergeButton(pr: pr, target: target)
           }
           prRows(pr)
           // Summary glyph, tappable → the PR's "/checks" tab. Derived from the loaded per-check list
@@ -162,9 +163,9 @@ struct PullRequestPanel: View {
   /// title (moved out of the section header, where it crowded the title — issue #93 feedback). Gated
   /// on `PRAction.available` so it mirrors the actions menu's own ready action exactly.
   @ViewBuilder
-  private func readyForReviewButton(pr: PullRequestInfo, sid: SidebarID) -> some View {
+  private func readyForReviewButton(pr: PullRequestInfo, target: VCSActionTarget) -> some View {
     if PRAction.available(for: pr).contains(.markReady) {
-      ReadyForReviewButton(pr: pr, sid: sid)
+      ReadyForReviewButton(pr: pr, target: target)
     }
   }
 
@@ -172,9 +173,9 @@ struct PullRequestPanel: View {
   /// actually be merged (`PullRequestInfo.canMerge`). Mutually exclusive with the draft-only Ready
   /// button (a draft can't merge), so the two never stack.
   @ViewBuilder
-  private func mergeButton(pr: PullRequestInfo, sid: SidebarID) -> some View {
+  private func mergeButton(pr: PullRequestInfo, target: VCSActionTarget) -> some View {
     if pr.canMerge {
-      MergeButton(pr: pr, sid: sid)
+      MergeButton(pr: pr, target: target)
     }
   }
 
@@ -322,13 +323,13 @@ struct PullRequestPanel: View {
 /// `@State` hover, which a `@ViewBuilder` helper can't — the accent capsule deepens on hover.
 private struct ReadyForReviewButton: View {
   let pr: PullRequestInfo
-  let sid: SidebarID
+  let target: VCSActionTarget
   @EnvironmentObject var store: AppStore
   @State private var hovering = false
 
   var body: some View {
     Button {
-      store.performPRAction(.markReady, number: pr.number, on: sid)
+      store.performPRAction(.markReady, number: pr.number, on: target)
     } label: {
       Text("Ready for Review")
         .font(.callout).fontWeight(.medium)
@@ -358,10 +359,16 @@ private struct ReadyForReviewButton: View {
 /// default gray), so the fill has to be ours to guarantee GitHub's green.
 private struct MergeButton: View {
   let pr: PullRequestInfo
-  let sid: SidebarID
+  let target: VCSActionTarget
   @EnvironmentObject var store: AppStore
   @Default(.prMergeMethod) private var method
-  @State private var confirming = false
+  /// The merge being confirmed, captured at the click: the dialog isn't modal to the terminal,
+  /// which can `cd` to another repository with a mergeable pull request while it is open (#808).
+  @State private var confirming: PendingMerge?
+  private struct PendingMerge {
+    let target: VCSActionTarget
+    let number: Int
+  }
   @State private var hovering = false
 
   private let corner: CGFloat = 5
@@ -370,7 +377,7 @@ private struct MergeButton: View {
     HStack(spacing: 0) {
       // Primary: merge with the current method (confirms first).
       Button {
-        confirming = true
+        confirming = PendingMerge(target: target, number: pr.number)
       } label: {
         Text(method.buttonLabel)
           .font(.caption).fontWeight(.medium)
@@ -422,14 +429,16 @@ private struct MergeButton: View {
     .disabled(store.prActionInFlight)
     .opacity(store.prActionInFlight ? 0.5 : 1)
     .confirmationDialog(
-      "\(method.buttonLabel)?", isPresented: $confirming, titleVisibility: .visible
-    ) {
+      "\(method.buttonLabel)?",
+      isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+      titleVisibility: .visible, presenting: confirming
+    ) { merge in
       Button(method.buttonLabel) {
-        store.performMerge(method, number: pr.number, on: sid)
+        store.performMerge(method, number: merge.number, on: merge.target)
       }
       Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This merges pull request #\(String(pr.number)) into its base branch on GitHub.")
+    } message: { merge in
+      Text("This merges pull request #\(String(merge.number)) into its base branch on GitHub.")
     }
   }
 }

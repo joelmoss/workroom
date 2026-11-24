@@ -624,6 +624,30 @@ final class RemoteStateModelTests: XCTestCase {
       m.lastFailure, "the BAR still belongs to the selection — only the dialog crosses the switch")
   }
 
+  /// Value: protects=a followed repository's push failing after the terminal moved to another;
+  /// fails_when=the dialog names the terminal's row ("Terminal 1"), which names no repository;
+  /// why_new=#808 review nit 3; seam=RemoteStateModel; no_claim=the dialog's rendering
+  func testAFollowedRepositorysFailureAfterACdNamesTheRepository() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.describeTarget = { _ in "Terminal 1" }
+    m.followedLocation = { root in try? await RepositoryLocation.local(root) }
+    let terminal = SidebarID.standalone(UUID())
+    let followed = RemoteStateModel.Target(
+      sid: terminal, path: "/p/feat", projectRoot: "/p/feat", followedRoot: "/p/feat")
+    let moved = RemoteStateModel.Target(
+      sid: terminal, path: "/p/other", projectRoot: "/p/other", followedRoot: "/p/other")
+    m.focus(followed)
+    await m.awaitCurrentLoad()
+
+    m.perform(.push)
+    m.focus(moved)  // the terminal `cd`s to another repository while the push runs
+    await m.awaitCurrentLoad()
+
+    XCTAssertEqual(m.failureReport?.failure, .authRequired("nope"))
+    XCTAssertEqual(m.failureReport?.workroom, "/p/feat", "the repository, not the terminal's row")
+  }
+
   /// The common case stays unnamed: naming the workroom you are looking at is noise.
   func testAFailureForTheSelectedWorkroomIsNotNamed() async {
     let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))

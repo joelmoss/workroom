@@ -426,7 +426,7 @@ final class RemoteStateModel: ObservableObject {
     if case .failed(let failure) = result, userInitiated {
       raiseFailureReport(
         failure, action: action,
-        workroom: self.target == target ? nil : describeTarget?(target.sid))
+        workroom: self.target == target ? nil : name(of: target))
     }
     // Everything past here writes PUBLISHED state that the toolbar renders for whatever is selected NOW,
     // so it needs the same guard `apply` has. Without it, starting a push in one workroom and switching
@@ -449,6 +449,13 @@ final class RemoteStateModel: ObservableObject {
   /// Put a failure in front of the user. The toolbar's one truncating line can't carry the message, so
   /// anything the user asked for and that failed gets the dialog. `workroom` names where it happened,
   /// and is passed only when that isn't the current selection — see `VCSFailureReport.workroom`.
+  /// What a failure dialog calls `target`: a followed repository by its root (#808), since its
+  /// `sid` is the terminal's row, which names no repository; a row by its label.
+  private func name(of target: Target) -> String? {
+    if let root = target.followedRoot { return (root as NSString).abbreviatingWithTildeInPath }
+    return describeTarget?(target.sid)
+  }
+
   private func raiseFailureReport(
     _ failure: VCSRemoteFailure, action: VCSRemoteAction?, workroom: String? = nil,
     isRead: Bool = false

@@ -547,10 +547,11 @@ final class AppStore: ObservableObject {
     case .target(let sid): return remoteTarget(for: sid)
     case .followed(let followed):
       // A terminal's followed repository (#808): the one this window holds, so its registration
-      // is there to write through. A registered row's is that row's own target, in place.
-      guard let repository = followed.repository, let root = heldFollowedRepository,
-        root == repository.root, let sid = selectedTargetID
-      else { return nil }
+      // is there to write through, and only where Commit is offered too. A registered row's is that
+      // row's own target, in place.
+      guard let root = writableFollowedRoot(followed), let sid = selectedTargetID else {
+        return nil
+      }
       if let registered = vcsStatus.registeredSidebarID(forCanonicalRoot: root) {
         return remoteTarget(for: registered)
       }

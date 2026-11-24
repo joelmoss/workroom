@@ -63,9 +63,11 @@ final class FollowedRepositoryWritesTests: XCTestCase {
 
   // MARK: Scaffold
 
-  private func makeStatus() -> VCSStatusService {
+  private func makeStatus(
+    runner: any StatusCommandRunning = NoGitHubRunner()
+  ) -> VCSStatusService {
     let status = VCSStatusService(projectStore: projects)
-    status.statusResolver = WorkroomStatusResolver(runner: NoGitHubRunner())
+    status.statusResolver = WorkroomStatusResolver(runner: runner)
     status.followedProbeDebounce = 0
     status.makeRepositoryWatcher = { _ in NoWatcher() }
     return status
@@ -719,5 +721,305 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(plain?.entry.sharedLocation, mainLocation)
     XCTAssertEqual(worktree?.location, linkedLocation)
     XCTAssertEqual(worktree?.entry.sharedLocation, mainLocation)
+  }
+
+  // MARK: Pull request actions
+
+  /// `git` runs for real. `gh repo view` names each repository after its folder (`octo/<name>`),
+  /// so the `--repo` a pull request write carries says which repository it addressed; the writes
+  /// (`gh pr ready`, `gh pr merge`, …) are recorded and answer `writeResult`, and with `gated` each
+  /// waits for `release()` first. Every other `gh` call answers as a branch with no pull request.
+  private final class RecordingGitHubRunner: StatusCommandRunning, @unchecked Sendable {
+    private let real = StatusCommandRunner()
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+    private var calls: [[String]] = []
+    private var released = false
+    var gated = false
+    var writeResult = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+
+    var writes: [[String]] { lock.withLock { recorded } }
+    var allCalls: [[String]] { lock.withLock { calls } }
+    func release() { lock.withLock { released = true } }
+
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    {
+      guard executable == "gh" else {
+        return await real.run(executable, args, in: directory, timeout: timeout)
+      }
+      lock.withLock { calls.append(args) }
+      switch args.first {
+      case "--version":
+        return CommandResult(
+          stdout: "gh version 2.60.0 (2024-10-01)\n", stderr: "", exitCode: 0, timedOut: false)
+      case "auth": return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+      default: break
+      }
+      if args.prefix(2) == ["repo", "view"] {
+        let name = (directory as NSString).lastPathComponent
+        return CommandResult(
+          stdout: "https://github.com/octo/\(name)\n", stderr: "", exitCode: 0, timedOut: false)
+      }
+      let writeVerbs: Set<String> = ["ready", "merge", "close", "reopen"]
+      if args.first == "pr", args.count > 1, writeVerbs.contains(args[1]) {
+        lock.withLock { recorded.append(args) }
+        while gated, !lock.withLock({ released }) {
+          try? await Task.sleep(for: .milliseconds(10))
+        }
+        return writeResult
+      }
+      // `gh pr list` and the rest: no pull request for the branch.
+      return CommandResult(stdout: "[]", stderr: "", exitCode: 0, timedOut: false)
+    }
+  }
+
+  private static func pullRequest(
+    _ number: Int, draft: Bool, mergeable: Bool = false
+  ) -> PullRequestInfo {
+    PullRequestInfo(
+      number: number, title: "t", state: .open, isDraft: draft, url: "u", reviewDecision: nil,
+      reviewers: [], mergeable: mergeable)
+  }
+
+  /// Seed what GitHub would have said about `target`'s pull request.
+  private static func seed(
+    _ pr: PullRequestInfo, on target: VCSActionTarget, in s: VCSStatusService
+  ) {
+    switch target {
+    case .row(let sid):
+      var status = s.workroomStatuses[sid] ?? WorkroomStatus(dirty: false)
+      status.pr = pr
+      s.workroomStatuses[sid] = status
+    case .followed(let root):
+      var status = s.followedStatuses[root] ?? WorkroomStatus(dirty: false)
+      status.pr = pr
+      s.followedStatuses[root] = status
+    }
+  }
+
+  private func waitForPRAction(_ store: AppStore) async {
+    for _ in 0..<400 where store.prActionInFlight {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertFalse(store.prActionInFlight, "the pull request action never settled")
+  }
+
+  private func waitForWrites(_ runner: RecordingGitHubRunner, count: Int) async {
+    for _ in 0..<400 where runner.writes.count < count {
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(runner.writes.count, count, "gh writes: \(runner.writes)")
+  }
+
+  /// Value: protects=Ready for Review and Merge on a followed repository's pull request, as a
+  /// workroom has them (#808, "full read-write"); fails_when=either does nothing, or `gh` is
+  /// pointed at any repository but the followed one; why_new=#808 review; seam=AppStore, `gh`
+  /// stubbed per repository; no_claim=GitHub's own answer
+  func testPullRequestActionsActOnAFollowedRepository() async throws {
+    let runner = RecordingGitHubRunner()
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("first")
+    try await cd(store, tab, root)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    XCTAssertEqual(target, .followed(root: root))
+
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+    store.performPRAction(.markReady, number: 5, on: target)
+    XCTAssertEqual(status.followedStatuses[root]?.pr?.isDraft, false, "flipped at the click")
+    XCTAssertTrue(store.prActionInFlight)
+    await waitForPRAction(store)
+    XCTAssertNil(store.modals.errorMessage)
+    XCTAssertEqual(runner.writes, [["pr", "ready", "5", "--repo", "github.com/octo/first"]])
+    await settle(store)
+
+    Self.seed(Self.pullRequest(5, draft: false, mergeable: true), on: target, in: status)
+    store.performMerge(.squash, number: 5, on: target)
+    XCTAssertEqual(status.followedStatuses[root]?.pr?.state, .merged)
+    await waitForPRAction(store)
+    XCTAssertNil(store.modals.errorMessage)
+    XCTAssertEqual(
+      runner.writes.last, ["pr", "merge", "5", "--squash", "--repo", "github.com/octo/first"])
+    await settle(store)
+  }
+
+  /// Value: protects=a failed pull request write in a followed repository; fails_when=the
+  /// optimistic flip stays (the panel lies), or the failure goes unreported; why_new=#808 review;
+  /// seam=AppStore; no_claim=the dialog's rendering
+  func testAFailedPullRequestActionInAFollowedRepositoryReverts() async throws {
+    let runner = RecordingGitHubRunner()
+    runner.writeResult = CommandResult(stdout: "", stderr: "nope", exitCode: 1, timedOut: false)
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("first")
+    try await cd(store, tab, root)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    let draft = Self.pullRequest(5, draft: true)
+    Self.seed(draft, on: target, in: status)
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForPRAction(store)
+
+    XCTAssertEqual(runner.writes.count, 1)
+    XCTAssertEqual(status.followedStatuses[root]?.pr, draft)
+    XCTAssertEqual(store.modals.errorTitle, "Couldn\u{2019}t ready for review")
+    XCTAssertEqual(store.modals.errorMessage, "nope")
+  }
+
+  /// Value: protects=a pull request action addressed to a repository the terminal has left;
+  /// fails_when=it runs against the repository the terminal is in now (same PR number there), or
+  /// flips that one's badge; why_new=#808 review; seam=AppStore; no_claim=the confirmation dialogs
+  func testAPullRequestActionForARepositoryNoLongerFollowedIsRefused() async throws {
+    let runner = RecordingGitHubRunner()
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let first = repo("first")
+    let second = repo("second")
+    try await cd(store, tab, first)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+
+    try await cd(store, tab, second)
+    let theirs = Self.pullRequest(5, draft: true)
+    Self.seed(theirs, on: try XCTUnwrap(store.inspectorActionTarget), in: status)
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForPRAction(store)
+    XCTAssertEqual(store.modals.errorMessage, "That repository is no longer available.")
+    store.modals.errorMessage = nil
+    store.performMerge(.squash, number: 5, on: target)
+    await waitForPRAction(store)
+
+    XCTAssertEqual(runner.writes, [], "no gh write runs")
+    XCTAssertEqual(store.modals.errorMessage, "That repository is no longer available.")
+    XCTAssertEqual(status.followedStatuses[second]?.pr, theirs, "the second's badge is untouched")
+    XCTAssertNil(status.followedStatuses[first], "nothing re-creates the status of one let go")
+  }
+
+  /// Value: protects=a pull request write still running when the terminal moves to another
+  /// repository; fails_when=its failure revert lands on the repository the terminal moved to,
+  /// re-creates the one let go, or the write went anywhere but where it started; why_new=#808
+  /// review; seam=AppStore, `gh` held on a gate; no_claim=GitHub's own answer
+  func testAPullRequestActionRacingACdStaysWithItsRepository() async throws {
+    let runner = RecordingGitHubRunner()
+    runner.gated = true
+    runner.writeResult = CommandResult(stdout: "", stderr: "nope", exitCode: 1, timedOut: false)
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let first = repo("first")
+    let second = repo("second")
+    try await cd(store, tab, first)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForWrites(runner, count: 1)
+    try await cd(store, tab, second)
+    let theirs = Self.pullRequest(5, draft: true)
+    Self.seed(theirs, on: try XCTUnwrap(store.inspectorActionTarget), in: status)
+    runner.release()
+    await waitForPRAction(store)
+
+    XCTAssertEqual(runner.writes, [["pr", "ready", "5", "--repo", "github.com/octo/first"]])
+    XCTAssertEqual(status.followedStatuses[second]?.pr, theirs, "the revert stays off the second")
+    XCTAssertNil(status.followedStatuses[first], "nothing re-creates the status of one let go")
+    XCTAssertEqual(store.modals.errorMessage, "nope", "the failure is still the user's to see")
+  }
+
+  /// Value: protects=pull request actions on a registered project's repository followed from a
+  /// terminal, in place; fails_when=the write goes elsewhere, or no GitHub re-read follows it (no
+  /// selection refresh reaches the row while a terminal is selected); why_new=#808 review;
+  /// seam=AppStore + the router; no_claim=the sidebar
+  func testPullRequestActionsActOnARegisteredRepositoryInPlace() async throws {
+    let root = repo("platform")
+    projects.projects = [Project(path: root, vcs: "git", workrooms: [])]
+    router.replaceLocal(try await RepositoryRouter.prepare(projects.projects))
+    let row = SidebarID.root(project: projects.projects[0].id)
+    let runner = RecordingGitHubRunner()
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    try await cd(store, tab, root)
+    let target = try XCTUnwrap(store.inspectorActionTarget)
+    XCTAssertEqual(target, .row(row))
+    Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
+    let before = runner.allCalls.count
+
+    store.performPRAction(.markReady, number: 5, on: target)
+    await waitForPRAction(store)
+    await status.followedStatusSettled()
+
+    XCTAssertNil(store.modals.errorMessage)
+    XCTAssertEqual(runner.writes, [["pr", "ready", "5", "--repo", "github.com/octo/platform"]])
+    let after = Array(runner.allCalls.dropFirst(before))
+    XCTAssertTrue(
+      after.contains { $0.prefix(2) == ["pr", "list"] },
+      "GitHub is asked again for the row's pull request: \(after)")
+  }
+
+  /// Value: protects=the Room menu's draft item for a followed repository, addressed at the
+  /// repository and number it showed; fails_when=it is missing, or carries no target, so a click
+  /// after a `cd` could pair one repository's number with another's; why_new=#808 review;
+  /// seam=RoomCommandState; no_claim=the menu's rendering
+  func testTheRoomMenuOffersTheDraftItemForAFollowedRepository() async throws {
+    let runner = RecordingGitHubRunner()
+    let status = makeStatus(runner: runner)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("first")
+    try await cd(store, tab, root)
+    status.githubCLIStatus = .available
+    Self.seed(Self.pullRequest(5, draft: true), on: .followed(root: root), in: status)
+
+    let state = RoomCommandState.read(store)
+    let pr = try XCTUnwrap(state.pullRequest)
+    XCTAssertEqual(pr.draftAction, .markReady)
+    XCTAssertEqual(pr.target, .followed(root: root))
+    XCTAssertEqual(pr.number, 5)
+    XCTAssertTrue(state.canChangeDraft)
+  }
+
+  // MARK: Review nits
+
+  /// Value: protects=the toolbar agreeing with Commit on a repository the app can't write to;
+  /// fails_when=Fetch, Push or Pull are offered where Commit is not; why_new=#808 review nit 1;
+  /// seam=AppStore, the resolve seam; no_claim=the toolbar's rendering
+  func testTheToolbarOffersNoWritesWhereCommitIsOff() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    let real = store.resolveFollowedRepository
+    store.resolveFollowedRepository = { folder in
+      let found = await real(folder)
+      guard case .repository(var repository) = found else { return found }
+      repository.isWritable = false
+      return .repository(repository)
+    }
+    try await cd(store, tab, root)
+
+    XCTAssertNil(store.inspectorActionTarget)
+    XCTAssertNil(store.remoteTarget())
+    store.performRemoteAction(.push)
+    XCTAssertNil(store.remoteState.inFlight)
+  }
+
+  /// Value: protects=a linked worktree whose main repository git couldn't name; fails_when=it is
+  /// registered as its own repository, so its writes and its main repository's stop refusing each
+  /// other; why_new=#808 review nit 2; seam=VCSStatusService.followedRegistration, real git;
+  /// no_claim=the 3 s timeout itself
+  func testALinkedWorktreeWhoseMainRepositoryCantBeReadIsNotRegistered() async throws {
+    let broken = folder("broken")
+    try "gitdir: \(scratch.path)/nowhere/.git/worktrees/broken\n".write(
+      toFile: broken + "/.git", atomically: true, encoding: .utf8)
+
+    let registration = await VCSStatusService.followedRegistration(root: broken)
+
+    XCTAssertNil(registration, "refused, to be retried on the next follow")
   }
 }

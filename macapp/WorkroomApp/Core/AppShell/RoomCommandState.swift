@@ -8,6 +8,9 @@ struct RoomCommandState: Equatable {
     let number: Int
     let url: String
     let draftAction: PRAction?
+    /// What the draft item acts on, read with `number`: a click after a `cd` then still pairs
+    /// the repository the menu showed with its own pull request.
+    let target: VCSActionTarget
   }
 
   let canCommit: Bool
@@ -19,21 +22,23 @@ struct RoomCommandState: Equatable {
     // Keep the filesystem-dependent Finder gate fresh on the same status updates as before,
     // without making the Commands body itself observe the whole status dictionary.
     let canReveal = store.selectedTarget.map { !$0.isMissing } ?? false
-    let subject = store.inspectorSubject
-    // Commit and the pull request items act on a followed repository too (#808).
+    // Commit and the pull request items act on a followed repository too, registered in place or
+    // not (#808): on what `inspectorActionTarget` names, so nowhere the app can't write to.
     guard !store.modals.hasModalPresentation, let target = store.inspectorActionTarget else {
       return Self(
         canCommit: false, pullRequest: nil, canChangeDraft: false, canRevealInFinder: canReveal)
     }
     let pr =
       store.vcsStatus.githubCLIStatus == .available
-      ? store.vcsStatus.status(for: subject)?.pr : nil
+      ? store.vcsStatus.status(for: target)?.pr : nil
     let draftAction = pr.flatMap {
       PRAction.available(for: $0).first { $0 == .markReady || $0 == .convertToDraft }
     }
     return Self(
       canCommit: store.canCommit(target),
-      pullRequest: pr.map { PullRequest(number: $0.number, url: $0.url, draftAction: draftAction) },
+      pullRequest: pr.map {
+        PullRequest(number: $0.number, url: $0.url, draftAction: draftAction, target: target)
+      },
       canChangeDraft: draftAction != nil && !store.prActionInFlight,
       canRevealInFinder: canReveal)
   }

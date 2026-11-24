@@ -258,7 +258,7 @@ struct ChangesPanel: View {
       case .target(let sid) where sid.isStatusable:
         content
       case .followed(let followed):
-        // A terminal's followed folder (#807): its repository's changes, read-only.
+        // A terminal's followed folder (#807): its repository's changes, committed from here as a workroom's are (#808).
         if followed.repository == nil
           || vcsStatus.status(for: inputs.subject)?.failure?.meansNoRepository == true
         {

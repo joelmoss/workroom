@@ -162,6 +162,11 @@ extension VCSStatusService {
   /// A followed repository's registration: itself as the repository its writes are serialised on,
   /// or for a linked worktree its main working tree, whose refs and objects it shares. A submodule
   /// or a worktree of a bare repository (a git directory that is no `<tree>/.git`) is its own.
+  ///
+  /// Nil when git can't say which repository a linked worktree's git directory belongs to (a
+  /// timeout, a dangling `gitdir:`): registered as its own, its writes and its main repository's
+  /// would stop refusing each other, so it is not registered at all. Its writes, and the toolbar's
+  /// reads, are refused until it is followed again.
   nonisolated static func followedRegistration(root: String) async
     -> RepositoryRouter.Registration?
   {
@@ -174,9 +179,10 @@ extension VCSStatusService {
         GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
         in: path, timeout: 3)
       let directory = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) as NSString
-      if r.ok, directory.lastPathComponent == ".git",
-        let main = try? await RepositoryLocation.local(directory.deletingLastPathComponent)
-      {
+      guard r.ok, directory.length > 0 else { return nil }
+      if directory.lastPathComponent == ".git" {
+        guard let main = try? await RepositoryLocation.local(directory.deletingLastPathComponent)
+        else { return nil }
         shared = main
       }
     }

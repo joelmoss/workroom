@@ -142,12 +142,10 @@ struct WorkroomCommands: Commands {
   }
 
   // The Room menu's items that only buttons offered before, off while a dialog or sheet is up, as
-  // `MenuStateValues` gates the rest. Commit and the pull request items read the workroom the
-  // inspector shows, whose status they need (`inspectorTargetID` is the selection, or nil while it
-  // has no tabs); the workroom's own items read the selection, as its right-click menu does.
-  private var inspectedWorkroom: SidebarID? {
-    store?.modals.hasModalPresentation == false ? store?.inspectorTargetID : nil
-  }
+  // `MenuStateValues` gates the rest. Commit and the pull request items act on what the inspector
+  // shows, a workroom or a terminal's followed repository (`RoomCommandState`, which carries the
+  // pull request's target with its number); the workroom's own items read the selection, as its
+  // right-click menu does.
   private var canCommit: Bool? { roomCommandState?.canCommit }
   private var pullRequest: RoomCommandState.PullRequest? { roomCommandState?.pullRequest }
   /// Ready for Review or Convert to Draft, whichever an open pull request offers.
@@ -535,9 +533,9 @@ struct WorkroomCommands: Commands {
         }
         .shortcut(.goToPullRequest)
         .disabled(detachedWindowKey)
-        if let draftAction, let sid = inspectedWorkroom {
+        if let draftAction {
           Button(draftAction.label) {
-            store?.performPRAction(draftAction, number: pullRequest.number, on: sid)
+            store?.performPRAction(draftAction, number: pullRequest.number, on: pullRequest.target)
           }
           .shortcut(.changeDraft)
           .disabled(!workroomCommandEnabled(canChangeDraft))

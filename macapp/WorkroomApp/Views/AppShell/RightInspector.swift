@@ -103,7 +103,7 @@ struct RightInspector: View {
       presenting: pendingConfirm
     ) { item in
       Button(item.action.label, role: .destructive) {
-        store.performPRAction(item.action, number: item.number, on: item.sid)
+        store.performPRAction(item.action, number: item.number, on: item.target)
       }
       Button("Cancel", role: .cancel) {}
     }
@@ -258,10 +258,10 @@ struct RightInspector: View {
   /// through a confirmation dialog). Shown whenever there's a PR, so a merged/closed PR with no
   /// remaining actions can still be opened in the browser.
   @ViewBuilder private var prActionsMenu: some View {
-    if vcsStatus.githubCLIStatus == .available, let pr = selectedStatus?.pr,
-      let sid = store.inspectorSubject.sidebarID
-    {
-      let actions = PRAction.available(for: pr)
+    if vcsStatus.githubCLIStatus == .available, let pr = selectedStatus?.pr {
+      // A workroom's or a followed repository's (#808); none where the app can't write.
+      let target = store.inspectorActionTarget
+      let actions = target == nil ? [] : PRAction.available(for: pr)
       Menu {
         Button {
           if let url = URL(string: pr.url) { openURL(url) }
@@ -272,10 +272,11 @@ struct RightInspector: View {
           Divider()
           ForEach(actions, id: \.self) { action in
             Button(role: action.isDestructive ? .destructive : nil) {
+              guard let target else { return }
               if action.needsConfirmation {
-                pendingConfirm = PendingPRAction(action: action, number: pr.number, sid: sid)
+                pendingConfirm = PendingPRAction(action: action, number: pr.number, target: target)
               } else {
-                store.performPRAction(action, number: pr.number, on: sid)
+                store.performPRAction(action, number: pr.number, on: target)
               }
             } label: {
               Label(action.label, systemImage: action.systemImage)
@@ -382,7 +383,8 @@ struct RightInspector: View {
 private struct PendingPRAction: Identifiable {
   let action: PRAction
   let number: Int
-  let sid: SidebarID
+  /// Captured at the click: the dialog isn't modal to the terminal, which can `cd` meanwhile.
+  let target: VCSActionTarget
   var id: String { "\(action.rawValue)-\(number)" }
 }
 

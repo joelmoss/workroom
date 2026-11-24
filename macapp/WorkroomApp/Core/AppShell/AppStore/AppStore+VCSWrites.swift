@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 
 /// The VCS write actions the status inspector offers: PR actions and merges through `gh`, and
@@ -44,13 +45,20 @@ extension AppStore {
     switch inspectorSubject {
     case .target(let sid): return .row(sid)
     case .followed(let followed):
-      guard let repository = followed.repository, repository.isWritable,
-        let root = heldFollowedRepository, root == repository.root
-      else { return nil }
+      guard let root = writableFollowedRoot(followed) else { return nil }
       if let sid = vcsStatus.registeredSidebarID(forCanonicalRoot: root) { return .row(sid) }
       return .followed(root: root)
     case .nothing: return nil
     }
+  }
+
+  /// The root of the repository `followed` is in, when a write can address it: one this window
+  /// holds, and the app can write to. Commit and the toolbar both ask it, so they can't disagree.
+  func writableFollowedRoot(_ followed: FollowedFolder) -> String? {
+    guard let repository = followed.repository, repository.isWritable,
+      let root = heldFollowedRepository, root == repository.root
+    else { return nil }
+    return root
   }
 
   /// Where a write to `target` lands, resolved when the write runs from what was captured at the
@@ -75,22 +83,41 @@ extension AppStore {
   /// on success, surface `stderr` on failure. In fixture mode it optimistically updates the seeded
   /// status instead of spawning `gh`, so the actions menu is exercisable hermetically. Delegates the
   /// whole lifecycle to `performPRWrite`, shared with `performMerge`.
+  @_disfavoredOverload
   func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
-    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
-    performPRAction(action, number: number, on: item)
+    performPRAction(action, number: number, on: .row(sid))
+  }
+
+  /// Run a PR write action on `target`'s PR: a row's, or a followed repository's (#808). `target`
+  /// and `number` are captured at the click, so the write goes to the PR the user acted on or is
+  /// refused, wherever the terminal has gone since.
+  func performPRAction(_ action: PRAction, number: Int, on target: VCSActionTarget) {
+    let optimistic = { (pr: PullRequestInfo) in Self.optimisticPR(after: action, pr) }
+    let title = "Couldn’t \(action.label.lowercased())"
+    switch target {
+    case .row(let sid):
+      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
+      performPRWrite(
+        arguments: action.arguments(number: number), on: item, number: number,
+        optimistic: optimistic, errorTitle: title)
+    case .followed(let root):
+      performFollowedPRWrite(
+        arguments: action.arguments(number: number), root: root, number: number,
+        optimistic: optimistic, errorTitle: title)
+    }
   }
 
   func performPRAction(
     _ action: PRAction, number: Int, on item: VCSStatusService.StatusWorkItem
   ) {
     performPRWrite(
-      arguments: action.arguments(number: number), on: item,
-      applyOptimistic: { self.applyOptimisticPRAction(action, on: $0) },
+      arguments: action.arguments(number: number), on: item, number: number,
+      optimistic: { Self.optimisticPR(after: action, $0) },
       errorTitle: "Couldn’t \(action.label.lowercased())")
   }
 
-  /// The gh-write lifecycle shared by `performPRAction` and `performMerge` (issue #88): guard the
-  /// selected item, capture the prior PR to restore on failure, apply the optimistic update, then —
+  /// The gh-write lifecycle shared by `performPRAction` and `performMerge` (issue #88) for a row: refuse
+  /// a PR whose number moved on since the click, capture the prior PR to restore on failure, apply the optimistic update, then —
   /// UNLESS in fixture mode, where the optimistic flip is itself the final result — flip the
   /// in-flight flag, build the GitHub service for the registered location (bound to its repository
   /// identity), and run the command. On success re-probe for
@@ -99,18 +126,24 @@ extension AppStore {
   /// Fixture mode applies the optimistic update and stops there, before `prActionInFlight` flips —
   /// fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
   private func performPRWrite(
-    arguments: [String], on item: VCSStatusService.StatusWorkItem,
-    applyOptimistic: (SidebarID) -> Void, errorTitle: String
+    arguments: [String], on item: VCSStatusService.StatusWorkItem, number: Int,
+    optimistic: (PullRequestInfo) -> PullRequestInfo, errorTitle: String
   ) {
     let sid = item.sid
     guard item.permitsGitHubAccess else {
-      self.modals.errorTitle = errorTitle
-      self.modals.errorMessage =
-        RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription
-      return
+      return failPRWrite(
+        errorTitle,
+        RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription)
+    }
+    let priorPR = vcsStatus.workroomStatuses[sid]?.pr
+    // The PR on screen moved on since the click: never act on a number it no longer shows.
+    if let priorPR, priorPR.number != number {
+      return failPRWrite(errorTitle, Self.pullRequestChanged)
     }
     // Seeded statuses have no `gh` behind them: the optimistic update below *is* the result.
-    guard vcsStatus.probesRepositories else { return applyOptimistic(sid) }
+    guard vcsStatus.probesRepositories else {
+      return setPullRequest(priorPR.map(optimistic), on: .row(sid))
+    }
     let github: RepositoryGitHub
     do {
       guard let location = item.location else {
@@ -119,15 +152,12 @@ extension AppStore {
       github = try RepositoryRouter.shared.registeredGitHub(
         for: location, resolver: vcsStatus.statusResolver)
     } catch {
-      self.modals.errorTitle = errorTitle
-      self.modals.errorMessage = error.localizedDescription
-      return
+      return failPRWrite(errorTitle, error.localizedDescription)
     }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
     // "the click did nothing". Keep the prior PR to restore if `gh` fails.
-    let priorPR = vcsStatus.workroomStatuses[sid]?.pr
-    applyOptimistic(sid)
+    setPullRequest(priorPR.map(optimistic), on: .row(sid))
     prActionInFlight = true
     Task { [weak self] in
       let r = await github.run(arguments)
@@ -137,16 +167,91 @@ extension AppStore {
       if r.ok {
         // Re-probe to replace the optimistic state with GitHub's authoritative one.
         self.scheduleSelectedStatusRefresh()
+        // A registered row a terminal's inspector follows in place (#808): no selection refresh
+        // reaches it, so its followed lane asks GitHub again.
+        if let held = self.heldFollowedRepository,
+          self.vcsStatus.registeredSidebarID(forCanonicalRoot: held) == sid
+        {
+          self.vcsStatus.refreshFollowedStatus(held, gitHub: true)
+        }
       } else {
         // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
-        if var s = self.vcsStatus.workroomStatuses[sid] {
-          s.pr = priorPR
-          self.vcsStatus.workroomStatuses[sid] = s
-        }
-        self.modals.errorTitle = errorTitle
-        let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.modals.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
+        if let priorPR { self.setPullRequest(priorPR, on: .row(sid)) }
+        self.failPRWrite(errorTitle, Self.stderrMessage(r))
       }
+    }
+  }
+
+  /// A followed repository's PR write (#808), the row lifecycle's twin: through its registration,
+  /// awaited when the write runs, so one no window follows any more is refused rather than sent to
+  /// wherever the terminal went. Its status is touched only while the hold the click saw stands: a
+  /// status let go of is never re-created, and one followed afresh since was re-read anyway.
+  private func performFollowedPRWrite(
+    arguments: [String], root: String, number: Int,
+    optimistic: (PullRequestInfo) -> PullRequestInfo, errorTitle: String
+  ) {
+    guard let hold = vcsStatus.followedRepositories[root] else {
+      return failPRWrite(errorTitle, FollowedRepositoryGone().localizedDescription)
+    }
+    guard let priorPR = vcsStatus.followedStatuses[root]?.pr, priorPR.number == number else {
+      return failPRWrite(errorTitle, Self.pullRequestChanged)
+    }
+    let target = VCSActionTarget.followed(root: root)
+    setPullRequest(optimistic(priorPR), on: target)
+    // Seeded statuses have no `gh` behind them: the optimistic update *is* the result.
+    guard vcsStatus.probesRepositories else { return }
+    let registration = hold.registration
+    let resolver = vcsStatus.statusResolver
+    prActionInFlight = true
+    Task { [weak self] in
+      guard let self else { return }
+      let r: CommandResult
+      do {
+        let location = try await self.writeLocation(for: target)
+        let github = try RepositoryRouter.shared.registeredGitHub(
+          for: location, resolver: resolver)
+        r = await github.run(arguments)
+      } catch {
+        r = CommandResult(
+          stdout: "", stderr: error.localizedDescription, exitCode: 1, timedOut: false)
+      }
+      self.prActionInFlight = false
+      let held = self.vcsStatus.followedRepositories[root]?.registration
+      let current = registration != nil && held == registration
+      if r.ok {
+        if current { self.vcsStatus.refreshFollowedStatus(root, gitHub: true) }
+      } else {
+        if current { self.setPullRequest(priorPR, on: target) }
+        self.failPRWrite(errorTitle, Self.stderrMessage(r))
+      }
+    }
+  }
+
+  /// A PR the inspector no longer shows: its number moved on between the click and the write.
+  private static let pullRequestChanged =
+    "That pull request changed since it was shown. Check it and try again."
+
+  private func failPRWrite(_ title: String, _ message: String) {
+    modals.errorTitle = title
+    modals.errorMessage = message
+  }
+
+  private static func stderrMessage(_ r: CommandResult) -> String {
+    let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+    return stderr.isEmpty ? "The gh command failed." : stderr
+  }
+
+  /// Set `target`'s PR in its status, when it has a status: a row's, or a followed repository's.
+  private func setPullRequest(_ pr: PullRequestInfo?, on target: VCSActionTarget) {
+    switch target {
+    case .row(let sid):
+      guard var s = vcsStatus.workroomStatuses[sid] else { return }
+      s.pr = pr
+      vcsStatus.workroomStatuses[sid] = s
+    case .followed(let root):
+      guard var s = vcsStatus.followedStatuses[root] else { return }
+      s.pr = pr
+      vcsStatus.followedStatuses[root] = s
     }
   }
 
@@ -313,8 +418,9 @@ extension AppStore {
   /// Optimistically reflect a PR action in the in-memory status (no `gh`): the badge/state flip
   /// immediately on click, before the command returns. The real path restores the prior PR if `gh`
   /// fails and re-probes on success; fixture mode keeps this as the final result.
-  private func applyOptimisticPRAction(_ action: PRAction, on sid: SidebarID) {
-    guard var s = vcsStatus.workroomStatuses[sid], let pr = s.pr else { return }
+  private static func optimisticPR(after action: PRAction, _ pr: PullRequestInfo)
+    -> PullRequestInfo
+  {
     let state: PullRequestInfo.State
     let draft: Bool
     switch action {
@@ -333,11 +439,10 @@ extension AppStore {
     }
     // Carry the prior mergeability forward (the re-probe corrects it): dropping it here would flip
     // `canMerge` off and blink the Merge button away for the (multi-second) round-trip.
-    s.pr = PullRequestInfo(
+    return PullRequestInfo(
       number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: pr.mergeable, mergeState: pr.mergeState)
-    vcsStatus.workroomStatuses[sid] = s
   }
 
   /// Merge the selected workroom's PR (issue #88) with `method`: shell to `gh pr merge`, refresh on
@@ -345,23 +450,35 @@ extension AppStore {
   /// `gh` repo context, same optimistic-then-authoritative flow, both via `performPRWrite` — but the
   /// strategy is a parameter, so it's kept separate from the state-only `PRAction` verbs. In fixture
   /// mode it optimistically flips the PR to merged instead of spawning `gh`.
+  @_disfavoredOverload
   func performMerge(_ method: PRMergeMethod, number: Int, on sid: SidebarID) {
-    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
-    performPRWrite(
-      arguments: method.arguments(number: number), on: item,
-      applyOptimistic: { self.applyOptimisticMerge(on: $0) },
-      errorTitle: "Couldn’t merge pull request")
+    performMerge(method, number: number, on: .row(sid))
+  }
+
+  /// Merge `target`'s PR, a row's or a followed repository's (#808), captured at the click with
+  /// its number, as `performPRAction(_:number:on:)` is.
+  func performMerge(_ method: PRMergeMethod, number: Int, on target: VCSActionTarget) {
+    let title = "Couldn’t merge pull request"
+    switch target {
+    case .row(let sid):
+      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else { return }
+      performPRWrite(
+        arguments: method.arguments(number: number), on: item, number: number,
+        optimistic: Self.optimisticMergedPR, errorTitle: title)
+    case .followed(let root):
+      performFollowedPRWrite(
+        arguments: method.arguments(number: number), root: root, number: number,
+        optimistic: Self.optimisticMergedPR, errorTitle: title)
+    }
   }
 
   /// Optimistically flip the PR to merged (no `gh`): the badge turns purple and the Merge button
   /// disappears the instant the user confirms. `mergeable` is cleared so `canMerge` is false too.
   /// The real path restores the prior PR if `gh` fails and re-probes on success.
-  private func applyOptimisticMerge(on sid: SidebarID) {
-    guard var s = vcsStatus.workroomStatuses[sid], let pr = s.pr else { return }
-    s.pr = PullRequestInfo(
+  private static func optimisticMergedPR(_ pr: PullRequestInfo) -> PullRequestInfo {
+    PullRequestInfo(
       number: pr.number, title: pr.title, state: .merged, isDraft: false, url: pr.url,
       reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
       mergeable: false, mergeState: pr.mergeState)
-    vcsStatus.workroomStatuses[sid] = s
   }
 }
