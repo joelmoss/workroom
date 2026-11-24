@@ -190,8 +190,8 @@ final class VCSStatusService: ObservableObject {
   /// (`rerouteFollowed`), by the shared location committing: probed as soon as the last commit
   /// there ends, so a section never waits on a watch event to leave "Checking…".
   @ObservationIgnored var followedRootsAwaitingCommit: [RepositoryLocation: Set<String>] = [:]
-  /// The followed repositories whose read waited on the registered-path index
-  /// (`followedReadAwaitsIndex`): re-routed, so seeded and probed, once it lands.
+  /// The followed repositories whose follow waits on the registered-path index
+  /// (`followAwaitsIndex`): re-routed, so seeded and probed, once it is for the current projects.
   @ObservationIgnored var followedRootsAwaitingIndex: Set<String> = []
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so

@@ -1117,11 +1117,13 @@ final class FollowedRepositoryStatusTests: XCTestCase {
 
   /// Value: protects=the index always ending on the current project list (offactor review I1);
   /// fails_when=a list that goes A, B and back to A while B's build is stalled installs B's index
-  /// over A's; why_new=review; seam=VCSStatusService's canonicaliser (stalled on B's path only);
-  /// no_claim=a real network mount
+  /// over A's, or a repository followed while B's build was out is never probed; why_new=review;
+  /// seam=VCSStatusService's canonicaliser (stalled on B's path only); no_claim=a real network
+  /// mount
   func testAListThatGoesAToBAndBackNeverInstallsBsIndex() async throws {
     let a = repo("a")
     let b = folder("b")
+    let other = repo("other")
     let status = makeStatus()
     let guarded = GuardedCanonicaliser(stalled: b)
     defer { guarded.release() }
@@ -1134,6 +1136,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     projects.projects = listA + [Project(path: b, vcs: "git", workrooms: [])]
     status.rebuildRegisteredIndex()
     let buildB = try XCTUnwrap(status.registeredIndexBuild?.task)
+    status.follow(other)
     projects.projects = listA
     status.rebuildRegisteredIndex()
     guarded.release()
@@ -1143,9 +1146,15 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertNil(status.registeredSidebarID(forCanonicalRoot: b))
     await status.registeredIndexSettled()
 
+    await status.followedStatusSettled()
     XCTAssertEqual(status.registeredIndex?.projects, listA, "A's list stays indexed")
     XCTAssertNil(status.registeredSidebarID(forCanonicalRoot: b), "B's build never lands")
     XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: a), .root(project: a))
+    XCTAssertEqual(
+      status.followedStatuses[other]?.changedFiles?.map(\.path), ["src/a.txt"],
+      "followed while B's build was out, and probed once the list is A's again")
+    status.unfollow(other)
+    await status.followedRegistrationsSettled()
   }
 
   /// Value: protects=a registered path whose `realpath` timed out healing on its own (offactor

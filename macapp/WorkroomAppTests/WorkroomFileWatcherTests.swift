@@ -205,11 +205,10 @@ final class WorkroomFileWatcherTests: XCTestCase {
     XCTAssertEqual(overflows.withLock { $0 }, 1, "one refresh for the gap, once the watch is live")
   }
 
-  /// Value: protects=the GCD pool against watcher churn on a stalled mount (offactor review I2);
-  /// fails_when=each watcher of a stalled path parks a thread of its own in its resolve, so a
-  /// storm of follows drains the pool every `runBlocking` read shares; why_new=review;
-  /// seam=HostFileWatcher's resolve, through the shared joined read; no_claim=a real network
-  /// mount. Also measures the unjoined resolve the watcher used before, for the report.
+  /// A measurement (offactor review I2): how many GCD threads 20 watchers of one stalled path hold,
+  /// resolving it joined (`GitRepositoryProbe.blockingRead`, the shape `localLocation` has) against
+  /// unjoined (`runBlocking`, the watcher's resolve before). Its seam re-implements the join, so a
+  /// regression in the watcher's default resolve would not fail it; no_claim=a real network mount.
   func testWatchersOfAStalledPathHoldOneThreadBetweenThem() async throws {
     let path = NSTemporaryDirectory() + "hfw-stalled-\(UUID().uuidString)"
     func peak(joined: Bool) async throws -> Int {
@@ -240,6 +239,5 @@ final class WorkroomFileWatcherTests: XCTestCase {
     let before = try await peak(joined: false)
     print("stalled-path watchers: \(before) blocked threads unjoined, \(after) joined")
     XCTAssertEqual(after, 1, "one thread for every watcher of the path")
-    XCTAssertEqual(before, 20)
   }
 }

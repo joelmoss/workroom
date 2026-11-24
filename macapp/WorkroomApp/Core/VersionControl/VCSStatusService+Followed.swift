@@ -119,6 +119,8 @@ extension VCSStatusService {
         registeredIndexBuild = nil
         registeredIndexGeneration += 1
       }
+      // Back to the list it is for: a follow that waited on the dropped build goes on now.
+      routeFollowedAwaitingIndex(index, alsoRerouting: [])
       if index.timedOut.isEmpty { return }
     } else {
       // Another list: a retry scheduled for the last one's timeouts goes with it.
@@ -166,8 +168,8 @@ extension VCSStatusService {
   /// A build landed. Only the latest asked for, and only for the projects as they are now, is
   /// installed: any other is dropped, and the current list gets its own build, so the latest list
   /// always ends up indexed (offactor review I1). Every followed repository whose registered row
-  /// it changes is re-routed (`rerouteFollowed`), as is every one whose read waited on it
-  /// (`followedReadAwaitsIndex`). One that left a path timed out is rebuilt after a backoff.
+  /// it changes is re-routed (`rerouteFollowed`), as is every one followed while it was out
+  /// (`followAwaitsIndex`). One that left a path timed out is rebuilt after a backoff.
   private func installRegisteredIndex(_ index: RegisteredPathIndex) {
     if registeredIndexBuild?.generation == index.generation { registeredIndexBuild = nil }
     guard index.generation == registeredIndexGeneration, index.projects == projectStore.projects
@@ -180,10 +182,19 @@ extension VCSStatusService {
     {
       registeredIndex = index
     }
-    let awaiting = followedRootsAwaitingIndex
+    let moved = followedRepositories.keys.filter { before?.ids[$0] != index.ids[$0] }
+    routeFollowedAwaitingIndex(index, alsoRerouting: Set(moved))
+  }
+
+  /// Re-route the followed repositories in `moved`, and every one whose follow waited on an index
+  /// for the current projects (`followAwaitsIndex`), which `index` is: each is seeded and probed for
+  /// the source it now knows.
+  private func routeFollowedAwaitingIndex(
+    _ index: RegisteredPathIndex, alsoRerouting moved: Set<String>
+  ) {
+    let keys = moved.union(followedRootsAwaitingIndex)
     followedRootsAwaitingIndex = []
-    for key in followedRepositories.keys
-    where awaiting.contains(key) || before?.ids[key] != index.ids[key] {
+    for key in keys where followedRepositories[key] != nil {
       rerouteFollowed(key, registered: index.ids[key])
     }
   }
@@ -208,12 +219,14 @@ extension VCSStatusService {
     }
   }
 
-  /// Whether a followed repository's read must wait for the registered-path index: none is built
-  /// yet, or the one built is for another project list. Its status source isn't known until then,
-  /// so nothing is probed and no status of its own (nor a recent one) is written for it: a
-  /// registered row is never read as unregistered (offactor review N3). The index landing re-routes
-  /// it (`installRegisteredIndex`), which seeds and probes it.
-  func followedReadAwaitsIndex(_ key: String) -> Bool {
+  /// Whether a repository followed afresh must wait for the registered-path index to decide its
+  /// status source: none is built yet, or the one built is for another project list. Until then
+  /// nothing probes it and no status of its own (nor a recent one) is written for it, so a
+  /// registered row is never read as unregistered (offactor review N3). An index for the current
+  /// list landing, or the list returning to the one indexed, re-routes it
+  /// (`routeFollowedAwaitingIndex`), which seeds and probes it. A repository already followed keeps
+  /// reading through the index it has meanwhile, as a workroom does.
+  private func followAwaitsIndex(_ key: String) -> Bool {
     guard registeredIndex?.projects != projectStore.projects else { return false }
     followedRootsAwaitingIndex.insert(key)
     return true
@@ -313,7 +326,7 @@ extension VCSStatusService {
       hold.registering = true
       hold.registration = registerFollowed(key, hold: hold.id)
       followedRepositories[key] = hold
-      if !followedReadAwaitsIndex(key), registeredSidebarID(forCanonicalRoot: key) == nil,
+      if !followAwaitsIndex(key), registeredSidebarID(forCanonicalRoot: key) == nil,
         followedStatuses[key] == nil
       {
         // One followed lately shows what it last showed at once; the probe below refreshes it.
@@ -346,6 +359,7 @@ extension VCSStatusService {
     }
     followedStatuses[key] = nil
     unregisteredFollowedRoots.remove(key)
+    followedRootsAwaitingIndex.remove(key)
     releaseFollowed(hold.registration)
   }
 
@@ -661,7 +675,9 @@ extension VCSStatusService {
     let key = root
     // Probed even under seeded statuses: a followed folder is a real repository (the UI-test
     // fixture's are throwaway ones its shell makes), where a seeded row's path is not one.
-    guard var hold = followedRepositories[key], !followedReadAwaitsIndex(key) else { return nil }
+    guard var hold = followedRepositories[key], !followedRootsAwaitingIndex.contains(key) else {
+      return nil
+    }
     let registered = registeredSidebarID(forCanonicalRoot: key)
     // A registered row keeps its seeded status, as its own lanes leave it.
     if registered != nil, !probesRepositories { return nil }
