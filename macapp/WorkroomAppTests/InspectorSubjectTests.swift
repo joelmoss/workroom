@@ -204,6 +204,10 @@ final class InspectorSubjectTests: XCTestCase {
   /// can be inspected; why_new=#803 activity bar; seam=AppStore.selectionIsInspectable;
   /// no_claim=the Quick Terminal panel
   func testNoSelectionOrTheQuickTerminalCannotBeInspected() throws {
+    // The panel holds the group, so selecting its row opens no terminal of the window's own.
+    let panel = makeQuickTerminalHost(
+      notifications: registry.notifications, service: retaggingService(), section: section)
+    panel.onReveal = { _ in }
     let store = makeStore()
     XCTAssertFalse(store.selectionIsInspectable, "no selection")
 
