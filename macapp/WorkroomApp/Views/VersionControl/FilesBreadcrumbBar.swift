@@ -17,7 +17,7 @@ struct FilesBreadcrumbBar: View {
   /// Each segment's horizontal inset inside its hover fill.
   static let segmentInset: CGFloat = 4
   /// More segments than this fold the middle ones into a menu, keeping the base, the folder above
-  /// the terminal's and the terminal's own.
+  /// the terminal's, the terminal's own, and the folder Files shows.
   static let maxVisibleSegments = 4
 
   var body: some View {
@@ -53,12 +53,24 @@ struct FilesBreadcrumbBar: View {
     case overflow([Int])
   }
 
-  /// The base, then either every segment or a menu of the middle ones, then the last two.
+  /// Every segment, or past `maxVisibleSegments` the base, the folder Files shows and the last
+  /// two, with each run of the others folded into a menu.
   private var layout: [Item] {
     let count = breadcrumb.segments.count
     guard count > Self.maxVisibleSegments else { return (0..<count).map(Item.segment) }
-    let folded = Array(1..<(count - 2))
-    return [.segment(0), .overflow(folded), .segment(count - 2), .segment(count - 1)]
+    let kept: Set<Int> = [0, breadcrumb.shownIndex, count - 2, count - 1]
+    var items: [Item] = []
+    var folded: [Int] = []
+    for index in 0..<count {
+      if kept.contains(index) {
+        if !folded.isEmpty { items.append(.overflow(folded)) }
+        folded = []
+        items.append(.segment(index))
+      } else {
+        folded.append(index)
+      }
+    }
+    return items
   }
 
   private func role(of index: Int) -> FilesBreadcrumbSegment.Role {

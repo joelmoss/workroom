@@ -180,6 +180,70 @@ final class FollowedFilesTests: XCTestCase {
     }
     XCTAssertEqual(opened.map(\.path), ["src/main.swift"])
     XCTAssertEqual(opened.first?.root, root)
+
+    // A restored session reads the same root.
+    let fileTab = try XCTUnwrap(
+      store.terminals.tabs(for: target).first { if case .file = $0.content { true } else { false } }
+    )
+    let saved = try XCTUnwrap(TabSession(key: "k", tab: fileTab))
+    guard case .file(let restored)? = saved.restoredContent else {
+      return XCTFail("the file tab did not restore")
+    }
+    XCTAssertEqual(restored.root, root)
+
+    // And the viewer's read accepts that root, for a repository and for a plain folder.
+    let read = await FileContentLoader.loadOutcome(
+      directory: try XCTUnwrap(opened.first?.root), relative: "src/main.swift")
+    XCTAssertEqual(read, .text("x\n"))
+    let plain = scratch.appendingPathComponent("plain").path
+    write(plain + "/notes.txt")
+    let plainRead = await FileContentLoader.loadOutcome(directory: plain, relative: "notes.txt")
+    XCTAssertEqual(plainRead, .text("x\n"))
+  }
+
+  /// Value: protects=an ignored folder inside a repository listing its files (review finding);
+  /// fails_when=`cd build` says the folder is empty; why_new=#809; seam=AppStore + FileTreeModel;
+  /// no_claim=—
+  func testAnIgnoredFolderInARepositoryListsItsFilesFromDisk() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try "build/\n".write(toFile: root + "/.gitignore", atomically: true, encoding: .utf8)
+    write(root + "/build/out.o")
+    write(root + "/build/gen/x.c")
+
+    try await cd(store, tab, root + "/build")
+    await eventually { store.fileTree.state == .loaded && !store.fileTree.roots.isEmpty }
+
+    XCTAssertEqual(names(store), ["gen", "out.o"])
+    XCTAssertEqual(
+      store.fileTree.roots.last?.path, "build/out.o", "paths stay relative to the repository")
+    let gen = try XCTUnwrap(store.fileTree.roots.first)
+    store.fileTree.toggle(gen)
+    await eventually { store.fileTree.roots.first?.children?.isEmpty == false }
+    XCTAssertEqual(
+      store.fileTree.rows.map(\.node.path), ["build/gen", "build/gen/x.c", "build/out.o"])
+
+    try await cd(store, tab, root + "/src")
+    XCTAssertEqual(names(store), ["lib", "main.swift"], "back to what git lists")
+  }
+
+  /// Value: protects=a plain folder's watch re-reading only for its listed directories (review
+  /// finding); fails_when=a hidden write in `~` re-reads it, a `/` root never matches, or the
+  /// `/private` spelling of a change is missed; why_new=#809; seam=FileTreeModel; no_claim=FSEvents
+  func testAPlainFoldersWatchReReadsOnlyForListedDirectories() {
+    let listed: Set<String> = ["", "inner"]
+    XCTAssertTrue(FileTreeModel.touchesListed(["/h/new.txt"], root: "/h", listed: listed))
+    XCTAssertTrue(FileTreeModel.touchesListed(["/h/inner/a"], root: "/h", listed: listed))
+    XCTAssertFalse(FileTreeModel.touchesListed(["/h/other/a"], root: "/h", listed: listed))
+    XCTAssertFalse(
+      FileTreeModel.touchesListed(["/h/.zsh_history"], root: "/h", listed: listed),
+      "hidden entries are never listed")
+    XCTAssertFalse(FileTreeModel.touchesListed(["/h/.cache/x"], root: "/h", listed: listed))
+    XCTAssertTrue(FileTreeModel.touchesListed(["/private/var/x/y"], root: "/var/x", listed: listed))
+    XCTAssertTrue(FileTreeModel.touchesListed(["/etc"], root: "/", listed: listed))
+    XCTAssertFalse(FileTreeModel.touchesListed(["/usr/lib/x"], root: "/", listed: listed))
+    XCTAssertFalse(FileTreeModel.touchesListed(["/hx/a"], root: "/h", listed: listed))
   }
 
   // MARK: Breadcrumb

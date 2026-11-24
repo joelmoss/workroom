@@ -48,8 +48,17 @@ final class FileTreeModel: ObservableObject {
   private var listedRoots: [FileNode] = []
   /// Listing a plain folder outside any repository (#809): from disk, one level at a time.
   private var isPlain = false
-  /// A plain folder's listed directories, by tree-relative path ("" for the root).
+  /// A repository folder git lists nothing under (an ignored `build` or `node_modules`) is read
+  /// from disk instead, as a plain folder is.
+  private var readsSubfolderFromDisk = false
+  /// Directories read from disk, by tree-relative path ("" for a plain folder's root).
   private var plainListings: [String: [FileNode]] = [:]
+  /// The directory a disk-read tree starts at: "" for a plain folder, the subfolder for an ignored
+  /// repository folder, nil for a tree git lists.
+  private var diskBase: String? {
+    if isPlain { return "" }
+    return readsSubfolderFromDisk ? subfolder : nil
+  }
   private var plainTask: Task<Void, Never>?
   private let runner: StatusCommandRunning
   private var watcher: HostFileWatcher?
@@ -115,6 +124,7 @@ final class FileTreeModel: ObservableObject {
         guard subfolder != self.subfolder else { return }
         self.subfolder = subfolder
         expanded = []
+        plainListings = [:]
         reroot()
         return
       }
@@ -149,6 +159,7 @@ final class FileTreeModel: ObservableObject {
     currentPath = path
     self.subfolder = subfolder
     isPlain = plain
+    readsSubfolderFromDisk = false
     expanded = []
     currentLocation = nil
     watcher?.stop()
@@ -256,8 +267,8 @@ final class FileTreeModel: ObservableObject {
     switch result {
     case .listing(let paths):
       listedRoots = FileTreeBuilder.build(from: paths)
-      reroot()
       state = .loaded
+      reroot()
     case .failed(let error):
       roots = []
       state = .failed(error.localizedDescription)
@@ -289,32 +300,45 @@ final class FileTreeModel: ObservableObject {
       expanded.remove(node.path)
     } else {
       expanded.insert(node.path)
-      if isPlain, plainListings[node.path] == nil, let location = currentLocation {
+      if diskBase != nil, plainListings[node.path] == nil, let location = currentLocation {
         listPlain([node.path], at: location)
       }
     }
   }
 
-  /// Show the part of the listed tree under `subfolder`: none of it when git lists nothing there
-  /// (an empty or wholly ignored folder).
+  /// Show the part of the listed tree under `subfolder`. Where git lists nothing (an ignored or
+  /// empty folder), the folder is read from disk instead, so it never reads as empty when it
+  /// isn't; its paths stay relative to the repository's root.
   private func reroot() {
-    var nodes = listedRoots
-    if !subfolder.isEmpty {
-      var walked = ""
-      for component in subfolder.split(separator: "/").map(String.init) {
-        walked = walked.isEmpty ? component : walked + "/" + component
-        let path = walked
-        nodes = nodes.first { $0.isDirectory && $0.path == path }?.children ?? []
-      }
+    var nodes: [FileNode]? = listedRoots
+    var walked = ""
+    for component in subfolder.split(separator: "/").map(String.init) {
+      walked = walked.isEmpty ? component : walked + "/" + component
+      let path = walked
+      nodes = nodes?.first { $0.isDirectory && $0.path == path }?.children
     }
-    roots = nodes
+    if let nodes {
+      readsSubfolderFromDisk = false
+      setRoots(nodes)
+      return
+    }
+    readsSubfolderFromDisk = true
+    if plainListings[subfolder] == nil { state = .loading }
+    if let location = currentLocation {
+      listPlain(Array(plainListings.keys) + [subfolder], at: location)
+    }
+  }
+
+  /// Publish `nodes` only when they differ, so a re-read that changed nothing re-renders nothing.
+  private func setRoots(_ nodes: [FileNode]) {
+    if roots != nodes { roots = nodes }
   }
 
   // MARK: Plain folders (#809)
 
-  /// List `directories` (tree-relative, "" for the root) of a plain folder from disk, off the main
-  /// actor, and graft them into the tree. Hidden entries are left out, as `ls` and Finder leave
-  /// them. A root that cannot be read leaves nothing to show.
+  /// List `directories` (tree-relative, "" for the root) from disk, off the main actor, and graft
+  /// them into the tree from `diskBase` down. Hidden entries are left out, as `ls` and Finder leave
+  /// them. A base that cannot be read leaves nothing to show.
   private func listPlain(_ directories: [String], at location: RepositoryLocation) {
     let wanted = Array(Set(directories))
     let previous = plainTask
@@ -322,16 +346,16 @@ final class FileTreeModel: ObservableObject {
       await previous?.value
       let listed =
         (try? await runBlocking { Self.readPlain(wanted, under: location.path) }) ?? [:]
-      guard !Task.isCancelled, let self, self.currentLocation == location, self.isPlain else {
-        return
-      }
+      guard !Task.isCancelled, let self, self.currentLocation == location,
+        let base = self.diskBase
+      else { return }
       for directory in wanted { self.plainListings[directory] = listed[directory] }
-      guard self.plainListings[""] != nil else {
-        self.roots = []
+      guard self.plainListings[base] != nil else {
+        self.setRoots([])
         self.state = .unavailable
         return
       }
-      self.roots = self.plainTree("")
+      self.setRoots(self.plainTree(base))
       self.state = .loaded
     }
   }
@@ -399,10 +423,13 @@ final class FileTreeModel: ObservableObject {
   nonisolated static func touchesListed(_ changed: [String], root: String, listed: Set<String>)
     -> Bool
   {
-    let roots = [root, "/private" + root]
+    let trimmed = root == "/" ? "" : root
+    let bases = [trimmed, "/private" + trimmed]
     return changed.contains { path in
-      for base in roots where path == base || path.hasPrefix(base + "/") {
+      for base in bases where path == base || path.hasPrefix(base + "/") {
         let relative = String(path.dropFirst(min(path.count, base.count + 1)))
+        // Hidden entries are never listed, so a `.zsh_history` write in `~` re-reads nothing.
+        if relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) { continue }
         let parent = (relative as NSString).deletingLastPathComponent
         if listed.contains(parent) || listed.contains(relative) { return true }
       }
