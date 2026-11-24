@@ -94,6 +94,10 @@ final class VCSStatusService: ObservableObject {
     set { storedFollowedStatuses = newValue }
   }
   private var storedFollowedStatuses: [String: WorkroomStatus] = [:]
+  /// The last-known status of the repositories followed most recently and let go of since (QA
+  /// round 2 of #803): what a revisit shows at once while its fresh probe runs. Data only; it
+  /// never makes a repository followed, watched or writable.
+  @ObservationIgnored var recentFollowedStatuses = RecentRepositoryCache<WorkroomStatus>()
   /// Who follows which repository, and its watches (`VCSStatusService+Followed.swift`).
   @ObservationIgnored var followedRepositories: [String: FollowedRepositoryHold] = [:]
   /// The followed repositories with a commit in flight, by canonical root: what `committingTargets`

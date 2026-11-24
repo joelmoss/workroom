@@ -562,6 +562,68 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertEqual(watcher(for: two)?.stopped, true, "the repository left behind is not watched")
   }
 
+  /// Value: protects=instant revisits (QA round 2): going back to a repository followed lately
+  /// shows its last-known Changes, Pull Request and History at once, and refreshes them behind;
+  /// fails_when=the last unfollow drops them, so a revisit shows "Checking…" and "Loading
+  /// history…" until the fresh reads land; why_new=QA round 2; seam=AppStore + VCSStatusService +
+  /// HistoryModel; no_claim=the panels' rendering
+  func testARevisitShowsTheRepositorysLastKnownStateAtOnce() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let one = repo("one")
+
+    try await cd(store, tab, one)
+    let known = try XCTUnwrap(status.followedStatuses[one])
+    XCTAssertEqual(store.commitHistory.commits.map(\.summary), ["base"])
+    try await cd(store, tab, folder("plain"))
+    XCTAssertFalse(status.isFollowing(one))
+
+    // The fresh reads are held back, so only what was kept can show.
+    status.followedProbeDebounce = 3600
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(one)
+    await store.followedFolderResolved()
+
+    XCTAssertEqual(status.followedStatuses[one], known, "Changes and Pull Request, at once")
+    XCTAssertEqual(changedPaths(store), ["src/a.txt"])
+    XCTAssertEqual(store.commitHistory.commits.map(\.summary), ["base"], "History, at once")
+    XCTAssertEqual(store.commitHistory.state, .loading, "and re-read behind it")
+    await store.commitHistory.awaitCurrentLoad()
+    XCTAssertEqual(store.commitHistory.state, .loaded)
+  }
+
+  /// Value: protects=stale cached data is never acted on (QA round 2); fails_when=a repository
+  /// kept only in the recent cache counts as followed, or a write resolves through it rather than
+  /// the live hold's registration; why_new=QA round 2; seam=VCSStatusService;
+  /// no_claim=the write itself (FollowedRepositoryWritesTests)
+  func testAKeptRepositoryIsNeverWrittenThroughUntilItIsFollowedAgain() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let one = repo("one")
+
+    try await cd(store, tab, one)
+    await status.followedRegistrationsSettled()
+    try await cd(store, tab, folder("plain"))
+    await status.followedRegistrationsSettled()
+
+    XCTAssertFalse(status.canAddress(.followed(root: one)))
+    let refused = await status.followedWriteLocation(one)
+    XCTAssertNil(refused, "a kept status addresses nothing")
+    do {
+      _ = try await status.writeLocation(for: .followed(root: one))
+      XCTFail("a write to a repository no window follows is refused")
+    } catch is FollowedRepositoryGone {}
+
+    try await cd(store, tab, one)
+    await status.followedRegistrationsSettled()
+    XCTAssertTrue(status.canAddress(.followed(root: one)))
+    let live = await status.followedWriteLocation(one)
+    XCTAssertEqual(
+      live.map { VCSStatusService.canonicalPath($0.path) }, one,
+      "through the new hold's registration")
+  }
+
   /// Value: protects=Pull Request following a branch switched, committed or pushed in the terminal
   /// (review of #807, finding 2); fails_when=a change to the repository's refs never asks GitHub
   /// again, or a plain save does; why_new=review; seam=VCSStatusService change handler (gh

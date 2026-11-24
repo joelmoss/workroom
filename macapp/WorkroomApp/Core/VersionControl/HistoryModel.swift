@@ -49,6 +49,11 @@ final class HistoryModel: ObservableObject {
   private let debounce: TimeInterval
   private(set) var root: URL?
   private var task: Task<Void, Never>?
+  /// Whether `root`'s pages are kept in `recentPages`: a terminal's followed repository's are
+  /// (QA round 2 of #803), so going back to it shows its log at once while it is re-read.
+  private var remembersRoot = false
+  /// The last page read for each of the repositories this window followed most recently.
+  private var recentPages = RecentRepositoryCache<VCSHistoryPage>()
 
   init(
     pageSize: Int = 100,
@@ -75,14 +80,17 @@ final class HistoryModel: ObservableObject {
   var windowCap: Int { maxWindow }
 
   /// Point the model at a repo (or clear it with `nil`). No-op if already focused there. Loads the
-  /// first page.
-  func focus(_ root: URL?) {
+  /// first page. `remembering` keeps its pages for a revisit, and shows the one kept from the last
+  /// visit at once while the read runs.
+  func focus(_ root: URL?, remembering: Bool = false) {
     guard self.root != root || location != nil else { return }
     self.root = root
     location = nil
-    pushScope = nil
-    commits = []
-    reachedEnd = false
+    remembersRoot = remembering && root != nil
+    let kept = remembersRoot ? root.flatMap { recentPages.value(for: $0.path) } : nil
+    pushScope = kept?.pushScope
+    commits = kept?.commits ?? []
+    reachedEnd = kept?.reachedEnd ?? false
     guard root != nil else {
       task?.cancel()
       state = .idle
@@ -95,6 +103,7 @@ final class HistoryModel: ObservableObject {
     guard self.location != location || root != nil else { return }
     task?.cancel()
     root = nil
+    remembersRoot = false
     self.location = location
     commits = []
     reachedEnd = false
@@ -120,25 +129,25 @@ final class HistoryModel: ObservableObject {
   /// double duty: it prevents a redundant second load when the store just called `focus` eagerly on
   /// selection/section-entry (state `.loading`), and it retries after a transient `.failed` (plain
   /// `focus` would no-op on the same root and leave the pane stuck showing the error).
-  func activate(_ root: URL?) {
+  func activate(_ root: URL?, remembering: Bool = false) {
     if self.root == root, root != nil, state.isSettled {
       refresh()
     } else {
-      focus(root)
+      focus(root, remembering: remembering)
     }
   }
 
   /// `focus` for a target: a remote workroom's log by its location on its host, which its path
   /// can't name (#253), and any other's by its directory.
-  func focus(target: TerminalTarget?) {
+  func focus(target: TerminalTarget?, remembering: Bool = false) {
     if let location = target?.remoteLocation { return focus(location: location) }
-    focus(Self.localRoot(of: target))
+    focus(Self.localRoot(of: target), remembering: remembering)
   }
 
   /// `activate` for a target, as `focus(target:)` picks.
-  func activate(target: TerminalTarget?) {
+  func activate(target: TerminalTarget?, remembering: Bool = false) {
     guard let location = target?.remoteLocation else {
-      return activate(Self.localRoot(of: target))
+      return activate(Self.localRoot(of: target), remembering: remembering)
     }
     if self.location == location, state.isSettled {
       refresh()
@@ -215,6 +224,9 @@ final class HistoryModel: ObservableObject {
         self.reachedEnd = page.reachedEnd
         self.pushScope = page.pushScope
         self.state = .loaded
+        if self.remembersRoot, let root, self.root == root {
+          self.recentPages.store(page, for: root.path)
+        }
       } catch {
         if Task.isCancelled { return }
         self?.state = .failed("\(error)")

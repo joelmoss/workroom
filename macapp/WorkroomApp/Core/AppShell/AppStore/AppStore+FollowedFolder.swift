@@ -417,6 +417,13 @@ extension AppStore {
     return followed.repository?.root
   }
 
+  /// Whether History keeps the target's log for a revisit: a followed repository's, so going back
+  /// to a terminal shows it at once (QA round 2), as its status is (`recentFollowedStatuses`).
+  var historyRemembersTarget: Bool {
+    if case .followed = inspectorSubject { return true }
+    return false
+  }
+
   /// The target History reads: the inspector's workroom or project, or for a followed folder in a
   /// repository, that repository's root. Nil outside one.
   var inspectorHistoryTarget: TerminalTarget? {

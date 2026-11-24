@@ -121,7 +121,8 @@ extension VCSStatusService {
       hold.registration = registerFollowed(key, hold: hold.id)
       followedRepositories[key] = hold
       if registeredSidebarID(forRepositoryRoot: key) == nil, followedStatuses[key] == nil {
-        followedStatuses[key] = .unresolved
+        // One followed lately shows what it last showed at once; the probe below refreshes it.
+        followedStatuses[key] = recentFollowedStatuses.value(for: key) ?? .unresolved
       }
       startWatching(key)
     }
@@ -144,6 +145,10 @@ extension VCSStatusService {
     hold.registrationRetry?.cancel()
     for watcher in hold.watchers { watcher.stop() }
     followedRepositories[key] = nil
+    // Kept for a revisit, as data only: the hold, its registration and its watch all go.
+    if let last = followedStatuses[key], last != .unresolved {
+      recentFollowedStatuses.store(last, for: key)
+    }
     followedStatuses[key] = nil
     unregisteredFollowedRoots.remove(key)
     releaseFollowed(hold.registration)

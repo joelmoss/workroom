@@ -268,7 +268,8 @@ struct HistoryPanelAdapter: View {
         // where `focus` would no-op on the unchanged root. The store's eager `focus` on selection
         // still fires first; `activate`'s settled-state guard means this won't double that fresh
         // load.
-        store.commitHistory.activate(target: store.inspectorHistoryTarget)
+        store.commitHistory.activate(
+          target: store.inspectorHistoryTarget, remembering: store.historyRemembersTarget)
       },
       // `[store]` + `Self.title` on purpose: the capture list is what makes this closure
       // behaviour-constant, which is what lets `HistoryRow.==` exclude it.

@@ -466,7 +466,7 @@ final class AppStore: ObservableObject {
   /// `HistoryModel.activate` — the same load, at the moment it's first worth doing.
   func focusHistoryIfShown() {
     guard !isMovingTerminalsInPlace, inspectorIsVisible, historySectionShown else { return }
-    commitHistory.focus(target: inspectorHistoryTarget)
+    commitHistory.focus(target: inspectorHistoryTarget, remembering: historyRemembersTarget)
   }
 
   /// Forward the ports the selected remote workroom's dev container declares, once a launch
