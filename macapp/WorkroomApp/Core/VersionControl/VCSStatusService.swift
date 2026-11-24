@@ -115,6 +115,9 @@ final class VCSStatusService: ObservableObject {
     }
   /// The router releases in flight, chained in order (`releaseFollowed`).
   @ObservationIgnored var followedRelease: Task<Void, Never>?
+  /// The linked-worktree git-directory watches being set up (`startWatching`), by hold, each until
+  /// it lands.
+  @ObservationIgnored var followedWatchSetups: [UUID: Task<Void, Never>] = [:]
   /// Makes a watch on a followed repository's tree, or on a linked worktree's git directory. The
   /// host file watcher in the app; tests record it and drive the change handler themselves.
   @ObservationIgnored var makeRepositoryWatcher:

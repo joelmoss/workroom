@@ -17,7 +17,9 @@ extension HostFileWatcher: RepositoryWatching {}
 /// A repository some window's inspector follows (#807), held for as long as any window does: how
 /// many hold it, and the watches that keep its status live while they do.
 struct FollowedRepositoryHold {
-  /// Tells this hold from one taken afresh after it was let go.
+  /// This hold, apart from one let go of and taken again for the same repository: what a watch set
+  /// up after an `await`, or a registration that came back empty, checks it still belongs to
+  /// (review of #807, finding 6).
   let id = UUID()
   var holders: Int
   /// The working tree's watch, and for a linked worktree a second one on its repository's git
@@ -300,15 +302,17 @@ extension VCSStatusService {
     }
     // A linked worktree's `.git` is a file naming a git directory inside its main repository, which
     // holds the worktree's HEAD and the refs a commit or `git switch` moves.
-    guard outside else { return }
-    Task { [weak self] in
+    guard outside, let hold = followedRepositories[key]?.id else { return }
+    followedWatchSetups[hold] = Task { [weak self] in
+      defer { self?.followedWatchSetups[hold] = nil }
       let r = await StatusCommandRunner().run(
         "git",
         GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
         in: key, timeout: 3)
       let directory = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+      // Let go of while git ran, and perhaps followed again: that hold sets up its own watch.
       guard r.ok, !directory.isEmpty, let self,
-        self.followedRepositories[key] != nil
+        self.followedRepositories[key]?.id == hold
       else { return }
       let metadata = self.makeRepositoryWatcher { [weak self] _, _ in
         self?.handleFollowedRepositoryChange(key, paths: [], overflow: true)
@@ -316,6 +320,11 @@ extension VCSStatusService {
       metadata.start(path: directory)
       self.followedRepositories[key]?.watchers.append(metadata)
     }
+  }
+
+  /// Wait for every linked worktree's git-directory watch being set up. For tests.
+  func followedWatchesSettled() async {
+    while let setup = followedWatchSetups.values.first { await setup.value }
   }
 
   nonisolated private static func gitDirectoryIsOutsideTree(_ root: String) -> Bool {

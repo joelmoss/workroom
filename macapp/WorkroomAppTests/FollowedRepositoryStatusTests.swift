@@ -655,4 +655,90 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertEqual(pullRequestBranches, ["main"], "only the repository stayed on is asked about")
     XCTAssertEqual(status.followedStatuses[two]?.changedFiles?.map(\.path), ["src/a.txt"])
   }
+
+  // MARK: Watch lifetime
+
+  /// A linked worktree of `root` at a sibling folder `name`, on a new branch `name`.
+  private func worktree(of root: String, _ name: String) -> String {
+    let path = scratch.appendingPathComponent(name).path
+    sh("git worktree add -q -b \(name) \(path)", in: root)
+    return path
+  }
+
+  /// Value: protects=a closed window letting go of its terminal's repository (AC 4, the `deinit`
+  /// path); fails_when=closing the last window following a repository keeps its watch and status;
+  /// why_new=deferred from #807; seam=AppStore deinit + VCSStatusService; no_claim=NSWindow close
+  func testClosingAWindowStopsWatchingItsRepository() async throws {
+    let status = makeStatus()
+    let root = repo("app")
+    weak var closed: AppStore?
+    do {
+      let store = makeStore(status)
+      let tab = try await openTerminal(store)
+      try await cd(store, tab, root + "/src")
+      closed = store
+    }
+    let watch = try XCTUnwrap(watcher(for: root))
+    XCTAssertNil(closed, "the window's store is gone")
+    // `deinit` hands the unfollow to the main actor.
+    for _ in 0..<100 where !watch.stopped { await Task.yield() }
+
+    XCTAssertTrue(watch.stopped, "no window follows it any more")
+    XCTAssertFalse(status.isFollowing(root))
+    XCTAssertNil(status.followedStatuses[root])
+  }
+
+  /// Value: protects=a linked worktree's HEAD and refs being watched where they live, in its main
+  /// repository's git directory (#807); fails_when=a commit or `git switch` in a linked worktree
+  /// goes unseen until a save, or that watch outlives the follow; why_new=deferred from #807;
+  /// seam=VCSStatusService (watch recorder); no_claim=FSEvents itself
+  func testALinkedWorktreeAlsoWatchesItsRepositorysGitDirectory() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    sh("git commit -qam edit", in: root)
+    let linked = worktree(of: root, "feature")
+
+    try await cd(store, tab, linked)
+    await status.followedWatchesSettled()
+
+    let tree = try XCTUnwrap(watcher(for: linked), "its tree is watched")
+    let gitDirectory = try XCTUnwrap(watcher(for: root + "/.git"), "so is its repository's")
+    XCTAssertEqual(changedPaths(store), [])
+
+    let before = store.commitHistory.commits.count
+    try "new\n".write(toFile: linked + "/b.txt", atomically: true, encoding: .utf8)
+    sh("git add -A && git commit -qm second", in: linked)
+    gitDirectory.onChange([root + "/.git/worktrees/feature/HEAD"], false)
+    await settle(store)
+    XCTAssertEqual(changedPaths(store), [], "Changes re-reads")
+    XCTAssertEqual(store.commitHistory.commits.count, before + 1, "History re-reads the log")
+
+    store.selectedTargetID = nil
+    XCTAssertTrue(tree.stopped)
+    XCTAssertTrue(gitDirectory.stopped, "the git directory's watch ends with the follow")
+  }
+
+  /// Value: protects=one git-directory watch per followed linked worktree (review of #807,
+  /// finding 6); fails_when=a follow let go of and taken again while git names the git directory
+  /// adds a second watch, so every ref change is handled twice; why_new=review;
+  /// seam=VCSStatusService (watch recorder); no_claim=FSEvents itself
+  func testALinkedWorktreeFollowedAgainQuicklyHasOneGitDirectoryWatch() async throws {
+    let status = makeStatus()
+    let root = repo("app")
+    let linked = worktree(of: root, "feature")
+
+    status.follow(linked)
+    status.unfollow(linked)
+    status.follow(linked)
+    await status.followedWatchesSettled()
+
+    let live = watchers.filter { $0.path == root + "/.git" && !$0.stopped }
+    XCTAssertEqual(live.count, 1, "one watch on the repository's git directory")
+    status.unfollow(linked)
+    XCTAssertTrue(watchers.allSatisfy(\.stopped))
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
 }

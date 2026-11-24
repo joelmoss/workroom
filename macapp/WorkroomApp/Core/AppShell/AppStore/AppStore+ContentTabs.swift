@@ -56,9 +56,13 @@ extension AppStore {
   /// exactly one of them is `selectedTarget`: without an explicit target, a button sitting on the
   /// non-focused workroom's diff pane opened the file into the *other* workroom's tab strip. A pane's
   /// own controls must act on that pane's target, which is the whole point of moving them there.
-  func openFilePreview(path: String, for target: TerminalTarget) {
+  ///
+  /// `root` is the folder `path` is relative to when it is not `target`'s own: a followed
+  /// repository's diff names its repository (`TabContent.fileRoot`).
+  func openFilePreview(path: String, root: String? = nil, for target: TerminalTarget) {
     whenHostLayoutRestored(target) { [terminals] target in
-      terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+      terminals.openFilePreview(
+        FileDescriptor(path: path, isPreview: true, root: root), for: target)
     }
   }
 
@@ -172,8 +176,10 @@ extension AppStore {
   /// selected or the file was deleted (no working copy — see `resolveOpenTarget`). Shares the single
   /// preview slot with diffs, so it recycles the row's diff preview (a persisted diff tab is kept).
   func openChangedFileInApp(_ file: ChangedFile) {
-    guard let rel = Self.resolveOpenTarget(file: file) else { return }
-    openFilePreview(path: rel)
+    guard let target = selectedTarget, let rel = Self.resolveOpenTarget(file: file) else { return }
+    // Relative to the repository Changes lists, as its diff is (#807), never Files' root: a
+    // browse can leave that on another folder.
+    openFilePreview(path: rel, root: followedRepositoryRoot, for: target)
   }
 
   /// The repo-relative path to open for a changed file, or nil when there's nothing to open (a

@@ -231,8 +231,9 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   var cannedDiffs: AppServices.CannedDiffs? { services.cannedDiffs }
   var vcsReader: (@Sendable (URL) throws -> LocalVCSProviding)? { services.vcsReader }
 
-  func openFilePreview(path: String, for target: TerminalTarget) {
-    _ = terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+  func openFilePreview(path: String, root: String?, for target: TerminalTarget) {
+    _ = terminals.openFilePreview(
+      FileDescriptor(path: path, isPreview: true, root: root), for: target)
   }
 
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {

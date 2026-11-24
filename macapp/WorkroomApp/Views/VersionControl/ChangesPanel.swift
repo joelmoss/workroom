@@ -22,6 +22,10 @@ struct ChangedFileRow: View, Equatable {
   /// `@ObservedObject TerminalPanes` and compute this itself, which meant every terminal
   /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
   let selection: FocusedTabSelection?
+  /// The repository the row's path is relative to, as its tabs name it
+  /// (`FocusedTabSelection.changedFileRoot`): nil for the target's own. Reaches `==` through
+  /// `isSelected`.
+  var root: String? = nil
   /// Whether the inspector's workroom has no directory on this Mac (a remote or missing one), which
   /// disables "Open File in…". Part of the equality gate: it is the one window state the row shows.
   let targetIsMissing: Bool
@@ -183,7 +187,7 @@ struct ChangedFileRow: View, Equatable {
   /// revision; the diff match keeps it so the same path from the worktree vs a commit selects the right
   /// row.
   nonisolated fileprivate var isSelected: Bool {
-    selection?.selectsChangedFile(path: file.path, source: source) ?? false
+    selection?.selectsChangedFile(path: file.path, source: source, root: root) ?? false
   }
 
   /// The equality gate behind `.equatable()` in `fileList`: a panel body pass that rebuilds the rows,
@@ -334,12 +338,13 @@ struct ChangesPanel: View {
     // here, in the panel's body, only the selected target's pane changes re-run the panel, and no
     // row rebuilds (`ChangedFileRowInvalidationTests`).
     let selection = inputs.selection()
+    let root = FocusedTabSelection.changedFileRoot(for: inputs.subject)
     let targetIsMissing = inputs.target?.isMissing != false
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
         ChangedFileRow(
-          file: file, source: source, selection: selection, targetIsMissing: targetIsMissing,
-          actions: actions
+          file: file, source: source, selection: selection, root: root,
+          targetIsMissing: targetIsMissing, actions: actions
         )
         .equatable()
       }

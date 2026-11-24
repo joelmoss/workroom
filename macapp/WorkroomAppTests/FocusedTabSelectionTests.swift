@@ -95,4 +95,40 @@ final class FocusedTabSelectionTests: XCTestCase {
     XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .commit("abc123")))
     XCTAssertFalse(selection!.selectsChangedFile(path: "src/other.swift", source: .gitWorktree))
   }
+
+  /// Value: protects=a followed repository's Changes row highlighting only its own repository's
+  /// tab (final pass of #803); fails_when=a diff or file tab from repository A highlights the
+  /// same-path row while the inspector shows repository B; why_new=#810 handoff;
+  /// seam=FocusedTabSelection over the inspector subject, as the Changes panel reads it;
+  /// no_claim=the row rendering (ChangedFileRowInvalidationTests)
+  func testAFollowedRepositorysTabSelectsOnlyItsOwnRepositorysRow() {
+    func followed(_ root: String) -> InspectorSubject {
+      .followed(
+        FollowedFolder(
+          folder: root, repository: FollowedFolder.Repository(root: root, isWritable: true)))
+    }
+    func selects(_ content: TabContent, under subject: InspectorSubject) -> Bool {
+      FocusedTabSelection(content: content)?.selectsChangedFile(
+        path: "src/a.swift", source: .gitWorktree,
+        root: FocusedTabSelection.changedFileRoot(for: subject)) ?? false
+    }
+    let diffFromA = TabContent.diff(
+      DiffDescriptor(
+        path: "src/a.swift", change: .modified, source: .gitWorktree, isPreview: true,
+        repositoryRoot: "/repos/a"))
+    let fileFromA = TabContent.file(
+      FileDescriptor(path: "src/a.swift", isPreview: true, root: "/repos/a"))
+    let workroomDiff = TabContent.diff(
+      DiffDescriptor(path: "src/a.swift", change: .modified, source: .gitWorktree, isPreview: true))
+
+    XCTAssertTrue(selects(diffFromA, under: followed("/repos/a")))
+    XCTAssertFalse(selects(diffFromA, under: followed("/repos/b")), "another repository's diff")
+    XCTAssertTrue(selects(fileFromA, under: followed("/repos/a")))
+    XCTAssertFalse(selects(fileFromA, under: followed("/repos/b")), "another repository's file")
+    XCTAssertFalse(selects(diffFromA, under: .target(.workroom(project: "/p", name: "w"))))
+    XCTAssertTrue(
+      selects(workroomDiff, under: .target(.workroom(project: "/p", name: "w"))),
+      "a workroom's own tab names no root, nor do its rows")
+    XCTAssertFalse(selects(workroomDiff, under: followed("/repos/a")))
+  }
 }
