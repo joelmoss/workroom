@@ -34,10 +34,14 @@ import WorkroomVCS
 final class HostFileWatcher {
   private let core: WatchCore
 
+  /// `admit`, when given, decides off the main actor whether a delivery reaches `onChange` at all,
+  /// so a consumer that ignores most of a busy tree never pays a main-actor hop for it.
   init(
-    router: RepositoryRouter = .shared, onChange: @escaping @MainActor ([String], Bool) -> Void
+    router: RepositoryRouter = .shared,
+    admit: (@Sendable ([String], Bool) -> Bool)? = nil,
+    onChange: @escaping @MainActor ([String], Bool) -> Void
   ) {
-    core = WatchCore(router: router, onChange: onChange)
+    core = WatchCore(router: router, admit: admit, onChange: onChange)
   }
 
   deinit { core.stop() }
@@ -63,6 +67,7 @@ final class HostFileWatcher {
 // and the owners' calls reach it from different threads by design.
 private final class WatchCore: @unchecked Sendable {
   private let router: RepositoryRouter
+  private let admit: (@Sendable ([String], Bool) -> Bool)?
   private let onChange: @MainActor ([String], Bool) -> Void
 
   private let lock = NSLock()
@@ -73,9 +78,11 @@ private final class WatchCore: @unchecked Sendable {
   private var generation = 0
 
   init(
-    router: RepositoryRouter = .shared, onChange: @escaping @MainActor ([String], Bool) -> Void
+    router: RepositoryRouter = .shared, admit: (@Sendable ([String], Bool) -> Bool)? = nil,
+    onChange: @escaping @MainActor ([String], Bool) -> Void
   ) {
     self.router = router
+    self.admit = admit
     self.onChange = onChange
   }
 
@@ -118,6 +125,7 @@ private final class WatchCore: @unchecked Sendable {
 
   private func deliver(_ paths: [String], overflow: Bool, generation: Int) {
     guard current(generation) else { return }
+    if let admit, !admit(paths, overflow) { return }
     let onChange = self.onChange
     Task { @MainActor in onChange(paths, overflow) }
   }

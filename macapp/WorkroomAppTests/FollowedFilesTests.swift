@@ -350,13 +350,17 @@ final class FollowedFilesTests: XCTestCase {
 
   /// Value: protects=a repository at the home folder (dotfiles) not re-listing on every change
   /// under `~` (review of #807, finding 3); fails_when=a `~/Library` write re-lists it, or an
-  /// ordinary repository stops re-listing on a save; why_new=review; seam=FileTreeModel's watch
-  /// filter; no_claim=FSEvents
+  /// ordinary repository stops re-listing on a change it shows; why_new=review; seam=FileTreeModel's
+  /// watch filter; no_claim=FSEvents. Since #812's perf pass an ordinary repository re-lists for a
+  /// change it shows or a folder git doesn't list, not for any save (`FileTreeModelPerfTests`).
   func testARepositoryAtTheHomeFolderReListsOnlyForShownDirectories() {
     let shown: Set<String> = ["", "src"]
     func reloads(_ path: String, root: String) -> Bool {
-      FileTreeModel.shouldReload(
-        [path], overflow: false, root: root, plain: false, listed: shown, home: "/Users/me")
+      let scope = FileTreeModel.WatchScope(
+        root: root, plain: false, base: "", visible: shown, known: ["src"], home: "/Users/me")
+      return FileTreeModel.watchVerdict(
+        [path], overflow: false, scope: scope, exists: { _ in true })
+        == .reload
     }
     XCTAssertFalse(reloads("/Users/me/Library/Caches/x", root: "/Users/me"))
     XCTAssertFalse(reloads("/Users/me/Downloads/big.zip", root: "/Users/me"))
