@@ -52,16 +52,21 @@ final class TerminalGroupUITests: XCTestCase {
     XCTAssertEqual(elements(app, prefix: "workroom.tab.\(group)").count, 1)
     let spoken = [tab.label, tab.title, tab.value as? String ?? ""]
     XCTAssertTrue(spoken.contains { $0.contains("Ops") }, "named for the group: \(spoken)")
-    XCTAssertTrue(
-      element(app, "sidebar.group.new.\(group)").exists, "New Terminal in Group on its row")
+    // Its "+" shows only on hover, but stays in the accessibility tree at rest (XCUITest can't
+    // hover: `SidebarHoverTrailing`).
+    let plus = element(app, "sidebar.group.new.\(group)")
+    XCTAssertTrue(plus.exists, "New Terminal in Group on its row")
 
-    // Unfolded, the row lists the group's two terminals; folded, none. Its fold chevron is in its
-    // leading column at rest, as a project row's always shows.
+    // Unfolded, the row lists the group's two terminals; folded, none. Its fold chevron sits after
+    // its name, as a project row's does, and is there at rest though it shows only on hover.
     let terminals = elements(app, prefix: "sidebar.terminal.")
     XCTAssertTrue(waitForRows(terminals, 2), "its terminals under it")
     let fold = element(app, "sidebar.group.fold.\(group)")
     XCTAssertTrue(fold.waitForExistence(timeout: 5), "at rest, its chevron")
-    XCTAssertLessThan(fold.frame.maxX, row.frame.minX + 30, "in the rows' leading glyph column")
+    let name = row.staticTexts["Ops"].firstMatch
+    XCTAssertTrue(name.exists, "the group's name on its row")
+    XCTAssertGreaterThanOrEqual(fold.frame.minX, name.frame.maxX, "after the name")
+    XCTAssertLessThan(fold.frame.maxX, plus.frame.minX, "clear of the trailing column")
     fold.click()
     XCTAssertTrue(waitForRows(terminals, 0), "folding hides them")
     XCTAssertTrue(row.exists, "and keeps the row")

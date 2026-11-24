@@ -146,7 +146,10 @@ enum SidebarTerminalRowStyle: Equatable {
 /// against slot, so the last sits on the same vertical axis as every "+" and the rest line up from
 /// row to row; one that draws nothing takes no slot. The group's width never changes, so neither
 /// does the row's name. The buttons stay laid out at rest (faded and not hit-testable), so a menu
-/// opened from one survives the pointer leaving the row.
+/// opened from one survives the pointer leaving the row. Only their glyphs fade
+/// (`sidebarHoverReveal`), not the buttons: SwiftUI leaves a fully transparent view out of
+/// accessibility, and at rest the buttons stay in it, named and placed, as the fold chevrons do,
+/// for VoiceOver and for XCUITest, which can't hover (`TerminalGroupUITests`).
 struct SidebarHoverTrailing<Marks: View, Buttons: View>: View {
   let hovered: Bool
   @ViewBuilder let marks: () -> Marks
@@ -156,7 +159,7 @@ struct SidebarHoverTrailing<Marks: View, Buttons: View>: View {
     SidebarAnimated(target: hovered) { progress in
       SidebarHoverTrailingLayout(progress: progress) {
         slots(buttons())
-          .opacity(progress)
+          .environment(\.sidebarHoverReveal, progress)
           .allowsHitTesting(hovered)
         slots(marks())
       }
@@ -168,6 +171,12 @@ struct SidebarHoverTrailing<Marks: View, Buttons: View>: View {
       ForEach(subviews: content) { $0.frame(width: SidebarRowMetrics.iconColumnWidth) }
     }
   }
+}
+
+extension EnvironmentValues {
+  /// How far a row's hover buttons show, 0 at rest to 1 hovered (`SidebarHoverTrailing`). Their
+  /// glyphs (`SidebarIconGlyph`, `DeleteRowButton`) fade by it; it is 1 everywhere else.
+  @Entry var sidebarHoverReveal: CGFloat = 1
 }
 
 extension SidebarHoverTrailing where Buttons == EmptyView {
