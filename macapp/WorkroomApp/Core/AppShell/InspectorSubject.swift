@@ -102,8 +102,45 @@ struct FollowedFolder: Equatable, Sendable {
     /// `root` as the shell spells it (`~/dev/app` for a `~/dev` symlinked elsewhere, `/tmp/x` for
     /// `/private/tmp/x`), nil when it is spelled as `root`. Display only: `root` is the identity.
     var spelledRoot: String? = nil
+    /// Its git directory, as git named it: where a finished command's re-check reads HEAD, with
+    /// no `git` run. Nil where it isn't known.
+    var gitDir: String? = nil
 
     /// The root as the header, Details and the Files breadcrumb show it.
     var displayRoot: String { spelledRoot ?? root }
+  }
+
+  /// This folder's repository part alone: what the version-control sections (Changes, History,
+  /// Pull Request, the toolbar, the activity bar and the menu) read, so a `cd` within one
+  /// repository changes nothing they see. Inside a repository the folder is its root and the
+  /// subfolder is empty; outside one (or while git is telling) the folder is kept, since those
+  /// sections name it.
+  var repositoryPart: FollowedFolder {
+    guard var repository, lookup == .resolved else { return self }
+    repository.subfolder = ""
+    return FollowedFolder(folder: repository.root, repository: repository, lookup: lookup)
+  }
+
+  /// This folder's own part, apart from `repositoryPart`: the folder and where it sits in its
+  /// repository. What the header, Details and Files read on top of the repository part.
+  var folderPart: FolderPart {
+    FolderPart(folder: folder, subfolder: repository?.subfolder ?? "")
+  }
+
+  /// The folder a followed inspector shows, apart from its repository (`folderPart`).
+  struct FolderPart: Equatable, Sendable {
+    var folder: String
+    var subfolder: String
+  }
+}
+
+extension FollowedFolder {
+  /// `repositoryPart` with `place` put back: the whole followed folder.
+  init(repositoryPart: FollowedFolder, place: FolderPart) {
+    self = repositoryPart
+    if repositoryPart.repository != nil, repositoryPart.lookup == .resolved {
+      folder = place.folder
+      repository?.subfolder = place.subfolder
+    }
   }
 }

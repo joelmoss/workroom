@@ -487,11 +487,18 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     guard case .followed(let afterWatch) = store.inspectorSubject else { return XCTFail() }
     XCTAssertEqual(afterWatch.repository?.branch, "topic")
 
+    // A finished command re-reads nothing while the live watch covers the repository (#812 perf):
+    // the watch's own report of the switch is what re-reads it.
+    await store.vcsStatus.followedWatchesSettled()
     sh("git switch -q main", in: root)
     try XCTUnwrap(store.terminals.surface(tab)).onEvent?(.commandFinished(0))
     await settle(store)
     guard case .followed(let afterCommand) = store.inspectorSubject else { return XCTFail() }
-    XCTAssertEqual(afterCommand.repository?.branch, "main")
+    XCTAssertEqual(afterCommand.repository?.branch, "topic", "the command alone runs no git")
+    watch.onChange([root + "/.git/HEAD"], false)
+    await settle(store)
+    guard case .followed(let afterSwitch) = store.inspectorSubject else { return XCTFail() }
+    XCTAssertEqual(afterSwitch.repository?.branch, "main")
   }
 
   /// Value: protects=Files staying on a browsed folder across a re-read of the repository (#809

@@ -115,27 +115,95 @@ struct GitRepositoryProbe: Sendable {
     let lines = found.stdout.split(whereSeparator: \.isNewline).map(String.init)
     guard lines.count == 2 else { return .unknown }
     let (root, gitDir) = (lines[0], lines[1])
-    let atRoot = await discoveryRunner.run(
-      "git", GitCommand.hardening + ["rev-parse", "--absolute-git-dir"], in: root,
-      timeout: timeout)
-    guard atRoot.ok else { return Self.notARepository(atRoot) ? .notARepository : .unknown }
-    guard atRoot.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == gitDir else {
-      return .notARepository
-    }
+    // One stat pass on GCD: whether the root holds a repository, whether it is writable, whether
+    // git's discovery from the root provably lands on `gitDir` (so the `rev-parse` that checks it
+    // can be skipped), and the branch HEAD names. One git spawn per resolve in the usual layouts.
     guard
-      let (isRepository, isWritable) = await stat(
-        "root\u{0}\(root)",
+      let facts = await stat(
+        "root\u{0}\(root)\u{0}\(gitDir)",
         {
-          (
-            isGitRepo(at: URL(fileURLWithPath: root)),
-            FileManager.default.isWritableFile(atPath: root)
-          )
+          RootFacts(
+            isRepository: isGitRepo(at: URL(fileURLWithPath: root)),
+            isWritable: FileManager.default.isWritableFile(atPath: root),
+            discoversGitDir: Self.rootDiscovers(gitDir, root: root),
+            head: Self.headBranch(gitDir: gitDir))
         })
     else { return .unknown }
-    guard isRepository else { return .notARepository }
+    // The root counts only when the repository found from it is the folder's (`core.worktree`):
+    // proved from the file system in the usual layouts, else asked of git under the normal ceiling.
+    if !facts.discoversGitDir {
+      let atRoot = await discoveryRunner.run(
+        "git", GitCommand.hardening + ["rev-parse", "--absolute-git-dir"], in: root,
+        timeout: timeout)
+      guard atRoot.ok else { return Self.notARepository(atRoot) ? .notARepository : .unknown }
+      guard atRoot.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == gitDir else {
+        return .notARepository
+      }
+    }
+    guard facts.isRepository else { return .notARepository }
+    let branch: String? =
+      switch facts.head {
+      case .branch(let name): name
+      case .detached: nil
+      case .unreadable: await localBranch(path: root, branch: nil)
+      }
     return .repository(
       FollowedFolder.Repository(
-        root: root, branch: await localBranch(path: root, branch: nil), isWritable: isWritable))
+        root: root, branch: branch, isWritable: facts.isWritable, gitDir: gitDir))
+  }
+
+  /// What the resolve reads of a repository's root in one blocking pass.
+  private struct RootFacts: Sendable {
+    var isRepository: Bool
+    var isWritable: Bool
+    var discoversGitDir: Bool
+    var head: Head
+  }
+
+  /// What a repository's `HEAD` file names.
+  enum Head: Equatable, Sendable {
+    case branch(String)
+    case detached
+    /// Not a plain loose `HEAD` (reftable's stub, an unreadable file): ask git.
+    case unreadable
+  }
+
+  /// The branch `<gitDir>/HEAD` names, read as git writes it, so the resolve spawns no
+  /// `symbolic-ref`. Blocking: call on GCD.
+  static func headBranch(gitDir: String) -> Head {
+    guard let data = FileManager.default.contents(atPath: gitDir + "/HEAD"),
+      let text = String(data: data, encoding: .utf8)
+    else { return .unreadable }
+    let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if line.hasPrefix("ref: ") {
+      let name = line.dropFirst("ref: ".count).trimmingCharacters(in: .whitespaces)
+      // Reftable keeps a `refs/heads/.invalid` stub here; the real HEAD is in its tables.
+      guard name.hasPrefix("refs/heads/"), name != "refs/heads/.invalid" else {
+        return .unreadable
+      }
+      let branch = String(name.dropFirst("refs/heads/".count))
+      return branch.isEmpty ? .unreadable : .branch(branch)
+    }
+    // A detached HEAD is a bare object name.
+    let isObjectName = (line.count == 40 || line.count == 64) && line.allSatisfy(\.isHexDigit)
+    return isObjectName ? .detached : .unreadable
+  }
+
+  /// Whether git's discovery from `root` provably finds `gitDir`, as the file system shows it:
+  /// `<root>/.git` is that directory, or a `.git` file naming it absolutely (a linked worktree, a
+  /// submodule). Anything else (`core.worktree` relocating the work tree, a relative `gitdir:`) is
+  /// left to git. Blocking: call on GCD.
+  static func rootDiscovers(_ gitDir: String, root: String) -> Bool {
+    let dotGit = root + "/.git"
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) else {
+      return false
+    }
+    if isDirectory.boolValue { return gitDir == dotGit }
+    guard let data = FileManager.default.contents(atPath: dotGit),
+      let text = String(data: data, encoding: .utf8)
+    else { return false }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines) == "gitdir: \(gitDir)"
   }
 
   /// Whether `path` is a folder on disk.

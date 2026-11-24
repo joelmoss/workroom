@@ -65,7 +65,7 @@ struct ActivityBar: View {
   /// icon's dirty dot. Keyed off the inspector's subject (nothing when the selection has no open
   /// tabs, so the Changes pane is empty and the dot stays hidden), matching what the pane shows.
   private var changesDirty: Bool {
-    vcsStatus.status(for: store.inspectorSubject)?.dirty == true
+    vcsStatus.status(for: store.inspectorRepositorySubject)?.dirty == true
   }
 }
 

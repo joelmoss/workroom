@@ -409,7 +409,7 @@ struct ChangesPanelAdapter: View {
 
   /// The panel's inputs from `store`.
   static func inputs(store: AppStore) -> ChangesPanelInputs {
-    let subject = store.inspectorSubject
+    let subject = store.inspectorRepositorySubject
     let target: TerminalTarget? =
       if case .followed = subject {
         store.inspectorHistoryTarget

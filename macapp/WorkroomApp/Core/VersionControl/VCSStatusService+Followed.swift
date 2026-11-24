@@ -41,6 +41,11 @@ struct FollowedRepositoryHold {
   var registrationFailures = 0
   /// The wait before the next retry of a registration that came back empty.
   var registrationRetry: Task<Void, Never>? = nil
+  /// Whether its watches are set up to report a change to its git directory (HEAD, refs, `.git`
+  /// itself), and to anything in its tree (a nested `git init`): what lets a window skip re-reading
+  /// it when a command finishes (`followedWatchCoverage`).
+  var watchesGitDirectory = false
+  var watchesTree = false
 }
 
 /// The registered project roots and local workrooms by canonical path (`VCSStatusService
@@ -210,6 +215,14 @@ extension VCSStatusService {
   func status(forFollowedRoot root: String) -> WorkroomStatus? {
     if let sid = registeredSidebarID(forCanonicalRoot: root) { return workroomStatuses[sid] }
     return followedStatuses[root]
+  }
+
+  /// What the watches of followed repository `root` report: changes to its git directory, and to
+  /// anything in its tree. Both false for a root no window follows, or one whose watch setup has
+  /// not finished (a linked worktree's git directory is found by a `git` run).
+  func followedWatchCoverage(_ root: String) -> (gitDirectory: Bool, tree: Bool) {
+    guard let hold = followedRepositories[root] else { return (false, false) }
+    return (hold.watchesGitDirectory, hold.watchesTree)
   }
 
   /// Whether some window follows `root`.
@@ -498,9 +511,13 @@ extension VCSStatusService {
       // Let go of while it ran, and perhaps followed again: that hold sets up its own watch.
       guard let self, self.followedRepositories[key]?.id == hold else { return }
       if broad, !outside { self.watchFollowedTree(key, at: key + "/.git") }
+      self.followedRepositories[key]?.watchesTree = !broad
       // A linked worktree's `.git` is a file naming a git directory inside its main repository,
       // which holds the worktree's HEAD and the refs a commit or `git switch` moves.
-      guard outside else { return }
+      guard outside else {
+        self.followedRepositories[key]?.watchesGitDirectory = true
+        return
+      }
       let r = await StatusCommandRunner().run(
         "git",
         GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -513,6 +530,7 @@ extension VCSStatusService {
       }
       metadata.start(path: directory)
       self.followedRepositories[key]?.watchers.append(metadata)
+      self.followedRepositories[key]?.watchesGitDirectory = true
     }
   }
 

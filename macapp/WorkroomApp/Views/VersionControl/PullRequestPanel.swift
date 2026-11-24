@@ -8,7 +8,7 @@ import WorkroomVCS
 /// workroom's branch — its full (wrapping) title, review decision, per-reviewer rows, and CI
 /// checks. The PR's state + number + open-in-browser link live in the section header's number badge
 /// (see `RightInspector.prNumberLink`, issue #77), not here. Reads
-/// `store.inspectorSubject` + its status's `pr` in `vcsStatus`, which a slow `gh pr list` probe
+/// `store.inspectorRepositorySubject` + its status's `pr` in `vcsStatus`, which a slow `gh pr list` probe
 /// fills on selection (like CI). Covers the same edge states as the Changes panel: nothing
 /// selected, a project (non-target), still-probing, and no PR for the branch.
 struct PullRequestPanel: View {
@@ -19,13 +19,15 @@ struct PullRequestPanel: View {
 
   var body: some View {
     Group {
-      if case .followed(let followed) = store.inspectorSubject, followed.repositoryPending {
+      if case .followed(let followed) = store.inspectorRepositorySubject, followed.repositoryPending
+      {
         // Its repository is still resolving: blank at first, so a fast answer never flashes a
         // loader, then the section's own loader.
         if store.followedFolderLoaderShown { checkingMessage } else { EmptyView() }
-      } else if case .followed(let followed) = store.inspectorSubject,
+      } else if case .followed(let followed) = store.inspectorRepositorySubject,
         followed.repository == nil
-          || vcsStatus.status(for: store.inspectorSubject)?.failure?.meansNoRepository == true
+          || vcsStatus.status(for: store.inspectorRepositorySubject)?.failure?.meansNoRepository
+            == true
       {
         // A terminal's followed folder in no repository (#807): no branch to have a pull request.
         NotARepositoryMessage(
@@ -34,7 +36,7 @@ struct PullRequestPanel: View {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
         ghWarning(vcsStatus.githubCLIStatus)
       } else {
-        switch store.inspectorSubject {
+        switch store.inspectorRepositorySubject {
         case .target(let sid) where sid.isStatusable:
           content(for: .row(sid))
         case .followed:
@@ -140,7 +142,7 @@ struct PullRequestPanel: View {
   /// `target`: what the pull request's actions act on; nil (a repository the app can't write to)
   /// shows none.
   private func content(for target: VCSActionTarget?) -> some View {
-    let status = vcsStatus.status(for: store.inspectorSubject)
+    let status = vcsStatus.status(for: store.inspectorRepositorySubject)
     if status?.prCheckedAt == nil {
       checkingMessage
     } else if let status {

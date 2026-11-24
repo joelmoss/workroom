@@ -78,7 +78,7 @@ struct RightInspector: View {
       // History hosts its body in fill mode (it scrolls itself via SwiftUI); the other sections
       // keep the default NSScrollView hosting. Files fills too, so its followed-folder breadcrumb
       // stays pinned above the list (#809).
-      fills: subs.map { $0 == .history || $0 == .files },
+      fills: subs.map(Self.fills),
       sectionKey: store.activeInspectorSection.rawValue,
       // The section layout is GLOBAL, not per-workroom, so this key is constant: switching workrooms
       // must not trigger the controller's workroom-switch redistribute (only a section change, via
@@ -93,7 +93,9 @@ struct RightInspector: View {
         store.updateInspectorSizeWeights(full)
       },
       // A followed repository's Changes and Pull Request keep their scroll per repository (#810).
-      scrollKeys: subs.map { store.inspectorMemoryKey(for: $0) },
+      // A fill-mode pane scrolls itself and ignores its key, so none is read for it: Files' would
+      // observe the followed folder, and re-render the whole inspector on every `cd`.
+      scrollKeys: subs.map { Self.fills($0) ? nil : store.inspectorMemoryKey(for: $0) },
       scrollMemory: store.inspectorScrollMemory
     )
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -108,6 +110,11 @@ struct RightInspector: View {
       }
       Button("Cancel", role: .cancel) {}
     }
+  }
+
+  /// Whether `sub` hosts its body in fill mode, scrolling itself (`InspectorSplitView.fills`).
+  private static func fills(_ sub: InspectorSectionKind) -> Bool {
+    sub == .history || sub == .files
   }
 
   /// Whether the inspector's subject has anything a commit could record.
@@ -310,7 +317,7 @@ struct RightInspector: View {
   /// The status of the inspector's subject, or nil when it is a non-target (project) or nothing —
   /// drives the header indicators so a collapsed section still shows state.
   private var selectedStatus: WorkroomStatus? {
-    vcsStatus.status(for: store.inspectorSubject)
+    vcsStatus.status(for: store.inspectorRepositorySubject)
   }
 
   /// Changes header indicator: how many files changed (a capsule count) and the working-tree line counts

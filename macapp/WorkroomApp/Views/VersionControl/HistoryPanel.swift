@@ -223,9 +223,9 @@ struct HistoryPanelAdapter: View {
 
   private var inputs: HistoryPanelInputs {
     HistoryPanelInputs(
-      hasTarget: store.inspectorSubject != .nothing,
+      hasTarget: store.inspectorRepositorySubject != .nothing,
       activationKey: .init(
-        subject: store.inspectorSubject.repositoryKey, shown: store.historySectionShown),
+        subject: store.inspectorRepositorySubject.repositoryKey, shown: store.historySectionShown),
       notARepository: notARepository,
       repositoryUndetermined: repositoryUndetermined,
       repositoryPending: repositoryPending,
@@ -241,7 +241,8 @@ struct HistoryPanelAdapter: View {
 
   /// The followed folder, when it is in no repository.
   private var notARepository: String? {
-    guard case .followed(let followed) = store.inspectorSubject, followed.repository == nil,
+    guard case .followed(let followed) = store.inspectorRepositorySubject,
+      followed.repository == nil,
       !followed.repositoryPending
     else { return nil }
     return followed.folder
@@ -249,13 +250,13 @@ struct HistoryPanelAdapter: View {
 
   /// Whether the followed folder's repository is still resolving.
   private var repositoryPending: Bool {
-    guard case .followed(let followed) = store.inspectorSubject else { return false }
+    guard case .followed(let followed) = store.inspectorRepositorySubject else { return false }
     return followed.repositoryPending
   }
 
   /// Whether git couldn't tell which repository the followed folder is in.
   private var repositoryUndetermined: Bool {
-    guard case .followed(let followed) = store.inspectorSubject else { return false }
+    guard case .followed(let followed) = store.inspectorRepositorySubject else { return false }
     return followed.repositoryUndetermined
   }
 

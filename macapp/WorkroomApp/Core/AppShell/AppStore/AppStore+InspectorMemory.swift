@@ -30,12 +30,15 @@ extension AppStore {
   /// other than a followed folder.
   /// Nil too while the folder's repository is pending, whose sections show nothing to scroll.
   func inspectorMemoryKey(for section: InspectorSectionKind) -> InspectorMemoryKey? {
-    guard case .followed(let followed) = inspectorSubject, !followed.repositoryPending else {
+    // The repository part alone, so the version-control sections observe no `cd` within one
+    // repository; Files reads its folder.
+    let subject = inspectorRepositorySubject
+    guard case .followed(let followed) = subject, !followed.repositoryPending else {
       return nil
     }
     switch section {
     case .changes, .history, .pullRequest:
-      return .section(section, inspectorSubject.repositoryKey)
+      return .section(section, subject.repositoryKey)
     case .files:
       return followedFilesRoot.map { .files(fileRoot: $0.fileRoot, path: $0.path) }
     }

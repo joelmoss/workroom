@@ -231,7 +231,32 @@ final class AppStore: ObservableObject {
   /// The folder this window's inspector follows for the selected Terminals-section target (#803),
   /// and which target it was resolved for, so a value never outlives its selection. Written only by
   /// `refreshFollowedFolder`; read through `inspectorSubject`.
-  var followedFolderState: FollowedFolderState?
+  ///
+  /// Stored as two observed parts, each written only when it changes: the repository part
+  /// (`followedRepositoryState`) and the folder part (`followedFolderPlace`), so a `cd` within one
+  /// repository re-renders only what reads the folder (the header, Details, Files), never the
+  /// version-control sections, which read `inspectorRepositorySubject`.
+  var followedFolderState: FollowedFolderState? {
+    get {
+      guard let repository = followedRepositoryState else { return nil }
+      guard let place = followedFolderPlace else { return repository }
+      return FollowedFolderState(
+        target: repository.target,
+        folder: FollowedFolder(repositoryPart: repository.folder, place: place))
+    }
+    set {
+      let repository = newValue.map {
+        FollowedFolderState(target: $0.target, folder: $0.folder.repositoryPart)
+      }
+      let place = newValue?.folder.folderPart
+      if followedRepositoryState != repository { followedRepositoryState = repository }
+      if followedFolderPlace != place { followedFolderPlace = place }
+    }
+  }
+  /// The repository part of `followedFolderState` (`FollowedFolder.repositoryPart`).
+  private(set) var followedRepositoryState: FollowedFolderState?
+  /// The folder part of `followedFolderState` (`FollowedFolder.folderPart`).
+  private(set) var followedFolderPlace: FollowedFolder.FolderPart?
   /// Whether the followed folder's pending lookup has outlasted the loader's delay: what
   /// `followedFolderLoaderShown` reads. Written only by `syncFollowedFolderLoader`.
   var followedFolderLoaderElapsedFlag = false
@@ -512,7 +537,7 @@ final class AppStore: ObservableObject {
   /// A `.project` row is deliberately not statusable — it's the collapsible header, not a working copy —
   /// so it resolves to nil and the toolbar shows its "no workroom selected" state.
   func remoteTarget() -> RemoteStateModel.Target? {
-    switch inspectorSubject {
+    switch inspectorRepositorySubject {
     case .target(let sid): return remoteTarget(for: sid)
     case .followed(let followed):
       // A terminal's followed repository (#808): where Commit is offered, so the toolbar can't
@@ -1103,10 +1128,10 @@ final class AppStore: ObservableObject {
       guard self.selectedTargetID?.targetID == targetID else { return }
       self.refreshFollowedFolder()
     // A finished command may have moved the repository without a `cd` (`git switch`, `git init`,
-    // `rm -rf .git`): re-read it, as the Quick Terminal's live branch does (#807).
-    case .commandFinished(let targetID, _):
+    // `rm -rf .git`): the followed tab's is re-checked where no live watch reports it (#807).
+    case .commandFinished(let targetID, let tabID):
       guard self.selectedTargetID?.targetID == targetID else { return }
-      self.reresolveFollowedFolder()
+      self.followedCommandFinished(tab: tabID)
     // Effective focus is the one authority for reading a terminal's notifications (#358).
     case .terminalSeen(_, let tabID):
       notifications.dismiss(tab: tabID)
@@ -1412,13 +1437,28 @@ final class AppStore: ObservableObject {
     return .followed(state.folder)
   }
 
+  /// The inspector's subject with a followed folder's repository part alone
+  /// (`FollowedFolder.repositoryPart`): what the version-control sections, the toolbar, the
+  /// activity bar and the menu read, so they observe nothing a `cd` within one repository changes.
+  /// The header, Details and Files read `inspectorSubject`, which adds the folder back.
+  var inspectorRepositorySubject: InspectorSubject {
+    guard selectionHasTabs, let sid = selectedTargetID, let id = sid.targetID,
+      id != .quickTerminal
+    else { return .nothing }
+    guard sid.isInTerminalsSection else { return .target(sid) }
+    guard Self.followsFolder(sid), let state = followedRepositoryState, state.target == id else {
+      return .nothing
+    }
+    return .followed(state.folder)
+  }
+
   /// The sidebar item the inspector is about: the subject's, nil for a followed folder and for
   /// nothing. What an action keyed by a sidebar item takes (the workroom's menu, a commit, a pull
   /// request action).
-  var inspectorTargetID: SidebarID? { inspectorSubject.sidebarID }
+  var inspectorTargetID: SidebarID? { inspectorRepositorySubject.sidebarID }
   /// That sidebar item's target, nil once it has gone.
   var inspectorTarget: TerminalTarget? {
-    switch inspectorSubject {
+    switch inspectorRepositorySubject {
     case .target(let sid): return target(for: sid)
     case .followed, .nothing: return nil
     }

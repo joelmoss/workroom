@@ -78,7 +78,8 @@ extension AppStore {
     if remoteState.target == target, let name = remoteState.snapshot?.current.name, !name.isEmpty {
       return name
     }
-    guard case .followed(let followed) = inspectorSubject, let repository = followed.repository,
+    guard case .followed(let followed) = inspectorRepositorySubject,
+      let repository = followed.repository,
       repository.root == root
     else { return nil }
     return repository.branch
