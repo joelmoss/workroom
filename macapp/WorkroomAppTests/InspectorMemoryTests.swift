@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import WorkroomDomain
 import WorkroomSystem
 import XCTest
@@ -295,6 +297,60 @@ final class InspectorMemoryTests: XCTestCase {
     XCTAssertEqual(store.inspectorSubject, .target(.workroom(project: "/p", name: "a")))
     XCTAssertNil(store.inspectorMemoryKey(for: .changes))
     XCTAssertNil(store.inspectorMemoryKey(for: .files))
+  }
+
+  /// Value: protects=a Changes or Pull Request pane restoring its repository's scroll when that
+  /// repository's content arrives after the switch (AC 1); fails_when=a briefly short body
+  /// clamps the clip view and that clamp is kept as the repository's offset, or another
+  /// repository opens at the last one's offset; why_new=#810; seam=InspectorPaneViewController;
+  /// no_claim=a real trackpad scroll (posted as the live-scroll notification it raises)
+  func testAScrollPaneRestoresItsOffsetWhenTheContentArrivesLate() throws {
+    let memory = InspectorScrollMemory()
+    let pane = InspectorPaneViewController()
+    pane.view.frame = NSRect(x: 0, y: 0, width: 300, height: 200)
+    let scroll = try XCTUnwrap(pane.view.subviews.compactMap { $0 as? NSScrollView }.first)
+    func show(_ height: CGFloat, under key: String) {
+      pane.setContent(
+        header: AnyView(EmptyView()),
+        body: AnyView(Color.clear.frame(width: 300, height: height)), collapsed: false)
+      pane.remembersScroll(under: key, in: memory)
+      pane.view.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      pane.view.layoutSubtreeIfNeeded()
+    }
+    var offset: CGFloat { scroll.contentView.bounds.origin.y }
+
+    show(2000, under: "a")
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 300))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+    XCTAssertEqual(memory.offset(under: "a"), 300)
+
+    show(2000, under: "b")
+    XCTAssertEqual(offset, 0, "another repository opens at its top")
+
+    show(50, under: "a")
+    XCTAssertEqual(memory.offset(under: "a"), 300, "a short body's clamp is not remembered")
+    show(2000, under: "a")
+    XCTAssertEqual(offset, 300, "restored once the content is there")
+  }
+
+  /// Value: protects=Changes' and History's selection surviving a round trip between
+  /// repositories (AC 1); fails_when=a repository switch drops or replaces the focused content
+  /// tab the selected row is read from; why_new=#810; seam=AppStore; no_claim=row highlighting
+  func testSelectionSurvivesARoundTripBetweenRepositories() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let app = repo("app")
+    let other = repo("other")
+    try await cd(store, tab, app)
+    store.openChangesetPersistent(commitID: "abc", title: "base")
+    let selected = FocusedTabSelection.current(store: store)
+    XCTAssertEqual(selected, .changeset(commitID: "abc"))
+
+    try await cd(store, tab, other)
+    try await cd(store, tab, app)
+    XCTAssertEqual(FocusedTabSelection.current(store: store), selected)
   }
 
   // MARK: Section

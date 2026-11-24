@@ -133,10 +133,11 @@ final class FileTreeModel: ObservableObject {
     case .repository(let path, let subfolder):
       if isPlain { forgetPath() }
       if path == currentPath {
+        // Set first: a workroom's tree at this same path becomes a followed one here.
+        remembersExpansion = true
         guard subfolder != self.subfolder else { return }
         rememberExpansion()
         self.subfolder = subfolder
-        remembersExpansion = true
         expanded = recalledExpansion()
         plainListings = [:]
         reroot()

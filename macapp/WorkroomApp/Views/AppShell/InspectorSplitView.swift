@@ -153,11 +153,10 @@ final class InspectorPaneViewController: NSViewController {
 
   private var scrollKey: String?
   private var scrollMemory: InspectorScrollMemory?
-  /// The offset a return to `scrollKey` still has to reach: its content may arrive after the switch
-  /// (a status read), so each document resize tries again until it fits or the user scrolls.
+  /// The offset a return to `scrollKey` restores. Its content may arrive after the switch (a
+  /// status read), and is clamped meanwhile, so every document resize re-applies it until the user
+  /// scrolls.
   private var pendingOffset: CGFloat?
-  /// Where the last restore put the clip view, to tell the user's own scroll from the restore's.
-  private var restoredY: CGFloat?
   private var observesScroll = false
 
   /// Remember a scroll-mode body's offset under `key` as the user scrolls, and restore the one
@@ -177,46 +176,45 @@ final class InspectorPaneViewController: NSViewController {
     applyPendingOffset()
   }
 
+  /// Only the user's own scrolls (live scrolls) are remembered: a clip view clamped by a body
+  /// that is briefly short must not overwrite where they left it.
   private func observeScrollIfNeeded() {
     guard !observesScroll else { return }
     observesScroll = true
-    let clip = bodyScroll.contentView
-    clip.postsBoundsChangedNotifications = true
     bodyHost.view.postsFrameChangedNotifications = true
     let center = NotificationCenter.default
     center.addObserver(
-      self, selector: #selector(clipBoundsDidChange(_:)),
-      name: NSView.boundsDidChangeNotification, object: clip)
+      self, selector: #selector(userWillScroll(_:)),
+      name: NSScrollView.willStartLiveScrollNotification, object: bodyScroll)
+    for name in [NSScrollView.didLiveScrollNotification, NSScrollView.didEndLiveScrollNotification]
+    {
+      center.addObserver(
+        self, selector: #selector(userDidScroll(_:)), name: name, object: bodyScroll)
+    }
     center.addObserver(
       self, selector: #selector(documentFrameDidChange(_:)),
       name: NSView.frameDidChangeNotification, object: bodyHost.view)
   }
 
-  @objc private func clipBoundsDidChange(_ notification: Notification) {
-    let y = bodyScroll.contentView.bounds.origin.y
-    if pendingOffset != nil {
-      // The user scrolled before the restore could land: theirs wins.
-      guard let restoredY, abs(y - restoredY) > 0.5 else { return }
-      pendingOffset = nil
-    }
+  @objc private func userWillScroll(_ notification: Notification) { pendingOffset = nil }
+
+  @objc private func userDidScroll(_ notification: Notification) {
+    pendingOffset = nil
     guard let scrollKey else { return }
-    scrollMemory?.remember(y, under: scrollKey)
+    scrollMemory?.remember(bodyScroll.contentView.bounds.origin.y, under: scrollKey)
   }
 
   @objc private func documentFrameDidChange(_ notification: Notification) {
     applyPendingOffset()
   }
 
-  /// Scroll as near `pendingOffset` as the content allows, without animating; done once reached.
+  /// Scroll as near `pendingOffset` as the content allows, without animating.
   private func applyPendingOffset() {
     guard let target = pendingOffset else { return }
     let clip = bodyScroll.contentView
     let limit = max(0, bodyHost.view.frame.height - clip.bounds.height)
-    let y = min(target, limit)
-    restoredY = y
-    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(target, limit)))
     bodyScroll.reflectScrolledClipView(clip)
-    if y >= target { pendingOffset = nil }
   }
 }
 
