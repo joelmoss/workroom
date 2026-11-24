@@ -743,6 +743,62 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertGreaterThan(counted.withLock { $0 }, before, "a new project rebuilds the index")
   }
 
+  /// Value: protects=a stalled mount never freezing the windows (Codex on #812); fails_when=
+  /// following, asking about, refreshing or letting go of a followed repository resolves its path
+  /// (`realpath`) on the main actor, rather than reading git's canonical root as the key it is;
+  /// why_new=review; seam=VCSStatusService follow/unfollow + `canonicalise`; no_claim=a real stall
+  func testFollowingAndLettingGoResolveNoPath() async throws {
+    let root = repo("app")
+    let link = scratch.appendingPathComponent("link").path
+    try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: root)
+    let status = makeStatus()
+    let counted = Mutex(0)
+    status.canonicalise = { path in
+      counted.withLock { $0 += 1 }
+      return VCSStatusService.canonicalPath(path)
+    }
+
+    status.follow(root)
+    XCTAssertTrue(status.isFollowing(root))
+    XCTAssertFalse(status.isFollowing(link), "a key is read as given: nothing resolves it")
+    status.refreshFollowedStatus(root, gitHub: false)
+    status.retryFollowedRegistration(root)
+    await status.followedStatusSettled()
+    status.unfollow(link)
+    XCTAssertTrue(status.isFollowing(root), "another spelling holds nothing")
+    status.unfollow(root)
+
+    XCTAssertFalse(status.isFollowing(root))
+    XCTAssertEqual(watcher(for: root)?.stopped, true)
+    XCTAssertEqual(counted.withLock { $0 }, 0)
+    await status.followedRegistrationsSettled()
+  }
+
+  /// Value: protects=a held followed repository's pull request and CI staying current (Codex on
+  /// #812); fails_when=the status sweep refreshes only registered rows, so CI finishing or a PR
+  /// merging elsewhere leaves a followed repository's state stale; why_new=review;
+  /// seam=VCSStatusService.refreshWorkroomStatuses (gh stubbed); no_claim=the timer's interval
+  func testTheSweepRefreshesAFollowedRepositorysGitHubStateOnTheWorkroomsCadence() async throws {
+    let status = makeStatus(onGitHub: true)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app", branch: "feature/x")
+    try await cd(store, tab, root)
+    let checked = try XCTUnwrap(status.followedStatuses[root]?.ciCheckedAt)
+    let probed = pullRequestBranches.count
+
+    status.refreshWorkroomStatuses()
+    await status.statusSweepTask?.value
+    await status.followedStatusSettled()
+    XCTAssertEqual(pullRequestBranches.count, probed, "not again within the CI TTL")
+
+    status.followedStatuses[root]?.ciCheckedAt = checked.addingTimeInterval(-3600)
+    status.refreshWorkroomStatuses()
+    await status.statusSweepTask?.value
+    await status.followedStatusSettled()
+    XCTAssertEqual(pullRequestBranches.count, probed + 1, "once it is stale, as a workroom's")
+  }
+
   /// Value: protects=arrow-keying past terminals in different repositories (review of #807,
   /// finding 5); fails_when=a repository followed for less than the selection's debounce forks
   /// git and gh; why_new=review; seam=VCSStatusService follow/unfollow (gh stubbed);

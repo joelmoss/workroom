@@ -303,9 +303,10 @@ extension AppStore {
   /// one it followed before: what keeps a followed repository's status and watch alive while some
   /// window follows it, and drops them when none does (#807).
   func holdFollowedRepository() {
+    // git's root, canonical already: no `realpath` here, on the main actor (Codex on #812).
     var root: String?
     if case .followed(let followed) = inspectorSubject, let repository = followed.repository {
-      root = VCSStatusService.canonicalPath(repository.root)
+      root = repository.root
     }
     guard root != followedFolder.heldRepository else {
       // The same repository, re-read (a `cd` within it, a re-resolve): a registration that came

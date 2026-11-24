@@ -99,8 +99,12 @@ extension VCSStatusService {
   }
 
   /// Whether some window follows `root`.
+  ///
+  /// Every root this extension takes (here and in `follow`, `unfollow` and the refreshes) is git's,
+  /// so canonical already, and is the key as given: none runs `realpath` on the main actor, where a
+  /// stalled network mount would freeze every window (Codex on #812).
   func isFollowing(_ root: String) -> Bool {
-    followedRepositories[Self.canonicalPath(root)] != nil
+    followedRepositories[root] != nil
   }
 
   // MARK: Holding
@@ -108,7 +112,7 @@ extension VCSStatusService {
   /// A window's inspector follows `root`: watch it, if no other window already does, and probe it.
   /// Balanced by one `unfollow(_:)`.
   func follow(_ root: String) {
-    let key = Self.canonicalPath(root)
+    let key = root
     if var hold = followedRepositories[key] {
       hold.holders += 1
       followedRepositories[key] = hold
@@ -120,7 +124,7 @@ extension VCSStatusService {
       hold.registering = true
       hold.registration = registerFollowed(key, hold: hold.id)
       followedRepositories[key] = hold
-      if registeredSidebarID(forRepositoryRoot: key) == nil, followedStatuses[key] == nil {
+      if registeredSidebarID(forCanonicalRoot: key) == nil, followedStatuses[key] == nil {
         // One followed lately shows what it last showed at once; the probe below refreshes it.
         followedStatuses[key] = recentFollowedStatuses.value(for: key) ?? .unresolved
       }
@@ -133,7 +137,7 @@ extension VCSStatusService {
   /// A window's inspector stops following `root`. The last one out stops its watch and drops its
   /// status, so nothing is left to go stale.
   func unfollow(_ root: String) {
-    let key = Self.canonicalPath(root)
+    let key = root
     guard var hold = followedRepositories[key] else { return }
     hold.holders -= 1
     if hold.holders > 0 {
@@ -209,7 +213,7 @@ extension VCSStatusService {
   /// in place of the backoff's wait. Nothing while one is running, or once it is registered. Its
   /// writes stay refused until the new one is in.
   func retryFollowedRegistration(_ root: String) {
-    let key = Self.canonicalPath(root)
+    let key = root
     guard unregisteredFollowedRoots.contains(key), var hold = followedRepositories[key],
       !hold.registering
     else { return }
@@ -406,7 +410,7 @@ extension VCSStatusService {
   /// `git switch`, a commit, a push or fetch) asks GitHub again too, after the probe's debounce:
   /// the branch's pull request and CI may be another's now (review of #807, finding 2).
   func handleFollowedRepositoryChange(_ root: String, paths: [String], overflow: Bool) {
-    let key = Self.canonicalPath(root)
+    let key = root
     guard followedRepositories[key] != nil else { return }
     if !overflow, !paths.isEmpty, paths.allSatisfy(AppStore.isJJInternalPath) { return }
     let incomplete = overflow || paths.isEmpty
@@ -438,11 +442,11 @@ extension VCSStatusService {
   func refreshFollowedStatus(
     _ root: String, gitHub: Bool, debounced: Bool = false
   ) -> Task<Void, Never>? {
-    let key = Self.canonicalPath(root)
+    let key = root
     // Probed even under seeded statuses: a followed folder is a real repository (the UI-test
     // fixture's are throwaway ones its shell makes), where a seeded row's path is not one.
     guard var hold = followedRepositories[key] else { return nil }
-    let registered = registeredSidebarID(forRepositoryRoot: key)
+    let registered = registeredSidebarID(forCanonicalRoot: key)
     // A registered row keeps its seeded status, as its own lanes leave it.
     if registered != nil, !probesRepositories { return nil }
     let item = registered.flatMap(selectedStatusWorkItem(for:))

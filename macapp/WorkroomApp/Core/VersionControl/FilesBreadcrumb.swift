@@ -2,7 +2,7 @@ import Foundation
 
 /// What the Files section lists (#809): a repository's working tree, or the part of it under one
 /// of its folders, or a plain folder outside any repository.
-enum FilesRoot: Equatable, Sendable {
+enum FilesRoot: Hashable, Sendable {
   /// `root`'s tracked and untracked-but-not-ignored files under `subfolder` ("" for all of them),
   /// as git lists them. File paths stay relative to `root`, so a file is the same file whichever of
   /// its folders the tree shows.

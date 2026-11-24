@@ -9,6 +9,16 @@ struct FilesBrowse: Equatable {
   var root: FilesRoot
 }
 
+/// What the Files section re-points on (`FilesPanel`'s `.task`): the subject, the whole root it
+/// lists, and Files showing. The root's repository too, not only the folder shown: a `git init` in
+/// a followed repository's subfolder keeps the folder but changes the root its paths are relative
+/// to, and the tree must re-root with it (Codex on #812).
+struct FilesActivation: Hashable {
+  var subject: InspectorSubject.Key
+  var root: FilesRoot?
+  var active: Bool
+}
+
 /// The Files section of a followed folder (#809, ADR 0081): rooted at the terminal's folder, with
 /// a breadcrumb from the repository's root (or `~`, else `/`) down to it. A breadcrumb click
 /// browses another folder in Files alone; the terminal's next folder change snaps Files back.
@@ -23,6 +33,13 @@ extension AppStore {
     if let browsed = currentFilesBrowse(followed) { return browsed.root }
     guard let repository = followed.repository else { return .folder(followed.folder) }
     return .repository(root: repository.root, subfolder: repository.subfolder)
+  }
+
+  /// What `FilesPanel` re-activates the tree on.
+  var filesActivationKey: FilesActivation {
+    FilesActivation(
+      subject: inspectorSubject.folderKey, root: followedFilesRoot,
+      active: activeInspectorSection == .files)
   }
 
   /// The breadcrumb above a followed folder's Files tree; nil for any other subject.

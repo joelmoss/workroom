@@ -414,6 +414,13 @@ final class VCSStatusService: ObservableObject {
         return now.timeIntervalSince(c) >= ciTTL
       }
       if Task.isCancelled { return }
+      // A followed repository no row reads (#807) has no item above: its CI and pull request
+      // re-read on the same TTL, so CI finishing or a pull request merging elsewhere reaches it
+      // (Codex on #812). Its local status is its watch's.
+      for (root, s) in self.followedStatuses where s.dirty != nil && s.failure == nil {
+        if !force, let c = s.ciCheckedAt, now.timeIntervalSince(c) < ciTTL { continue }
+        self.refreshFollowedStatus(root, gitHub: true)
+      }
       await self.runCISweep(ciItems, resolver: resolver, cap: Self.ciConcurrency, force: force)
     }
   }

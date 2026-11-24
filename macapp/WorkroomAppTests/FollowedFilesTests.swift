@@ -164,6 +164,35 @@ final class FollowedFilesTests: XCTestCase {
     XCTAssertEqual(names(store), ["docs", "src", "README.md"])
   }
 
+  /// Value: protects=Files re-rooting when the followed folder becomes its own repository (Codex
+  /// on #812); fails_when=a `git init` in a followed subfolder leaves Files' activation key alone
+  /// (same folder, same path shown), so the tree stays rooted in the parent repository while file
+  /// opens use the new root; why_new=review; seam=AppStore.filesActivationKey + FileTreeModel;
+  /// no_claim=SwiftUI's `.task` re-run
+  func testAGitInitInTheFollowedFolderReRootsFiles() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    let src = root + "/src"
+    try await cd(store, tab, src)
+    XCTAssertEqual(store.fileTree.roots.last?.path, "src/main.swift")
+    let before = store.filesActivationKey
+
+    sh("git init -q -b main .", in: src)
+    try XCTUnwrap(store.terminals.surface(tab)).onEvent?(.commandFinished(0))
+    await eventually {
+      guard case .followed(let followed) = store.inspectorSubject else { return false }
+      return followed.repository?.root == src
+    }
+
+    XCTAssertNotEqual(store.filesActivationKey, before, "Files re-activates on the new root")
+    store.activateFileTree()
+    await listed(store)
+    XCTAssertEqual(names(store), ["lib", "main.swift"])
+    XCTAssertEqual(
+      store.fileTree.roots.last?.path, "main.swift", "paths are relative to the new repository")
+  }
+
   /// Value: protects=a file opened from a followed tree reading the followed repository (parent
   /// decision); fails_when=the file tab resolves against the terminal's own folder;
   /// why_new=#809; seam=AppStore; no_claim=the viewer's read
@@ -232,6 +261,25 @@ final class FollowedFilesTests: XCTestCase {
     store.openChangedFileInApp(ChangedFile(path: "src/main.swift", change: .modified))
 
     XCTAssertEqual(try fileTabs(store).map(\.root), [root])
+  }
+
+  /// Value: protects=Changes' "Open File in …" for a followed repository (Codex on #812);
+  /// fails_when=the row is disabled because a followed folder has no sidebar target, though the
+  /// open reads the repository's root; why_new=review; seam=ChangesPanelAdapter.inputs(store:);
+  /// no_claim=the editor launch
+  func testAFollowedRepositorysChangedFileCanOpenInTheEditor() async throws {
+    let store = makeStore()
+    let tab = try await openTerminal(store)
+    try await cd(store, tab, repo("app") + "/src")
+
+    XCTAssertFalse(ChangesPanelAdapter.inputs(store: store).fileTargetIsMissing)
+    XCTAssertNotNil(store.inspectorHistoryTarget, "what the open reads")
+
+    let plain = scratch.appendingPathComponent("plain").path
+    try FileManager.default.createDirectory(atPath: plain, withIntermediateDirectories: true)
+    try await cd(store, tab, plain)
+    XCTAssertTrue(
+      ChangesPanelAdapter.inputs(store: store).fileTargetIsMissing, "no repository, no open")
   }
 
   /// Value: protects=a followed repository's diff pane opening its working file from that

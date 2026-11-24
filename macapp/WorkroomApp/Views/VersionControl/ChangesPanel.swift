@@ -235,7 +235,8 @@ struct ChangedFileActions {
 struct ChangesPanelInputs {
   /// What the inspector is about (`AppStore.inspectorSubject`).
   var subject: InspectorSubject
-  /// Its sidebar item's target, nil once it has gone.
+  /// Its sidebar item's target, nil once it has gone; for a followed repository, the repository
+  /// itself (`AppStore.inspectorHistoryTarget`), which a changed file opens against.
   var target: TerminalTarget?
   /// What the focused content tab shows. A closure, called only while the file list renders, so the
   /// focused-tab and `TerminalPanes` reads stay the panel's own (see `ChangesPanel.fileList`).
@@ -243,6 +244,9 @@ struct ChangesPanelInputs {
   /// Whether a followed folder's repository has been pending long enough to show the loader
   /// (`AppStore.followedFolderLoaderShown`); before that the pane stays blank.
   var showsPendingLoader = false
+
+  /// Whether a changed file has nowhere to open: what disables its "Open File in …".
+  var fileTargetIsMissing: Bool { target?.isMissing != false }
 }
 
 /// The Changes section body: the selected workroom's branch, sync state, working-tree changes
@@ -352,7 +356,7 @@ struct ChangesPanel: View {
     // row rebuilds (`ChangedFileRowInvalidationTests`).
     let selection = inputs.selection()
     let root = FocusedTabSelection.changedFileRoot(for: inputs.subject)
-    let targetIsMissing = inputs.target?.isMissing != false
+    let targetIsMissing = inputs.fileTargetIsMissing
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
         ChangedFileRow(
@@ -400,17 +404,26 @@ struct ChangesPanelAdapter: View {
   @EnvironmentObject var store: AppStore
 
   var body: some View {
+    ChangesPanel(inputs: Self.inputs(store: store), actions: actions)
+  }
+
+  /// The panel's inputs from `store`.
+  static func inputs(store: AppStore) -> ChangesPanelInputs {
     let subject = store.inspectorSubject
-    ChangesPanel(
-      inputs: ChangesPanelInputs(
-        subject: subject,
-        target: subject.sidebarID.flatMap { $0.isStatusable ? store.target(for: $0) : nil },
-        // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
-        selection: { [store] in
-          FocusedTabSelection.current(store: store)
-        },
-        showsPendingLoader: store.followedFolderLoaderShown),
-      actions: actions)
+    let target: TerminalTarget? =
+      if case .followed = subject {
+        store.inspectorHistoryTarget
+      } else {
+        subject.sidebarID.flatMap { $0.isStatusable ? store.target(for: $0) : nil }
+      }
+    return ChangesPanelInputs(
+      subject: subject,
+      target: target,
+      // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
+      selection: { [store] in
+        FocusedTabSelection.current(store: store)
+      },
+      showsPendingLoader: store.followedFolderLoaderShown)
   }
 
   /// `[store]` only, and the file and source as arguments: the capture list is what makes these

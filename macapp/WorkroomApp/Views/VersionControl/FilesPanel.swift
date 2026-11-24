@@ -90,18 +90,7 @@ struct FilesPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private var activationKey: Activation {
-    Activation(
-      subject: store.inspectorSubject.folderKey, browsed: store.followedFilesRoot?.path,
-      active: store.activeInspectorSection == .files)
-  }
-
-  /// What the tree re-points on: the subject, the folder browsed to, and Files showing.
-  private struct Activation: Hashable {
-    var subject: InspectorSubject.Key
-    var browsed: String?
-    var active: Bool
-  }
+  private var activationKey: FilesActivation { store.filesActivationKey }
 
   /// `LazyVStack`, not `VStack`: rows are fixed-height (single-line, truncated — no soft-wrap, unlike
   /// `DiffViewer`'s lines, where lazy would cache a wrong estimate for a not-yet-materialized wrapping
