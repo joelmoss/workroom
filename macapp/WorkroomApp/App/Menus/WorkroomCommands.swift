@@ -39,6 +39,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasWaitingTerminals) private var hasWaitingTerminals
   @FocusedValue(\.hasProjects) private var hasProjects
   @FocusedValue(\.hasSidebarContent) private var hasSidebarContent
+  @FocusedValue(\.selectionIsInspectable) private var selectionIsInspectable
   @FocusedValue(\.hasWorkroomAnchor) private var hasWorkroomAnchor
   @FocusedValue(\.canNavigateBack) private var canNavigateBack
   @FocusedValue(\.canNavigateForward) private var canNavigateForward
@@ -89,9 +90,10 @@ struct WorkroomCommands: Commands {
   /// through a dialog — verified: ⌘T behind the Add Project sheet really did open a terminal tab.
   private var modalBlocked: Bool { modalPresented == true }
 
-  /// No projects: the sidebar and inspector have nothing to show, so their View-menu toggles (and
-  /// their key equivalents, which a disabled item drops) are off.
-  private var noProjects: Bool { hasProjects != true }
+  /// Nothing selected to inspect (no selection, the Quick Terminal): the inspector has nothing to
+  /// show, so its View-menu toggles (and their key equivalents, which a disabled item drops) are
+  /// off. A terminal with no project has one, which follows its folder (#803).
+  private var nothingToInspect: Bool { selectionIsInspectable != true }
 
   /// Nothing to list in the sidebar: no project and no terminal with a row (ADR 0077).
   private var noSidebarContent: Bool { hasSidebarContent != true }
@@ -140,12 +142,10 @@ struct WorkroomCommands: Commands {
   }
 
   // The Room menu's items that only buttons offered before, off while a dialog or sheet is up, as
-  // `MenuStateValues` gates the rest. Commit and the pull request items read the workroom the
-  // inspector shows, whose status they need (`inspectorTargetID` is the selection, or nil while it
-  // has no tabs); the workroom's own items read the selection, as its right-click menu does.
-  private var inspectedWorkroom: SidebarID? {
-    store?.modals.hasModalPresentation == false ? store?.inspectorTargetID : nil
-  }
+  // `MenuStateValues` gates the rest. Commit and the pull request items act on what the inspector
+  // shows, a workroom or a terminal's followed repository (`RoomCommandState`, which carries the
+  // pull request's target with its number); the workroom's own items read the selection, as its
+  // right-click menu does.
   private var canCommit: Bool? { roomCommandState?.canCommit }
   private var pullRequest: RoomCommandState.PullRequest? { roomCommandState?.pullRequest }
   /// Ready for Review or Convert to Draft, whichever an open pull request offers.
@@ -189,23 +189,23 @@ struct WorkroomCommands: Commands {
     // stays put (see `AppStore.apply`).
     Toggle("Details", isOn: paneBinding(.details))
       .shortcut(shortcuts ? .details : nil)
-      .disabled(modalBlocked || noProjects)
+      .disabled(modalBlocked || nothingToInspect)
     // Changes, History and Pull Request share the **Changes** pane (a stack), so "showing" one means
     // selecting that pane, opening the inspector, and expanding its sub-section; the checkmark is on
     // only when all three hold. Turning it off just collapses the sub-section. (History is ⌥⌘Y:
     // ⌥⌘H is macOS "Hide Others".)
     Toggle("Changes", isOn: subSectionBinding(\.changesSectionCollapsed))
       .shortcut(shortcuts ? .changes : nil)
-      .disabled(modalBlocked || noProjects)
+      .disabled(modalBlocked || nothingToInspect)
     Toggle("History", isOn: subSectionBinding(\.historySectionCollapsed))
       .shortcut(shortcuts ? .history : nil)
-      .disabled(modalBlocked || noProjects)
+      .disabled(modalBlocked || nothingToInspect)
     Toggle("Pull Request", isOn: subSectionBinding(\.prSectionCollapsed))
       .shortcut(shortcuts ? .pullRequestPane : nil)
-      .disabled(modalBlocked || noProjects)
+      .disabled(modalBlocked || nothingToInspect)
     Toggle("Files", isOn: paneBinding(.files))
       .shortcut(shortcuts ? .files : nil)
-      .disabled(modalBlocked || noProjects)
+      .disabled(modalBlocked || nothingToInspect)
   }
 
   private func paneBinding(_ section: ActivitySection) -> Binding<Bool> {
@@ -449,7 +449,7 @@ struct WorkroomCommands: Commands {
       // AND open the inspector; this one just shows/hides whatever section was last active.
       Toggle("Inspector", isOn: $showInspector)
         .shortcut(.inspector)
-        .disabled(modalBlocked || noProjects)
+        .disabled(modalBlocked || nothingToInspect)
 
       inspectorPaneToggles(shortcuts: true)
 
@@ -512,7 +512,7 @@ struct WorkroomCommands: Commands {
 
       Divider()
       // The Changes header's commit button.
-      Button("Commit…") { store?.requestCommit(store?.inspectorTargetID) }
+      Button("Commit…") { store?.requestCommit(store?.inspectorActionTarget) }
         .shortcut(.commit)
         .disabled(!workroomCommandEnabled(canCommit))
       Button("Fetch") { store?.performRemoteAction(.fetch) }
@@ -533,9 +533,9 @@ struct WorkroomCommands: Commands {
         }
         .shortcut(.goToPullRequest)
         .disabled(detachedWindowKey)
-        if let draftAction, let sid = inspectedWorkroom {
+        if let draftAction {
           Button(draftAction.label) {
-            store?.performPRAction(draftAction, number: pullRequest.number, on: sid)
+            store?.performPRAction(draftAction, number: pullRequest.number, on: pullRequest.target)
           }
           .shortcut(.changeDraft)
           .disabled(!workroomCommandEnabled(canChangeDraft))

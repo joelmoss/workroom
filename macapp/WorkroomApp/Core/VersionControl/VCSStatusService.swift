@@ -42,12 +42,17 @@ final class VCSStatusService: ObservableObject {
   /// services before any window exists.
   @ObservationIgnored private let seededStatuses: (@MainActor () -> AppServices.SeededStatuses)?
 
-  init(projectStore: ProjectStore) {
+  init(
+    projectStore: ProjectStore,
+    seededStatuses: (@MainActor () -> AppServices.SeededStatuses)? = AppServices.current
+      .seededStatuses
+  ) {
     self.projectStore = projectStore
-    seededStatuses = AppServices.current.seededStatuses
+    self.seededStatuses = seededStatuses
     let ciResultCache = GitHubCIResultCache()
     self.ciResultCache = ciResultCache
     statusResolver = WorkroomStatusResolver(ciCache: ciResultCache)
+    observeRegisteredPaths()
   }
 
   // MARK: Status
@@ -80,6 +85,131 @@ final class VCSStatusService: ObservableObject {
     set { storedWorkroomStatuses = newValue }
   }
   private var storedWorkroomStatuses: [SidebarID: WorkroomStatus] = [:]
+
+  /// The status of each repository an inspector follows (#807) that no workroom or project root
+  /// is, keyed by its canonical root (`VCSStatusService.canonicalPath`). Kept apart from
+  /// `workroomStatuses` so a terminal's sidebar row never gains a badge. Present only while some
+  /// window follows the repository.
+  var followedStatuses: [String: WorkroomStatus] {
+    get { storedFollowedStatuses }
+    set { storedFollowedStatuses = newValue }
+  }
+  private var storedFollowedStatuses: [String: WorkroomStatus] = [:]
+  /// The last-known status of the repositories followed most recently and let go of since (QA
+  /// round 2 of #803): what a revisit shows at once while its fresh probe runs. Data only; it
+  /// never makes a repository followed, watched or writable. Each keeps its first
+  /// `recalledFileCap` changed files and a count of the rest (#812): what Changes shows of it at
+  /// once, until the fresh probe brings the whole list.
+  @ObservationIgnored var recentFollowedStatuses = RecentRepositoryCache<WorkroomStatus>(
+    prepare: { $0.recalled(keepingFiles: VCSStatusService.recalledFileCap) })
+  /// How many changed files a recalled status keeps: as many as Changes draws (`renderCap`).
+  nonisolated static let recalledFileCap = 200
+  /// Who follows which repository, and its watches (`VCSStatusService+Followed.swift`).
+  @ObservationIgnored var followedRepositories: [String: FollowedRepositoryHold] = [:]
+  /// The followed repositories with a commit in flight, by canonical root: what `committingTargets`
+  /// is for a sidebar row (#808).
+  var committingFollowedRoots: Set<String> {
+    get { storedCommittingFollowedRoots }
+    set { storedCommittingFollowedRoots = newValue }
+  }
+  private var storedCommittingFollowedRoots: Set<String> = []
+  /// The followed repositories whose registration came back empty (git couldn't say which
+  /// repository a linked worktree belongs to), by canonical root: nothing writes to them, so no
+  /// action is offered for them, until a retry registers them (review of #808, finding 5; lane B
+  /// review M1).
+  var unregisteredFollowedRoots: Set<String> {
+    get { storedUnregisteredFollowedRoots }
+    set { storedUnregisteredFollowedRoots = newValue }
+  }
+  private var storedUnregisteredFollowedRoots: Set<String> = []
+  /// Resolves a followed repository's registration (`followedRegistration(root:)`). A seam for
+  /// tests.
+  @ObservationIgnored var resolveFollowedRegistration:
+    @Sendable (String) async -> RepositoryRouter.Registration? = {
+      await VCSStatusService.followedRegistration(root: $0)
+    }
+  /// Wait before retrying a followed repository's registration that came back empty `streak` times
+  /// in a row: the folder resolve's backoff (`FollowedFolderTracker.retryDelay`), 2 s doubling to
+  /// 60 s. A seam for tests.
+  @ObservationIgnored var followedRegistrationRetryWait: @Sendable (_ streak: Int) async -> Void = {
+    streak in
+    try? await Task.sleep(for: FollowedFolderTracker.retryDelay(streak))
+  }
+  /// The router releases in flight, chained in order (`releaseFollowed`).
+  @ObservationIgnored var followedRelease: Task<Void, Never>?
+  /// The linked-worktree git-directory watches being set up (`startWatching`), by hold, each until
+  /// it lands.
+  @ObservationIgnored var followedWatchSetups: [UUID: Task<Void, Never>] = [:]
+  /// Whether a followed repository's `.git` is a file (a linked worktree's, naming a git directory
+  /// elsewhere): a stat, which a stalled network mount blocks, so it runs off the main actor under
+  /// `followedStatTimeout` (Codex on #812). A seam for tests.
+  @ObservationIgnored var followedGitFileStat: @Sendable (String) -> Bool = {
+    VCSStatusService.gitDirectoryIsOutsideTree($0)
+  }
+  /// How long `followedGitFileStat` may take before the watch setup goes on without it.
+  @ObservationIgnored var followedStatTimeout: TimeInterval = 3
+  /// Makes a watch on a followed repository's tree, or on a linked worktree's git directory. The
+  /// host file watcher in the app; tests record it and drive the change handler themselves.
+  @ObservationIgnored var makeRepositoryWatcher:
+    @MainActor (@escaping @MainActor ([String], Bool) -> Void) -> any RepositoryWatching = {
+      HostFileWatcher(onChange: $0)
+    }
+  /// How long a followed repository's full probe waits before it forks `git` and `gh`: the selected
+  /// workroom's coalesce window, so arrow-keying past terminals in other repositories probes none of
+  /// them (review of #807, finding 5). Tests set 0.
+  @ObservationIgnored var followedProbeDebounce: TimeInterval = 0.3
+  /// How long the last window's unfollow keeps a followed repository's watch and status before
+  /// letting go of them, so focus moving between panes in two repositories re-follows for free.
+  /// Never its writes: those end at the unfollow. 0 lets go at once. A seam for tests.
+  @ObservationIgnored var followedUnfollowGrace: TimeInterval = 10
+  /// The status reads of each followed repository, by root: one in flight at a time, since the
+  /// daemon can't cancel one (`followedRead`).
+  @ObservationIgnored var followedReads: [String: FollowedStatusReads] = [:]
+  /// Reads a followed repository's working status. A seam for tests, which count the reads.
+  @ObservationIgnored var readFollowedWorkingStatus:
+    @Sendable (WorkroomStatusResolver, StatusWorkItem?, String) async -> WorkroomStatus = {
+      await VCSStatusService.readWorkingStatus($0, item: $1, path: $2)
+    }
+  /// The home folder, canonical, which no followed repository's tree watch covers
+  /// (`HostFileWatcher.isTooBroadToWatch`). A seam for tests.
+  @ObservationIgnored var watchHome: String = VCSStatusService.canonicalPath(NSHomeDirectory())
+  /// Resolves a registered path's symlinks (`canonicalPath`) while the registered-path index is
+  /// built, off the main actor under `registeredPathTimeout`. A seam for tests, which count it or
+  /// stall it.
+  @ObservationIgnored var canonicalise: @Sendable (String) -> String = {
+    VCSStatusService.canonicalPath($0)
+  }
+  /// How long one registered path's `realpath` may take before the index takes its literal path.
+  @ObservationIgnored var registeredPathTimeout: TimeInterval = 3
+  /// The registered project roots and local workrooms by canonical path, as last built
+  /// (`rebuildRegisteredIndex`), so a status read never touches the file system. Observed: a
+  /// rebuild landing moves what a followed repository's sections and actions read.
+  var registeredIndex: RegisteredPathIndex?
+  /// The index build in flight, the latest asked for, and the project list and generation it is
+  /// for.
+  @ObservationIgnored var registeredIndexBuild:
+    (projects: [Project], generation: Int, task: Task<Void, Never>)?
+  /// The generation of the latest index build asked for: only that build lands.
+  @ObservationIgnored var registeredIndexGeneration = 0
+  /// How many index builds in a row left a registered path's `realpath` timed out: what spaces out
+  /// their retries (`registeredIndexRetryWait`).
+  @ObservationIgnored var registeredIndexTimeouts = 0
+  /// The wait before rebuilding an index that left a path timed out.
+  @ObservationIgnored var registeredIndexRetry: Task<Void, Never>?
+  /// Wait before rebuilding an index whose last `streak` builds left a path timed out: the
+  /// followed-folder backoff (`FollowedFolderTracker.retryDelay`), 2 s doubling to 60 s. A seam for
+  /// tests.
+  @ObservationIgnored var registeredIndexRetryWait: @Sendable (_ streak: Int) async -> Void = {
+    streak in
+    try? await Task.sleep(for: FollowedFolderTracker.retryDelay(streak))
+  }
+  /// The followed repositories re-routed while a commit held their read lanes off
+  /// (`rerouteFollowed`), by the shared location committing: probed as soon as the last commit
+  /// there ends, so a section never waits on a watch event to leave "Checking…".
+  @ObservationIgnored var followedRootsAwaitingCommit: [RepositoryLocation: Set<String>] = [:]
+  /// The followed repositories whose follow waits on the registered-path index
+  /// (`followAwaitsIndex`): re-routed, so seeded and probed, once it is for the current projects.
+  @ObservationIgnored var followedRootsAwaitingIndex: Set<String> = []
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check; refreshed by `refreshGitHubCLI`. Drives the Pull
@@ -166,6 +296,27 @@ final class VCSStatusService: ObservableObject {
 
   /// The windows that cache what a local status says, in the order they registered.
   @ObservationIgnored private var windows = WeakList<any VCSStatusWindow>()
+
+  /// The version-control status of what an inspector is about: what its Changes and Pull Request
+  /// sections, and the indicators beside them, show. A workroom or a project root resolves to its
+  /// own entry in `workroomStatuses`; a project's header row is no working copy, so it has none.
+  func status(for subject: InspectorSubject) -> WorkroomStatus? {
+    switch subject {
+    case .target(let sid): return sid.isStatusable ? workroomStatuses[sid] : nil
+    case .followed(let followed):
+      guard let root = followed.repository?.root else { return nil }
+      return status(forFollowedRoot: root)
+    case .nothing: return nil
+    }
+  }
+
+  /// The status a version-control action reads: a row's, or a followed repository's own.
+  func status(for target: VCSActionTarget) -> WorkroomStatus? {
+    switch target {
+    case .row(let sid): return sid.isStatusable ? workroomStatuses[sid] : nil
+    case .followed(let root): return followedStatuses[root]
+    }
+  }
 
   /// Hand `window` every local status merged while it lives. Idempotent.
   func register(_ window: any VCSStatusWindow) {
@@ -321,6 +472,13 @@ final class VCSStatusService: ObservableObject {
         return now.timeIntervalSince(c) >= ciTTL
       }
       if Task.isCancelled { return }
+      // A followed repository no row reads (#807) has no item above: its CI and pull request
+      // re-read on the same TTL, so CI finishing or a pull request merging elsewhere reaches it
+      // (Codex on #812). Its local status is its watch's.
+      for (root, s) in self.followedStatuses where s.dirty != nil && s.failure == nil {
+        if !force, let c = s.ciCheckedAt, now.timeIntervalSince(c) < ciTTL { continue }
+        self.refreshFollowedStatus(root, gitHub: true)
+      }
       await self.runCISweep(ciItems, resolver: resolver, cap: Self.ciConcurrency, force: force)
     }
   }
@@ -489,21 +647,8 @@ final class VCSStatusService: ObservableObject {
   /// comparison subtly wrong.
   func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
     guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
-    if let readAt = fresh.localReadAt, let prior = workroomStatuses[sid]?.localReadAt,
-      prior > readAt
-    {
-      return
-    }
     var s = workroomStatuses[sid] ?? .unresolved
-    s.dirty = fresh.dirty
-    s.conflicted = fresh.conflicted
-    s.changedFiles = fresh.changedFiles
-    s.insertions = fresh.insertions
-    s.deletions = fresh.deletions
-    s.branchForCI = fresh.branchForCI
-    s.failure = fresh.failure
-    s.localReadAt = fresh.localReadAt
-    s.lastChecked = Date()
+    guard s.mergeLocal(fresh) else { return }
     workroomStatuses[sid] = s
     // This merge is the freshest evidence anyone has, so each window settles what it caches from a
     // status: the branch name its toolbar published, and the change kind an open diff tab captured.
@@ -512,72 +657,25 @@ final class VCSStatusService: ObservableObject {
 
   func applyCIStatus(_ res: CIResolution, to sid: SidebarID, checkedAt: Date) {
     guard var s = workroomStatuses[sid] else { return }
-    switch res {
-    case .state(let x):
-      s.ci = x
-      s.ciCheckedAt = checkedAt
-    case .absent:
-      s.ci = nil
-      s.ciCheckedAt = checkedAt
-    case .keepPrior:
-      // Transient rate-limit / network blip. Stamp `ciCheckedAt` so the TTL throttles re-probes —
-      // but ONLY if we've probed before (ciCheckedAt set). On a first-ever probe that blips, leave
-      // it nil so the next sweep retries instead of hiding CI for the full TTL on one blip. Coarse
-      // but cheap; true exponential backoff is a future refinement.
-      if s.ciCheckedAt != nil { s.ciCheckedAt = checkedAt }
-    }
+    s.applyCI(res, checkedAt: checkedAt)
     workroomStatuses[sid] = s
   }
 
   func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
     guard var s = workroomStatuses[sid] else { return }
-    switch res {
-    case .info(let pr):
-      // Checks are keyed to a PR's identity (issue #75). If the PR changed (different number), the
-      // old PR's checks are stale — drop them so they can't render under the new PR until
-      // `resolveChecks` refills them. Same number ⇒ keep them (e.g. the raw→enriched re-apply).
-      if s.pr?.number != pr.number {
-        s.checks = nil
-        s.checksCheckedAt = nil
-      }
-      s.pr = pr
-      s.prCheckedAt = Date()
-    case .absent:
-      // No PR ⇒ `resolveChecks` won't run, so the checks must be cleared here (not only in
-      // `applyChecksStatus`) or a disappearing PR would leave its checks rendered.
-      s.pr = nil
-      s.checks = nil
-      s.checksCheckedAt = nil
-      s.prCheckedAt = Date()
-    case .keepPrior:
-      // Transient blip: keep the last good PR. Stamp `prCheckedAt` so the TTL throttles re-probes,
-      // but only if we've probed before — a first-ever blip leaves it nil so the next sweep retries.
-      if s.prCheckedAt != nil { s.prCheckedAt = Date() }
-    }
+    s.applyPR(res)
     workroomStatuses[sid] = s
   }
 
-  /// Apply a PR-checks probe result (issue #75). `.list` (including `[]` for "loaded, no checks")
-  /// sets the rows and stamps `checksCheckedAt`. `.absent` (no checks reported / gh error) is *also*
-  /// a loaded state — it stamps with an empty list, distinct from the not-loaded `nil`, so the panel
-  /// stops falling back to the run-list aggregate. `.keepPrior` (transient blip) keeps the last good
-  /// list, stamping only if we've probed before (so a first-ever blip retries next time). The
-  /// clear-on-no-PR / clear-on-PR-change paths live in `applyPRStatus` — `resolveChecks` never runs
-  /// without a PR.
+  /// Apply a PR-checks probe result (issue #75); see `WorkroomStatus.applyChecks`.
   func applyChecksStatus(_ res: ChecksResolution, to sid: SidebarID) {
     guard var s = workroomStatuses[sid] else { return }
-    switch res {
-    case .list(let checks):
-      s.checks = checks
-      s.checksCheckedAt = Date()
-    case .absent:
-      s.checks = []
-      s.checksCheckedAt = Date()
-    case .keepPrior:
-      if s.checksCheckedAt != nil { s.checksCheckedAt = Date() }
-    }
+    s.applyChecks(res)
     workroomStatuses[sid] = s
   }
+
+  /// Every window that caches what a status says, for the followed-repository lane.
+  var statusWindows: [any VCSStatusWindow] { windows.elements }
 
   // MARK: Creates, commits and writes in flight
 
@@ -626,6 +724,35 @@ final class VCSStatusService: ObservableObject {
     writingProjectRoots[repository, default: 0] > 0
   }
 
+  func isCommitting(_ target: VCSActionTarget) -> Bool {
+    switch target {
+    case .row(let sid): return isCommitting(sid)
+    case .followed(let root): return committingFollowedRoots.contains(root)
+    }
+  }
+
+  /// `beginCommit(sid:root:)` for whatever a commit acts on. Pair with `endCommit(_:root:)`.
+  func beginCommit(_ target: VCSActionTarget, root: RepositoryLocation) {
+    switch target {
+    case .row(let sid): beginCommit(sid: sid, root: root)
+    case .followed(let followed):
+      committingFollowedRoots.insert(followed)
+      committingProjectRoots[root, default: 0] += 1
+      beginWrite(projectRoot: root)
+    }
+  }
+
+  func endCommit(_ target: VCSActionTarget, root: RepositoryLocation) {
+    switch target {
+    case .row(let sid): endCommit(sid: sid, root: root)
+    case .followed(let followed):
+      Self.decrement(&committingProjectRoots, at: root)
+      endWrite(projectRoot: root)
+      committingFollowedRoots.remove(followed)
+      reprobeFollowedAfterCommit(at: root)
+    }
+  }
+
   /// Mark a commit of `sid` starting against `root`: the row's button state, the read lanes'
   /// suppression (`isCommittingProject`) and the write umbrella (`beginWrite`). Pair with
   /// `endCommit(sid:root:)` unconditionally, as `AppStore.performCommit` does.
@@ -642,6 +769,7 @@ final class VCSStatusService: ObservableObject {
     Self.decrement(&committingProjectRoots, at: root)
     endWrite(projectRoot: root)
     committingTargets.remove(sid)
+    reprobeFollowedAfterCommit(at: root)
   }
 
   /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
@@ -709,6 +837,20 @@ final class VCSStatusService: ObservableObject {
 @MainActor
 protocol VCSStatusWindow: AnyObject {
   func localStatusDidMerge(_ status: WorkroomStatus, into sid: SidebarID)
+  /// Something changed under a followed repository's root (`metadata`: in its git directory). A
+  /// window following it re-reads what it shows of it (#807).
+  func followedRepositoryDidChange(root: String, metadata: Bool)
+  /// A followed repository's registration came back empty, or a retry registered it
+  /// (`unregisteredFollowedRoots`): a window following it stops, or starts again, offering its
+  /// writes (review of #808, finding 5).
+  func followedRegistrationDidChange(root: String)
+  /// The watches on followed repository `root` now cover its git directory and its tree: a window
+  /// holding it checks what it cached before then (#812 perf review A, N3).
+  func followedWatchDidGoLive(root: String)
+}
+
+extension VCSStatusWindow {
+  func followedWatchDidGoLive(root: String) {}
 }
 
 /// The three resolvers a status sweep and `RepositoryGitHub` use, built over one command runner so a

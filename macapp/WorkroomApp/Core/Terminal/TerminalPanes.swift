@@ -204,6 +204,16 @@ enum TabContent {
     }
   }
 
+  /// The folder `filePath` is relative to when it is not the tab's target's own: a followed
+  /// repository's diff (#807) or a followed folder's file (#809). Nil: the target's.
+  var fileRoot: String? {
+    switch self {
+    case .diff(let d): return d.repositoryRoot
+    case .file(let f): return f.root
+    case .terminal, .changeset: return nil
+    }
+  }
+
   /// The SF Symbol marking this content kind wherever a tab is named — the chip (`TerminalTabChip`)
   /// and the pane's own title bar (`PaneTitleBar`, issue #150). `nil` for a terminal: a terminal is
   /// the default, and the glyphs exist to say "this one is NOT a terminal" (issue #66).
@@ -287,8 +297,10 @@ extension FocusedTabSelection {
   init?(content: TabContent) {
     switch content {
     case .changeset(let descriptor): self = .changeset(commitID: descriptor.commitID)
-    case .diff(let descriptor): self = .diff(path: descriptor.path, source: descriptor.source)
-    case .file(let descriptor): self = .file(path: descriptor.path)
+    case .diff(let descriptor):
+      self = .diff(
+        path: descriptor.path, source: descriptor.source, root: descriptor.repositoryRoot)
+    case .file(let descriptor): self = .file(path: descriptor.path, root: descriptor.root)
     case .terminal: return nil
     }
   }
@@ -332,19 +344,20 @@ extension TabSession {
         diff: DiffPayload(
           path: descriptor.path, change: descriptor.change.rawValue,
           source: DiffSourcePayload(descriptor.source), isPreview: descriptor.isPreview,
-          viewMode: tab.diffViewModeOverride?.rawValue))
+          viewMode: tab.diffViewModeOverride?.rawValue, repositoryRoot: descriptor.repositoryRoot))
     case .file(let descriptor):
       self.init(
         key: key, kind: Self.fileKind,
         file: FilePayload(
           path: descriptor.path, isPreview: descriptor.isPreview,
-          markdownPreview: tab.markdownPreviewOverride))
+          markdownPreview: tab.markdownPreviewOverride, root: descriptor.root))
     case .changeset(let descriptor):
       self.init(
         key: key, kind: Self.changesetKind,
         changeset: ChangesetPayload(
           commitID: descriptor.commitID, title: descriptor.title,
-          isPreview: descriptor.isPreview, selectedPath: descriptor.selectedPath))
+          isPreview: descriptor.isPreview, selectedPath: descriptor.selectedPath,
+          repositoryRoot: descriptor.repositoryRoot))
     }
   }
 
@@ -361,16 +374,18 @@ extension TabSession {
       else { return nil }
       return .diff(
         DiffDescriptor(
-          path: payload.path, change: change, source: source, isPreview: payload.isPreview))
+          path: payload.path, change: change, source: source, isPreview: payload.isPreview,
+          repositoryRoot: payload.repositoryRoot))
     case Self.fileKind:
       guard let payload = file else { return nil }
-      return .file(FileDescriptor(path: payload.path, isPreview: payload.isPreview))
+      return .file(
+        FileDescriptor(path: payload.path, isPreview: payload.isPreview, root: payload.root))
     case Self.changesetKind:
       guard let payload = changeset else { return nil }
       return .changeset(
         ChangesetDescriptor(
           commitID: payload.commitID, title: payload.title, isPreview: payload.isPreview,
-          selectedPath: payload.selectedPath))
+          selectedPath: payload.selectedPath, repositoryRoot: payload.repositoryRoot))
     default:
       return nil
     }
@@ -854,6 +869,12 @@ final class TerminalPanes {
     /// edit or by focus moving between a split and a solo tab, and the operation that did it has
     /// finished. A workroom split it sits in re-evens to match.
     case paneCountChanged(TerminalTarget.ID, along: SplitOrientation?)
+    /// A terminal's shell reported a new working directory (OSC 7), already written to its
+    /// `TerminalState.cwd`. A window's inspector follows the folder of the terminal it shows (#803).
+    case cwdChanged(TerminalTarget.ID, TerminalTab.ID)
+    /// A terminal's command finished (OSC 133). The inspector re-reads the repository the terminal
+    /// is in, which the command may have changed without a `cd` (#807).
+    case commandFinished(TerminalTarget.ID, TerminalTab.ID)
   }
 
   /// The panes each target showed across each axis (`shownSlots`) at its last `reconcileOcclusion`.
@@ -2925,10 +2946,12 @@ final class TerminalPanes {
       liveState.titleChanged(title, tab: tabID, target: targetID)
     case .cwdChanged(let cwd):
       liveState.cwdChanged(cwd, tab: tabID, target: targetID)
+      onEvent?(.cwdChanged(targetID, tabID))
     case .commandFinished(let exitCode):
       // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)
       // ignores it.
       liveState.commandFinished(tab: tabID, target: targetID, exitCode: exitCode)
+      onEvent?(.commandFinished(targetID, tabID))
     case .progressReport(let active, let failed):
       liveState.progressReported(active, failed: failed, tab: tabID, target: targetID)
     // A pane became first responder (click / programmatic focus): make it the selection (issue #3),

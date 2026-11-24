@@ -34,10 +34,22 @@ import WorkroomVCS
 final class HostFileWatcher {
   private let core: WatchCore
 
+  /// `admit`, when given, decides off the main actor whether a delivery reaches `onChange` at all,
+  /// so a consumer that ignores most of a busy tree never pays a main-actor hop for it.
+  /// `resolveLocation` tells the watched path's location (its symlinks resolved), nil when it can't
+  /// in time. By default the probe's bounded read, joined by path: a stalled mount then holds one
+  /// GCD thread for every watcher, probe and registration of that path, and each watcher's loop
+  /// backs off rather than parking a thread of its own (offactor review I2). A seam for tests.
   init(
-    router: RepositoryRouter = .shared, onChange: @escaping @MainActor ([String], Bool) -> Void
+    router: RepositoryRouter = .shared,
+    admit: (@Sendable ([String], Bool) -> Bool)? = nil,
+    resolveLocation: @escaping @Sendable (String) async -> RepositoryLocation? = {
+      await GitRepositoryProbe.localLocation($0)
+    },
+    onChange: @escaping @MainActor ([String], Bool) -> Void
   ) {
-    core = WatchCore(router: router, onChange: onChange)
+    core = WatchCore(
+      router: router, admit: admit, resolveLocation: resolveLocation, onChange: onChange)
   }
 
   deinit { core.stop() }
@@ -47,12 +59,24 @@ final class HostFileWatcher {
   func start(path: String) { core.start(path: path) }
 
   func stop() { core.stop() }
+
+  /// Whether `root` (canonical) is too broad a tree to watch whole: the disk's root, a top-level
+  /// folder such as `/Users`, a volume's root, or the home folder, whose `Library` never rests. A
+  /// followed folder lands wherever the user `cd`s, so its watch is bounded by this (#807 review,
+  /// finding 3); a registered workroom is watched because the user chose it.
+  nonisolated static func isTooBroadToWatch(_ root: String, home: String) -> Bool {
+    if root == home { return true }
+    let parts = root.split(separator: "/")
+    return parts.count <= 1 || (parts.count == 2 && parts[0] == "Volumes")
+  }
 }
 
 // `@unchecked Sendable`: every mutable field is read and written under `lock`, and the loop's task
 // and the owners' calls reach it from different threads by design.
 private final class WatchCore: @unchecked Sendable {
   private let router: RepositoryRouter
+  private let admit: (@Sendable ([String], Bool) -> Bool)?
+  private let resolveLocation: @Sendable (String) async -> RepositoryLocation?
   private let onChange: @MainActor ([String], Bool) -> Void
 
   private let lock = NSLock()
@@ -63,9 +87,14 @@ private final class WatchCore: @unchecked Sendable {
   private var generation = 0
 
   init(
-    router: RepositoryRouter = .shared, onChange: @escaping @MainActor ([String], Bool) -> Void
+    router: RepositoryRouter,
+    admit: (@Sendable ([String], Bool) -> Bool)?,
+    resolveLocation: @escaping @Sendable (String) async -> RepositoryLocation?,
+    onChange: @escaping @MainActor ([String], Bool) -> Void
   ) {
     self.router = router
+    self.admit = admit
+    self.resolveLocation = resolveLocation
     self.onChange = onChange
   }
 
@@ -98,7 +127,8 @@ private final class WatchCore: @unchecked Sendable {
       return (self.task, self.fallback)
     }
     task?.cancel()
-    fallback?.stop()
+    // Behind any start of it still queued (`streamQueue`).
+    if let fallback { Self.streamQueue.async { fallback.stop() } }
   }
 
   private func current(_ generation: Int) -> Bool {
@@ -107,18 +137,26 @@ private final class WatchCore: @unchecked Sendable {
 
   private func deliver(_ paths: [String], overflow: Bool, generation: Int) {
     guard current(generation) else { return }
+    if let admit, !admit(paths, overflow) { return }
     let onChange = self.onChange
     Task { @MainActor in onChange(paths, overflow) }
   }
 
-  /// Start the local FSEvents fallback.
+  /// Where every fallback's FSEvents stream starts and stops: one serial queue, never the main
+  /// actor.
   ///
-  /// **On the main actor, always.** `WorkroomFileWatcher` is main-thread-only by contract, and this
-  /// used to call it from the cooperative pool: several watchers starting at once (a window opening
-  /// arms one per project) then ran `FSEventStreamStart` concurrently, which crashes inside
-  /// CoreFoundation (`CFFileDescriptorEnableCallBacks`, SIGBUS). Hopping to the main actor also makes
-  /// the liveness check and the start atomic with `stop()`, which the owners call from there: a `stop()`
-  /// that lands first leaves nothing to start, and one that lands after stops what this started.
+  /// **One at a time, always.** Several watchers starting at once (a window opening arms one per
+  /// project) once ran `FSEventStreamStart` concurrently from the cooperative pool, which crashes
+  /// inside CoreFoundation (`CFFileDescriptorEnableCallBacks`, SIGBUS); `WorkroomFileWatcher` is
+  /// one-thread-at-a-time by contract, and this is that thread. It is not the main actor: creating
+  /// and starting a stream reads its path, which a stalled network mount blocks, and the windows
+  /// must never wait on that (Codex on #812). A stalled start holds this queue, not the app.
+  ///
+  /// Serial, it also makes the liveness check and the start atomic with `stop()`: a `stop()` that
+  /// lands first leaves nothing to start, and one that lands after queues its stop behind the start.
+  static let streamQueue = DispatchQueue(label: "com.developwithstyle.workroom.fswatch.streams")
+
+  /// Start the local FSEvents fallback, on `streamQueue`.
   private func startFallback(path: String, generation: Int) async {
     let watcher: WorkroomFileWatcher? = lock.withLock {
       guard self.generation == generation, fallback == nil else { return nil }
@@ -129,9 +167,14 @@ private final class WatchCore: @unchecked Sendable {
       return watcher
     }
     guard let watcher else { return }
-    await MainActor.run {
-      let live = lock.withLock { self.generation == generation && fallback === watcher }
-      if live { watcher.start(path: path) }
+    // Awaited, so the gap's synthetic refresh that follows is delivered only once the watch is
+    // live. This waits on the loop's task, never the main actor.
+    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+      Self.streamQueue.async { [self] in
+        let live = lock.withLock { self.generation == generation && fallback === watcher }
+        if live { watcher.start(path: path) }
+        done.resume()
+      }
     }
   }
 
@@ -145,18 +188,27 @@ private final class WatchCore: @unchecked Sendable {
       return fallback
     }
     guard let stopped else { return false }
-    await MainActor.run { stopped.stop() }
+    Self.streamQueue.async { stopped.stop() }
     return true
   }
 
   private func run(path: String, generation: Int) async {
     var backoff: Duration = .milliseconds(500)
     var gap = false
+    // Not a usable path: nothing a daemon could watch, so the local watcher's own behavior stands.
+    guard path.hasPrefix("/"), !path.contains("\0") else {
+      await startFallback(path: path, generation: generation)
+      return
+    }
     while !Task.isCancelled, current(generation) {
-      guard let location = try? await RepositoryLocation.local(path) else {
-        // Not a usable path: nothing a daemon could watch, so the local watcher's own behavior stands.
-        await startFallback(path: path, generation: generation)
-        return
+      guard let location = await resolveLocation(path) else {
+        // Its symlinks couldn't be resolved in time: a stalled mount. Neither the daemon nor the
+        // fallback is asked (FSEvents would stall the shared stream queue on it too); try again
+        // after the backoff, and report the gap once a watch is live.
+        gap = true
+        try? await Task.sleep(for: backoff)
+        backoff = min(backoff * 2, .seconds(30))
+        continue
       }
       let (events, continuation) = AsyncStream<FileWatchEvent>.makeStream(
         bufferingPolicy: .unbounded)

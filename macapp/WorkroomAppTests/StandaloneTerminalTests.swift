@@ -5,9 +5,9 @@ import XCTest
 @testable import Workroom
 
 /// Standalone terminals in a window (#655, ADR 0077): ⌘T and ⌥⌘T open one, it gets a row in the
-/// Terminals section and a title-bar tab of its own, and nothing project-shaped (the inspector,
-/// version control, Run) applies to it. Two windows share one section, as they share one project
-/// list, and each keeps its own tabs.
+/// Terminals section and a title-bar tab of its own, and nothing project-shaped (version control
+/// keyed by a sidebar item, Run) applies to it; its inspector follows its folder (ADR 0081). Two
+/// windows share one section, as they share one project list, and each keeps its own tabs.
 @MainActor
 final class StandaloneTerminalTests: XCTestCase {
   private let projects = ProjectStore()
@@ -251,16 +251,21 @@ final class StandaloneTerminalTests: XCTestCase {
 
   // MARK: Nothing project-shaped
 
-  /// Value: protects=no inspector, VCS, pull-request or Run for a terminal with no project
-  /// (stories 48–49); fails_when=any of them resolves a target for it; why_new=#655;
-  /// seam=AppStore; no_claim=the menu items' rendering
-  func testItHasNoInspectorVersionControlOrRun() throws {
+  /// Value: protects=no sidebar-keyed VCS, pull-request or Run for a terminal with no project
+  /// (stories 48–49); its inspector follows its folder instead (#805, ADR 0081,
+  /// StandaloneFollowsFolderTests); fails_when=any of them resolves a target for it;
+  /// why_new=#655; seam=AppStore; no_claim=the menu items' rendering
+  func testItHasNoProjectVersionControlOrRun() async throws {
     let store = makeStore()
     store.newTerminalInSelectedTarget()
     let sid = try standalone(store)
+    await store.followedFolderResolved()
 
     XCTAssertTrue(store.selectionHasTabs)
-    XCTAssertNil(store.inspectorTargetID)
+    guard case .followed = store.inspectorSubject else {
+      return XCTFail("the inspector follows its folder, not \(store.inspectorSubject)")
+    }
+    XCTAssertNil(store.inspectorTargetID, "a followed folder is no sidebar item")
     XCTAssertNil(store.remoteTarget())
     XCTAssertFalse(store.vcsStatus.targetExists(sid))
     XCTAssertNil(AppStore.projectPath(of: sid))

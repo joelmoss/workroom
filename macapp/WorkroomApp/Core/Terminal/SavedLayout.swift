@@ -367,6 +367,8 @@ struct DiffPayload: Codable, Hashable, Sendable {
   var isPreview: Bool
   /// `DiffViewMode.rawValue` — the per-tab unified/side-by-side override, nil to follow the global.
   var viewMode: String?
+  /// The repository the file is in, when not the target's own folder (#807).
+  var repositoryRoot: String? = nil
 }
 
 struct FilePayload: Codable, Hashable, Sendable {
@@ -374,6 +376,8 @@ struct FilePayload: Codable, Hashable, Sendable {
   var isPreview: Bool
   /// The per-tab Markdown source/preview override, nil for the default (rendered).
   var markdownPreview: Bool?
+  /// The folder `path` is relative to, when not the target's own (#809).
+  var root: String? = nil
 }
 
 struct ChangesetPayload: Codable, Hashable, Sendable {
@@ -382,6 +386,8 @@ struct ChangesetPayload: Codable, Hashable, Sendable {
   var isPreview: Bool
   /// The selected file within the commit.
   var selectedPath: String?
+  /// The repository the commit is in, when not the target's own folder (#805).
+  var repositoryRoot: String? = nil
 }
 
 /// One pane. Flat with optional payloads rather than an enum-with-associated-values on purpose: an

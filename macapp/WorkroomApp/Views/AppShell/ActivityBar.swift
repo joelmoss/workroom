@@ -12,7 +12,6 @@ import SwiftUI
 /// `.onHover` tracking (a raw content view near the title bar loses it, issue #114).
 struct ActivityBar: View {
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var vcsStatus: VCSStatusService
   @Default(.showInspector) private var showInspector
   @Environment(\.themeTokens) private var tokens
@@ -26,8 +25,9 @@ struct ActivityBar: View {
     // Re-renders on every click, so `showInspector` is read fresh (`AppStore.inspectorToggles`).
     let _ = store.inspectorToggles
     VStack(spacing: 2) {
-      // No projects: no inspector to show, so only Settings stays on the rail.
-      ForEach(projectStore.projects.isEmpty ? [] : ActivitySection.allCases) { section in
+      // Nothing selected to inspect (no selection, the Quick Terminal): no inspector to show, so
+      // only Settings stays on the rail. A terminal with no project has one: it follows its folder.
+      ForEach(store.selectionIsInspectable ? ActivitySection.allCases : []) { section in
         ActivityBarButton(
           section: section,
           // Active only while the pane is actually shown — a closed inspector highlights nothing
@@ -62,11 +62,10 @@ struct ActivityBar: View {
   }
 
   /// Whether the inspector's current target has an uncommitted working tree — drives the Changes
-  /// icon's dirty dot. Keyed off `inspectorTargetID` (nil when the selection has no open tabs, so the
-  /// Changes pane is empty and the dot stays hidden), matching what the pane actually shows.
+  /// icon's dirty dot. Keyed off the inspector's subject (nothing when the selection has no open
+  /// tabs, so the Changes pane is empty and the dot stays hidden), matching what the pane shows.
   private var changesDirty: Bool {
-    guard let id = store.inspectorTargetID else { return false }
-    return vcsStatus.workroomStatuses[id]?.dirty == true
+    vcsStatus.status(for: store.inspectorRepositorySubject)?.dirty == true
   }
 }
 

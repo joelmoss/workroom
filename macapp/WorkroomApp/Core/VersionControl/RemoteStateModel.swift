@@ -28,10 +28,41 @@ final class RemoteStateModel: ObservableObject {
 
   /// What the model is pointed at. Carries `projectRoot` because fetch always runs there.
   struct Target: Equatable, Sendable {
-    let sid: SidebarID
+    /// What a failure dialog calls a followed repository: its root as the shell spelled it, the
+    /// header's spelling. Display only, so it takes no part in `==`: two terminals spelling one
+    /// repository differently still share one target.
+    var name: String? = nil
+    /// What its actions act on: a sidebar row, or a repository a terminal's inspector follows that
+    /// is no row's (#808), by its canonical root. A followed one's location is resolved through
+    /// `followedLocation` on every read and action, never from the path.
+    let actionTarget: VCSActionTarget
     let path: String
     let projectRoot: String
     var location: RepositoryLocation? = nil
+
+    /// A sidebar row's working copy.
+    init(sid: SidebarID, path: String, projectRoot: String, location: RepositoryLocation? = nil) {
+      actionTarget = .row(sid)
+      self.path = path
+      self.projectRoot = projectRoot
+      self.location = location
+    }
+
+    /// A followed repository's, at its canonical root, called `name` in a failure dialog.
+    init(followed root: String, name: String? = nil) {
+      actionTarget = .followed(root: root)
+      path = root
+      projectRoot = root
+      self.name = name
+    }
+
+    static func == (lhs: Target, rhs: Target) -> Bool {
+      lhs.actionTarget == rhs.actionTarget && lhs.path == rhs.path
+        && lhs.projectRoot == rhs.projectRoot && lhs.location == rhs.location
+    }
+
+    /// The sidebar row it names, nil for a followed repository.
+    var sid: SidebarID? { actionTarget.sidebarID }
   }
 
   @Published private(set) var state: State = .idle
@@ -115,6 +146,10 @@ final class RemoteStateModel: ObservableObject {
   /// `performCommit` pairs its own `beginWrite`/`endWrite` calls.
   var writeDidStart: (@MainActor (RepositoryLocation) -> Void)?
   var writeDidFinish: (@MainActor (RepositoryLocation) -> Void)?
+  /// Where a followed repository's reads and writes land (`Target.actionTarget`): its registration's
+  /// location, awaited, or nil once no window follows it, which refuses the read or the action.
+  /// Wired post-init to `VCSStatusService.followedWriteLocation`.
+  var followedLocation: (@MainActor (String) async throws -> RepositoryLocation)?
 
   init(
     makeWriter: (@Sendable (URL) throws -> LocalVCSWriting)? = nil,
@@ -133,7 +168,12 @@ final class RemoteStateModel: ObservableObject {
 
   private func resolveWriter(_ target: Target) async throws -> VCSWriting {
     let location: RepositoryLocation
-    if let supplied = target.location {
+    if let root = target.actionTarget.followedRoot {
+      // Registered while some window follows it, and addressed only through that registration: a
+      // repository let go since the click resolves to nothing, never to wherever the path leads.
+      guard let followedLocation else { throw FollowedRepositoryGone() }
+      location = try await followedLocation(root)
+    } else if let supplied = target.location {
       location = supplied
     } else {
       location = try await RepositoryLocation.local(target.path)
@@ -412,7 +452,7 @@ final class RemoteStateModel: ObservableObject {
     if case .failed(let failure) = result, userInitiated {
       raiseFailureReport(
         failure, action: action,
-        workroom: self.target == target ? nil : describeTarget?(target.sid))
+        workroom: self.target == target ? nil : name(of: target))
     }
     // Everything past here writes PUBLISHED state that the toolbar renders for whatever is selected NOW,
     // so it needs the same guard `apply` has. Without it, starting a push in one workroom and switching
@@ -435,6 +475,12 @@ final class RemoteStateModel: ObservableObject {
   /// Put a failure in front of the user. The toolbar's one truncating line can't carry the message, so
   /// anything the user asked for and that failed gets the dialog. `workroom` names where it happened,
   /// and is passed only when that isn't the current selection — see `VCSFailureReport.workroom`.
+  /// What a failure dialog calls `target`: a followed repository by its root (#808), a row by its
+  /// label.
+  private func name(of target: Target) -> String? {
+    target.name ?? target.actionTarget.followedName ?? target.sid.flatMap { describeTarget?($0) }
+  }
+
   private func raiseFailureReport(
     _ failure: VCSRemoteFailure, action: VCSRemoteAction?, workroom: String? = nil,
     isRead: Bool = false
@@ -475,10 +521,16 @@ final class RemoteStateModel: ObservableObject {
   /// still have left the working copy conflicted.
   /// `sid` is the workroom the pull ran in — checked, not trusted, for the same reason `finish` checks it:
   /// the sweep this waits on is async, so the selection can move before it lands.
+  func noteConflictState(_ conflicted: Bool, for pulled: Target) {
+    guard target == pulled, lastAction == .pull, lastFailure == nil else { return }
+    lastPullConflicted = conflicted
+  }
+
   func noteConflictState(
     _ conflicted: Bool, for sid: SidebarID, location: RepositoryLocation? = nil
   ) {
-    guard target?.sid == sid, target?.location == location, lastAction == .pull, lastFailure == nil
+    guard target?.actionTarget == .row(sid), target?.location == location, lastAction == .pull,
+      lastFailure == nil
     else { return }
     lastPullConflicted = conflicted
   }

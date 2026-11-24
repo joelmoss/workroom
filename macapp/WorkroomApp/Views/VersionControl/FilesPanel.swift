@@ -6,56 +6,94 @@ import SwiftUI
 /// itself rather than hosting a `List`/`OutlineGroup`). A single click on a file opens it read-only
 /// in the main pane (preview), a quick second click persists it, and ⌘-click opens it in the
 /// external editor — mirroring the Changes panel. Directory rows toggle expansion.
+///
+/// For a folder a terminal's inspector follows (#809) the tree is rooted at that folder, and a
+/// breadcrumb pinned above it (`FilesBreadcrumbBar`) walks from its repository's root, or `~`, down
+/// to it. The pane hosts this body in fill mode, so the list scrolls under the breadcrumb.
 struct FilesPanel: View {
   @EnvironmentObject var store: AppStore
   @ObservedObject var model: FileTreeModel
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
+    let breadcrumb = store.filesBreadcrumb
+    VStack(spacing: 0) {
+      if let breadcrumb {
+        FilesBreadcrumbBar(breadcrumb: breadcrumb) { store.browseFiles(toSegment: $0) }
+      }
+      content(followed: breadcrumb != nil)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    // Fill the pane (hosted in fill mode) so the list's own `ScrollView` has a bounded height.
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    // Point the tree at the inspector's subject (nothing once all its tabs close → the tree
+    // clears), only while Files is the active activity-bar section. Re-runs on either change, and
+    // for a followed folder on every folder change and breadcrumb browse; `activate` no-ops when
+    // already on a local path, so re-selecting the same target is instant; a remote tree has no
+    // watcher, so it is listed again. While Files isn't shown (another section, or the inspector
+    // hidden, which unmounts this) the tree stops watching, and it catches up once on its return.
+    .task(id: activationKey) {
+      guard store.activeInspectorSection == .files else { return model.pause() }
+      store.activateFileTree()
+      model.resume()
+    }
+    .onDisappear { model.pause() }
+  }
+
+  /// The section's loader: while the tree lists, and once a followed folder's repository has been
+  /// pending a moment.
+  private var listingIndicator: some View {
+    HStack(spacing: 6) {
+      ProgressView().controlSize(.small)
+      Text("Listing files…").font(.callout).foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 6).padding(.horizontal, 8)
+    .help("Listing files")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Listing files")
+  }
+
+  @ViewBuilder private func content(followed: Bool) -> some View {
     Group {
-      if store.inspectorTargetID == nil {
+      if case .followed(let followed) = store.inspectorSubject, followed.repositoryPending {
+        // The folder's repository is still resolving, which decides how it lists: wait rather
+        // than list it twice. Blank at first, so a fast answer never flashes a loader, then the
+        // section's own loader.
+        if store.followedFolderLoaderShown { listingIndicator } else { EmptyView() }
+      } else if store.inspectorSubject == .nothing {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than list a stale workroom.
         InlineMessage("No open terminal", systemImage: "folder")
       } else {
         switch model.state {
         case .idle:
-          InlineMessage("No workroom selected", systemImage: "folder")
+          InlineMessage(
+            followed ? "No open terminal" : "No workroom selected", systemImage: "folder")
         case .loading:
-          HStack(spacing: 6) {
-            ProgressView().controlSize(.small)
-            Text("Listing files…").font(.callout).foregroundStyle(.secondary)
-          }
-          .padding(.vertical, 6).padding(.horizontal, 8)
+          listingIndicator
         case .failed(let message):
           InlineMessage(message, systemImage: "exclamationmark.triangle")
         case .unavailable:
-          InlineMessage("Not a repository", systemImage: "folder.badge.questionmark")
+          // A followed folder lists with or without a repository, so for one this means the
+          // folder is gone or unreadable.
+          InlineMessage(
+            followed ? "Folder unavailable" : "Not a repository",
+            systemImage: "folder.badge.questionmark")
         case .loaded:
           if model.roots.isEmpty {
-            InlineMessage("No files", systemImage: "folder")
+            InlineMessage(followed ? "Empty folder" : "No files", systemImage: "folder")
           } else {
-            fileList
+            ScrollView { fileList }
+              .inspectorScrollMemory(
+                key: store.inspectorMemoryKey(for: .files), in: store.inspectorScrollMemory)
           }
         }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Point the tree at the inspector's active target (nil once all its tabs close → the tree
-    // clears), only while Files is the active activity-bar section. Re-runs on either change;
-    // `activate` no-ops when already on a local path, so re-selecting the same target is instant; a
-    // remote tree has no watcher, so it is listed again.
-    .task(id: activationKey) {
-      guard store.activeInspectorSection == .files else { return }
-      let target = store.inspectorTarget
-      model.activate(target: target)
-    }
   }
 
-  private var activationKey: String {
-    "\(store.inspectorTargetID?.targetID?.encoded ?? "")"
-      + "\u{1F}\(store.activeInspectorSection == .files)"
-  }
+  private var activationKey: FilesActivation { store.filesActivationKey }
 
   /// `LazyVStack`, not `VStack`: rows are fixed-height (single-line, truncated — no soft-wrap, unlike
   /// `DiffViewer`'s lines, where lazy would cache a wrong estimate for a not-yet-materialized wrapping
@@ -64,8 +102,10 @@ struct FilesPanel: View {
   /// of behaving like `VStack` with no viewport to bound against.
   private var fileList: some View {
     let rows = model.rows
-    // Once per list, not per row: resolving the target can stat its directory.
-    let canOpenInEditor = store.inspectorTarget?.isMissing == false
+    // Once per list, not per row: resolving the target can stat its directory. A followed folder
+    // is always this Mac's.
+    let canOpenInEditor =
+      store.filesFileRoot != nil || store.inspectorTarget?.isMissing == false
     let capped = Array(rows.prefix(FileTreeModel.renderCap))
     return LazyVStack(alignment: .leading, spacing: 0) {
       ForEach(capped, id: \.node.path) { row in

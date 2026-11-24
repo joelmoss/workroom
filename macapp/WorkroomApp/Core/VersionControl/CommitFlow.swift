@@ -52,16 +52,16 @@ final class CommitFlow {
     var draft: () -> Draft
     var dismiss: () -> Void
 
-    /// `store`'s asks for `sid`, which the caller captured: the selection can move while a hook
-    /// runs, and every ask must land on the workroom the sheet was opened for.
+    /// `store`'s asks for `target`, which the caller captured: the selection (or a terminal's
+    /// folder) can move while a hook runs, and every ask must land on what the sheet was opened for.
     static func store(
-      _ store: AppStore, sid: SidebarID, draft: @escaping () -> Draft,
+      _ store: AppStore, target: VCSActionTarget, draft: @escaping () -> Draft,
       dismiss: @escaping () -> Void
     ) -> Context {
       Context(
-        preflight: { store.commitPreflight(on: sid, completion: $0) },
-        stagedContentAtRisk: { store.stagedContentAtRisk(on: sid, files: $0, completion: $1) },
-        performCommit: { store.performCommit($0, on: sid, completion: $1) },
+        preflight: { store.commitPreflight(on: target, completion: $0) },
+        stagedContentAtRisk: { store.stagedContentAtRisk(on: target, files: $0, completion: $1) },
+        performCommit: { store.performCommit($0, on: target, completion: $1) },
         draft: draft, dismiss: dismiss)
     }
   }

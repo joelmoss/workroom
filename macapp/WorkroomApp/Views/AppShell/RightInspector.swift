@@ -36,7 +36,8 @@ struct RightInspector: View {
       // The VCS toolbar sits ABOVE the section stack, not inside a section, so it survives a collapsed
       // Changes section. Only for the Changes activity section: branch/remote state is what that section
       // is about, and showing it over the Files tree would jump the layout on every activity-bar click.
-      if store.activeInspectorSection == .changes {
+      // Not for a followed folder with no repository, where Changes already says so.
+      if store.activeInspectorSection == .changes, store.inspectorShowsRepositoryControls {
         VCSToolbar(model: store.remoteState)
       }
       if subs.isEmpty {
@@ -60,7 +61,9 @@ struct RightInspector: View {
     ) { item in
       // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
       // the selection can move while it's open and `performRemoteAction` would re-derive the target.
-      Button(item.action.label) { store.runRemoteAction(item.action, on: item.sid) }
+      Button(item.action.label) {
+        store.runRemoteAction(item.action, on: item.target)
+      }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
       Text("Your uncommitted changes will be stashed and reapplied after the rebase.")
@@ -72,9 +75,10 @@ struct RightInspector: View {
       headers: subs.map { sectionHeader(for: $0) },
       bodies: subs.map { sectionBody(for: $0) },
       collapsed: subs.map { collapsedValue(for: $0) },
-      // History hosts its body in fill mode (it scrolls itself via SwiftUI) so its divergence
-      // expander animates cleanly; the other sections keep the default NSScrollView hosting.
-      fills: subs.map { $0 == .history },
+      // History hosts its body in fill mode (it scrolls itself via SwiftUI); the other sections
+      // keep the default NSScrollView hosting. Files fills too, so its followed-folder breadcrumb
+      // stays pinned above the list (#809).
+      fills: subs.map(Self.fills),
       sectionKey: store.activeInspectorSection.rawValue,
       // The section layout is GLOBAL, not per-workroom, so this key is constant: switching workrooms
       // must not trigger the controller's workroom-switch redistribute (only a section change, via
@@ -87,7 +91,12 @@ struct RightInspector: View {
           full[sub.storeIndex] = shown[index]
         }
         store.updateInspectorSizeWeights(full)
-      }
+      },
+      // A followed repository's Changes and Pull Request keep their scroll per repository (#810).
+      // A fill-mode pane scrolls itself and ignores its key, so none is read for it: Files' would
+      // observe the followed folder, and re-render the whole inspector on every `cd`.
+      scrollKeys: subs.map { Self.fills($0) ? nil : store.inspectorMemoryKey(for: $0) },
+      scrollMemory: store.inspectorScrollMemory
     )
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .confirmationDialog(
@@ -97,14 +106,19 @@ struct RightInspector: View {
       presenting: pendingConfirm
     ) { item in
       Button(item.action.label, role: .destructive) {
-        store.performPRAction(item.action, number: item.number, on: item.sid)
+        store.performPRAction(item.action, number: item.number, on: item.target)
       }
       Button("Cancel", role: .cancel) {}
     }
   }
 
-  /// Whether the inspector's target has anything a commit could record.
-  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorTargetID) }
+  /// Whether `sub` hosts its body in fill mode, scrolling itself (`InspectorSplitView.fills`).
+  private static func fills(_ sub: InspectorSectionKind) -> Bool {
+    sub == .history || sub == .files
+  }
+
+  /// Whether the inspector's subject has anything a commit could record.
+  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorActionTarget) }
 
   private var commitButtonHelp: String {
     canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
@@ -133,15 +147,19 @@ struct RightInspector: View {
           shortcut: Shortcuts.shared.table.label(for: .changes)
         ) {
           HStack(spacing: 0) {
-            InspectorHeaderButton(
-              systemImage: "checkmark.circle", help: commitButtonHelp,
-              disabled: !canCommitSelectedTarget
-            ) {
-              store.requestCommit(store.inspectorTargetID)
+            // A followed folder with no repository has nothing a commit could go to.
+            if store.inspectorShowsRepositoryControls {
+              InspectorHeaderButton(
+                systemImage: "checkmark.circle", help: commitButtonHelp,
+                disabled: !canCommitSelectedTarget
+              ) {
+                store.requestCommit(store.inspectorActionTarget)
+              }
+              .accessibilityIdentifier("changes.commitButton")
             }
-            .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
               vcsStatus.refreshWorkroomStatuses(force: true)
+              store.refreshFollowedRepository()
             }
           }
         }
@@ -248,10 +266,11 @@ struct RightInspector: View {
   /// through a confirmation dialog). Shown whenever there's a PR, so a merged/closed PR with no
   /// remaining actions can still be opened in the browser.
   @ViewBuilder private var prActionsMenu: some View {
-    if vcsStatus.githubCLIStatus == .available, let pr = selectedStatus?.pr,
-      let sid = store.selectedTargetID
-    {
-      let actions = PRAction.available(for: pr)
+    if vcsStatus.githubCLIStatus == .available, let pr = selectedStatus?.pr {
+      // A workroom's or a followed repository's (#808), wherever `gh` can write: GitHub, not the
+      // folder, so a read-only checkout keeps them (review of #808, finding 6).
+      let target = store.inspectorPullRequestTarget
+      let actions = target == nil ? [] : PRAction.available(for: pr)
       Menu {
         Button {
           if let url = URL(string: pr.url) { openURL(url) }
@@ -262,10 +281,11 @@ struct RightInspector: View {
           Divider()
           ForEach(actions, id: \.self) { action in
             Button(role: action.isDestructive ? .destructive : nil) {
+              guard let target else { return }
               if action.needsConfirmation {
-                pendingConfirm = PendingPRAction(action: action, number: pr.number, sid: sid)
+                pendingConfirm = PendingPRAction(action: action, number: pr.number, target: target)
               } else {
-                store.performPRAction(action, number: pr.number, on: sid)
+                store.performPRAction(action, number: pr.number, on: target)
               }
             } label: {
               Label(action.label, systemImage: action.systemImage)
@@ -294,12 +314,10 @@ struct RightInspector: View {
     tokens.border.frame(height: 1)
   }
 
-  /// The selected workroom's status, or nil when a non-target (project) or nothing is selected —
+  /// The status of the inspector's subject, or nil when it is a non-target (project) or nothing —
   /// drives the header indicators so a collapsed section still shows state.
   private var selectedStatus: WorkroomStatus? {
-    guard let sid = store.inspectorTargetID else { return nil }
-    if case .project = sid { return nil }
-    return vcsStatus.workroomStatuses[sid]
+    vcsStatus.status(for: store.inspectorRepositorySubject)
   }
 
   /// Changes header indicator: how many files changed (a capsule count) and the working-tree line counts
@@ -321,7 +339,7 @@ struct RightInspector: View {
     let ins = s.insertions ?? 0
     let del = s.deletions ?? 0
     // Matches the rows rendered below.
-    let files = s.changedFiles?.count ?? 0
+    let files = s.changedFileCount
     let countsHelp = VCSStatusPresentation.lineCountsHelp(s)
     // `!s.conflicted` because `dot` checks conflict FIRST and would hand back the triangle this row
     // already draws — a status that is both conflicted and unreadable would otherwise show two.
@@ -358,9 +376,8 @@ struct RightInspector: View {
     // The capsule count is a `Text` inside the combined header element, so it never reaches the
     // accessibility tree on its own — it has to be spoken here or not at all.
     // `> 0` so this tracks the badge exactly — a clean tree renders no capsule and must speak none.
-    let files = (s.changedFiles?.count).flatMap {
-      $0 > 0 ? ChangedFileCountBadge.phrase(count: $0) : nil
-    }
+    let count = s.changedFileCount
+    let files = count > 0 ? ChangedFileCountBadge.phrase(count: count) : nil
     // Mirrors what the row now draws: line counts, or the unavailable reason, and no longer "working
     // tree has changes" — the count phrase above already says that, in files rather than in prose.
     let detail =
@@ -374,7 +391,8 @@ struct RightInspector: View {
 private struct PendingPRAction: Identifiable {
   let action: PRAction
   let number: Int
-  let sid: SidebarID
+  /// Captured at the click: the dialog isn't modal to the terminal, which can `cd` meanwhile.
+  let target: VCSActionTarget
   var id: String { "\(action.rawValue)-\(number)" }
 }
 

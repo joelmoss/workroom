@@ -48,6 +48,13 @@ struct HasSidebarContentKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the window's selection can be inspected (`AppStore.selectionIsInspectable`): gates the
+/// View menu's Inspector item and its pane items, so a window with only terminals can open the
+/// inspector that follows their folder (#803), as its activity bar does.
+struct SelectionIsInspectableKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether a workroom is selected to split BESIDE — published by RootView so the two "…in Split"
 /// items (⌥⌘N / ⌥⌘O, issue #163) disable when there is no anchor.
 ///
@@ -180,6 +187,10 @@ extension FocusedValues {
   var hasSidebarContent: Bool? {
     get { self[HasSidebarContentKey.self] }
     set { self[HasSidebarContentKey.self] = newValue }
+  }
+  var selectionIsInspectable: Bool? {
+    get { self[SelectionIsInspectableKey.self] }
+    set { self[SelectionIsInspectableKey.self] = newValue }
   }
   var hasWorkroomAnchor: Bool? {
     get { self[HasWorkroomAnchorKey.self] }

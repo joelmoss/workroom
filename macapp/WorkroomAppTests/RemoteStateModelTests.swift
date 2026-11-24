@@ -13,6 +13,8 @@ import XCTest
 @MainActor
 final class RemoteStateModelTests: XCTestCase {
 
+  private let sid = SidebarID.workroom(project: "/p", name: "feat")
+  private let otherSid = SidebarID.workroom(project: "/p", name: "other")
   private let target = RemoteStateModel.Target(
     sid: .workroom(project: "/p", name: "feat"), path: "/p/feat", projectRoot: "/p")
   private let otherTarget = RemoteStateModel.Target(
@@ -179,21 +181,21 @@ final class RemoteStateModelTests: XCTestCase {
   func testResolvedBranchIsPublished() async {
     let writer = StubWriter(state: .state(state(branch: "feature/x")))
     let m = model(writer)
-    var published: [SidebarID: String?] = [:]
-    m.onBranchResolved = { target, name in published[target.sid] = name }
+    var published: [VCSActionTarget: String?] = [:]
+    m.onBranchResolved = { target, name in published[target.actionTarget] = name }
     m.focus(target)
     await m.awaitCurrentLoad()
-    XCTAssertEqual(published[target.sid], "feature/x")
+    XCTAssertEqual(published[target.actionTarget], "feature/x")
   }
 
   func testAbsentPublishesNoBranch() async {
     let writer = StubWriter(state: .absent)
     let m = model(writer)
-    var published: [SidebarID: String?] = [:]
-    m.onBranchResolved = { target, name in published[target.sid] = name }
+    var published: [VCSActionTarget: String?] = [:]
+    m.onBranchResolved = { target, name in published[target.actionTarget] = name }
     m.focus(target)
     await m.awaitCurrentLoad()
-    XCTAssertEqual(published[target.sid], String?.none)
+    XCTAssertEqual(published[target.actionTarget], String?.none)
   }
 
   // MARK: Derived enablement
@@ -431,7 +433,7 @@ final class RemoteStateModelTests: XCTestCase {
     m.perform(.pull)
     await m.awaitCurrentLoad()
     XCTAssertFalse(m.lastPullConflicted)
-    m.noteConflictState(true, for: target.sid)
+    m.noteConflictState(true, for: sid)
     XCTAssertTrue(m.lastPullConflicted)
   }
 
@@ -442,7 +444,7 @@ final class RemoteStateModelTests: XCTestCase {
     await m.awaitCurrentLoad()
     m.perform(.push)
     await m.awaitCurrentLoad()
-    m.noteConflictState(true, for: target.sid)
+    m.noteConflictState(true, for: sid)
     XCTAssertFalse(m.lastPullConflicted, "a push can't produce a rebase conflict")
   }
 
@@ -473,15 +475,15 @@ final class RemoteStateModelTests: XCTestCase {
   func testASuccessfulActionStillReportsItsOwnWorkroomDownstream() async {
     let writer = StubWriter(state: .state(state(ahead: 1)), action: .ok(summary: "pushed"))
     let m = model(writer, ttl: 0)
-    var mutated: [SidebarID] = []
-    m.onDidMutate = { _, target in mutated.append(target.sid) }
+    var mutated: [VCSActionTarget] = []
+    m.onDidMutate = { _, target in mutated.append(target.actionTarget) }
     m.focus(target)
     await m.awaitCurrentLoad()
     m.perform(.push)
     m.focus(otherTarget)
     await m.awaitCurrentLoad()
     XCTAssertEqual(
-      mutated, [target.sid],
+      mutated, [target.actionTarget],
       "the mutation must be attributed to the workroom it ran in, not the one now selected")
   }
 
@@ -511,7 +513,7 @@ final class RemoteStateModelTests: XCTestCase {
     await m.awaitCurrentLoad()
     m.perform(.pull)
     await m.awaitCurrentLoad()
-    m.noteConflictState(true, for: otherTarget.sid)
+    m.noteConflictState(true, for: otherSid)
     XCTAssertFalse(
       m.lastPullConflicted, "another workroom's conflict flag must not attach to this pull")
   }
@@ -622,6 +624,27 @@ final class RemoteStateModelTests: XCTestCase {
       "named, so the dialog can't be read as the workroom now on screen")
     XCTAssertNil(
       m.lastFailure, "the BAR still belongs to the selection — only the dialog crosses the switch")
+  }
+
+  /// Value: protects=a followed repository's push failing after the terminal moved to another;
+  /// fails_when=the dialog names the terminal's row ("Terminal 1"), which names no repository;
+  /// why_new=#808 review nit 3; seam=RemoteStateModel; no_claim=the dialog's rendering
+  func testAFollowedRepositorysFailureAfterACdNamesTheRepository() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.describeTarget = { _ in "Terminal 1" }
+    m.followedLocation = { root in try await RepositoryLocation.local(root) }
+    let followed = RemoteStateModel.Target(followed: "/p/feat")
+    let moved = RemoteStateModel.Target(followed: "/p/other")
+    m.focus(followed)
+    await m.awaitCurrentLoad()
+
+    m.perform(.push)
+    m.focus(moved)  // the terminal `cd`s to another repository while the push runs
+    await m.awaitCurrentLoad()
+
+    XCTAssertEqual(m.failureReport?.failure, .authRequired("nope"))
+    XCTAssertEqual(m.failureReport?.workroom, "/p/feat", "the repository, not the terminal's row")
   }
 
   /// The common case stays unnamed: naming the workroom you are looking at is noise.

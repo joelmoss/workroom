@@ -7,6 +7,7 @@ import WorkroomSystem
 /// Local input → async canonicalization ─┐
 /// Remote input → pure validation ────────┴→ location → captured registry entry → bound services
 ///   Unregistered local: probe for immutable reads; writes require registration.
+///   A repository an inspector follows is registered while some window follows it (#808).
 ///   Unregistered remote: unavailable, with no local filesystem or provider access.
 final class RepositoryRouter: @unchecked Sendable {
   struct Entry: Hashable, Sendable {
@@ -49,6 +50,11 @@ final class RepositoryRouter: @unchecked Sendable {
   private let lock = NSLock()
   private var entries: [RepositoryLocation: Entry] = [:]
   private var localLocations: [String: RepositoryLocation] = [:]
+  /// The repositories the windows' inspectors follow for their terminals (#808, ADR 0081), and how
+  /// many holds each has. Apart from `entries`, so a project reload (`replaceLocal`) never drops one
+  /// and a release never removes a project's own registration, which is read first.
+  private var followed: [RepositoryLocation: (entry: Entry, holders: Int, source: String?)] =
+    [:]
 
   /// Injected remote factories never fall back to local services.
   let remoteReader: @Sendable (RepositoryContext) throws -> VCSProviding
@@ -169,13 +175,44 @@ final class RepositoryRouter: @unchecked Sendable {
     }
   }
 
+  /// Hold a registration for a repository an inspector follows, so its writes route as a
+  /// workroom's do (#808). Counted: every hold is balanced by one `releaseFollowed(_:)`, and the
+  /// registration lasts until the last. Local only; a project's or workroom's own registration of
+  /// the same location stays the one that routes it.
+  func holdFollowed(_ registration: Registration) {
+    guard registration.location.host == .local else { return }
+    lock.withLock {
+      followed[
+        registration.location, default: (registration.entry, 0, registration.localSourcePath)
+      ].holders += 1
+    }
+  }
+
+  /// Let go of one hold on a followed repository's registration. The last one out removes it; a
+  /// location nothing holds is left alone, as is whatever a project registered there.
+  func releaseFollowed(_ location: RepositoryLocation) {
+    lock.withLock {
+      guard let held = followed[location] else { return }
+      followed[location] = held.holders > 1 ? (held.entry, held.holders - 1, held.source) : nil
+    }
+  }
+
+  /// Whether some inspector's followed-repository registration is held at `location`.
+  func isHeldFollowed(_ location: RepositoryLocation) -> Bool {
+    lock.withLock { followed[location] != nil }
+  }
+
   /// Listing aliases were normalized during preparation. This lookup does no filesystem work.
   func localLocation(for path: String) -> RepositoryLocation? {
-    lock.withLock { localLocations[path] }
+    lock.withLock {
+      // A followed repository answers to its location's path and to the root it was followed by
+      // (git's spelling, which keeps a `/private` the location's drops).
+      localLocations[path] ?? followed.first { $0.key.path == path || $0.value.source == path }?.key
+    }
   }
 
   func entry(for location: RepositoryLocation) -> Entry? {
-    lock.withLock { entries[location] }
+    lock.withLock { entries[location] ?? followed[location]?.entry }
   }
 
   func context(for location: RepositoryLocation) async throws -> RepositoryContext {

@@ -337,6 +337,13 @@ public enum ShellEnvironment {
     return value
   }
 
+  /// Wait for the probe in flight, if there is one, and start none: for a read that needs what the
+  /// user's shell exports (its `GIT_CEILING_DIRECTORIES`) but runs too often to spawn a login shell,
+  /// so it never reads the floor while the launch probe is still out.
+  public static func settled() async {
+    if let task = state.inFlight() { _ = await task.value }
+  }
+
   /// Log the reason a probe failed. The *case* only — never the payload or the merged environment,
   /// which carry whatever the user's shell exports.
   private static func report(_ reason: ProbeFailure) {
@@ -387,6 +394,12 @@ private final class ProbeState: @unchecked Sendable {
     guard gen > stored else { return }
     stored = gen
     value = env
+  }
+
+  func inFlight() -> Task<[String: String], Never>? {
+    lock.lock()
+    defer { lock.unlock() }
+    return task
   }
 
   func clearInFlight(_ finished: Task<[String: String], Never>) {

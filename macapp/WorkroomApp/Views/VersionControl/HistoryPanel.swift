@@ -48,6 +48,14 @@ struct HistoryPanel: View {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
         InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
+      } else if inputs.repositoryPending {
+        // A followed folder whose repository is still resolving: blank at first, so a fast answer
+        // never flashes a loader, then the section's own loader.
+        if inputs.showsPendingLoader { loadingIndicator } else { EmptyView() }
+      } else if let folder = inputs.notARepository {
+        // A terminal's followed folder outside any repository (#805), or in one git couldn't tell:
+        // no log to read.
+        NotARepositoryMessage(path: folder, undetermined: inputs.repositoryUndetermined)
       } else {
         switch model.state {
         case .idle:
@@ -136,6 +144,7 @@ struct HistoryPanel: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .inspectorScrollMemory(key: inputs.scrollMemoryKey, in: inputs.scrollMemory)
   }
 
   private var loadingIndicator: some View {
@@ -144,6 +153,9 @@ struct HistoryPanel: View {
       Text("Loading history…").font(.callout).foregroundStyle(.secondary)
     }
     .padding(.vertical, 6).padding(.horizontal, 8)
+    .help("Loading history")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Loading history")
   }
 }
 
@@ -154,7 +166,28 @@ struct HistoryPanelInputs {
   var hasTarget: Bool
   /// Changes when the inspector's target changes or the History section shows or hides; the panel
   /// re-runs `HistoryPanelActions.activate` on each.
-  var activationKey: String
+  var activationKey: Activation
+  /// The folder a terminal's inspector follows, when it is in no git repository (#805): the pane
+  /// says so instead of reading a log. Nil for a workroom, a project, or a folder in a repository.
+  var notARepository: String? = nil
+  /// Whether git couldn't tell which repository `notARepository` is in, rather than answering none.
+  var repositoryUndetermined = false
+  /// Whether the followed folder's repository is still resolving: the pane waits blank, then
+  /// shows its loader once `showsPendingLoader`.
+  var repositoryPending = false
+  /// Whether it has been pending long enough to show the loader
+  /// (`AppStore.followedFolderLoaderShown`).
+  var showsPendingLoader = false
+  /// What the list's scroll position is remembered under for a followed repository (#810); nil
+  /// for a workroom or project, whose History remembers none.
+  var scrollMemoryKey: InspectorMemoryKey? = nil
+  /// Where it is remembered: the window's.
+  var scrollMemory: InspectorScrollMemory? = nil
+  /// What `activationKey` is made of.
+  struct Activation: Hashable {
+    var subject: InspectorSubject.Key
+    var shown: Bool
+  }
   /// The commit id of the focused changeset tab, or `nil`.
   ///
   /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
@@ -190,14 +223,41 @@ struct HistoryPanelAdapter: View {
 
   private var inputs: HistoryPanelInputs {
     HistoryPanelInputs(
-      hasTarget: store.inspectorTargetID != nil,
-      activationKey: (store.inspectorTargetID?.targetID?.encoded ?? "")
-        + "\u{1F}\(store.historySectionShown)",
+      hasTarget: store.inspectorRepositorySubject != .nothing,
+      activationKey: .init(
+        subject: store.inspectorRepositorySubject.repositoryKey, shown: store.historySectionShown),
+      notARepository: notARepository,
+      repositoryUndetermined: repositoryUndetermined,
+      repositoryPending: repositoryPending,
+      showsPendingLoader: store.followedFolderLoaderShown,
+      scrollMemoryKey: store.inspectorMemoryKey(for: .history),
+      scrollMemory: store.inspectorScrollMemory,
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
         FocusedTabSelection.current(store: store)?.changesetCommitID
       }
     )
+  }
+
+  /// The followed folder, when it is in no repository.
+  private var notARepository: String? {
+    guard case .followed(let followed) = store.inspectorRepositorySubject,
+      followed.repository == nil,
+      !followed.repositoryPending
+    else { return nil }
+    return followed.folder
+  }
+
+  /// Whether the followed folder's repository is still resolving.
+  private var repositoryPending: Bool {
+    guard case .followed(let followed) = store.inspectorRepositorySubject else { return false }
+    return followed.repositoryPending
+  }
+
+  /// Whether git couldn't tell which repository the followed folder is in.
+  private var repositoryUndetermined: Bool {
+    guard case .followed(let followed) = store.inspectorRepositorySubject else { return false }
+    return followed.repositoryUndetermined
   }
 
   private var actions: HistoryPanelActions {
@@ -209,7 +269,8 @@ struct HistoryPanelAdapter: View {
         // where `focus` would no-op on the unchanged root. The store's eager `focus` on selection
         // still fires first; `activate`'s settled-state guard means this won't double that fresh
         // load.
-        store.commitHistory.activate(target: store.inspectorTarget)
+        store.commitHistory.activate(
+          target: store.inspectorHistoryTarget, remembering: store.historyRemembersTarget)
       },
       // `[store]` + `Self.title` on purpose: the capture list is what makes this closure
       // behaviour-constant, which is what lets `HistoryRow.==` exclude it.
@@ -458,7 +519,8 @@ struct HistoryRefChips: View {
     HistoryPanel(
       model: model,
       inputs: HistoryPanelInputs(
-        hasTarget: true, activationKey: "preview", selectedCommitID: { "fixturecommit2" }),
+        hasTarget: true, activationKey: .init(subject: .none, shown: true),
+        selectedCommitID: { "fixturecommit2" }),
       actions: HistoryPanelActions(
         activate: { model.activate(target: target) }, open: { _, _ in })
     )

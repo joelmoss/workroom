@@ -115,7 +115,8 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
       }
     // No navigation history, workroom split or selection to follow a content change, a pane count
     // or a surface focus. Its saved layout follows `paneWillChange`, which every pane change sends.
-    case .tabContentChanged, .paneCountChanged, .surfaceFocused:
+    // And no inspector to follow a folder change: the Quick Terminal never feeds one (#803).
+    case .tabContentChanged, .paneCountChanged, .surfaceFocused, .cwdChanged, .commandFinished:
       break
     // Pop-out panes (issue #172), as a window's store opens and closes them.
     case .paneDetached(_, let tabID, let screenPoint):
@@ -230,8 +231,9 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   var cannedDiffs: AppServices.CannedDiffs? { services.cannedDiffs }
   var vcsReader: (@Sendable (URL) throws -> LocalVCSProviding)? { services.vcsReader }
 
-  func openFilePreview(path: String, for target: TerminalTarget) {
-    _ = terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+  func openFilePreview(path: String, root: String?, for target: TerminalTarget) {
+    _ = terminals.openFilePreview(
+      FileDescriptor(path: path, isPreview: true, root: root), for: target)
   }
 
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {
@@ -239,7 +241,7 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   }
 
   /// The Files inspector's ⌘-click, which acts on a window's selected workroom; it has none.
-  func openFileInEditor(path: String) {}
+  func openFileInEditor(path: String, root: String?) {}
 
   func selectChangesetFile(_ path: String?, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
     terminals.setChangesetSelectedPath(path, forTab: tabID, in: target)

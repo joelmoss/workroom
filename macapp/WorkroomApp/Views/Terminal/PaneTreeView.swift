@@ -528,7 +528,8 @@ struct PaneLeafView: View {
       // tab, so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
       // always a live tab while it renders, so the `else` is just a safety fallback.
       let diff = DiffViewer(
-        descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
+        descriptor: descriptor, directory: descriptor.repositoryRoot ?? target.path,
+        repositoryLocation: target.remoteLocation,
         viewModeOverride: tab?.diffViewModeOverride,
         isFocused: focused, find: host.contentFind, cannedDiffs: host.cannedDiffs
       )
@@ -542,7 +543,8 @@ struct PaneLeafView: View {
       // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
       // diff leaf, so "Keep Open"/Close behave identically on a previewed file.
       let file = PlainFileViewer(
-        descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
+        descriptor: descriptor, directory: descriptor.root ?? target.path,
+        repositoryLocation: descriptor.root == nil ? target.remoteLocation : nil,
         isFocused: focused,
         previewOverride: tab?.markdownPreviewOverride,
         find: host.contentFind
@@ -558,7 +560,7 @@ struct PaneLeafView: View {
       // reuses DiffViewer via a `.commit` source). Same rounded clip + chip context menu as the other
       // content leaves, so "Keep Open"/Close/split behave identically.
       let detail = ChangesetDetailView(
-        descriptor: descriptor, directory: target.path,
+        descriptor: descriptor, directory: descriptor.repositoryRoot ?? target.path,
         repositoryLocation: target.remoteLocation,
         isFocused: focused, find: host.contentFind,
         vcsReader: host.vcsReader, cannedDiffs: host.cannedDiffs,
@@ -658,7 +660,9 @@ struct PaneLeafView: View {
       onSetMarkdownPreview: { panes.setMarkdownPreview($0, forTab: tabID, in: target) },
       // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
       onOpenFile: {
-        if let path = content.filePath { host.openFilePreview(path: path, for: target) }
+        if let path = content.filePath {
+          host.openFilePreview(path: path, root: content.fileRoot, for: target)
+        }
       },
       onSplitRight: { panes.splitTab(tabID, on: .right, for: target) },
       onSplitDown: { panes.splitTab(tabID, on: .bottom, for: target) },

@@ -429,7 +429,7 @@ extension RepositoryRoutingTests {
     let target = try XCTUnwrap(store.remoteTarget())
     XCTAssertEqual(target.location, location)
     store.remoteState.onBranchResolved?(target, "host-aware-branch")
-    XCTAssertEqual(store.branchName(for: target.sid), "host-aware-branch")
+    XCTAssertEqual(store.branchName(for: try XCTUnwrap(target.sid)), "host-aware-branch")
   }
 }
 

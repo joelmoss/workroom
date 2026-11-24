@@ -1,6 +1,7 @@
 import Foundation
 import WorkroomGit
 import WorkroomSystem
+import WorkroomVCS
 
 /// The few facts the app reads from a checkout on this Mac by running `git` itself, rather than
 /// through `RepositoryRouter`: its origin and remotes (a remote create's plan, #260), whether origin
@@ -11,11 +12,28 @@ struct GitRepositoryProbe: Sendable {
   var timeout: TimeInterval  // local git
   var networkTimeout: TimeInterval  // `git ls-remote`
 
+  /// What `discoverRepository` runs git with: a runner that applies a per-call environment.
+  let discoveryRunner: StatusCommandRunning
+  /// The discovery limits `discoverRepository` runs with. A seam for tests.
+  let discoveryEnvironment: @Sendable () -> [String: String]
+  /// Whether a path is a folder on disk, which a stale network mount can block indefinitely. A seam
+  /// for tests.
+  let isFolder: @Sendable (String) -> Bool
+
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    networkTimeout: TimeInterval = 10
+    networkTimeout: TimeInterval = 10,
+    discoveryRunner: StatusCommandRunning = StatusCommandRunner(),
+    discoveryEnvironment: @escaping @Sendable () -> [String: String] = {
+      GitRepositoryProbe.discoveryLimits(
+        inherited: ProcessInfo.processInfo.environment, probed: ShellEnvironment.environment())
+    },
+    isFolder: @escaping @Sendable (String) -> Bool = GitRepositoryProbe.isFolder
   ) {
+    self.isFolder = isFolder
     self.runner = runner
+    self.discoveryRunner = discoveryRunner
+    self.discoveryEnvironment = discoveryEnvironment
     self.timeout = timeout
     self.networkTimeout = networkTimeout
   }
@@ -55,6 +73,231 @@ struct GitRepositoryProbe: Sendable {
     default: return nil
     }
   }
+
+  /// The innermost git repository containing `folder` on this Mac, nil outside one or when git
+  /// couldn't tell (see `discoverRepository`). What an inspector following a terminal reads (#803).
+  func repository(containing folder: String) async -> FollowedFolder.Repository? {
+    if case .repository(let found) = await discoverRepository(containing: folder) { return found }
+    return nil
+  }
+
+  /// What `discoverRepository` found for a folder.
+  enum Discovery: Equatable, Sendable {
+    case repository(FollowedFolder.Repository)
+    /// git answered that the folder is in no work tree, or the folder is gone.
+    case notARepository
+    /// git couldn't tell: a timeout, a failed spawn, a repository it refused (dubious ownership).
+    case unknown
+  }
+
+  /// The innermost git repository containing `folder` on this Mac, as `git rev-parse
+  /// --show-toplevel` answers it, so a linked worktree and a submodule are each their own.
+  ///
+  /// The one git run that must discover a repository ABOVE its working directory, which the
+  /// runner's `GIT_CEILING_DIRECTORIES` forbids every other caller: it runs with the user's own
+  /// discovery limits instead (`discoveryLimits`), on `discoveryRunner`, which must apply a per-call
+  /// environment (the daemon-routed runner drops it, and re-sets the ceiling from the folder).
+  ///
+  /// The root it names is the folder's WORK TREE, which `core.worktree` can put anywhere, and every
+  /// later read rediscovers a repository from that root. So the root counts only when the repository
+  /// found there, under the normal ceiling, is the one found from the folder; else the root would
+  /// read another repository (or none) than the one the folder is in.
+  func discoverRepository(containing folder: String) async -> Discovery {
+    // Every stat runs on GCD under the timeout: a stale network mount blocks one indefinitely.
+    guard
+      let exists = await stat("folder\u{0}\(folder)", { [isFolder] in isFolder(folder) })
+    else { return .unknown }
+    guard exists else { return .notARepository }
+    let found = await discoveryRunner.run(
+      "git", GitCommand.hardening + ["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+      in: folder, timeout: timeout, environment: discoveryEnvironment())
+    guard found.ok else { return Self.notARepository(found) ? .notARepository : .unknown }
+    let lines = found.stdout.split(whereSeparator: \.isNewline).map(String.init)
+    guard lines.count == 2 else { return .unknown }
+    let (root, gitDir) = (lines[0], lines[1])
+    // One stat pass on GCD: whether the root holds a repository, whether it is writable, whether
+    // git's discovery from the root provably lands on `gitDir` (so the `rev-parse` that checks it
+    // can be skipped), and the branch HEAD names. One git spawn per resolve in the usual layouts.
+    guard
+      let facts = await stat(
+        "root\u{0}\(root)\u{0}\(gitDir)",
+        {
+          RootFacts(
+            isRepository: isGitRepo(at: URL(fileURLWithPath: root)),
+            isWritable: FileManager.default.isWritableFile(atPath: root),
+            discoversGitDir: Self.rootDiscovers(gitDir, root: root),
+            head: Self.headBranch(gitDir: gitDir))
+        })
+    else { return .unknown }
+    // The root counts only when the repository found from it is the folder's (`core.worktree`):
+    // proved from the file system in the usual layouts, else asked of git under the normal ceiling.
+    if !facts.discoversGitDir {
+      let atRoot = await discoveryRunner.run(
+        "git", GitCommand.hardening + ["rev-parse", "--absolute-git-dir"], in: root,
+        timeout: timeout)
+      guard atRoot.ok else { return Self.notARepository(atRoot) ? .notARepository : .unknown }
+      guard atRoot.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == gitDir else {
+        return .notARepository
+      }
+    }
+    guard facts.isRepository else { return .notARepository }
+    let branch: String? =
+      switch facts.head {
+      case .branch(let name): name
+      case .detached: nil
+      case .unreadable: await localBranch(path: root, branch: nil)
+      }
+    return .repository(
+      FollowedFolder.Repository(
+        root: root, branch: branch, isWritable: facts.isWritable, gitDir: gitDir))
+  }
+
+  /// What the resolve reads of a repository's root in one blocking pass.
+  private struct RootFacts: Sendable {
+    var isRepository: Bool
+    var isWritable: Bool
+    var discoversGitDir: Bool
+    var head: Head
+  }
+
+  /// What a repository's `HEAD` file names.
+  enum Head: Equatable, Sendable {
+    case branch(String)
+    case detached
+    /// Not a plain loose `HEAD` (reftable's stub, an unreadable file): ask git.
+    case unreadable
+  }
+
+  /// The branch `<gitDir>/HEAD` names, read as git writes it, so the resolve spawns no
+  /// `symbolic-ref`. Blocking: call on GCD.
+  static func headBranch(gitDir: String) -> Head {
+    guard let data = FileManager.default.contents(atPath: gitDir + "/HEAD"),
+      let text = String(data: data, encoding: .utf8)
+    else { return .unreadable }
+    let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if line.hasPrefix("ref: ") {
+      let name = line.dropFirst("ref: ".count).trimmingCharacters(in: .whitespaces)
+      // Reftable keeps a `refs/heads/.invalid` stub here; the real HEAD is in its tables.
+      guard name.hasPrefix("refs/heads/"), name != "refs/heads/.invalid" else {
+        return .unreadable
+      }
+      let branch = String(name.dropFirst("refs/heads/".count))
+      return branch.isEmpty ? .unreadable : .branch(branch)
+    }
+    // A detached HEAD is a bare object name.
+    let isObjectName = (line.count == 40 || line.count == 64) && line.allSatisfy(\.isHexDigit)
+    return isObjectName ? .detached : .unreadable
+  }
+
+  /// Whether git's discovery from `root` provably finds `gitDir`, as the file system shows it:
+  /// `<root>/.git` is that directory, or a `.git` file naming it absolutely (a linked worktree, a
+  /// submodule). Anything else (`core.worktree` relocating the work tree, a relative `gitdir:`) is
+  /// left to git. Blocking: call on GCD.
+  static func rootDiscovers(_ gitDir: String, root: String) -> Bool {
+    let dotGit = root + "/.git"
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) else {
+      return false
+    }
+    if isDirectory.boolValue { return gitDir == dotGit }
+    guard let data = FileManager.default.contents(atPath: dotGit),
+      let text = String(data: data, encoding: .utf8)
+    else { return false }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines) == "gitdir: \(gitDir)"
+  }
+
+  /// Whether `path` is a folder on disk.
+  @Sendable static func isFolder(_ path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+      && isDirectory.boolValue
+  }
+
+  /// The discovery limits the resolve runs with: the user's own `GIT_CEILING_DIRECTORIES` (a
+  /// dotfiles repository at `$HOME` is commonly fenced off this way) and
+  /// `GIT_DISCOVERY_ACROSS_FILESYSTEM`, else no ceiling. The app's inherited environment wins over
+  /// the probed shell's, as for a network command (`StatusCommandRunner.networkEnvironment`).
+  static func discoveryLimits(inherited: [String: String], probed: [String: String])
+    -> [String: String]
+  {
+    var env = ["GIT_CEILING_DIRECTORIES": ""]
+    for key in ["GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"] {
+      if let value = inherited[key] ?? probed[key] { env[key] = value }
+    }
+    return env
+  }
+
+  /// Whether a failed `rev-parse` said the folder is in no work tree (git's message under the
+  /// runner's `LC_ALL=C`), rather than that it couldn't tell.
+  private static func notARepository(_ r: CommandResult) -> Bool {
+    guard r.exitCode == CommandResult.gitFatal, !r.timedOut, !r.signaled else { return false }
+    // Only git's own "no work tree here": `not a git repository: <path>` names a `.git` file whose
+    // git directory isn't there (an unmounted volume), which a remount can change (re-review R4).
+    return r.stderr.contains("not a git repository (or any")
+      || r.stderr.contains("must be run in a work tree")
+  }
+
+  /// `found` with `folder` placed in it (`Repository.placed(in:)`), read off the cooperative pool
+  /// under the timeout, as every stat here is; nil when the read outruns it.
+  func placed(_ found: FollowedFolder.Repository, in folder: String) async
+    -> FollowedFolder.Repository?
+  {
+    let root = found.root
+    // Keyed on the root and folder alone, so a joined read never carries another resolve's branch.
+    guard
+      let placement = await Self.blockingRead(
+        "place\u{0}\(root)\u{0}\(folder)", timeout: timeout,
+        {
+          FollowedFolder.Repository(root: root, isWritable: false).placed(in: folder)
+        })
+    else { return nil }
+    var placed = found
+    placed.subfolder = placement.subfolder
+    placed.spelledRoot = placement.spelledRoot
+    return placed
+  }
+
+  /// `work` off the cooperative pool, nil when it outruns `timeout`.
+  private func stat<T: Sendable>(_ key: String, _ work: @escaping @Sendable () -> T) async -> T? {
+    await Self.blockingRead(key, timeout: timeout, work)
+  }
+
+  /// `work` on GCD under `timeout`, nil when it outruns it. A read of `key` still blocked from an
+  /// earlier call (any probe's) is joined rather than started again: a stale network mount blocks
+  /// its GCD thread until the kernel gives up, and a thread per ask would drain the global pool
+  /// every `runBlocking` read shares (re-review R2). A key names the read and its path, so the
+  /// joined read computes the same thing.
+  ///
+  /// A read that outruns its bound and lands later is kept for its key a short while
+  /// (`BlockingReads`), so a slow but live path, whose every read takes a little longer than the
+  /// bound and so lands in its caller's backoff gap, resolves on the next try (#812).
+  static func blockingRead<T: Sendable>(
+    _ key: String, timeout: TimeInterval, _ work: @escaping @Sendable () -> T
+  ) async -> T? {
+    await blockingReads.read(key, timeout: timeout) { try await runBlocking { work() } } as? T
+  }
+
+  /// `work`, which runs its own blocking part on GCD, joined by `key` and bounded by `timeout` as
+  /// `blockingRead` is: nil when it outruns it.
+  static func boundedRead<T: Sendable>(
+    _ key: String, timeout: TimeInterval, _ work: @escaping @Sendable () async -> T
+  ) async -> T? {
+    await blockingReads.read(key, timeout: timeout) { await work() } as? T
+  }
+
+  /// `path` as a local repository location (`RepositoryLocation.local`, which resolves its
+  /// symlinks), joined and bounded, so a stalled mount costs its caller `timeout`. Nil when it
+  /// can't be told in time, or is no usable path.
+  static func localLocation(_ path: String, timeout: TimeInterval = 3) async
+    -> RepositoryLocation?
+  {
+    let location = await boundedRead("location\u{0}\(path)", timeout: timeout) {
+      try? await RepositoryLocation.local(path)
+    }
+    return location ?? nil
+  }
+
+  private static let blockingReads = BlockingReads()  // late results kept 30 s
 
   // MARK: Local-only derivation (a local host reads these from its own checkout)
 
@@ -96,5 +339,119 @@ struct GitRepositoryProbe: Sendable {
     }
     guard let branchName, !branchName.isEmpty else { return nil }
     return branchName
+  }
+}
+
+/// The blocking reads in flight, by key, for `GitRepositoryProbe.blockingRead`, and the late
+/// results of those that outran a caller's bound. An in-flight entry lasts until its closure
+/// actually returns, however many callers gave up waiting on it.
+///
+/// A read a caller gave up on keeps its result for its key for `keepFor` once it lands, so that
+/// caller's retry gets it at once rather than starting a read that outruns the bound again (#812).
+/// Only a late result is kept: a read that lands in time clears its key, so a healthy path is read
+/// afresh every time. A kept result is never served past `keepFor`, and at most `capacity` are
+/// kept (the oldest go first), as keys are per path.
+final class BlockingReads: @unchecked Sendable {
+  let keepFor: Duration
+  let capacity: Int
+
+  private let lock = NSLock()
+  private var reads: [String: Read] = [:]
+  private var kept: [String: (value: any Sendable, landed: ContinuousClock.Instant)] = [:]
+
+  init(keepFor: Duration = .seconds(30), capacity: Int = 256) {
+    self.keepFor = keepFor
+    self.capacity = capacity
+  }
+
+  /// One read in flight. Its state is guarded by the owning `BlockingReads`'s lock.
+  private final class Read: @unchecked Sendable {
+    var task: Task<any Sendable, Error>?
+    /// Whether a caller gave up waiting on it, so its result is kept once it lands.
+    var abandoned = false
+    /// Its result once it landed (nil for a read that threw).
+    var landed: (any Sendable)?
+  }
+
+  /// `work`'s result under `timeout`, nil when it outruns it: a kept late result for `key`, else
+  /// the read of `key` in flight joined, else `work` started as it.
+  func read(
+    _ key: String, timeout: TimeInterval,
+    _ work: @escaping @Sendable () async throws -> any Sendable
+  ) async -> (any Sendable)? {
+    let joined: Read
+    switch join(key, work) {
+    case .kept(let value): return value
+    case .read(let read): joined = read
+    }
+    guard let task = lock.withLock({ joined.task }) else { return nil }
+    do {
+      return try await withTimeout(seconds: timeout) {
+        () async throws -> any Sendable in try await task.value
+      }
+    } catch {
+      return abandon(joined)
+    }
+  }
+
+  private enum Joined {
+    case kept(any Sendable)
+    case read(Read)
+  }
+
+  private func join(_ key: String, _ work: @escaping @Sendable () async throws -> any Sendable)
+    -> Joined
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    if let read = reads[key] { return .read(read) }
+    if let late = kept[key] {
+      if ContinuousClock.now - late.landed < keepFor { return .kept(late.value) }
+      kept[key] = nil
+    }
+    let read = Read()
+    // Its `finish` takes the lock, so it can't run before the entry is in.
+    read.task = Task<any Sendable, Error> { [self] in
+      do {
+        let value = try await work()
+        finish(key, read, value)
+        return value
+      } catch {
+        finish(key, read, nil)
+        throw error
+      }
+    }
+    reads[key] = read
+    return .read(read)
+  }
+
+  /// A caller gave up on `read`: its result, should it have landed in the meantime, else nil, and
+  /// it is kept once it lands.
+  private func abandon(_ read: Read) -> (any Sendable)? {
+    lock.lock()
+    defer { lock.unlock() }
+    read.abandoned = true
+    return read.landed
+  }
+
+  private func finish(_ key: String, _ read: Read, _ value: (any Sendable)?) {
+    lock.lock()
+    defer { lock.unlock() }
+    if reads[key] === read { reads[key] = nil }
+    read.landed = value
+    // The newest landing replaces whatever was kept: a late one is kept, an in-time one clears it.
+    guard read.abandoned, let value else {
+      kept[key] = nil
+      return
+    }
+    let now = ContinuousClock.now
+    kept[key] = (value, now)
+    guard kept.count > capacity else { return }
+    kept = kept.filter { now - $0.value.landed < keepFor }
+    while kept.count > capacity,
+      let oldest = kept.min(by: { $0.value.landed < $1.value.landed })?.key
+    {
+      kept[oldest] = nil
+    }
   }
 }

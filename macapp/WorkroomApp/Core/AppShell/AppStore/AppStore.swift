@@ -6,6 +6,7 @@ import DevContainer
 import Foundation
 import SwiftUI
 import WorkroomDomain
+import WorkroomSystem
 import WorkroomVCS
 
 /// One window's state and actions. Production builds one store per window (issue #70); the
@@ -123,6 +124,10 @@ final class AppStore: ObservableObject {
     for token in frameObservers { NotificationCenter.default.removeObserver(token) }
     // A closed window no longer holds its workroom's host connected (#356).
     RemoteHosts.shared.reachability.select(nil, in: ObjectIdentifier(self))
+    // Nor does it follow its terminal's repository any more (#807).
+    if let root = followedFolder.heldRepository {
+      Task { @MainActor [vcsStatus] in vcsStatus.unfollow(root) }
+    }
   }
 
   /// Only the active (last-key) window writes the shared sidebar prefs to UserDefaults, so multiple
@@ -223,6 +228,46 @@ final class AppStore: ObservableObject {
   /// add/remove hooks, so the inspector re-renders when the answer flips rather than on every
   /// change to the selected target's tabs, which a `terminals.tabCount` read would observe.
   private(set) var selectionHasTabs = false
+  /// The folder this window's inspector follows for the selected Terminals-section target (#803),
+  /// and which target it was resolved for, so a value never outlives its selection. Written only by
+  /// `refreshFollowedFolder`; read through `inspectorSubject`.
+  ///
+  /// Stored as two observed parts, each written only when it changes: the repository part
+  /// (`followedRepositoryState`) and the folder part (`followedFolderPlace`), so a `cd` within one
+  /// repository re-renders only what reads the folder (the header, Details, Files), never the
+  /// version-control sections, which read `inspectorRepositorySubject`.
+  var followedFolderState: FollowedFolderState? {
+    get {
+      guard let repository = followedRepositoryState else { return nil }
+      guard let place = followedFolderPlace else { return repository }
+      return FollowedFolderState(
+        target: repository.target,
+        folder: FollowedFolder(repositoryPart: repository.folder, place: place))
+    }
+    set {
+      let repository = newValue.map {
+        FollowedFolderState(target: $0.target, folder: $0.folder.repositoryPart)
+      }
+      let place = newValue?.folder.folderPart
+      if followedRepositoryState != repository { followedRepositoryState = repository }
+      if followedFolderPlace != place { followedFolderPlace = place }
+    }
+  }
+  /// The repository part of `followedFolderState` (`FollowedFolder.repositoryPart`).
+  private(set) var followedRepositoryState: FollowedFolderState?
+  /// The folder part of `followedFolderState` (`FollowedFolder.folderPart`).
+  private(set) var followedFolderPlace: FollowedFolder.FolderPart?
+  /// Whether the followed folder's pending lookup has outlasted the loader's delay: what
+  /// `followedFolderLoaderShown` reads. Written only by `syncFollowedFolderLoader`.
+  var followedFolderLoaderElapsedFlag = false
+  /// The folder this window's Files section was browsed to from its breadcrumb (#809), nil while it
+  /// shows the followed folder. Cleared by the terminal's next folder change (snap-back).
+  var filesBrowse: FilesBrowse?
+  /// Where each followed repository's and folder's inspector sections were scrolled to (#810).
+  @ObservationIgnored let inspectorScrollMemory = InspectorScrollMemory()
+  /// How this window follows its terminal's folder: the resolve asked for and in flight, its
+  /// retry, what each folder resolved to, and the repository held in `vcsStatus` (#803).
+  @ObservationIgnored let followedFolder = FollowedFolderTracker()
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
   /// the sidebar's `List` until some *other* state changes (e.g. the pointer moving over a row), so
@@ -444,9 +489,9 @@ final class AppStore: ObservableObject {
   /// Nothing has to re-trigger this when the inspector opens: `RootView` builds `InspectorColumn`
   /// inside `if showInspector`, so opening it CONSTRUCTS `HistoryPanel`, whose `.task` calls
   /// `HistoryModel.activate` — the same load, at the moment it's first worth doing.
-  private func focusHistoryIfShown() {
-    guard inspectorIsVisible, historySectionShown else { return }
-    commitHistory.focus(target: inspectorTarget)
+  func focusHistoryIfShown() {
+    guard !isMovingTerminalsInPlace, inspectorIsVisible, historySectionShown else { return }
+    commitHistory.focus(target: inspectorHistoryTarget, remembering: historyRemembersTarget)
   }
 
   /// Forward the ports the selected remote workroom's dev container declares, once a launch
@@ -477,7 +522,8 @@ final class AppStore: ObservableObject {
   /// Same gate, and the same reason, as `focusHistoryIfShown`: a `focus` here is not a cheap pointer
   /// move but two or three `git` processes, so without this every selection change would read a
   /// repo for a toolbar nobody can see.
-  private func focusRemoteStateIfShown() {
+  func focusRemoteStateIfShown() {
+    guard !isMovingTerminalsInPlace else { return }
     guard inspectorIsVisible, remoteToolbarShown else {
       remoteState.focus(nil)
       return
@@ -485,13 +531,28 @@ final class AppStore: ObservableObject {
     remoteState.focus(remoteTarget())
   }
 
-  /// The toolbar's target, resolved from the inspector's active target. `nil` when nothing statusable
+  /// The toolbar's target, resolved from the inspector's subject. `nil` when nothing statusable
   /// is selected, or when the target's project has gone away.
   ///
   /// A `.project` row is deliberately not statusable — it's the collapsible header, not a working copy —
   /// so it resolves to nil and the toolbar shows its "no workroom selected" state.
   func remoteTarget() -> RemoteStateModel.Target? {
-    guard let sid = inspectorTargetID else { return nil }
+    switch inspectorRepositorySubject {
+    case .target(let sid): return remoteTarget(for: sid)
+    case .followed(let followed):
+      // A terminal's followed repository (#808): where Commit is offered, so the toolbar can't
+      // disagree with it. A registered row's is that row's own target, in place.
+      switch followedActionTarget(followed, writingLocally: true) {
+      case .row(let sid): return remoteTarget(for: sid)
+      case .followed(let root):
+        return RemoteStateModel.Target(followed: root, name: followedRepositoryName(root))
+      case nil: return nil
+      }
+    case .nothing: return nil
+    }
+  }
+
+  private func remoteTarget(for sid: SidebarID) -> RemoteStateModel.Target? {
     let projectPath: String
     let path: String
     switch sid {
@@ -713,20 +774,21 @@ final class AppStore: ObservableObject {
     guard let target = remoteState.target else { return }
     // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
     // will stash and reapply, which is worth saying before it happens.
-    if action == .pull, vcsStatus.workroomStatuses[target.sid]?.dirty == true {
-      modals.pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
+    if action == .pull, vcsStatus.status(for: target.actionTarget)?.dirty == true {
+      modals.pendingRemoteConfirm = PendingVCSAction(action: action, target: target.actionTarget)
       return
     }
-    runRemoteAction(action, on: target.sid)
+    runRemoteAction(action, on: target.actionTarget)
   }
 
   /// Run a confirmed action against the workroom it was confirmed FOR.
   ///
-  /// The `sid` is checked rather than trusted: the confirmation dialog is not modal to the sidebar, so
-  /// the selection can move while it is open. Re-deriving the target at click time would silently run
-  /// the pull against a different workroom than the one the dirty-tree warning described.
-  func runRemoteAction(_ action: VCSRemoteAction, on sid: SidebarID) {
-    guard let target = remoteState.target, target.sid == sid else { return }
+  /// The target is checked rather than trusted: the confirmation dialog is not modal to the sidebar,
+  /// so the selection can move while it is open, or a terminal's shell `cd` to another repository
+  /// (#808). Re-deriving the target at click time would silently run the pull against a different
+  /// workroom than the one the dirty-tree warning described.
+  func runRemoteAction(_ action: VCSRemoteAction, on target: VCSActionTarget) {
+    guard remoteState.target?.actionTarget == target else { return }
     guard vcsAllowsRemoteActions else { return }
     remoteState.perform(action, setUpstream: remoteState.snapshot?.tracking?.gone == true)
   }
@@ -793,7 +855,8 @@ final class AppStore: ObservableObject {
   /// True while this window hands its terminals from one target to another in place
   /// (`rehomeTerminals`): the `.tabsRemoved` that fires is a move, not a close, so the
   /// tidy-up a close gets (history, an emptied split member, the fallback selection, a row going)
-  /// is skipped.
+  /// is skipped. The inspector holds still meanwhile (#806): the selection moves before the
+  /// terminals do, so its subject would read nothing in between; the move re-points it at the end.
   @ObservationIgnored var isMovingTerminalsInPlace = false
   @ObservationIgnored var pendingSessionRecovery = false
   /// Saved targets held back from the restore (#253): remote workrooms this app couldn't reach
@@ -871,16 +934,30 @@ final class AppStore: ObservableObject {
     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
     // every branch-showing surface reads through `branchName(for:)`.
     self.remoteState.onBranchResolved = { [weak self] target, name in
-      guard let self,
-        self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      // A followed repository's branch is its folder's resolve's: it names no row to cache it on.
+      guard let self, let sid = target.sid,
+        self.vcsStatus.selectedStatusWorkItem(for: sid)?.location == target.location
       else { return }
-      self.setResolvedBranchName(name, for: target.sid)
+      self.setResolvedBranchName(name, for: sid)
     }
     self.remoteState.onDidMutate = { [weak self] action, target in
-      guard let self,
-        self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      guard let self else { return }
+      if let root = target.actionTarget.followedRoot {
+        return self.handleFollowedRemoteMutation(action, root: root, target: target)
+      }
+      guard let sid = target.sid,
+        self.vcsStatus.selectedStatusWorkItem(for: sid)?.location == target.location
       else { return }
-      self.handleRemoteMutation(action, on: target.sid, location: target.location)
+      // A registered row a terminal's inspector follows in place (#808): no selection refresh
+      // reaches it, so its followed lane re-reads it.
+      if let held = self.rootFollowedInPlace(sid) {
+        return self.handleFollowedRemoteMutation(action, root: held, target: target)
+      }
+      self.handleRemoteMutation(action, on: sid, location: target.location)
+    }
+    // Throws why it can't: let go of, or still followed with a registration that came back empty.
+    self.remoteState.followedLocation = { [vcsStatus = self.vcsStatus] root in
+      try await vcsStatus.writeLocation(for: .followed(root: root))
     }
     // Only the store can name a target, and the model needs the name to attribute a failure that
     // outlived the selection it started from.
@@ -1007,6 +1084,10 @@ final class AppStore: ObservableObject {
       // the previous place, read before the prune and the row going take it away.
       let successor = self.closeSuccessor(of: targetID, closing: Set(ids))
       self.history.prune(removing: Set(ids))
+      // The terminal tab the target last focused goes with it, as does a target's last (#812 F7).
+      if let last = self.followedFolder.lastFocusedTerminalTab[targetID], ids.contains(last) {
+        self.followedFolder.lastFocusedTerminalTab[targetID] = nil
+      }
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
@@ -1046,6 +1127,15 @@ final class AppStore: ObservableObject {
     // navigation.
     case .surfaceFocused(let targetID):
       focusWorkroomMemberFromSurface(targetID)
+    // The inspector follows the selected terminal's folder (#803): only the selection's matters.
+    case .cwdChanged(let targetID, _):
+      guard self.selectedTargetID?.targetID == targetID else { return }
+      self.refreshFollowedFolder()
+    // A finished command may have moved the repository without a `cd` (`git switch`, `git init`,
+    // `rm -rf .git`): the followed tab's is re-checked where no live watch reports it (#807).
+    case .commandFinished(let targetID, let tabID):
+      guard self.selectedTargetID?.targetID == targetID else { return }
+      self.followedCommandFinished(tab: tabID)
     // Effective focus is the one authority for reading a terminal's notifications (#358).
     case .terminalSeen(_, let tabID):
       notifications.dismiss(tab: tabID)
@@ -1317,22 +1407,78 @@ final class AppStore: ObservableObject {
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
 
-  /// The target the inspector reflects: the selection, but only while it has open tabs
-  /// (`selectionHasTabs`). `nil` ⇒ the inspector shows its empty state. History/Changes/PR key on
-  /// this, not `selectedTargetID`, so they empty when all tabs close.
-  /// Nil for a Terminals-section row too: a terminal with no project has nothing to inspect.
-  var inspectorTargetID: SidebarID? {
-    guard selectionHasTabs, selectedTargetID?.isInTerminalsSection == false else { return nil }
-    return selectedTargetID
+  /// Whether this window's selection has an inspector (#803): a workroom or a project, or a
+  /// terminal whose inspector follows its folder (`followsFolder`). False with no selection and for
+  /// the Quick Terminal's row. The one gate for the inspector column, the activity bar's panes and
+  /// the View menu's inspector items, so they agree in a window with no projects.
+  ///
+  /// Keyed on the row, not on `inspectorSubject`, which is `.nothing` until a selection opens a tab
+  /// and its folder resolves: the chrome would otherwise flash shut on every new selection.
+  var selectionIsInspectable: Bool {
+    guard let sid = selectedTargetID, selectedTarget != nil else { return false }
+    return !sid.isInTerminalsSection || Self.followsFolder(sid)
   }
-  var inspectorTarget: TerminalTarget? { inspectorTargetID.flatMap(target(for:)) }
+
+  /// What this window's inspector is about (#803): the one value its header and every section
+  /// read. It is the selection, but only while it has open tabs (`selectionHasTabs`), so the
+  /// sections empty when all its tabs close. `.nothing` ⇒ the inspector shows its empty state.
+  /// Nothing for a Terminals-section row too: a terminal with no project has nothing to inspect.
+  /// The Quick Terminal's group is a Terminals-section row, and is named on its own because it is
+  /// nothing by a rule of its own: the group is its panel's, and no window selects it
+  /// (`selectionDidChange`).
+  ///
+  /// Computed from the selection and `selectionHasTabs` alone, so a reader observes those two and
+  /// nothing else of the store.
+  var inspectorSubject: InspectorSubject {
+    guard selectionHasTabs, let sid = selectedTargetID, let id = sid.targetID,
+      id != .quickTerminal
+    else { return .nothing }
+    guard sid.isInTerminalsSection else { return .target(sid) }
+    // A Terminals-section target follows its terminal's folder once that has resolved.
+    guard Self.followsFolder(sid), let state = followedFolderState, state.target == id else {
+      return .nothing
+    }
+    return .followed(state.folder)
+  }
+
+  /// The inspector's subject with a followed folder's repository part alone
+  /// (`FollowedFolder.repositoryPart`): what the version-control sections, the toolbar, the
+  /// activity bar and the menu read, so they observe nothing a `cd` within one repository changes.
+  /// The header, Details and Files read `inspectorSubject`, which adds the folder back.
+  var inspectorRepositorySubject: InspectorSubject {
+    guard selectionHasTabs, let sid = selectedTargetID, let id = sid.targetID,
+      id != .quickTerminal
+    else { return .nothing }
+    guard sid.isInTerminalsSection else { return .target(sid) }
+    guard Self.followsFolder(sid), let state = followedRepositoryState, state.target == id else {
+      return .nothing
+    }
+    return .followed(state.folder)
+  }
+
+  /// The sidebar item the inspector is about: the subject's, nil for a followed folder and for
+  /// nothing. What an action keyed by a sidebar item takes (the workroom's menu, a commit, a pull
+  /// request action).
+  var inspectorTargetID: SidebarID? { inspectorRepositorySubject.sidebarID }
+  /// That sidebar item's target, nil once it has gone.
+  var inspectorTarget: TerminalTarget? {
+    switch inspectorRepositorySubject {
+    case .target(let sid): return target(for: sid)
+    case .followed, .nothing: return nil
+    }
+  }
 
   /// Recompute `selectionHasTabs` — call after a selection change or a tab add/remove. Guarded so it
   /// only publishes (re-renders the inspector) on an actual transition.
   func refreshSelectionHasTabs() {
+    guard !isMovingTerminalsInPlace else { return }
     let has = selectedTarget.map { terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
-    guard has != selectionHasTabs else { return }
-    selectionHasTabs = has
+    let flipped = has != selectionHasTabs
+    if flipped { selectionHasTabs = has }
+    // Every caller is a selection, focus or tab change, which can each move the followed folder.
+    let followedMoved = updateFollowedFolder()
+    holdFollowedRepository()
+    guard flipped || followedMoved else { return }
     // A tab opening (or the last one closing) for the selected workroom flips `inspectorTargetID`
     // (nil↔id). Re-point History from here so it loads the instant its target appears, instead of
     // waiting on the panel's own `.task` to re-fire — which doesn't happen reliably across the
@@ -2980,6 +3126,30 @@ final class AppStore: ObservableObject {
       guard let self else { return }
       self.remoteState.noteConflictState(
         self.vcsStatus.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
+    }
+  }
+
+  /// `handleRemoteMutation` for a repository a terminal's inspector follows (#808): `root`'s own
+  /// probe re-reads it (and a registered row's, in place), since no selection refresh reaches it.
+  /// `target` is what the action ran against, handed over by the model: History and the conflict
+  /// flag move only while the toolbar is still pointed at it, so a `cd` to another repository
+  /// mid-pull attributes nothing to the new one.
+  private func handleFollowedRemoteMutation(
+    _ action: VCSRemoteAction, root: String, target: RemoteStateModel.Target
+  ) {
+    guard action != .fetch else { return }
+    // The local read at once, for the conflict flag below; then its pull request and CI, which a
+    // push or a pull may have moved.
+    let refresh = vcsStatus.refreshFollowedStatus(root, gitHub: false)
+    vcsStatus.refreshFollowedStatus(root, gitHub: true, debounced: true)
+    guard remoteState.target == target else { return }
+    if historySectionShown { commitHistory.refresh() }
+    guard action == .pull else { return }
+    Task { [weak self] in
+      await refresh?.value
+      guard let self else { return }
+      self.remoteState.noteConflictState(
+        self.vcsStatus.status(for: target.actionTarget)?.conflicted == true, for: target)
     }
   }
 

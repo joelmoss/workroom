@@ -39,37 +39,13 @@ extension AppStore {
       if Task.isCancelled { return }
       guard vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
       vcsStatus.mergeLocalStatus(fresh, into: sid)
-      guard item.permitsGitHubAccess else { return }
-      let github: RepositoryGitHub
-      do {
-        github = try await RepositoryRouter.shared.gitHub(
-          for: try await item.resolvedLocation(), resolver: resolver)
-      } catch { return }
-      // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
-      await vcsStatus.refreshGitHubCLI(resolver: resolver)
-      if Task.isCancelled { return }
-      guard vcsStatus.githubCLIStatus == .available else { return }
-      // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
-      // the sidebar/tab glyph never waits on the PR probe.
-      async let ciRes = github.ciSnapshot(branch: fresh.branchForCI)
-      async let prRawRes = github.pullRequest(branch: fresh.branchForCI)
-      let ci = await ciRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyCIStatus(ci.resolution, to: sid, checkedAt: ci.checkedAt)
-      let prRaw = await prRawRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyPRStatus(prRaw, to: sid)
-      // With the PR number in hand, fetch its checks and enrich reviewer permalinks concurrently —
-      // checks must not wait behind the (conditional) reviewer-URL GraphQL round-trip (issue #75).
-      guard case .info(let info) = prRaw else { return }
-      async let enrichedRes = github.enrich(prRaw)
-      async let checksRes = github.checks(number: info.number)
-      let enriched = await enrichedRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyPRStatus(enriched, to: sid)
-      let checks = await checksRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyChecksStatus(checks, to: sid)
+      guard item.permitsGitHubAccess,
+        let location = try? await item.resolvedLocation(), !Task.isCancelled
+      else { return }
+      await vcsStatus.probeGitHub(
+        location: location, branch: fresh.branchForCI,
+        isCurrent: { !Task.isCancelled && vcsStatus.selectedStatusWorkItem(for: sid) == item },
+        apply: { vcsStatus.applyGitHub($0, to: sid) })
     }
   }
 
@@ -88,6 +64,25 @@ extension AppStore {
   func branchLabel(for target: TerminalTarget) -> String? {
     guard let sid = sidebarID(for: target.id) else { return nil }
     return branchName(for: sid)
+  }
+
+  /// The branch the VCS toolbar's branch bar shows for `target`. A row's goes through
+  /// `branchName(for:)`. A followed repository names no row, so its comes from the toolbar's own
+  /// read of it, as a row's resolved name does, else from what its folder resolved to, which is
+  /// what the header shows (QA round 2 of #803: the bar read "—" beside a header saying `main`).
+  func toolbarBranchName(for target: RemoteStateModel.Target?) -> String? {
+    guard let target else { return nil }
+    guard let root = target.actionTarget.followedRoot else {
+      return target.sid.flatMap { branchName(for: $0) }
+    }
+    if remoteState.target == target, let name = remoteState.snapshot?.current.name, !name.isEmpty {
+      return name
+    }
+    guard case .followed(let followed) = inspectorRepositorySubject,
+      let repository = followed.repository,
+      repository.root == root
+    else { return nil }
+    return repository.branch
   }
 
   /// **The** answer to "what branch is this?", for every surface that shows one: the status

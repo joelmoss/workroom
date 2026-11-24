@@ -1094,7 +1094,7 @@ extension View {
         // selected one — and the no-target overload resolves `selectedTarget`, which would open the
         // file into the other workroom's strip (issue #150).
         Button {
-          host.openFilePreview(path: descriptor.path, for: target)
+          host.openFilePreview(path: descriptor.path, root: descriptor.repositoryRoot, for: target)
         } label: {
           Label("Open File", systemImage: "doc.text")
         }
@@ -1135,7 +1135,7 @@ extension View {
           Divider()
         }
         Button {
-          host.openFileInEditor(path: descriptor.path)
+          host.openFileInEditor(path: descriptor.path, root: descriptor.root)
         } label: {
           Label("Open File in…", systemImage: "doc.text")
         }

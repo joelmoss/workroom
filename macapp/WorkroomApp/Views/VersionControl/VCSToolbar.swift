@@ -92,6 +92,7 @@ struct VCSToolbar: View {
   private func presentation(now: Date) -> VCSSyncPresentation {
     VCSSyncPresenter.make(
       state: model.snapshot, hasTarget: model.target != nil,
+      noTargetSubtitle: store.vcsSyncNoTargetSubtitle,
       toolsUsable: store.vcsAllowsRemoteActions,
       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
@@ -116,10 +117,10 @@ struct VCSToolbar: View {
   /// and is never revised. Reading `workroomStatuses` here means resolving the conflicts in a terminal
   /// clears the message on the next sweep, instead of it lingering until the next action.
   private var pullConflicted: Bool {
-    guard let sid = model.target?.sid else { return false }
+    guard let target = model.target else { return false }
     return VCSSyncPresenter.pullConflicted(
       lastPullConflicted: model.lastPullConflicted,
-      statusConflicted: vcsStatus.workroomStatuses[sid]?.conflicted == true)
+      statusConflicted: vcsStatus.status(for: target.actionTarget)?.conflicted == true)
   }
 
   var body: some View {
@@ -173,11 +174,9 @@ struct VCSToolbar: View {
     .task(id: activationKey) { model.activate(store.remoteTarget()) }
   }
 
-  /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the target's identity rather
+  /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the subject's identity rather
   /// than the whole `Target`, which carries paths that never change independently of it.
-  private var activationKey: String {
-    store.inspectorTargetID?.targetID?.encoded ?? ""
-  }
+  private var activationKey: InspectorSubject.Key { store.inspectorRepositorySubject.repositoryKey }
 
   /// Full-bleed, unlike `TitlebarDivider` (a 14pt inline group rule) — it's what makes the three cells
   /// read as segments rather than as a row of controls.
@@ -188,7 +187,7 @@ struct VCSToolbar: View {
   /// Read through the one accessor every branch-showing surface uses, so this can't disagree with the
   /// status bar or the sidebar.
   private var branchName: String? {
-    model.target.flatMap { store.branchName(for: $0.sid) }
+    store.toolbarBranchName(for: model.target)
   }
 
   /// Hands straight to the store, which owns the dirty-tree confirmation gate.

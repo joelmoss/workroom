@@ -17,11 +17,43 @@ Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. The icon stri
 
 **View** also has an item for each section of the Changes pane: **Changes**, **History** (<kbd>⌥⌘Y</kbd>) and **Pull Request** (<kbd>⌥⌘P</kbd>). Each opens the inspector at that section. The **Room** menu repeats these pane and section items, without the shortcuts. The sections stack in the Changes pane, and you can collapse them or drag the dividers to resize them.
 
-The inspector follows the workroom you are in.
+The inspector follows the workroom you are in. Nightly only: in a terminal with no project it follows the terminal's folder instead. See [Terminals and the inspector](#terminals-and-the-inspector).
 
 ### Workroom header
 
 The inspector shows the project and workroom name above its panes, led by the icon the sidebar shows for the workroom, or a house for a project's root. The **Workroom actions** menu beside the name has **Move to New Window**, the label items and **Delete Workroom…**. See [Workrooms](workrooms.md).
+
+## Terminals and the inspector {nightly}
+
+A standalone terminal or a terminal group has no workroom, but its inspector still works. It follows the folder the focused terminal is in. Run `cd` and the inspector moves with it. The Quick Terminal is the exception: it has no inspector.
+
+The folder is the terminal's working directory, as the shell reports it. In a group the focused terminal sets it, so clicking another pane moves the inspector to that pane's folder. When the focused tab is a diff or a file, the inspector keeps the last terminal you used in that group. If you `ssh` to another machine, the inspector stays on the last local folder the terminal was in, because that machine's folders are not on your Mac.
+
+The inspector is on for these terminals as it is for a workroom: <kbd>⌘B</kbd> shows it, and the activity bar is there, including in a window that has only terminals and no projects.
+
+### The folder's repository
+
+Where the folder is inside a Git repository, the inspector shows that repository, whichever folder of it you are in:
+
+- The header shows the repository's folder name, with its branch and the repository root's path, `~`-relative, beneath. It names the root, not the subfolder you are in. It has no **Workroom actions** menu, because a followed folder is not a workroom.
+- **Details** shows **Running on** and, under **Folder**, the terminal's own folder. It has none of a workroom's host options or ports.
+- **History** lists the repository's commits, as for a workroom.
+- **Changes** and **Pull Request** read the repository live, and work as they do for a workroom, so you can [commit](#commit), [push, pull and sync](#push-pull-and-sync), and use the pull request's buttons and menu. It reads the pull request with the GitHub CLI as before. The repository's status updates as files change, and as you `git switch` or commit in the terminal.
+- A repository that is also one of your workrooms or projects shows that workroom's own status, and a write goes through it.
+
+Changing folder within the same repository does not reload anything. Moving into another repository switches all of it at once.
+
+### Not a repository
+
+A folder in no Git repository says **Not a git repository** in **Changes**, **History** and **Pull Request**, with the folder beneath. If Git cannot tell which repository the folder is in, because the volume is slow or disconnected or the folder belongs to another user, the message is **Couldn't read the repository**, with a tooltip that says why. Workroom tries again shortly. **Files** still lists the folder either way. With no repository to act on, the branch and sync bar above **Changes** is hidden, and so is the **Commit** button.
+
+### Files follows the folder
+
+**Files** is rooted at the terminal's folder, not the repository's root. A breadcrumb above the list shows the path from the repository root (or from `~` outside a repository) to the folder. Click a segment to browse up to that folder. The inspector keeps showing the terminal's own repository while you browse. The next time the terminal changes folder, **Files** snaps back to it. A long path keeps its first segment, a **…** and its last two.
+
+### It remembers each repository
+
+Workroom remembers where you were in each repository you visit. Go away and come back, and **Files** has the same folders open and the lists are scrolled where you left them. Which pane is open, and which sections are collapsed, do not change when the inspector moves.
 
 ## Changes
 

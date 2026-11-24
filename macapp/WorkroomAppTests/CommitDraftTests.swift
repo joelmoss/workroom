@@ -64,6 +64,48 @@ final class CommitDraftTests: XCTestCase {
     XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12), "Commit 12 files")
   }
 
+  // MARK: - Counts while the list is recalled
+
+  /// Value: protects=the commit sheet telling the truth about how many files changed while a
+  /// recalled status lists only its first ones (#812 N5); fails_when=the caption reads
+  /// "200 of 200 files" for a 5,000-file change set; why_new=#812 perf review N5;
+  /// seam=CommitDraft.countCaption; no_claim=formatting of large numbers
+  func testTheCaptionCountsTheFilesARecalledListLeavesOut() {
+    XCTAssertEqual(
+      CommitDraft.countCaption(selectedCount: 200, listedCount: 200, omittedCount: 4800),
+      "5000 of 5000 files")
+    // A left-out file is never excluded: it can't be unticked until it is listed.
+    XCTAssertEqual(
+      CommitDraft.countCaption(selectedCount: 150, listedCount: 200, omittedCount: 4800),
+      "4950 of 5000 files")
+    XCTAssertEqual(
+      CommitDraft.countCaption(selectedCount: 1, listedCount: 1, omittedCount: 0), "1 of 1 file")
+    XCTAssertEqual(
+      CommitDraft.countCaption(selectedCount: 2, listedCount: 3, omittedCount: 0), "2 of 3 files")
+  }
+
+  /// Value: protects=the render-cap line naming the whole change set, and saying the rest is still
+  /// being read rather than offering to untick files nobody can see (#812 N5); fails_when=a recalled
+  /// 200-of-5,000 list shows no notice, or "of 200"; why_new=#812 perf review N5;
+  /// seam=CommitDraft.renderCapNotice; no_claim=—
+  func testTheRenderCapNoticeNamesTheWholeChangeSet() {
+    XCTAssertEqual(
+      CommitDraft.renderCapNotice(shownCount: 200, listedCount: 200, omittedCount: 4800),
+      "Showing the first 200 of 5000 while every changed file is read.")
+    XCTAssertEqual(
+      CommitDraft.renderCapNotice(shownCount: 200, listedCount: 300, omittedCount: 0),
+      "Showing the first 200 of 300. All 300 are included unless you untick them.")
+    XCTAssertNil(CommitDraft.renderCapNotice(shownCount: 12, listedCount: 12, omittedCount: 0))
+  }
+
+  /// Value: protects=the (disabled) button naming the true count while the list is recalled
+  /// (#812 N5); fails_when=it reads "Commit 200 files" for 5,000; why_new=#812 perf review N5;
+  /// seam=CommitDraft.commitLabel; no_claim=—
+  func testTheCommitLabelCountsTheFilesARecalledListLeavesOut() {
+    XCTAssertEqual(
+      CommitDraft.commitLabel(selectedCount: 200, omittedCount: 4800), "Commit 5000 files")
+  }
+
   // MARK: - Blocked reasons
 
   private func reason(
@@ -77,6 +119,17 @@ final class CommitDraftTests: XCTestCase {
 
   func testNothingBlocksAValidCommit() {
     XCTAssertNil(reason())
+  }
+
+  /// Value: protects=a commit never recording only the part of the change list a recalled status
+  /// keeps (#812 F8); fails_when=Commit is live while files are left out of the list it would
+  /// pass as pathspecs; why_new=#812 perf F8; seam=CommitDraft.blockedReason; no_claim=—
+  func testAListWithFilesLeftOutBlocks() {
+    XCTAssertEqual(
+      CommitDraft.blockedReason(
+        summary: "Subject", selectedCount: 200, totalCount: 200, omittedCount: 4800,
+        conflicted: false, sequencer: nil),
+      "Reading every changed file…")
   }
 
   func testAnEmptySummaryBlocks() {

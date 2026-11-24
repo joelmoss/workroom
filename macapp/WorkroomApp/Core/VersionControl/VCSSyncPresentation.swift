@@ -118,6 +118,8 @@ enum VCSSyncPresenter {
   ///   - state: `nil` ⇒ no readable repo for the current target.
   ///   - hasTarget: whether a workroom is selected at all (distinguishes "nothing selected" from
   ///     "selected, but not a repo" — different copy, both disabled).
+  ///   - noTargetSubtitle: what it says with no target: "No workroom selected" unless the inspector
+  ///     follows a terminal's repository, which is never a workroom (`AppStore.vcsSyncNoTargetSubtitle`).
   ///   - toolsUsable: `false` ⇒ the `git` on PATH can't run these commands
   ///     (`VCSToolVersions`). Outranks everything except an in-flight action and a failure, because no
   ///     action can succeed.
@@ -130,15 +132,17 @@ enum VCSSyncPresenter {
   ///     Worse through the confirmation path: the dialog appeared, the user confirmed, and the action was
   ///     silently discarded. A 300s pull in one workroom made every other workroom's button a no-op.
   static func make(
-    state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool = true,
+    state: VCSRemoteState?, hasTarget: Bool,
+    noTargetSubtitle: String = "No workroom selected", toolsUsable: Bool = true,
     activity: VCSSyncActivity = .idle, failure: VCSRemoteFailure? = nil,
     readFailure: VCSRemoteFailure? = nil, reading: Bool = false,
     lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, pullConflicted: Bool = false,
     busyElsewhere: Bool = false, now: Date
   ) -> VCSSyncPresentation {
     var resolved = resolve(
-      state: state, hasTarget: hasTarget, toolsUsable: toolsUsable, activity: activity,
-      failure: failure, readFailure: readFailure, reading: reading, lastAction: lastAction,
+      state: state, hasTarget: hasTarget, noTargetSubtitle: noTargetSubtitle,
+      toolsUsable: toolsUsable, activity: activity, failure: failure, readFailure: readFailure,
+      reading: reading, lastAction: lastAction,
       pullRebase: pullRebase, pullConflicted: pullConflicted, now: now)
     // Applied AFTER the ladder rather than threaded through every enabled tier: it changes only whether
     // the thing can be clicked, never what it says. The copy still reports the real state, so the user
@@ -151,7 +155,7 @@ enum VCSSyncPresenter {
   }
 
   private static func resolve(
-    state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool,
+    state: VCSRemoteState?, hasTarget: Bool, noTargetSubtitle: String, toolsUsable: Bool,
     activity: VCSSyncActivity, failure: VCSRemoteFailure?, readFailure: VCSRemoteFailure?,
     reading: Bool, lastAction: VCSRemoteAction?, pullRebase: Bool, pullConflicted: Bool,
     now: Date
@@ -276,7 +280,7 @@ enum VCSSyncPresenter {
 
     // [1] Nothing selected.
     guard hasTarget else {
-      return disabled("No workroom selected", symbol: nil)
+      return disabled(noTargetSubtitle, symbol: nil)
     }
     // [2] Selected, but not a readable repo.
     guard let state else {

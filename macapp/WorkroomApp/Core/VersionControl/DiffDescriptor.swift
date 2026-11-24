@@ -24,12 +24,17 @@ struct DiffDescriptor: Equatable, Hashable, Sendable {
   /// True while this is the single preview tab for its target; false once persisted ("Keep Open",
   /// double-click, or opened persistently from the start).
   var isPreview: Bool
+  /// The repository the file is in, when it is not the tab's target's own folder: a change listed
+  /// for the repository a terminal's inspector follows (#807). Nil: the target's. Part of the
+  /// identity: one terminal can follow several repositories, each with its own `src/a.txt`.
+  var repositoryRoot: String? = nil
 
   /// Two descriptors address the *same* diff tab when they point at the same file from the same
-  /// revision — the identity used to dedupe (re-select an already-open file) and to decide whether a
-  /// preview can be retargeted in place. The preview flag is deliberately excluded.
+  /// revision of the same repository — the identity used to dedupe (re-select an already-open file)
+  /// and to decide whether a preview can be retargeted in place. The preview flag is deliberately
+  /// excluded.
   func sameFile(as other: DiffDescriptor) -> Bool {
-    path == other.path && source == other.source
+    path == other.path && source == other.source && repositoryRoot == other.repositoryRoot
   }
 }
 

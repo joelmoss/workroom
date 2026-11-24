@@ -119,8 +119,9 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     XCTAssertTrue(waitExists(row, before), "\(message) (and back again)")
   }
 
-  /// No projects (`-WorkroomUITestNoProjects`): the View menu's sidebar and inspector toggles are
-  /// disabled, which also drops their key equivalents (⌃⌘S, ⌘B, ⌥⌘C, ⌥⌘Y, ⌥⌘P, ⌥⌘F). Theme… stays
+  /// No projects (`-WorkroomUITestNoProjects`) and so nothing selected: the View menu's sidebar and
+  /// inspector toggles are disabled, which also drops their key equivalents (⌃⌘S, ⌘B, ⌥⌘C, ⌥⌘Y,
+  /// ⌥⌘P, ⌥⌘F). A terminal opened there enables the inspector's (FollowedFolderInspectorUITests). Theme… stays
   /// enabled as the control, so a menu that never opened, or reads every item as disabled, can't pass.
   func testWithNoProjectsTheSidebarAndInspectorItemsAreDisabled() {
     let app = XCUIApplication()

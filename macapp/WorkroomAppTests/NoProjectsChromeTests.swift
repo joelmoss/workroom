@@ -5,20 +5,44 @@ import XCTest
 
 @testable import Workroom
 
-/// The window chrome with no projects: the controls for what needs one (the sidebar, the pickers,
-/// the inspector) are gone, read from the real views hosted off screen, the way
-/// `CreationPaneAccessibilityTests` reads the creation pane.
+/// The window chrome with no projects: the controls for what needs one (the sidebar, the pickers)
+/// are gone, read from the real views hosted off screen, the way `CreationPaneAccessibilityTests`
+/// reads the creation pane. The activity bar's panes follow the selection instead (#803).
 @MainActor
 final class NoProjectsChromeTests: XCTestCase {
-  private static let projectControls = [
-    "toolbar.toggleSidebar", "OpenWorkroom", "NewWorkroom", "activitySection.changes",
-    "activitySection.files",
+  private static let projectControls = ["toolbar.toggleSidebar", "OpenWorkroom", "NewWorkroom"]
+  private static let inspectorPanes = [
+    "activitySection.details", "activitySection.changes", "activitySection.files",
   ]
 
-  /// Value: protects=with no projects the title bar's sidebar, Open and New Workroom buttons and the
-  /// activity bar's Changes and Files icons are hidden, and come back with a project;
-  /// fails_when=any of them shows with no projects, or stays hidden with one; no_claim=the View
-  /// menu (`ViewMenuShortcutsUITests`) and the sidebar shortcuts (`SharedPrefDefaultsTests`)
+  /// Value: protects=the activity bar shows Details, Changes and Files whenever the selection can
+  /// be inspected, a terminal with no project included, and only Settings with nothing selected;
+  /// fails_when=the panes key off the project list again, so a window of only terminals can't open
+  /// its inspector; why_new=#803 activity bar; seam=ActivityBar hosted over AppStore;
+  /// no_claim=the inspector column (`FollowedFolderInspectorUITests`)
+  func testTheActivityBarPanesFollowWhatCanBeInspected() throws {
+    let projects = ProjectStore()
+    let section = TerminalsSection()
+    let store = AppStore(projectStore: projects, terminalsSection: section)
+    store.inspectorVisibleOverrideForTesting = false
+    let nothing = identifiers(rendering: store)
+    XCTAssertTrue(nothing.contains("activityBar.settings"), "the chrome rendered")
+    for id in Self.inspectorPanes {
+      XCTAssertFalse(nothing.contains(id), "\(id) shows with nothing selected")
+    }
+
+    store.selectedTargetID = try XCTUnwrap(section.addStandalone().sidebarID)
+    store.selectionStatusTask?.cancel()
+    let terminal = identifiers(rendering: store)
+    for id in Self.inspectorPanes {
+      XCTAssertTrue(terminal.contains(id), "\(id) is missing for a terminal with no project")
+    }
+  }
+
+  /// Value: protects=with no projects the title bar's sidebar, Open and New Workroom buttons are
+  /// hidden, and come back with a project; fails_when=any of them shows with no projects, or stays
+  /// hidden with one; no_claim=the View menu (`ViewMenuShortcutsUITests`) and the sidebar shortcuts
+  /// (`SharedPrefDefaultsTests`)
   func testTheProjectControlsShowOnlyWithAProject() throws {
     let store = AppStore()
     store.projectStore.projects = []

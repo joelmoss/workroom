@@ -52,6 +52,15 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertTrue(p.isSingleLine)
   }
 
+  /// A followed repository with no target says its own reason, never "No workroom selected"
+  /// (QA of #803).
+  func testNoTargetSaysTheGivenSubtitle() {
+    let p = VCSSyncPresenter.make(
+      state: nil, hasTarget: false, noTargetSubtitle: "Read-only repository", now: now)
+    XCTAssertEqual(p.subtitle, "Read-only repository")
+    XCTAssertFalse(p.isEnabled)
+  }
+
   func testTargetWithNoRepoIsDisabled() {
     let p = VCSSyncPresenter.make(state: nil, hasTarget: true, now: now)
     XCTAssertEqual(p.subtitle, "No repository")

@@ -27,7 +27,8 @@ public enum SidebarID: Hashable, Sendable {
   }
 
   /// Whether this row is in the Terminals section above the projects: a terminal with no project,
-  /// so it has no project path, no version-control status and no inspector (ADR 0077).
+  /// so it has no project path and no version-control status of its own (ADR 0077); its inspector
+  /// follows its terminal's folder instead (ADR 0081).
   public var isInTerminalsSection: Bool {
     switch self {
     case .standalone, .terminalGroup: return true

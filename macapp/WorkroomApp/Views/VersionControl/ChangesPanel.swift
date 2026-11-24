@@ -22,6 +22,10 @@ struct ChangedFileRow: View, Equatable {
   /// `@ObservedObject TerminalPanes` and compute this itself, which meant every terminal
   /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
   let selection: FocusedTabSelection?
+  /// The repository the row's path is relative to, as its tabs name it
+  /// (`FocusedTabSelection.changedFileRoot`): nil for the target's own. Reaches `==` through
+  /// `isSelected`.
+  var root: String? = nil
   /// Whether the inspector's workroom has no directory on this Mac (a remote or missing one), which
   /// disables "Open File in…". Part of the equality gate: it is the one window state the row shows.
   let targetIsMissing: Bool
@@ -183,7 +187,7 @@ struct ChangedFileRow: View, Equatable {
   /// revision; the diff match keeps it so the same path from the worktree vs a commit selects the right
   /// row.
   nonisolated fileprivate var isSelected: Bool {
-    selection?.selectsChangedFile(path: file.path, source: source) ?? false
+    selection?.selectsChangedFile(path: file.path, source: source, root: root) ?? false
   }
 
   /// The equality gate behind `.equatable()` in `fileList`: a panel body pass that rebuilds the rows,
@@ -226,20 +230,27 @@ struct ChangedFileActions {
   var openInEditor: (ChangedFile) -> Void
 }
 
-/// What the Changes panel shows from the window: the inspector's workroom and, read lazily, the
+/// What the Changes panel shows from the window: the inspector's subject and, read lazily, the
 /// focused content tab.
 struct ChangesPanelInputs {
-  /// The inspector's target row (`AppStore.inspectorTargetID`), nil when nothing is shown.
-  var targetID: SidebarID?
-  /// That row's target, nil once it has gone.
+  /// What the inspector is about (`AppStore.inspectorSubject`).
+  var subject: InspectorSubject
+  /// Its sidebar item's target, nil once it has gone; for a followed repository, the repository
+  /// itself (`AppStore.inspectorHistoryTarget`), which a changed file opens against.
   var target: TerminalTarget?
   /// What the focused content tab shows. A closure, called only while the file list renders, so the
   /// focused-tab and `TerminalPanes` reads stay the panel's own (see `ChangesPanel.fileList`).
   var selection: () -> FocusedTabSelection?
+  /// Whether a followed folder's repository has been pending long enough to show the loader
+  /// (`AppStore.followedFolderLoaderShown`); before that the pane stays blank.
+  var showsPendingLoader = false
+
+  /// Whether a changed file has nowhere to open: what disables its "Open File in …".
+  var fileTargetIsMissing: Bool { target?.isMissing != false }
 }
 
 /// The Changes section body: the selected workroom's branch, sync state, working-tree changes
-/// (relative to HEAD), and CI. Reads its inputs' target + `vcsStatus.workroomStatuses`.
+/// (relative to HEAD), and CI. Reads its inputs' target + the subject's status in `vcsStatus`.
 /// Covers the empty/edge states the design review enumerated: nothing selected, a project
 /// (non-target), missing directory, still-loading, unknown (probe failed), and clean.
 ///
@@ -254,24 +265,46 @@ struct ChangesPanel: View {
 
   var body: some View {
     Group {
-      if let sid = inputs.targetID, sid.isStatusable {
-        content(for: sid)
-      } else {
+      switch inputs.subject {
+      case .target(let sid) where sid.isStatusable:
+        content
+      case .followed(let followed):
+        // A terminal's followed folder (#807): its repository's changes, committed from here as a workroom's are (#808).
+        if followed.repositoryPending {
+          // Its repository is still resolving: blank at first, so a fast answer never flashes a
+          // loader, then the section's own loader.
+          if inputs.showsPendingLoader { checkingMessage } else { EmptyView() }
+        } else if followed.repository == nil
+          || vcsStatus.status(for: inputs.subject)?.failure?.meansNoRepository == true
+        {
+          NotARepositoryMessage(
+            path: followed.folder, undetermined: followed.repositoryUndetermined)
+        } else {
+          content
+        }
+      case .target, .nothing:
         inspectorMessage("Select a workroom to see its changes.")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  /// The section's loader: while a workroom's status is read, and once a followed folder's
+  /// repository has been pending a moment.
+  private var checkingMessage: some View {
+    inspectorCheckingMessage(help: "Reading the repository's changes")
+  }
+
+  /// Read here, in the panel, so a status sweep re-runs the panel and not its adapter.
   @ViewBuilder
-  private func content(for sid: SidebarID) -> some View {
+  private var content: some View {
     let target = inputs.target
-    let status = vcsStatus.workroomStatuses[sid]
+    let status = vcsStatus.status(for: inputs.subject)
     // `terminalUnavailability`: a remote workroom this app reaches has its changes read on its host.
     if let reason = target?.terminalUnavailability {
       inspectorMessage("\(reason.title).")
     } else if status == nil || status?.lastChecked == nil {
-      inspectorMessage("Checking\u{2026}")
+      checkingMessage
     } else if let status {
       // The branch name is NOT repeated here — the VCS toolbar above this section shows it, through
       // the same `AppStore.branchName(for:)` accessor this panel used to read, so the pill was saying
@@ -293,7 +326,8 @@ struct ChangesPanel: View {
       } else if status.isClean {
         cleanState
       } else {
-        fileList(status.changedFiles ?? [], source: .gitWorktree)
+        fileList(
+          status.changedFiles ?? [], total: status.changedFileCount, source: .gitWorktree)
       }
     }
     .padding(12)
@@ -313,7 +347,7 @@ struct ChangesPanel: View {
   }
 
   @ViewBuilder
-  private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
+  private func fileList(_ files: [ChangedFile], total: Int, source: DiffSource) -> some View {
     let shown = Array(files.prefix(renderCap))
     // Resolved once for the whole list, not once per row: this is the read that used to make every row
     // observe `TerminalPanes`. While each `ChangedFileRow` observed it directly, every terminal
@@ -322,17 +356,19 @@ struct ChangesPanel: View {
     // here, in the panel's body, only the selected target's pane changes re-run the panel, and no
     // row rebuilds (`ChangedFileRowInvalidationTests`).
     let selection = inputs.selection()
-    let targetIsMissing = inputs.target?.isMissing != false
+    let root = FocusedTabSelection.changedFileRoot(for: inputs.subject)
+    let targetIsMissing = inputs.fileTargetIsMissing
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
         ChangedFileRow(
-          file: file, source: source, selection: selection, targetIsMissing: targetIsMissing,
-          actions: actions
+          file: file, source: source, selection: selection, root: root,
+          targetIsMissing: targetIsMissing, actions: actions
         )
         .equatable()
       }
-      if files.count > shown.count {
-        Text("Showing first \(shown.count) of \(files.count)")
+      // `total`, not the list: a recalled status lists only its first files (#812).
+      if total > shown.count {
+        Text("Showing first \(shown.count) of \(total)")
           .font(.footnote).foregroundStyle(.tertiary)
       }
     }
@@ -363,23 +399,33 @@ struct ChangesPanel: View {
 
 /// Builds `ChangesPanel`'s inputs and actions from the window's `AppStore`.
 ///
-/// It reads the inspector's target, as the panel's body did; the focused tab and the statuses are
+/// It reads the inspector's subject, as the panel's body did; the focused tab and the statuses are
 /// read by the panel, so a terminal pulse reaches the panel and not this, and a status sweep re-runs
 /// the panel alone.
 struct ChangesPanelAdapter: View {
   @EnvironmentObject var store: AppStore
 
   var body: some View {
-    let targetID = store.inspectorTargetID
-    ChangesPanel(
-      inputs: ChangesPanelInputs(
-        targetID: targetID,
-        target: targetID.flatMap { $0.isStatusable ? store.target(for: $0) : nil },
-        // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
-        selection: { [store] in
-          FocusedTabSelection.current(store: store)
-        }),
-      actions: actions)
+    ChangesPanel(inputs: Self.inputs(store: store), actions: actions)
+  }
+
+  /// The panel's inputs from `store`.
+  static func inputs(store: AppStore) -> ChangesPanelInputs {
+    let subject = store.inspectorRepositorySubject
+    let target: TerminalTarget? =
+      if case .followed = subject {
+        store.inspectorHistoryTarget
+      } else {
+        subject.sidebarID.flatMap { $0.isStatusable ? store.target(for: $0) : nil }
+      }
+    return ChangesPanelInputs(
+      subject: subject,
+      target: target,
+      // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
+      selection: { [store] in
+        FocusedTabSelection.current(store: store)
+      },
+      showsPendingLoader: store.followedFolderLoaderShown)
   }
 
   /// `[store]` only, and the file and source as arguments: the capture list is what makes these
@@ -418,6 +464,16 @@ func inspectorMessage(_ text: String) -> some View {
     .padding(12)
 }
 
+/// The inspector's "Checking…" loader line, shared by the Changes and Pull Request panels: what
+/// they show while a status is read, and once a followed folder's repository has been pending a
+/// moment. `help` is its tooltip and accessibility label.
+func inspectorCheckingMessage(help: String) -> some View {
+  inspectorMessage("Checking\u{2026}")
+    .help(help)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(help)
+}
+
 #if DEBUG
   #Preview("Changes") {
     // Three changed files in a workroom, the second open as a diff.
@@ -436,7 +492,7 @@ func inspectorMessage(_ text: String) -> some View {
       lastChecked: Date())
     return ChangesPanel(
       inputs: ChangesPanelInputs(
-        targetID: sid, target: target,
+        subject: .target(sid), target: target,
         selection: { .diff(path: "Sources/Auth/Token.swift", source: .gitWorktree) }),
       actions: ChangedFileActions(
         openDiff: { _, _, _ in }, openInApp: { _ in }, openInEditor: { _ in })

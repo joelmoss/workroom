@@ -81,11 +81,11 @@ One terminal, or one diff, file or changeset view, opened in a target.
 What a terminal is labelled with: the name the user gave it, kept across a quit, or else the title its program sets, or else its program and folder, `<program> <folder>` ("zsh ~/dev/workroom", "claude ~/workrooms/calm-dune"), drawn with the program bright and the folder faded, and joined by a space wherever it is plain text. The program is the terminal's foreground process by its short name; the folder is the shell's live folder, else where it started, in full with the home folder as `~`. This holds for every terminal, in a workroom or the Terminals section, and nothing numbers two alike apart. Any terminal can be renamed.
 
 **Standalone terminal**:
-A terminal that belongs to no project and no terminal group, with a sidebar row and a workroom tab of its own. It runs on this Mac, starts in the folder the user chose for them, and comes back after a quit like a workroom's terminals. The app calls it just a terminal; say standalone where it must be told apart.
+A terminal that belongs to no project and no terminal group, with a sidebar row and a workroom tab of its own. It runs on this Mac, starts in the folder the user chose for them, and comes back after a quit like a workroom's terminals. It has no version control of its own, but its inspector follows its shell's folder and the git repository that folder is in. The app calls it just a terminal; say standalone where it must be told apart.
 _Avoid_: Loose terminal, free terminal
 
 **Terminal group**:
-A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its terminals' names: both of two ("zsh + htop"), else the first and how many more ("zsh + 2 more") and goes when one terminal is left, which becomes standalone again. Named or not, a group goes with its last terminal across every window, but never at a quit. The Quick Terminal's group is never deleted. Deleting one makes its terminals standalone.
+A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host of its own. Its inspector follows the focused terminal's folder, and the git repository that folder is in, as a standalone terminal's does. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its terminals' names: both of two ("zsh + htop"), else the first and how many more ("zsh + 2 more") and goes when one terminal is left, which becomes standalone again. Named or not, a group goes with its last terminal across every window, but never at a quit. The Quick Terminal's group is never deleted. Deleting one makes its terminals standalone.
 _Avoid_: Group (alone), workroom (for a terminal group)
 
 **Split**:
@@ -263,7 +263,7 @@ A window's back and forward trail through targets, tabs and what each tab showed
 _Avoid_: History (alone)
 
 **Inspector**:
-The right-hand column of Changes, History, Pull Request and Files sections for the selected target.
+The right-hand column of Details, Changes, History, Pull Request and Files sections, under a header naming what it is about: the selected workroom or project, or, for a standalone terminal or terminal group, the folder its focused terminal is in and the git repository containing it. That folder is the shell's live one, else where it started, and the inspector follows it as the shell moves; outside a repository the version-control sections say "Not a git repository". Each window's inspector follows only that window's selection, and the Quick Terminal never changes it.
 
 **Notification**:
 A badge or desktop banner raised when a program in a terminal asks for attention with an OSC notification sequence. The app keeps one list of them for all windows.

@@ -8,6 +8,9 @@ struct RoomCommandState: Equatable {
     let number: Int
     let url: String
     let draftAction: PRAction?
+    /// What the draft item acts on, read with `number`: a click after a `cd` then still pairs
+    /// the repository the menu showed with its own pull request.
+    let target: VCSActionTarget
   }
 
   let canCommit: Bool
@@ -19,19 +22,27 @@ struct RoomCommandState: Equatable {
     // Keep the filesystem-dependent Finder gate fresh on the same status updates as before,
     // without making the Commands body itself observe the whole status dictionary.
     let canReveal = store.selectedTarget.map { !$0.isMissing } ?? false
-    guard !store.modals.hasModalPresentation, let sid = store.inspectorTargetID else {
+    // Commit and the pull request items act on a followed repository too, registered in place or
+    // not (#808): Commit on what `inspectorActionTarget` names, so nowhere the app can't write to;
+    // the pull request on `inspectorPullRequestTarget`'s, since `gh` writes only on GitHub.
+    guard !store.modals.hasModalPresentation else {
       return Self(
         canCommit: false, pullRequest: nil, canChangeDraft: false, canRevealInFinder: canReveal)
     }
+    let target = store.inspectorPullRequestTarget
     let pr =
       store.vcsStatus.githubCLIStatus == .available
-      ? store.vcsStatus.workroomStatuses[sid]?.pr : nil
+      ? target.flatMap { store.vcsStatus.status(for: $0)?.pr } : nil
     let draftAction = pr.flatMap {
       PRAction.available(for: $0).first { $0 == .markReady || $0 == .convertToDraft }
     }
     return Self(
-      canCommit: store.canCommit(sid),
-      pullRequest: pr.map { PullRequest(number: $0.number, url: $0.url, draftAction: draftAction) },
+      canCommit: store.canCommit(store.inspectorActionTarget),
+      pullRequest: pr.flatMap { pr in
+        target.map {
+          PullRequest(number: pr.number, url: pr.url, draftAction: draftAction, target: $0)
+        }
+      },
       canChangeDraft: draftAction != nil && !store.prActionInFlight,
       canRevealInFinder: canReveal)
   }

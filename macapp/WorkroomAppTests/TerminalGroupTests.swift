@@ -394,15 +394,20 @@ final class TerminalGroupTests: XCTestCase {
 
   // MARK: Nothing project-shaped
 
-  /// Value: protects=no inspector, version control or Run for a group (story 48–49);
-  /// fails_when=any of them resolves for it; why_new=#658; seam=AppStore; no_claim=the menus'
-  /// rendering
-  func testAGroupHasNoInspectorVersionControlOrRun() throws {
+  /// Value: protects=no sidebar-keyed version control or Run for a group (story 48–49); its
+  /// inspector follows its focused terminal instead (#806, ADR 0081,
+  /// TerminalGroupFollowsFocusTests); fails_when=any of them resolves for it; why_new=#658;
+  /// seam=AppStore; no_claim=the menus' rendering
+  func testAGroupHasNoProjectVersionControlOrRun() async throws {
     let store = makeStore()
     let sid = try group(store)
+    await store.followedFolderResolved()
 
     XCTAssertTrue(store.selectionHasTabs)
-    XCTAssertNil(store.inspectorTargetID)
+    guard case .followed = store.inspectorSubject else {
+      return XCTFail("the inspector follows its focused terminal, not \(store.inspectorSubject)")
+    }
+    XCTAssertNil(store.inspectorTargetID, "a followed folder is no sidebar item")
     XCTAssertNil(store.remoteTarget())
     XCTAssertFalse(store.vcsStatus.targetExists(sid))
     XCTAssertNil(AppStore.projectPath(of: sid))
