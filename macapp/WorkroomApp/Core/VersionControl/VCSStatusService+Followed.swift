@@ -53,7 +53,7 @@ struct RegisteredPathIndex: Equatable {
   /// The registered paths whose `realpath` timed out, indexed by their literal path until a build
   /// resolves them.
   let timedOut: Set<String>
-  /// Which build this is (`registeredIndexGeneration`): a build lands only over an older one.
+  /// Which build this is (`registeredIndexGeneration`): only the latest asked for lands.
   let generation: Int
 }
 
@@ -108,11 +108,24 @@ extension VCSStatusService {
   /// stalled mount costs its own entry `registeredPathTimeout` and the rest of the index still
   /// builds. A path that timed out is indexed by its literal path, and the next build retries it.
   ///
-  /// Nothing when a build for this list is in flight, or one landed with every path resolved.
+  /// Nothing when a build for this list is in flight, or one landed with every path resolved. A
+  /// build in flight for another list is dropped once the index already matches this one: the list
+  /// went A, B and back to A, and B's build must never land over A's (offactor review I1).
   func rebuildRegisteredIndex() {
     let projects = projectStore.projects
     if let build = registeredIndexBuild, build.projects == projects { return }
-    if let index = registeredIndex, index.projects == projects, index.timedOut.isEmpty { return }
+    if let index = registeredIndex, index.projects == projects {
+      if registeredIndexBuild != nil {
+        registeredIndexBuild = nil
+        registeredIndexGeneration += 1
+      }
+      if index.timedOut.isEmpty { return }
+    } else {
+      // Another list: a retry scheduled for the last one's timeouts goes with it.
+      registeredIndexRetry?.cancel()
+      registeredIndexRetry = nil
+      registeredIndexTimeouts = 0
+    }
     registeredIndexGeneration += 1
     let generation = registeredIndexGeneration
     // Reversed, so the first registration of a path wins, as the scan this replaced did.
@@ -147,23 +160,63 @@ extension VCSStatusService {
         RegisteredPathIndex(
           projects: projects, ids: ids, timedOut: timedOut, generation: generation))
     }
-    registeredIndexBuild = (projects, task)
+    registeredIndexBuild = (projects, generation, task)
   }
 
-  /// A build landed: it replaces an older index, never a newer one. Every followed repository
-  /// whose registered row it changes is re-routed (`rerouteFollowed`).
+  /// A build landed. Only the latest asked for, and only for the projects as they are now, is
+  /// installed: any other is dropped, and the current list gets its own build, so the latest list
+  /// always ends up indexed (offactor review I1). Every followed repository whose registered row
+  /// it changes is re-routed (`rerouteFollowed`), as is every one whose read waited on it
+  /// (`followedReadAwaitsIndex`). One that left a path timed out is rebuilt after a backoff.
   private func installRegisteredIndex(_ index: RegisteredPathIndex) {
-    if registeredIndexBuild?.projects == index.projects,
-      index.generation == registeredIndexGeneration
-    {
-      registeredIndexBuild = nil
-    }
-    guard index.generation > (registeredIndex?.generation ?? 0) else { return }
+    if registeredIndexBuild?.generation == index.generation { registeredIndexBuild = nil }
+    guard index.generation == registeredIndexGeneration, index.projects == projectStore.projects
+    else { return rebuildRegisteredIndex() }
+    scheduleRegisteredIndexRetry(timedOut: !index.timedOut.isEmpty)
     let before = registeredIndex
-    registeredIndex = index
-    for key in followedRepositories.keys where before?.ids[key] != index.ids[key] {
+    // A rebuild that found what the last one did changes nothing the windows read.
+    if before?.projects != index.projects || before?.ids != index.ids
+      || before?.timedOut != index.timedOut
+    {
+      registeredIndex = index
+    }
+    let awaiting = followedRootsAwaitingIndex
+    followedRootsAwaitingIndex = []
+    for key in followedRepositories.keys
+    where awaiting.contains(key) || before?.ids[key] != index.ids[key] {
       rerouteFollowed(key, registered: index.ids[key])
     }
+  }
+
+  /// After a build that left a registered path's `realpath` timed out, rebuild once the backoff's
+  /// wait (`registeredIndexRetryWait`) has passed, so a slow volume heals without waiting on a
+  /// follow or a project change (offactor review N2). A clean build ends the streak.
+  private func scheduleRegisteredIndexRetry(timedOut: Bool) {
+    registeredIndexRetry?.cancel()
+    registeredIndexRetry = nil
+    guard timedOut else {
+      registeredIndexTimeouts = 0
+      return
+    }
+    registeredIndexTimeouts += 1
+    let (wait, streak) = (registeredIndexRetryWait, registeredIndexTimeouts)
+    registeredIndexRetry = Task { [weak self] in
+      await wait(streak)
+      guard !Task.isCancelled, let self else { return }
+      self.registeredIndexRetry = nil
+      self.rebuildRegisteredIndex()
+    }
+  }
+
+  /// Whether a followed repository's read must wait for the registered-path index: none is built
+  /// yet, or the one built is for another project list. Its status source isn't known until then,
+  /// so nothing is probed and no status of its own (nor a recent one) is written for it: a
+  /// registered row is never read as unregistered (offactor review N3). The index landing re-routes
+  /// it (`installRegisteredIndex`), which seeds and probes it.
+  func followedReadAwaitsIndex(_ key: String) -> Bool {
+    guard registeredIndex?.projects != projectStore.projects else { return false }
+    followedRootsAwaitingIndex.insert(key)
+    return true
   }
 
   /// A followed repository's registered row changed under it: its status source switches between
@@ -193,9 +246,29 @@ extension VCSStatusService {
     } else if followedStatuses[key] == nil {
       followedStatuses[key] = recentFollowedStatuses.value(for: key) ?? .unresolved
     }
-    refreshFollowedStatus(key, gitHub: true)
+    if refreshFollowedStatus(key, gitHub: true) == nil {
+      // Held off by a commit: probed the moment the last commit there ends, so the section never
+      // waits on a watch event to leave "Checking…" (offactor review N4).
+      let item = registered.flatMap(selectedStatusWorkItem(for:))
+      if let shared = item?.sharedLocation ?? followedSharedLocation(key),
+        isCommittingProject(shared)
+      {
+        followedRootsAwaitingCommit[shared, default: []].insert(key)
+      }
+    }
     // Commit and the toolbar address the row, or the repository, now.
     for window in statusWindows { window.followedRegistrationDidChange(root: key) }
+  }
+
+  /// The commits at `shared` are over: probe the followed repositories a re-route left waiting on
+  /// them. Nothing while a sibling's commit there still runs.
+  func reprobeFollowedAfterCommit(at shared: RepositoryLocation) {
+    guard !isCommittingProject(shared),
+      let keys = followedRootsAwaitingCommit.removeValue(forKey: shared)
+    else { return }
+    for key in keys where followedRepositories[key] != nil {
+      refreshFollowedStatus(key, gitHub: true)
+    }
   }
 
   /// Wait for the registered-path index to be built for the current projects, starting the build
@@ -240,7 +313,9 @@ extension VCSStatusService {
       hold.registering = true
       hold.registration = registerFollowed(key, hold: hold.id)
       followedRepositories[key] = hold
-      if registeredSidebarID(forCanonicalRoot: key) == nil, followedStatuses[key] == nil {
+      if !followedReadAwaitsIndex(key), registeredSidebarID(forCanonicalRoot: key) == nil,
+        followedStatuses[key] == nil
+      {
         // One followed lately shows what it last showed at once; the probe below refreshes it.
         followedStatuses[key] = recentFollowedStatuses.value(for: key) ?? .unresolved
       }
@@ -586,7 +661,7 @@ extension VCSStatusService {
     let key = root
     // Probed even under seeded statuses: a followed folder is a real repository (the UI-test
     // fixture's are throwaway ones its shell makes), where a seeded row's path is not one.
-    guard var hold = followedRepositories[key] else { return nil }
+    guard var hold = followedRepositories[key], !followedReadAwaitsIndex(key) else { return nil }
     let registered = registeredSidebarID(forCanonicalRoot: key)
     // A registered row keeps its seeded status, as its own lanes leave it.
     if registered != nil, !probesRepositories { return nil }

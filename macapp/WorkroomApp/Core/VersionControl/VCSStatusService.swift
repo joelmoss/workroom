@@ -168,10 +168,31 @@ final class VCSStatusService: ObservableObject {
   /// (`rebuildRegisteredIndex`), so a status read never touches the file system. Observed: a
   /// rebuild landing moves what a followed repository's sections and actions read.
   var registeredIndex: RegisteredPathIndex?
-  /// The index build in flight, the latest asked for, and the project list it is for.
-  @ObservationIgnored var registeredIndexBuild: (projects: [Project], task: Task<Void, Never>)?
-  /// The generation of the latest index build asked for: a build lands only over an older one.
+  /// The index build in flight, the latest asked for, and the project list and generation it is
+  /// for.
+  @ObservationIgnored var registeredIndexBuild:
+    (projects: [Project], generation: Int, task: Task<Void, Never>)?
+  /// The generation of the latest index build asked for: only that build lands.
   @ObservationIgnored var registeredIndexGeneration = 0
+  /// How many index builds in a row left a registered path's `realpath` timed out: what spaces out
+  /// their retries (`registeredIndexRetryWait`).
+  @ObservationIgnored var registeredIndexTimeouts = 0
+  /// The wait before rebuilding an index that left a path timed out.
+  @ObservationIgnored var registeredIndexRetry: Task<Void, Never>?
+  /// Wait before rebuilding an index whose last `streak` builds left a path timed out: the
+  /// followed-folder backoff (`FollowedFolderTracker.retryDelay`), 2 s doubling to 60 s. A seam for
+  /// tests.
+  @ObservationIgnored var registeredIndexRetryWait: @Sendable (_ streak: Int) async -> Void = {
+    streak in
+    try? await Task.sleep(for: FollowedFolderTracker.retryDelay(streak))
+  }
+  /// The followed repositories re-routed while a commit held their read lanes off
+  /// (`rerouteFollowed`), by the shared location committing: probed as soon as the last commit
+  /// there ends, so a section never waits on a watch event to leave "Checking…".
+  @ObservationIgnored var followedRootsAwaitingCommit: [RepositoryLocation: Set<String>] = [:]
+  /// The followed repositories whose read waited on the registered-path index
+  /// (`followedReadAwaitsIndex`): re-routed, so seeded and probed, once it lands.
+  @ObservationIgnored var followedRootsAwaitingIndex: Set<String> = []
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check; refreshed by `refreshGitHubCLI`. Drives the Pull
@@ -711,6 +732,7 @@ final class VCSStatusService: ObservableObject {
       Self.decrement(&committingProjectRoots, at: root)
       endWrite(projectRoot: root)
       committingFollowedRoots.remove(followed)
+      reprobeFollowedAfterCommit(at: root)
     }
   }
 
@@ -730,6 +752,7 @@ final class VCSStatusService: ObservableObject {
     Self.decrement(&committingProjectRoots, at: root)
     endWrite(projectRoot: root)
     committingTargets.remove(sid)
+    reprobeFollowedAfterCommit(at: root)
   }
 
   /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
