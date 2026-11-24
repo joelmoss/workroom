@@ -127,7 +127,10 @@ extension AppStore {
       }
     }
     followedFolderRequest = nil
+    // The same folder, re-read: a folder Files is browsing stays (a save must not snap it back).
+    let browse = filesBrowse
     refreshFollowedFolder()
+    filesBrowse = browse
   }
 
   /// Hold, in the app's status, the repository this window's inspector follows, and let go of the

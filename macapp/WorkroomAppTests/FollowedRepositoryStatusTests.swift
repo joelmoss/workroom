@@ -435,6 +435,25 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertEqual(afterCommand.repository?.branch, "main")
   }
 
+  /// Value: protects=Files staying on a browsed folder across a re-read of the repository (#809
+  /// meets #807); fails_when=a save or a finished command snaps Files back; why_new=#807;
+  /// seam=AppStore; no_claim=the breadcrumb's rendering
+  func testAReReadKeepsTheFolderFilesIsBrowsing() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app")
+    try await cd(store, tab, root + "/src")
+    store.browseFiles(toSegment: 0)
+    let browse = try XCTUnwrap(store.filesBrowse)
+
+    try XCTUnwrap(watcher(for: root)).onChange([root + "/src/a.txt"], false)
+    try XCTUnwrap(store.terminals.surface(tab)).onEvent?(.commandFinished(0))
+    await settle(store)
+
+    XCTAssertEqual(store.filesBrowse, browse)
+  }
+
   /// Value: protects=a `git init` in the followed folder, with no `cd`, making it a repository
   /// (adversarial review of #805, finding 2); fails_when=the folder stays not-a-repo;
   /// why_new=#807; seam=AppStore; no_claim=the watch
