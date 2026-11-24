@@ -59,7 +59,11 @@ struct FilesPanel: View {
         // The folder's repository is still resolving, which decides how it lists: wait rather
         // than list it twice. Blank at first, so a fast answer never flashes a loader, then the
         // section's own loader.
-        if store.followedFolderLoaderShown { listingIndicator } else { EmptyView() }
+        if store.followedFolderLoaderShown {
+          listingIndicator.accessibilityIdentifier(pendingRepositoryLoaderID)
+        } else {
+          EmptyView()
+        }
       } else if store.inspectorSubject == .nothing {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than list a stale workroom.

@@ -23,7 +23,11 @@ struct PullRequestPanel: View {
       {
         // Its repository is still resolving: blank at first, so a fast answer never flashes a
         // loader, then the section's own loader.
-        if store.followedFolderLoaderShown { checkingMessage } else { EmptyView() }
+        if store.followedFolderLoaderShown {
+          checkingMessage.accessibilityIdentifier(pendingRepositoryLoaderID)
+        } else {
+          EmptyView()
+        }
       } else if case .followed(let followed) = store.inspectorRepositorySubject,
         followed.repository == nil
           || vcsStatus.status(for: store.inspectorRepositorySubject)?.failure?.meansNoRepository

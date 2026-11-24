@@ -975,6 +975,14 @@ import WorkroomVCS
       }
     }
 
+    /// How long each lookup of a followed folder's repository is held
+    /// (`-WorkroomUITestFollowedLookupDelay <seconds>`), so the inspector's delayed loader can be
+    /// seen before the answer lands. Zero unless given.
+    static var followedLookupDelay: Duration {
+      text("WorkroomUITestFollowedLookupDelay").flatMap(Double.init).map { .seconds(max(0, $0)) }
+        ?? .zero
+    }
+
     /// Whether splits auto-even on add/remove in a fixture launch
     /// (`-WorkroomUITestAutoResizeSplitsEvenly 0` to turn it off). Defaults to the shipped `true`, and
     /// pinned for the same reason as `dimUnfocusedPanes`: it persists in the real Dev domain and it
@@ -2019,7 +2027,8 @@ import WorkroomVCS
   extension AppServices {
     /// The UI-test fixture's services (`-WorkroomUITestFixture 1`): the scripted CLI when a test asks
     /// for it, the seeded repositories' reader and writer, canned diffs, and seeded statuses, since the
-    /// fixture's paths are temp directories, not repositories. Everything else stays live.
+    /// fixture's paths are temp directories, not repositories, and any delay a test asks for on a
+    /// followed folder's lookup. Everything else stays live.
     @MainActor static var fixture: AppServices {
       var services = AppServices.live
       services.cli = UITestFixture.scriptedCreate ? ScriptedCreateCLI.shared : WorkroomCLI.shared
@@ -2038,6 +2047,7 @@ import WorkroomVCS
           root: UITestFixture.rootStatus, workroom: UITestFixture.workroomStatus,
           gitHubCLI: UITestFixture.ghStatus)
       }
+      services.followedLookupDelay = UITestFixture.followedLookupDelay
       return services
     }
   }
