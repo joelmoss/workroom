@@ -1258,7 +1258,9 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertFalse(change([r + "/.git/HEAD"]).movesOnlyLocalBranches)
 
     // A linked worktree's watch on its repository's git directory.
-    func linked(_ paths: [String], own: String = r + "/.git/worktrees/wt") -> FollowedRepositoryChange {
+    func linked(_ paths: [String], own: String = r + "/.git/worktrees/wt")
+      -> FollowedRepositoryChange
+    {
       VCSStatusService.followedChange(
         paths: paths, overflow: false, gitDirectory: own, commonDirectory: r + "/.git")
     }
