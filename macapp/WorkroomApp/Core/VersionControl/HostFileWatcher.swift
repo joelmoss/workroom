@@ -147,9 +147,14 @@ private final class WatchCore: @unchecked Sendable {
       return watcher
     }
     guard let watcher else { return }
-    Self.streamQueue.async { [self] in
-      let live = lock.withLock { self.generation == generation && fallback === watcher }
-      if live { watcher.start(path: path) }
+    // Awaited, so the gap's synthetic refresh that follows is delivered only once the watch is
+    // live. This waits on the loop's task, never the main actor.
+    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+      Self.streamQueue.async { [self] in
+        let live = lock.withLock { self.generation == generation && fallback === watcher }
+        if live { watcher.start(path: path) }
+        done.resume()
+      }
     }
   }
 
