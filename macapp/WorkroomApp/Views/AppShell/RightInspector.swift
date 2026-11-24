@@ -36,7 +36,8 @@ struct RightInspector: View {
       // The VCS toolbar sits ABOVE the section stack, not inside a section, so it survives a collapsed
       // Changes section. Only for the Changes activity section: branch/remote state is what that section
       // is about, and showing it over the Files tree would jump the layout on every activity-bar click.
-      if store.activeInspectorSection == .changes {
+      // Not for a followed folder with no repository, where Changes already says so.
+      if store.activeInspectorSection == .changes, store.inspectorShowsRepositoryControls {
         VCSToolbar(model: store.remoteState)
       }
       if subs.isEmpty {
@@ -139,13 +140,16 @@ struct RightInspector: View {
           shortcut: Shortcuts.shared.table.label(for: .changes)
         ) {
           HStack(spacing: 0) {
-            InspectorHeaderButton(
-              systemImage: "checkmark.circle", help: commitButtonHelp,
-              disabled: !canCommitSelectedTarget
-            ) {
-              store.requestCommit(store.inspectorActionTarget)
+            // A followed folder with no repository has nothing a commit could go to.
+            if store.inspectorShowsRepositoryControls {
+              InspectorHeaderButton(
+                systemImage: "checkmark.circle", help: commitButtonHelp,
+                disabled: !canCommitSelectedTarget
+              ) {
+                store.requestCommit(store.inspectorActionTarget)
+              }
+              .accessibilityIdentifier("changes.commitButton")
             }
-            .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
               vcsStatus.refreshWorkroomStatuses(force: true)
               store.refreshFollowedRepository()

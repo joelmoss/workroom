@@ -32,6 +32,22 @@ extension AppStore {
   /// back empty, or one the app can't write to.
   var inspectorActionTarget: VCSActionTarget? { inspectorTarget(writingLocally: true) }
 
+  /// Whether the inspector shows its repository controls: the VCS branch bar above Changes, and
+  /// Changes' Commit button. Not for a followed folder with no repository (outside one, one git
+  /// couldn't tell about, or one it is still telling), whose sections already say so (QA of #803).
+  var inspectorShowsRepositoryControls: Bool {
+    guard case .followed(let followed) = inspectorSubject else { return true }
+    return followed.lookup == .resolved && followed.repository != nil
+  }
+
+  /// What the VCS sync chip says when it has no target. A followed repository with none is one
+  /// this window can't act on (read-only, or not registered), never "No workroom selected".
+  var vcsSyncNoTargetSubtitle: String {
+    guard case .followed(let followed) = inspectorSubject else { return "No workroom selected" }
+    if followed.repository?.isWritable == false { return "Read-only repository" }
+    return "No repository"
+  }
+
   /// What a pull request action in the inspector acts on: `inspectorActionTarget`'s, and a followed
   /// repository the app can't write to as well, since `gh` writes only on GitHub, as the same
   /// repository's registered row offers them (review of #808, finding 6).

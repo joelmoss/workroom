@@ -92,6 +92,7 @@ struct VCSToolbar: View {
   private func presentation(now: Date) -> VCSSyncPresentation {
     VCSSyncPresenter.make(
       state: model.snapshot, hasTarget: model.target != nil,
+      noTargetSubtitle: store.vcsSyncNoTargetSubtitle,
       toolsUsable: store.vcsAllowsRemoteActions,
       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.

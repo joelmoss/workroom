@@ -220,6 +220,44 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     XCTAssertNil(store.commitHistory.root, "and empties")
   }
 
+  /// Value: protects=the branch bar and Commit only where there is a repository (QA of #803);
+  /// fails_when=a plain folder, one git couldn't tell about, or one still being told shows
+  /// "Current Branch —", a sync chip or a Commit button, or a followed folder's chip says "No
+  /// workroom selected"; why_new=#803 QA; seam=AppStore; no_claim=the views' layout
+  func testOnlyAFollowedRepositoryShowsTheBranchBarAndCommit() async throws {
+    let store = makeStore()
+    store.followedFolderRetryWait = { _ in try? await Task.sleep(for: .seconds(3600)) }
+    let tab = try await openTerminal(store)
+    try await cd(store, tab, repo("app"))
+    XCTAssertNotNil(followed(store)?.repository)
+    XCTAssertTrue(store.inspectorShowsRepositoryControls, "a repository shows them")
+
+    try await cd(store, tab, folder("plain"))
+    XCTAssertEqual(followed(store)?.isOutsideRepository, true)
+    XCTAssertFalse(store.inspectorShowsRepositoryControls, "not a repository")
+    XCTAssertNotEqual(store.vcsSyncNoTargetSubtitle, "No workroom selected")
+
+    store.resolveFollowedRepository = { _ in .unknown }
+    try await cd(store, tab, folder("unreadable"))
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, true)
+    XCTAssertFalse(store.inspectorShowsRepositoryControls, "couldn't tell")
+    store.followedFolder.retryTask?.cancel()
+
+    // A first visit still being told: a fresh window's terminal, its lookup held.
+    let slow = makeStore()
+    let lookup = Gate()
+    slow.resolveFollowedRepository = { _ in
+      await lookup.pass()
+      return .notARepository
+    }
+    slow.newTerminalInSelectedTarget()
+    XCTAssertEqual(followed(slow)?.repositoryPending, true)
+    XCTAssertFalse(slow.inspectorShowsRepositoryControls, "still being told")
+    XCTAssertNotEqual(slow.vcsSyncNoTargetSubtitle, "No workroom selected")
+    for _ in 0..<3 { lookup.open() }
+    await slow.followedFolderResolved()
+  }
+
   /// Value: protects=the innermost repo winning (stories 25, 26); fails_when=a nested repo, a
   /// linked worktree or a submodule resolves to its outer repository; why_new=#805;
   /// seam=AppStore over real git; no_claim=git's own resolution beyond these three shapes
