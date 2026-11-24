@@ -36,12 +36,20 @@ final class HostFileWatcher {
 
   /// `admit`, when given, decides off the main actor whether a delivery reaches `onChange` at all,
   /// so a consumer that ignores most of a busy tree never pays a main-actor hop for it.
+  /// `resolveLocation` tells the watched path's location (its symlinks resolved), nil when it can't
+  /// in time. By default the probe's bounded read, joined by path: a stalled mount then holds one
+  /// GCD thread for every watcher, probe and registration of that path, and each watcher's loop
+  /// backs off rather than parking a thread of its own (offactor review I2). A seam for tests.
   init(
     router: RepositoryRouter = .shared,
     admit: (@Sendable ([String], Bool) -> Bool)? = nil,
+    resolveLocation: @escaping @Sendable (String) async -> RepositoryLocation? = {
+      await GitRepositoryProbe.localLocation($0)
+    },
     onChange: @escaping @MainActor ([String], Bool) -> Void
   ) {
-    core = WatchCore(router: router, admit: admit, onChange: onChange)
+    core = WatchCore(
+      router: router, admit: admit, resolveLocation: resolveLocation, onChange: onChange)
   }
 
   deinit { core.stop() }
@@ -68,6 +76,7 @@ final class HostFileWatcher {
 private final class WatchCore: @unchecked Sendable {
   private let router: RepositoryRouter
   private let admit: (@Sendable ([String], Bool) -> Bool)?
+  private let resolveLocation: @Sendable (String) async -> RepositoryLocation?
   private let onChange: @MainActor ([String], Bool) -> Void
 
   private let lock = NSLock()
@@ -78,11 +87,14 @@ private final class WatchCore: @unchecked Sendable {
   private var generation = 0
 
   init(
-    router: RepositoryRouter = .shared, admit: (@Sendable ([String], Bool) -> Bool)? = nil,
+    router: RepositoryRouter,
+    admit: (@Sendable ([String], Bool) -> Bool)?,
+    resolveLocation: @escaping @Sendable (String) async -> RepositoryLocation?,
     onChange: @escaping @MainActor ([String], Bool) -> Void
   ) {
     self.router = router
     self.admit = admit
+    self.resolveLocation = resolveLocation
     self.onChange = onChange
   }
 
@@ -183,11 +195,20 @@ private final class WatchCore: @unchecked Sendable {
   private func run(path: String, generation: Int) async {
     var backoff: Duration = .milliseconds(500)
     var gap = false
+    // Not a usable path: nothing a daemon could watch, so the local watcher's own behavior stands.
+    guard path.hasPrefix("/"), !path.contains("\0") else {
+      await startFallback(path: path, generation: generation)
+      return
+    }
     while !Task.isCancelled, current(generation) {
-      guard let location = try? await RepositoryLocation.local(path) else {
-        // Not a usable path: nothing a daemon could watch, so the local watcher's own behavior stands.
-        await startFallback(path: path, generation: generation)
-        return
+      guard let location = await resolveLocation(path) else {
+        // Its symlinks couldn't be resolved in time: a stalled mount. Neither the daemon nor the
+        // fallback is asked (FSEvents would stall the shared stream queue on it too); try again
+        // after the backoff, and report the gap once a watch is live.
+        gap = true
+        try? await Task.sleep(for: backoff)
+        backoff = min(backoff * 2, .seconds(30))
+        continue
       }
       let (events, continuation) = AsyncStream<FileWatchEvent>.makeStream(
         bufferingPolicy: .unbounded)

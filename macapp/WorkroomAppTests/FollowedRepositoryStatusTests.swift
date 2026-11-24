@@ -1424,4 +1424,145 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertNil(status.followedStatuses[root])
     XCTAssertFalse(status.isFollowing(root))
   }
+
+  // MARK: The registered-path index (offactor review)
+
+  /// Value: protects=the index always ending on the current project list (offactor review I1);
+  /// fails_when=a list that goes A, B and back to A while B's build is stalled installs B's index
+  /// over A's, or a repository followed while B's build was out is never probed; why_new=review;
+  /// seam=VCSStatusService's canonicaliser (stalled on B's path only); no_claim=a real network
+  /// mount
+  func testAListThatGoesAToBAndBackNeverInstallsBsIndex() async throws {
+    let a = repo("a")
+    let b = folder("b")
+    let other = repo("other")
+    let status = makeStatus()
+    let guarded = GuardedCanonicaliser(stalled: b)
+    defer { guarded.release() }
+    status.canonicalise = guarded.canonicalise
+    status.registeredPathTimeout = 5
+    let listA = [Project(path: a, vcs: "git", workrooms: [])]
+    projects.projects = listA
+    await status.registeredIndexSettled()
+
+    projects.projects = listA + [Project(path: b, vcs: "git", workrooms: [])]
+    status.rebuildRegisteredIndex()
+    let buildB = try XCTUnwrap(status.registeredIndexBuild?.task)
+    status.follow(other)
+    projects.projects = listA
+    status.rebuildRegisteredIndex()
+    guarded.release()
+    await buildB.value
+    // Read before any settle, which would rebuild for the current list and hide a stale install.
+    XCTAssertEqual(status.registeredIndex?.projects, listA, "B's build landing installs nothing")
+    XCTAssertNil(status.registeredSidebarID(forCanonicalRoot: b))
+    await status.registeredIndexSettled()
+
+    await status.followedStatusSettled()
+    XCTAssertEqual(status.registeredIndex?.projects, listA, "A's list stays indexed")
+    XCTAssertNil(status.registeredSidebarID(forCanonicalRoot: b), "B's build never lands")
+    XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: a), .root(project: a))
+    XCTAssertEqual(
+      status.followedStatuses[other]?.changedFiles?.map(\.path), ["src/a.txt"],
+      "followed while B's build was out, and probed once the list is A's again")
+    status.unfollow(other)
+    await status.followedRegistrationsSettled()
+  }
+
+  /// Value: protects=a registered path whose `realpath` timed out healing on its own (offactor
+  /// review N2); fails_when=a timed-out entry stays indexed by its literal path until some follow
+  /// or project change; why_new=review; seam=VCSStatusService's canonicaliser (stalled) + the
+  /// retry wait (recorded); no_claim=the real backoff's timing
+  func testATimedOutRegisteredPathIsRetriedOnABackoff() async throws {
+    let real = repo("real")
+    let link = scratch.appendingPathComponent("link").path
+    try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+    let status = makeStatus()
+    let guarded = GuardedCanonicaliser(stalled: link)
+    defer { guarded.release() }
+    status.canonicalise = guarded.canonicalise
+    status.registeredPathTimeout = 0.2
+    let streaks = Mutex<[Int]>([])
+    // The wait is where the mount recovers.
+    status.registeredIndexRetryWait = { streak in
+      streaks.withLock { $0.append(streak) }
+      guarded.release()
+    }
+    projects.projects = [Project(path: link, vcs: "git", workrooms: [])]
+    await status.registeredIndexSettled()
+    XCTAssertEqual(status.registeredIndex?.timedOut, [link])
+
+    await status.registeredIndexRetry?.value
+    await status.registeredIndexSettled()
+
+    XCTAssertEqual(streaks.withLock { $0 }, [1])
+    XCTAssertEqual(status.registeredIndex?.timedOut, [])
+    XCTAssertEqual(status.registeredSidebarID(forCanonicalRoot: real), .root(project: link))
+    XCTAssertNil(status.registeredIndexRetry, "a clean build schedules no retry")
+  }
+
+  /// Value: protects=a registered row followed before the index lands never being read as
+  /// unregistered (offactor review N3); fails_when=it gets a status of its own (or a recent one)
+  /// while its source is unknown, or an unregistered repository followed meanwhile is never
+  /// probed once it lands; why_new=review; seam=VCSStatusService follow + the canonicaliser
+  /// (stalled); no_claim=the sidebar's rendering
+  func testARepositoryFollowedBeforeTheIndexLandsWaitsForIt() async throws {
+    let registered = repo("registered")
+    let other = repo("other")
+    let status = makeStatus()
+    await status.registeredIndexSettled()
+    let guarded = GuardedCanonicaliser(stalled: registered)
+    defer { guarded.release() }
+    status.canonicalise = guarded.canonicalise
+    status.registeredPathTimeout = 5
+    projects.projects = [Project(path: registered, vcs: "git", workrooms: [])]
+    status.rebuildRegisteredIndex()
+
+    status.follow(registered)
+    status.follow(other)
+    status.handleFollowedRepositoryChange(registered, paths: [], overflow: true)
+    XCTAssertNil(status.followedStatuses[registered], "no status of its own while it waits")
+    XCTAssertNil(status.followedStatuses[other])
+    guarded.release()
+    await status.followedStatusSettled()
+
+    let row = SidebarID.root(project: registered)
+    XCTAssertNil(status.followedStatuses[registered])
+    XCTAssertNil(status.recentFollowedStatuses.value(for: registered), "nor a recent one")
+    XCTAssertEqual(status.workroomStatuses[row]?.changedFiles?.map(\.path), ["src/a.txt"])
+    XCTAssertEqual(
+      status.followedStatuses[other]?.changedFiles?.map(\.path), ["src/a.txt"],
+      "one unregistered is probed once the index lands")
+    status.unfollow(registered)
+    status.unfollow(other)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+  }
+
+  /// Value: protects=Changes leaving "Checking…" once a commit ends, for a repository re-routed
+  /// while it committed (offactor review N4); fails_when=the re-route's probe, held off by the
+  /// commit, waits for a watch event; why_new=review; seam=VCSStatusService's commit marks + the
+  /// project list; no_claim=the commit itself
+  func testARepositoryReRoutedWhileItCommitsIsProbedWhenTheCommitEnds() async throws {
+    let root = repo("app")
+    projects.projects = [Project(path: root, vcs: "git", workrooms: [])]
+    let status = makeStatus()
+    status.follow(root)
+    await status.followedRegistrationsSettled()
+    await status.followedStatusSettled()
+    XCTAssertNil(status.followedStatuses[root], "in place")
+    let shared = try XCTUnwrap(status.followedSharedLocation(root))
+
+    status.beginCommit(.followed(root: root), root: shared)
+    projects.projects = []
+    await status.followedStatusSettled()
+    XCTAssertEqual(status.followedStatuses[root], .unresolved, "held off while it commits")
+
+    status.endCommit(.followed(root: root), root: shared)
+    await status.followedStatusSettled()
+
+    XCTAssertEqual(status.followedStatuses[root]?.changedFiles?.map(\.path), ["src/a.txt"])
+    status.unfollow(root)
+    await status.followedRegistrationsSettled()
+  }
 }
