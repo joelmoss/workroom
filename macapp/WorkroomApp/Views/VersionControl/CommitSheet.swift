@@ -57,10 +57,14 @@ struct CommitSheet: View {
     files.reduce(into: 0) { if !excluded.contains($1.path) { $0 += 1 } }
   }
 
+  /// The changed files a recalled status leaves out of `files` (#812): counted in every number the
+  /// sheet shows, and Commit waits until they are listed.
+  private var omittedCount: Int { status?.omittedChangedFiles ?? 0 }
+
   private var blockedReason: String? {
     CommitDraft.blockedReason(
       summary: summary, selectedCount: selectedCount,
-      totalCount: files.count, omittedCount: status?.omittedChangedFiles ?? 0,
+      totalCount: files.count, omittedCount: omittedCount,
       conflicted: status?.conflicted ?? false, sequencer: flow.sequencer)
   }
 
@@ -113,11 +117,12 @@ struct CommitSheet: View {
   /// warning is up so it can never read as an ordinary Commit.
   private var primaryLabel: String {
     if case .confirmingStagedLoss = flow.phase { return "Commit anyway" }
-    return CommitDraft.commitLabel(selectedCount: selectedCount)
+    return CommitDraft.commitLabel(selectedCount: selectedCount, omittedCount: omittedCount)
   }
 
   private var countCaption: String {
-    "\(selectedCount) of \(files.count) file\(files.count == 1 ? "" : "s")"
+    CommitDraft.countCaption(
+      selectedCount: selectedCount, listedCount: files.count, omittedCount: omittedCount)
   }
 
   // MARK: Files
@@ -150,16 +155,15 @@ struct CommitSheet: View {
         }
         .frame(maxHeight: 200)
         .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
-        if files.count > shown.count {
+        if let notice = CommitDraft.renderCapNotice(
+          shownCount: shown.count, listedCount: files.count, omittedCount: omittedCount)
+        {
           // Never silent: the rows below the cap are still selected and still committed, and saying
           // so is the difference between a cap and a lie about what is about to be recorded.
-          Text(
-            "Showing the first \(shown.count) of \(files.count). All \(files.count) are included "
-              + "unless you untick them."
-          )
-          .font(.caption).foregroundStyle(.tertiary)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("commit.renderCapNotice")
+          Text(notice)
+            .font(.caption).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("commit.renderCapNotice")
         }
       }
     }

@@ -52,11 +52,34 @@ enum CommitDraft {
 
   /// The primary button's label. Names the count so what is about to be recorded is never implicit —
   /// once the list scrolls, "Commit" alone is an unverifiable claim.
-  static func commitLabel(selectedCount: Int) -> String {
-    switch selectedCount {
+  ///
+  /// `omittedCount` is the files a recalled status leaves out of its list (#812). None of them can
+  /// have been unticked — an exclusion is of a listed path — so each one counts as selected.
+  static func commitLabel(selectedCount: Int, omittedCount: Int = 0) -> String {
+    switch selectedCount + omittedCount {
     case 1: return "Commit 1 file"
-    default: return "Commit \(selectedCount) files"
+    case let count: return "Commit \(count) files"
     }
+  }
+
+  /// The header's "N of M files", counting the files a recalled list leaves out (see
+  /// `commitLabel`), so it names the whole change set while commit waits for it.
+  static func countCaption(selectedCount: Int, listedCount: Int, omittedCount: Int) -> String {
+    let total = listedCount + omittedCount
+    return "\(selectedCount + omittedCount) of \(total) file\(total == 1 ? "" : "s")"
+  }
+
+  /// The line under a list drawn only in part, or nil when every file is drawn. While a recalled
+  /// list leaves files out it says the rest is being read — the same wait the blocked reason names —
+  /// rather than offering to untick files nobody can see yet.
+  static func renderCapNotice(shownCount: Int, listedCount: Int, omittedCount: Int) -> String? {
+    let total = listedCount + omittedCount
+    guard total > shownCount else { return nil }
+    if omittedCount > 0 {
+      return "Showing the first \(shownCount) of \(total) while every changed file is read."
+    }
+    return "Showing the first \(shownCount) of \(total). All \(total) are included "
+      + "unless you untick them."
   }
 
   /// Why Commit is unavailable, as a sentence, or nil when it is available.
