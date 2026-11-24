@@ -79,6 +79,17 @@ final class CommitDraftTests: XCTestCase {
     XCTAssertNil(reason())
   }
 
+  /// Value: protects=a commit never recording only the part of the change list a recalled status
+  /// keeps (#812 F8); fails_when=Commit is live while files are left out of the list it would
+  /// pass as pathspecs; why_new=#812 perf F8; seam=CommitDraft.blockedReason; no_claim=—
+  func testAListWithFilesLeftOutBlocks() {
+    XCTAssertEqual(
+      CommitDraft.blockedReason(
+        summary: "Subject", selectedCount: 200, totalCount: 200, omittedCount: 4800,
+        conflicted: false, sequencer: nil),
+      "Reading every changed file…")
+  }
+
   func testAnEmptySummaryBlocks() {
     XCTAssertEqual(reason(summary: "   "), "Write a summary to describe this change.")
   }

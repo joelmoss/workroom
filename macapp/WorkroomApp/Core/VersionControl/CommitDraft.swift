@@ -65,10 +65,16 @@ enum CommitDraft {
   /// different blocked states explained only by a tooltip would be invisible to anyone who doesn't
   /// hover a control that already looks dead, and unavailable to VoiceOver entirely.
   static func blockedReason(
-    summary: String, selectedCount: Int, totalCount: Int, conflicted: Bool, sequencer: String?
+    summary: String, selectedCount: Int, totalCount: Int, omittedCount: Int = 0,
+    conflicted: Bool, sequencer: String?
   ) -> String? {
     if let reason = repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer) {
       return reason
+    }
+    // A recalled status lists only its first files (#812): the commit's pathspecs would leave
+    // the rest out, so it waits for the fresh read's whole list.
+    if omittedCount > 0 {
+      return "Reading every changed file…"
     }
     if totalCount == 0 {
       return "Nothing has changed in this workroom yet."

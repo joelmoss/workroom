@@ -1059,6 +1059,10 @@ final class AppStore: ObservableObject {
       // the previous place, read before the prune and the row going take it away.
       let successor = self.closeSuccessor(of: targetID, closing: Set(ids))
       self.history.prune(removing: Set(ids))
+      // The terminal tab the target last focused goes with it, as does a target's last (#812 F7).
+      if let last = self.followedFolder.lastFocusedTerminalTab[targetID], ids.contains(last) {
+        self.followedFolder.lastFocusedTerminalTab[targetID] = nil
+      }
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }

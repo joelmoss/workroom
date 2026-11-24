@@ -154,8 +154,8 @@ final class InspectorPaneViewController: NSViewController {
   private var scrollKey: InspectorMemoryKey?
   private var scrollMemory: InspectorScrollMemory?
   /// The offset a return to `scrollKey` restores. Its content may arrive after the switch (a
-  /// status read), and is clamped meanwhile, so every document resize re-applies it until the user
-  /// scrolls.
+  /// status read), and is clamped meanwhile, so every document resize re-applies it until the
+  /// content reaches it or the user scrolls.
   private var pendingOffset: CGFloat?
   private var observesScroll = false
 
@@ -173,6 +173,9 @@ final class InspectorPaneViewController: NSViewController {
       return
     }
     pendingOffset = memory.offset(under: key) ?? 0
+    // Measured against the new content, not the last key's still-laid-out body, which would
+    // count the offset as reached and let it go before a shorter body clamps it.
+    view.layoutSubtreeIfNeeded()
     applyPendingOffset()
   }
 
@@ -215,6 +218,9 @@ final class InspectorPaneViewController: NSViewController {
     let limit = max(0, bodyHost.view.frame.height - clip.bounds.height)
     clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(target, limit)))
     bodyScroll.reflectScrolledClipView(clip)
+    // Reached: restored once per return, then let go, so a list growing afterwards (a status
+    // update adding changes) stays where it is rather than snapping back (#812).
+    if target <= limit { pendingOffset = nil }
   }
 }
 
