@@ -204,6 +204,16 @@ enum TabContent {
     }
   }
 
+  /// The folder `filePath` is relative to when it is not the tab's target's own: a followed
+  /// repository's diff (#807) or a followed folder's file (#809). Nil: the target's.
+  var fileRoot: String? {
+    switch self {
+    case .diff(let d): return d.repositoryRoot
+    case .file(let f): return f.root
+    case .terminal, .changeset: return nil
+    }
+  }
+
   /// The SF Symbol marking this content kind wherever a tab is named — the chip (`TerminalTabChip`)
   /// and the pane's own title bar (`PaneTitleBar`, issue #150). `nil` for a terminal: a terminal is
   /// the default, and the glyphs exist to say "this one is NOT a terminal" (issue #66).
@@ -287,8 +297,10 @@ extension FocusedTabSelection {
   init?(content: TabContent) {
     switch content {
     case .changeset(let descriptor): self = .changeset(commitID: descriptor.commitID)
-    case .diff(let descriptor): self = .diff(path: descriptor.path, source: descriptor.source)
-    case .file(let descriptor): self = .file(path: descriptor.path)
+    case .diff(let descriptor):
+      self = .diff(
+        path: descriptor.path, source: descriptor.source, root: descriptor.repositoryRoot)
+    case .file(let descriptor): self = .file(path: descriptor.path, root: descriptor.root)
     case .terminal: return nil
     }
   }

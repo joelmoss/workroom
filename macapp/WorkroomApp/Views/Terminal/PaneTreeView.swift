@@ -660,7 +660,9 @@ struct PaneLeafView: View {
       onSetMarkdownPreview: { panes.setMarkdownPreview($0, forTab: tabID, in: target) },
       // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
       onOpenFile: {
-        if let path = content.filePath { host.openFilePreview(path: path, for: target) }
+        if let path = content.filePath {
+          host.openFilePreview(path: path, root: content.fileRoot, for: target)
+        }
       },
       onSplitRight: { panes.splitTab(tabID, on: .right, for: target) },
       onSplitDown: { panes.splitTab(tabID, on: .bottom, for: target) },

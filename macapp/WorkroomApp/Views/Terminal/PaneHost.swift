@@ -37,7 +37,8 @@ protocol PaneHost: AnyObject, Sendable {
   var cannedDiffs: AppServices.CannedDiffs? { get }
   /// A repository on this Mac read directly (`AppServices.vcsReader`).
   var vcsReader: (@Sendable (URL) throws -> LocalVCSProviding)? { get }
-  func openFilePreview(path: String, for target: TerminalTarget)
+  /// `root`: the folder `path` is relative to when not `target`'s (`TabContent.fileRoot`).
+  func openFilePreview(path: String, root: String?, for target: TerminalTarget)
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget)
   func openFileInEditor(path: String, root: String?)
   func selectChangesetFile(_ path: String?, tab tabID: TerminalTab.ID, in target: TerminalTarget)
