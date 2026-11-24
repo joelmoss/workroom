@@ -1256,6 +1256,22 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertTrue(change([r + "/.git/refs/heads/main"]).movesOnlyLocalBranches)
     XCTAssertFalse(change([r + "/.git/refs/remotes/origin/main"]).movesOnlyLocalBranches)
     XCTAssertFalse(change([r + "/.git/HEAD"]).movesOnlyLocalBranches)
+
+    // A linked worktree's watch on its repository's git directory.
+    func linked(_ paths: [String], own: String = r + "/.git/worktrees/wt") -> FollowedRepositoryChange {
+      VCSStatusService.followedChange(
+        paths: paths, overflow: false, gitDirectory: own, commonDirectory: r + "/.git")
+    }
+    XCTAssertEqual(linked([r + "/.git/worktrees/wt/HEAD"]), all)
+    XCTAssertEqual(linked([r + "/.git/worktrees/wt/FETCH_HEAD"]), all)
+    XCTAssertEqual(linked([r + "/.git/worktrees/wt/index"]), local)
+    XCTAssertEqual(linked([r + "/.git/refs/heads/wt"]), all)
+    XCTAssertEqual(
+      linked([r + "/.git/worktrees/other/index", r + "/.git/index", r + "/.git/objects/a"]), none)
+    XCTAssertEqual(linked(["/elsewhere/.git/refs/heads/wt"]), all, "a spelling it can't place")
+    XCTAssertEqual(
+      linked([r + "/.git/refs/heads/main"], own: r + "/.git"), all,
+      "a submodule's git directory is its own and its repository's")
   }
 
   /// Value: protects=an object or reflog write costing nothing (perf I6); fails_when=it re-reads

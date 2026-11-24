@@ -350,7 +350,9 @@ extension VCSStatusService {
       return
     }
     let grace = followedUnfollowGrace
-    guard grace > 0 else {
+    // A registration still running is let go of at once: a re-follow in the grace would run a
+    // second beside it under the same hold, which `registering` exists to prevent.
+    guard grace > 0, !hold.registering else {
       followedRepositories[key] = hold
       return letGoOfFollowed(key)
     }
@@ -396,7 +398,9 @@ extension VCSStatusService {
       if let registration = await kept?.value { return registration }
       return await resolve(root)
     }
-    let (local, gitHub) = (hold.staleLocal, hold.staleGitHub)
+    // A kept status that failed or never resolved is asked again, as a first follow would.
+    let unsettled = followedStatuses[key].map { $0.failure != nil || $0.dirty == nil } ?? false
+    let (local, gitHub) = (hold.staleLocal, hold.staleGitHub || unsettled)
     (hold.staleLocal, hold.staleGitHub) = (false, false)
     followedRepositories[key] = hold
     if gitHub {
@@ -804,6 +808,10 @@ extension VCSStatusService {
     for path in paths {
       if path == gitDirectory || path == commonDirectory {
         change.add(.gitEntry)
+      } else if gitDirectory == commonDirectory, path.hasPrefix(gitDirectory + "/") {
+        // A submodule's or a `--separate-git-dir` repository's: its own, refs and all.
+        let rest = path.dropFirst(gitDirectory.count + 1).split(separator: "/")
+        change.add(gitDirectoryPathKind(rest[...]))
       } else if path.hasPrefix(gitDirectory + "/") {
         let rest = path.dropFirst(gitDirectory.count + 1).split(separator: "/")
         let kind = gitDirectoryPathKind(rest[...])
@@ -812,6 +820,9 @@ extension VCSStatusService {
         let rest = path.dropFirst(commonDirectory.count + 1).split(separator: "/")
         let kind = gitDirectoryPathKind(rest[...])
         change.add(["refs", "packed-refs"].contains(rest.first) ? kind : .ignored)
+      } else {
+        // Spelled apart from what git named: rather than go deaf, it counts as everything.
+        return .everything
       }
     }
     return change
