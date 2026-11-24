@@ -178,14 +178,24 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   }
 
   /// The folder a new quick-terminal shell starts in: the setting with `~` expanded, or the home
-  /// folder when it is empty or no longer a folder (deleted, or on an unmounted volume).
-  nonisolated static func workingDirectory(for setting: String) -> String {
+  /// folder when it is empty or no longer a folder (deleted, or on an unmounted or stalled
+  /// volume). Synchronous callers (a new tab) get `presence`'s last answer, so the main actor never
+  /// stats a user-set folder; a folder not checked yet is taken as there while its check runs.
+  static func workingDirectory(
+    for setting: String, presence: FolderPresence = .shared
+  ) -> String {
     let path = (setting as NSString).expandingTildeInPath
-    var isDirectory: ObjCBool = false
     // An empty setting expands to "", which no folder matches.
-    guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-      isDirectory.boolValue
-    else { return NSHomeDirectory() }
+    guard !path.isEmpty, presence.isFolder(path) else { return NSHomeDirectory() }
+    return path
+  }
+
+  /// `workingDirectory(for:)` from a fresh, bounded check, for a caller that can wait for one.
+  static func checkedWorkingDirectory(
+    for setting: String, presence: FolderPresence = .shared
+  ) async -> String {
+    let path = (setting as NSString).expandingTildeInPath
+    guard !path.isEmpty, await presence.check(path) else { return NSHomeDirectory() }
     return path
   }
 
@@ -398,16 +408,22 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     pendingSession = saved
     await sessionService.prepareBackend()
     defer { pendingSession = nil }
+    // Its folder is stat-ed off the main actor, once, before anything is restored: a stalled
+    // mount costs the restore `restoreStatTimeout` and its panes start fresh shells.
+    let path = Self.target(in: section).path
+    let reattaches = await FolderPresence.exists(
+      path, timeout: restoreStatTimeout, stat: restoreStat)
     let host = ensureHost()
     let target = host.target
     guard host.terminals.tabCount(forTargetID: target.id) == 0 else { return }
     host.terminals.restore(saved, for: target)
-    let section = section
-    await recoverSessions(host.terminals) { id in
-      guard id == .quickTerminal else { return false }
-      return FileManager.default.fileExists(atPath: Self.target(in: section).path)
-    }
+    await recoverSessions(host.terminals) { id in id == .quickTerminal && reattaches }
   }
+
+  /// How long `restore`'s stat of the panel's folder may take before its panes start fresh.
+  var restoreStatTimeout: TimeInterval = 3
+  /// `restore`'s stat of the panel's folder, blocking. A seam for tests; nil for the disk.
+  var restoreStat: (@Sendable (String) -> Bool)?
 
   /// What `session.json` keeps of the panel: its panes now, or its saved layout while that is
   /// still being restored. Nil when it has none.

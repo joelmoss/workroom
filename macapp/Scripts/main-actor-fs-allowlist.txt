@@ -6,7 +6,6 @@
 #   known:         on the main actor, a documented exception
 #   unbounded:     RepositoryLocation.local resolves on GCD (runBlocking), so the main actor never
 #                  blocks, but the await has no timeout: GitRepositoryProbe.localLocation bounds it
-#   grandfathered: on the main actor and undocumented; predates this check, unfixed
 
 VersionControl/FileServices.swift | realPath | realpath | off-main: only from readVerified, which NativeFileProvider.read runs in runBlocking
 VersionControl/FilesBreadcrumb.swift | realPath | realpath | off-main: only from Repository.placed(in:), which GitRepositoryProbe.placed runs in blockingRead
@@ -14,10 +13,9 @@ VersionControl/FileTreeModel.swift | readPlain | contentsOfDirectory | off-main:
 VersionControl/FileTreeModel.swift | nodes | resourceValues | off-main: inside readPlain, run in blockingRead
 VersionControl/FileTreeModel.swift | listFailure | resourceValues | off-main: a nonisolated async func, called from the nonisolated fetch on the generic executor
 VersionControl/FileTreeModel.swift | verdict | fileExists | off-main: the exists probe in WatchInterest.admit, which runs on HostFileWatcher's own thread (#812 perf, F3)
-VersionControl/FileTreeModel.swift | home | canonicalPath | grandfathered: a static let of the home folder, first read by the @MainActor updateWatchScope, resolved once
 VersionControl/GitRepositoryProbe.swift | rootDiscovers | fileExists | off-main: "Blocking: call on GCD"; only from the probe's stat, a blockingRead
 VersionControl/GitRepositoryProbe.swift | isFolder | fileExists | off-main: the isFolder seam, only called through blockingRead (the probe's stat, FileTreeModel's folder check)
-VersionControl/VCSStatusService+Followed.swift | canonicalPath | realpath | off-main: the canonicalise seam runs it in blockingRead; watchHome and FileTreeModel.home are the known home-folder exceptions
+VersionControl/VCSStatusService+Followed.swift | canonicalPath | realpath | off-main: the canonicalise seam runs it in blockingRead; watchHome is the known home-folder exception
 VersionControl/VCSStatusService+Followed.swift | gitDirectoryIsOutsideTree | fileExists | off-main: the followedGitFileStat seam, run in blockingRead under followedStatTimeout (Codex on #812)
 VersionControl/VCSStatusService.swift | watchHome | canonicalPath | known: the home folder, which is local, resolved once as the service is made
 VersionControl/VCSStatusService.swift | canonicalise | canonicalPath | off-main: the registered-path index runs this seam in blockingRead under registeredPathTimeout
@@ -38,8 +36,3 @@ VersionControl/RepositoryRouter.swift | prepare | RepositoryLocation.local | unb
 VersionControl/VCSStatusService.swift | resolvedLocation | RepositoryLocation.local | unbounded: StatusWorkItem's fallback when the router has no location
 VersionControl/WorkingStatusResolver.swift | resolveLocal | RepositoryLocation.local | unbounded: WorkingStatusResolver is a nonisolated Sendable struct
 AppShell/AppStore/AppStore+VCSWrites.swift | performCommit | RepositoryLocation.local | unbounded: AppStore is @MainActor
-
-AppShell/CommandLineInstaller.swift | status | fileExists | grandfathered: runFromMenu calls it on the main actor; the install path is local
-AppShell/QuickTerminalController.swift | workingDirectory | fileExists | grandfathered: nonisolated but sync, called on the main actor (TerminalsSection, SettingsView) with a user-set folder
-AppShell/QuickTerminalController.swift | restore | fileExists | grandfathered: the @MainActor recoverSessions predicate stats the quick terminal's folder
-AppShell/AppStore/AppStore+SavedLayout.swift | reattachesLocally | fileExists | grandfathered: @MainActor, stats each restored target's folder during session recovery

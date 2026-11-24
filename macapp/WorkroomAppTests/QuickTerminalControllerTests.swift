@@ -58,22 +58,34 @@ final class QuickTerminalControllerTests: XCTestCase {
   }
 
   /// Pure, so no shared `Defaults` write races the parallel test workers.
-  func testWorkingDirectoryFollowsSettingElseHome() throws {
+  /// The healthy path: a checked folder answers at once, the same from a new tab's synchronous
+  /// read as from the awaited check.
+  func testWorkingDirectoryFollowsSettingElseHome() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: folder) }
     let file = folder.appendingPathComponent("file")
     try Data().write(to: file)
+    let gone = folder.appendingPathComponent("gone").path
+    let presence = FolderPresence()
 
-    XCTAssertEqual(QuickTerminalController.workingDirectory(for: ""), NSHomeDirectory())
-    XCTAssertEqual(QuickTerminalController.workingDirectory(for: folder.path), folder.path)
-    XCTAssertEqual(QuickTerminalController.workingDirectory(for: "~"), NSHomeDirectory())
+    for (setting, expected, why) in [
+      ("", NSHomeDirectory(), "unset"), (folder.path, folder.path, "a folder"),
+      ("~", NSHomeDirectory(), "the home folder"),
+      (gone, NSHomeDirectory(), "a folder that is gone"),
+      (file.path, NSHomeDirectory(), "a file is not a folder"),
+    ] {
+      let checked = await QuickTerminalController.checkedWorkingDirectory(
+        for: setting, presence: presence)
+      XCTAssertEqual(checked, expected, why)
+      XCTAssertEqual(
+        QuickTerminalController.workingDirectory(for: setting, presence: presence), expected,
+        "\(why), read at once once checked")
+    }
+    // A folder never checked yet is taken as there, as it nearly always is.
     XCTAssertEqual(
-      QuickTerminalController.workingDirectory(for: folder.appendingPathComponent("gone").path),
-      NSHomeDirectory(), "a folder that is gone falls back to home")
-    XCTAssertEqual(
-      QuickTerminalController.workingDirectory(for: file.path), NSHomeDirectory(),
-      "a file is not a folder")
+      QuickTerminalController.workingDirectory(for: folder.path, presence: FolderPresence()),
+      folder.path)
   }
 
   /// A 1000×800 visible frame inside a 1000×1000 screen (menu bar + Dock taken out).

@@ -127,6 +127,12 @@ final class FileTreeModel: ObservableObject {
   private let isFolder: @Sendable (String) -> Bool
   /// Reads directories of a plain folder from disk (`readPlain`). A seam for tests.
   private let readDirectories: @Sendable ([String], String) -> [String: [FileNode]]
+  /// Resolves the home folder's symlinks (`home`), blocking. A seam for tests; nil for the disk.
+  private let resolveHome: (@Sendable () -> String)?
+  /// The home folder, canonical: a tree too broad to re-list on every change in it. Resolved off
+  /// the main actor as a local tree is first watched, under `diskReadTimeout`; until then, or when
+  /// that outruns it, the literal home folder, which is canonical on an ordinary Mac.
+  private(set) var home = NSHomeDirectory()
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), router: RepositoryRouter = .shared,
@@ -134,14 +140,19 @@ final class FileTreeModel: ObservableObject {
     isFolder: @escaping @Sendable (String) -> Bool = GitRepositoryProbe.isFolder,
     readDirectories: @escaping @Sendable ([String], String) -> [String: [FileNode]] = {
       FileTreeModel.readPlain($0, under: $1)
-    }
+    },
+    resolveHome: (@Sendable () -> String)? = nil
   ) {
     self.runner = runner
     self.router = router
     self.diskReadTimeout = diskReadTimeout
     self.isFolder = isFolder
     self.readDirectories = readDirectories
+    self.resolveHome = resolveHome
+    // A stand-in resolves under a key of its own, so it never joins or feeds the disk's read.
+    homeKey = "home\u{0}" + (resolveHome == nil ? NSHomeDirectory() : UUID().uuidString)
   }
+  private let homeKey: String
 
   deinit {
     loadTask?.cancel()
@@ -330,14 +341,18 @@ final class FileTreeModel: ObservableObject {
     // A remote tree is listed by its daemon, and not watched: `HostFileWatcher` watches local paths
     // only, so it refreshes on reactivation and Reload.
     guard location.host == .local else { return reload() }
-    loadTask = Task { [weak self, isFolder, diskReadTimeout] in
+    loadTask = Task { [weak self, isFolder, diskReadTimeout, resolveHome, homeKey] in
       // Keyed as the probe keys its own folder stat, so the two join on a wedged mount. One that
-      // outruns the timeout reads as unavailable.
-      let exists =
-        await GitRepositoryProbe.blockingRead(
-          "folder\u{0}\(location.path)", timeout: diskReadTimeout, { isFolder(location.path) })
-        ?? false
+      // outruns the timeout reads as unavailable. The home folder resolves beside it.
+      async let folder = GitRepositoryProbe.blockingRead(
+        "folder\u{0}\(location.path)", timeout: diskReadTimeout, { isFolder(location.path) })
+      async let home = GitRepositoryProbe.blockingRead(homeKey, timeout: diskReadTimeout) {
+        resolveHome?() ?? VCSStatusService.canonicalPath(NSHomeDirectory())
+      }
+      let exists = await folder ?? false
+      let resolvedHome = await home
       guard !Task.isCancelled, let self, self.currentLocation == location else { return }
+      if let resolvedHome { self.home = resolvedHome }
       guard exists else {
         self.forgetTree()
         self.state = .unavailable
@@ -677,11 +692,8 @@ final class FileTreeModel: ObservableObject {
     interest.set(
       WatchScope(
         root: location.path, plain: isPlain, base: isPlain ? "" : subfolder,
-        visible: Set(visibleDirectories), known: listedDirectories, home: Self.home))
+        visible: Set(visibleDirectories), known: listedDirectories, home: home))
   }
-
-  /// The home folder, canonical: a tree too broad to re-list on every change in it.
-  nonisolated static let home = VCSStatusService.canonicalPath(NSHomeDirectory())
 
   /// What the watch compares a change against: the tree's folder, how it lists, the folder it
   /// shows (`base`, repository-relative), the directories shown, and every directory the listing

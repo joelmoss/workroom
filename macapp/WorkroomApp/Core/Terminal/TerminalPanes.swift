@@ -704,6 +704,8 @@ final class TerminalPanes {
     }
   }
   private var panesByTarget: [TerminalTarget.ID: TargetPanes<TerminalTab.ID>] = [:]
+  /// Every target this window holds panes for, emptied ones too, in no order.
+  var heldTargetIDs: [TerminalTarget.ID] { Array(panesByTarget.keys) }
 
   /// The app's tabs: their records and surfaces, by id. This window reaches a tab there only while
   /// its layout holds it (`record(_:in:)`, `surface(of:)`). Every window shares `.shared`, which is
