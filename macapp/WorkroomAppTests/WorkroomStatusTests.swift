@@ -11,6 +11,50 @@ import XCTest
 /// aggregate-priority ordering the project-row badge and the badge views depend on.
 final class WorkroomStatusTests: XCTestCase {
 
+  // MARK: - Recalled statuses (#812 F8)
+
+  private func files(_ n: Int) -> [ChangedFile] {
+    (0..<n).map { ChangedFile(path: "dir/file\($0).swift", change: .untracked) }
+  }
+
+  /// Value: protects=a recalled repository's status holding only the first files of a huge dirty
+  /// tree, while still counting all of them; fails_when=it keeps every file, or the count drops
+  /// the ones left out; why_new=#812 perf F8; seam=WorkroomStatus.recalled; no_claim=—
+  func testARecalledStatusKeepsTheFirstFilesAndTheirCount() {
+    let live = WorkroomStatus(dirty: true, changedFiles: files(50_000), insertions: 3)
+    let recalled = live.recalled(keepingFiles: 200)
+    XCTAssertEqual(recalled.changedFiles?.map(\.path), live.changedFiles?.prefix(200).map(\.path))
+    XCTAssertEqual(recalled.changedFileCount, 50_000)
+    XCTAssertEqual(recalled.omittedChangedFiles, 49_800)
+    XCTAssertEqual(recalled.insertions, 3, "everything else is kept")
+
+    let small = WorkroomStatus(dirty: true, changedFiles: files(5))
+    XCTAssertEqual(small.recalled(keepingFiles: 200), small, "a short list is kept whole")
+  }
+
+  /// Value: protects=the full list replacing a recalled one: once a fresh read lands, nothing is
+  /// counted as left out; fails_when=a stale omitted count survives the refresh; why_new=#812 perf
+  /// F8; seam=WorkroomStatus.mergeLocal; no_claim=—
+  func testAFreshReadEndsARecalledList() {
+    var status = WorkroomStatus(dirty: true, changedFiles: files(500)).recalled(keepingFiles: 200)
+    XCTAssertTrue(status.mergeLocal(WorkroomStatus(dirty: true, changedFiles: files(300))))
+    XCTAssertEqual(status.omittedChangedFiles, 0)
+    XCTAssertEqual(status.changedFileCount, 300)
+  }
+
+  /// Value: protects=the followed status cache keeping a revisit's first paint only (#812 F8);
+  /// fails_when=it stores a whole live list; why_new=#812 perf F8; seam=VCSStatusService's
+  /// recentFollowedStatuses; no_claim=when it is written
+  @MainActor
+  func testTheFollowedStatusCacheKeepsARecalledStatus() {
+    let service = VCSStatusService(projectStore: ProjectStore())
+    service.recentFollowedStatuses.store(
+      WorkroomStatus(dirty: true, changedFiles: files(5000)), for: "/r")
+    let kept = service.recentFollowedStatuses.value(for: "/r")
+    XCTAssertEqual(kept?.changedFiles?.count, VCSStatusService.recalledFileCap)
+    XCTAssertEqual(kept?.changedFileCount, 5000)
+  }
+
   // MARK: - isUnknown / isClean (unknown ≠ clean)
 
   func testUnknownIsNotClean() {

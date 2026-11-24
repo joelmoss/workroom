@@ -97,8 +97,13 @@ final class VCSStatusService: ObservableObject {
   private var storedFollowedStatuses: [String: WorkroomStatus] = [:]
   /// The last-known status of the repositories followed most recently and let go of since (QA
   /// round 2 of #803): what a revisit shows at once while its fresh probe runs. Data only; it
-  /// never makes a repository followed, watched or writable.
-  @ObservationIgnored var recentFollowedStatuses = RecentRepositoryCache<WorkroomStatus>()
+  /// never makes a repository followed, watched or writable. Each keeps its first
+  /// `recalledFileCap` changed files and a count of the rest (#812): what Changes shows of it at
+  /// once, until the fresh probe brings the whole list.
+  @ObservationIgnored var recentFollowedStatuses = RecentRepositoryCache<WorkroomStatus>(
+    prepare: { $0.recalled(keepingFiles: VCSStatusService.recalledFileCap) })
+  /// How many changed files a recalled status keeps: as many as Changes draws (`renderCap`).
+  nonisolated static let recalledFileCap = 200
   /// Who follows which repository, and its watches (`VCSStatusService+Followed.swift`).
   @ObservationIgnored var followedRepositories: [String: FollowedRepositoryHold] = [:]
   /// The followed repositories with a commit in flight, by canonical root: what `committingTargets`

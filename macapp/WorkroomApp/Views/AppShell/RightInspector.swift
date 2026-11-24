@@ -332,7 +332,7 @@ struct RightInspector: View {
     let ins = s.insertions ?? 0
     let del = s.deletions ?? 0
     // Matches the rows rendered below.
-    let files = s.changedFiles?.count ?? 0
+    let files = s.changedFileCount
     let countsHelp = VCSStatusPresentation.lineCountsHelp(s)
     // `!s.conflicted` because `dot` checks conflict FIRST and would hand back the triangle this row
     // already draws — a status that is both conflicted and unreadable would otherwise show two.
@@ -369,9 +369,8 @@ struct RightInspector: View {
     // The capsule count is a `Text` inside the combined header element, so it never reaches the
     // accessibility tree on its own — it has to be spoken here or not at all.
     // `> 0` so this tracks the badge exactly — a clean tree renders no capsule and must speak none.
-    let files = (s.changedFiles?.count).flatMap {
-      $0 > 0 ? ChangedFileCountBadge.phrase(count: $0) : nil
-    }
+    let count = s.changedFileCount
+    let files = count > 0 ? ChangedFileCountBadge.phrase(count: count) : nil
     // Mirrors what the row now draws: line counts, or the unavailable reason, and no longer "working
     // tree has changes" — the count phrase above already says that, in files rather than in prose.
     let detail =

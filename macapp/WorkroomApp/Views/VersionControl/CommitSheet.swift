@@ -60,7 +60,8 @@ struct CommitSheet: View {
   private var blockedReason: String? {
     CommitDraft.blockedReason(
       summary: summary, selectedCount: selectedCount,
-      totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: flow.sequencer)
+      totalCount: files.count, omittedCount: status?.omittedChangedFiles ?? 0,
+      conflicted: status?.conflicted ?? false, sequencer: flow.sequencer)
   }
 
   /// The secondary verb rewrites a message and takes no pathspec, so it answers to the repo-state and

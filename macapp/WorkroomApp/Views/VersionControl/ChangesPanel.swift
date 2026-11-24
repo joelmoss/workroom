@@ -326,7 +326,8 @@ struct ChangesPanel: View {
       } else if status.isClean {
         cleanState
       } else {
-        fileList(status.changedFiles ?? [], source: .gitWorktree)
+        fileList(
+          status.changedFiles ?? [], total: status.changedFileCount, source: .gitWorktree)
       }
     }
     .padding(12)
@@ -346,7 +347,7 @@ struct ChangesPanel: View {
   }
 
   @ViewBuilder
-  private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
+  private func fileList(_ files: [ChangedFile], total: Int, source: DiffSource) -> some View {
     let shown = Array(files.prefix(renderCap))
     // Resolved once for the whole list, not once per row: this is the read that used to make every row
     // observe `TerminalPanes`. While each `ChangedFileRow` observed it directly, every terminal
@@ -365,8 +366,9 @@ struct ChangesPanel: View {
         )
         .equatable()
       }
-      if files.count > shown.count {
-        Text("Showing first \(shown.count) of \(files.count)")
+      // `total`, not the list: a recalled status lists only its first files (#812).
+      if total > shown.count {
+        Text("Showing first \(shown.count) of \(total)")
           .font(.footnote).foregroundStyle(.tertiary)
       }
     }
