@@ -81,6 +81,24 @@ final class VCSStatusService: ObservableObject {
   }
   private var storedWorkroomStatuses: [SidebarID: WorkroomStatus] = [:]
 
+  /// The status of each repository an inspector follows (#807) that no workroom or project root
+  /// is, keyed by its canonical root (`VCSStatusService.canonicalPath`). Kept apart from
+  /// `workroomStatuses` so a terminal's sidebar row never gains a badge. Present only while some
+  /// window follows the repository.
+  var followedStatuses: [String: WorkroomStatus] {
+    get { storedFollowedStatuses }
+    set { storedFollowedStatuses = newValue }
+  }
+  private var storedFollowedStatuses: [String: WorkroomStatus] = [:]
+  /// Who follows which repository, and its watches (`VCSStatusService+Followed.swift`).
+  @ObservationIgnored var followedRepositories: [String: FollowedRepositoryHold] = [:]
+  /// Makes a watch on a followed repository's tree, or on a linked worktree's git directory. The
+  /// host file watcher in the app; tests record it and drive the change handler themselves.
+  @ObservationIgnored var makeRepositoryWatcher:
+    @MainActor (@escaping @MainActor ([String], Bool) -> Void) -> any RepositoryWatching = {
+      HostFileWatcher(onChange: $0)
+    }
+
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check; refreshed by `refreshGitHubCLI`. Drives the Pull
   /// Request section's warning and gates the `gh` probes when not available.
@@ -173,7 +191,10 @@ final class VCSStatusService: ObservableObject {
   func status(for subject: InspectorSubject) -> WorkroomStatus? {
     switch subject {
     case .target(let sid): return sid.isStatusable ? workroomStatuses[sid] : nil
-    case .followed, .nothing: return nil
+    case .followed(let followed):
+      guard let root = followed.repository?.root else { return nil }
+      return status(forFollowedRoot: root)
+    case .nothing: return nil
     }
   }
 
@@ -499,21 +520,8 @@ final class VCSStatusService: ObservableObject {
   /// comparison subtly wrong.
   func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
     guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
-    if let readAt = fresh.localReadAt, let prior = workroomStatuses[sid]?.localReadAt,
-      prior > readAt
-    {
-      return
-    }
     var s = workroomStatuses[sid] ?? .unresolved
-    s.dirty = fresh.dirty
-    s.conflicted = fresh.conflicted
-    s.changedFiles = fresh.changedFiles
-    s.insertions = fresh.insertions
-    s.deletions = fresh.deletions
-    s.branchForCI = fresh.branchForCI
-    s.failure = fresh.failure
-    s.localReadAt = fresh.localReadAt
-    s.lastChecked = Date()
+    guard s.mergeLocal(fresh) else { return }
     workroomStatuses[sid] = s
     // This merge is the freshest evidence anyone has, so each window settles what it caches from a
     // status: the branch name its toolbar published, and the change kind an open diff tab captured.
@@ -522,72 +530,25 @@ final class VCSStatusService: ObservableObject {
 
   func applyCIStatus(_ res: CIResolution, to sid: SidebarID, checkedAt: Date) {
     guard var s = workroomStatuses[sid] else { return }
-    switch res {
-    case .state(let x):
-      s.ci = x
-      s.ciCheckedAt = checkedAt
-    case .absent:
-      s.ci = nil
-      s.ciCheckedAt = checkedAt
-    case .keepPrior:
-      // Transient rate-limit / network blip. Stamp `ciCheckedAt` so the TTL throttles re-probes —
-      // but ONLY if we've probed before (ciCheckedAt set). On a first-ever probe that blips, leave
-      // it nil so the next sweep retries instead of hiding CI for the full TTL on one blip. Coarse
-      // but cheap; true exponential backoff is a future refinement.
-      if s.ciCheckedAt != nil { s.ciCheckedAt = checkedAt }
-    }
+    s.applyCI(res, checkedAt: checkedAt)
     workroomStatuses[sid] = s
   }
 
   func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
     guard var s = workroomStatuses[sid] else { return }
-    switch res {
-    case .info(let pr):
-      // Checks are keyed to a PR's identity (issue #75). If the PR changed (different number), the
-      // old PR's checks are stale — drop them so they can't render under the new PR until
-      // `resolveChecks` refills them. Same number ⇒ keep them (e.g. the raw→enriched re-apply).
-      if s.pr?.number != pr.number {
-        s.checks = nil
-        s.checksCheckedAt = nil
-      }
-      s.pr = pr
-      s.prCheckedAt = Date()
-    case .absent:
-      // No PR ⇒ `resolveChecks` won't run, so the checks must be cleared here (not only in
-      // `applyChecksStatus`) or a disappearing PR would leave its checks rendered.
-      s.pr = nil
-      s.checks = nil
-      s.checksCheckedAt = nil
-      s.prCheckedAt = Date()
-    case .keepPrior:
-      // Transient blip: keep the last good PR. Stamp `prCheckedAt` so the TTL throttles re-probes,
-      // but only if we've probed before — a first-ever blip leaves it nil so the next sweep retries.
-      if s.prCheckedAt != nil { s.prCheckedAt = Date() }
-    }
+    s.applyPR(res)
     workroomStatuses[sid] = s
   }
 
-  /// Apply a PR-checks probe result (issue #75). `.list` (including `[]` for "loaded, no checks")
-  /// sets the rows and stamps `checksCheckedAt`. `.absent` (no checks reported / gh error) is *also*
-  /// a loaded state — it stamps with an empty list, distinct from the not-loaded `nil`, so the panel
-  /// stops falling back to the run-list aggregate. `.keepPrior` (transient blip) keeps the last good
-  /// list, stamping only if we've probed before (so a first-ever blip retries next time). The
-  /// clear-on-no-PR / clear-on-PR-change paths live in `applyPRStatus` — `resolveChecks` never runs
-  /// without a PR.
+  /// Apply a PR-checks probe result (issue #75); see `WorkroomStatus.applyChecks`.
   func applyChecksStatus(_ res: ChecksResolution, to sid: SidebarID) {
     guard var s = workroomStatuses[sid] else { return }
-    switch res {
-    case .list(let checks):
-      s.checks = checks
-      s.checksCheckedAt = Date()
-    case .absent:
-      s.checks = []
-      s.checksCheckedAt = Date()
-    case .keepPrior:
-      if s.checksCheckedAt != nil { s.checksCheckedAt = Date() }
-    }
+    s.applyChecks(res)
     workroomStatuses[sid] = s
   }
+
+  /// Every window that caches what a status says, for the followed-repository lane.
+  var statusWindows: [any VCSStatusWindow] { windows.elements }
 
   // MARK: Creates, commits and writes in flight
 
@@ -719,6 +680,9 @@ final class VCSStatusService: ObservableObject {
 @MainActor
 protocol VCSStatusWindow: AnyObject {
   func localStatusDidMerge(_ status: WorkroomStatus, into sid: SidebarID)
+  /// Something changed under a followed repository's root (`metadata`: in its git directory). A
+  /// window following it re-reads what it shows of it (#807).
+  func followedRepositoryDidChange(root: String, metadata: Bool)
 }
 
 /// The three resolvers a status sweep and `RepositoryGitHub` use, built over one command runner so a

@@ -39,37 +39,13 @@ extension AppStore {
       if Task.isCancelled { return }
       guard vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
       vcsStatus.mergeLocalStatus(fresh, into: sid)
-      guard item.permitsGitHubAccess else { return }
-      let github: RepositoryGitHub
-      do {
-        github = try await RepositoryRouter.shared.gitHub(
-          for: try await item.resolvedLocation(), resolver: resolver)
-      } catch { return }
-      // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
-      await vcsStatus.refreshGitHubCLI(resolver: resolver)
-      if Task.isCancelled { return }
-      guard vcsStatus.githubCLIStatus == .available else { return }
-      // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
-      // the sidebar/tab glyph never waits on the PR probe.
-      async let ciRes = github.ciSnapshot(branch: fresh.branchForCI)
-      async let prRawRes = github.pullRequest(branch: fresh.branchForCI)
-      let ci = await ciRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyCIStatus(ci.resolution, to: sid, checkedAt: ci.checkedAt)
-      let prRaw = await prRawRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyPRStatus(prRaw, to: sid)
-      // With the PR number in hand, fetch its checks and enrich reviewer permalinks concurrently —
-      // checks must not wait behind the (conditional) reviewer-URL GraphQL round-trip (issue #75).
-      guard case .info(let info) = prRaw else { return }
-      async let enrichedRes = github.enrich(prRaw)
-      async let checksRes = github.checks(number: info.number)
-      let enriched = await enrichedRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyPRStatus(enriched, to: sid)
-      let checks = await checksRes
-      guard !Task.isCancelled, vcsStatus.selectedStatusWorkItem(for: sid) == item else { return }
-      vcsStatus.applyChecksStatus(checks, to: sid)
+      guard item.permitsGitHubAccess,
+        let location = try? await item.resolvedLocation(), !Task.isCancelled
+      else { return }
+      await vcsStatus.probeGitHub(
+        location: location, branch: fresh.branchForCI,
+        isCurrent: { !Task.isCancelled && vcsStatus.selectedStatusWorkItem(for: sid) == item },
+        apply: { vcsStatus.applyGitHub($0, to: sid) })
     }
   }
 

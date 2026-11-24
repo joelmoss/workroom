@@ -332,7 +332,7 @@ extension TabSession {
         diff: DiffPayload(
           path: descriptor.path, change: descriptor.change.rawValue,
           source: DiffSourcePayload(descriptor.source), isPreview: descriptor.isPreview,
-          viewMode: tab.diffViewModeOverride?.rawValue))
+          viewMode: tab.diffViewModeOverride?.rawValue, repositoryRoot: descriptor.repositoryRoot))
     case .file(let descriptor):
       self.init(
         key: key, kind: Self.fileKind,
@@ -362,7 +362,8 @@ extension TabSession {
       else { return nil }
       return .diff(
         DiffDescriptor(
-          path: payload.path, change: change, source: source, isPreview: payload.isPreview))
+          path: payload.path, change: change, source: source, isPreview: payload.isPreview,
+          repositoryRoot: payload.repositoryRoot))
     case Self.fileKind:
       guard let payload = file else { return nil }
       return .file(FileDescriptor(path: payload.path, isPreview: payload.isPreview))
@@ -858,6 +859,9 @@ final class TerminalPanes {
     /// A terminal's shell reported a new working directory (OSC 7), already written to its
     /// `TerminalState.cwd`. A window's inspector follows the folder of the terminal it shows (#803).
     case cwdChanged(TerminalTarget.ID, TerminalTab.ID)
+    /// A terminal's command finished (OSC 133). The inspector re-reads the repository the terminal
+    /// is in, which the command may have changed without a `cd` (#807).
+    case commandFinished(TerminalTarget.ID, TerminalTab.ID)
   }
 
   /// The panes each target showed across each axis (`shownSlots`) at its last `reconcileOcclusion`.
@@ -2934,6 +2938,7 @@ final class TerminalPanes {
       // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)
       // ignores it.
       liveState.commandFinished(tab: tabID, target: targetID, exitCode: exitCode)
+      onEvent?(.commandFinished(targetID, tabID))
     case .progressReport(let active, let failed):
       liveState.progressReported(active, failed: failed, tab: tabID, target: targetID)
     // A pane became first responder (click / programmatic focus): make it the selection (issue #3),

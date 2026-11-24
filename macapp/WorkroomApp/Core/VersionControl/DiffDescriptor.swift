@@ -24,6 +24,9 @@ struct DiffDescriptor: Equatable, Hashable, Sendable {
   /// True while this is the single preview tab for its target; false once persisted ("Keep Open",
   /// double-click, or opened persistently from the start).
   var isPreview: Bool
+  /// The repository the file is in, when it is not the tab's target's own folder: a change listed
+  /// for the repository a terminal's inspector follows (#807). Non-identity. Nil: the target's.
+  var repositoryRoot: String? = nil
 
   /// Two descriptors address the *same* diff tab when they point at the same file from the same
   /// revision — the identity used to dedupe (re-select an already-open file) and to decide whether a

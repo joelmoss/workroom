@@ -19,14 +19,23 @@ struct PullRequestPanel: View {
 
   var body: some View {
     Group {
-      if vcsStatus.githubCLIStatus != .available {
+      if case .followed(let followed) = store.inspectorSubject,
+        followed.repository == nil
+          || vcsStatus.status(for: store.inspectorSubject)?.failure?.meansNoRepository == true
+      {
+        // A terminal's followed folder in no repository (#807): no branch to have a pull request.
+        NotARepositoryMessage(path: followed.folder)
+      } else if vcsStatus.githubCLIStatus != .available {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
         ghWarning(vcsStatus.githubCLIStatus)
       } else {
         switch store.inspectorSubject {
         case .target(let sid) where sid.isStatusable:
           content(for: sid)
-        case .target, .followed, .nothing:
+        case .followed:
+          // A followed repository's pull request is read-only here: its actions are #808's.
+          content(for: nil)
+        case .target, .nothing:
           inspectorMessage("Select a workroom to see its pull request.")
         }
       }
@@ -115,7 +124,8 @@ struct PullRequestPanel: View {
   }
 
   @ViewBuilder
-  private func content(for sid: SidebarID) -> some View {
+  /// `sid`: what the pull request's actions act on; nil (a followed repository's) shows none.
+  private func content(for sid: SidebarID?) -> some View {
     let status = vcsStatus.status(for: store.inspectorSubject)
     if status?.prCheckedAt == nil {
       inspectorMessage("Checking\u{2026}")
@@ -125,8 +135,10 @@ struct PullRequestPanel: View {
       // no PR shows just "No pull request" (no CI rows).
       VStack(alignment: .leading, spacing: 8) {
         if let pr = status.pr {
-          readyForReviewButton(pr: pr, sid: sid)
-          mergeButton(pr: pr, sid: sid)
+          if let sid {
+            readyForReviewButton(pr: pr, sid: sid)
+            mergeButton(pr: pr, sid: sid)
+          }
           prRows(pr)
           // Summary glyph, tappable → the PR's "/checks" tab. Derived from the loaded per-check list
           // so it can't contradict the rows below; falls back to the branch CI aggregate

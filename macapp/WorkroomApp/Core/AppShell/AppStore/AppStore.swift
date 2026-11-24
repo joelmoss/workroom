@@ -123,6 +123,10 @@ final class AppStore: ObservableObject {
     for token in frameObservers { NotificationCenter.default.removeObserver(token) }
     // A closed window no longer holds its workroom's host connected (#356).
     RemoteHosts.shared.reachability.select(nil, in: ObjectIdentifier(self))
+    // Nor does it follow its terminal's repository any more (#807).
+    if let root = heldFollowedRepository {
+      Task { @MainActor [vcsStatus] in vcsStatus.unfollow(root) }
+    }
   }
 
   /// Only the active (last-key) window writes the shared sidebar prefs to UserDefaults, so multiple
@@ -235,6 +239,10 @@ final class AppStore: ObservableObject {
   /// What each folder resolved to last, so returning to a terminal shows its repository at once,
   /// before the fresh resolve (for a branch switched meanwhile) lands.
   @ObservationIgnored var followedRepositoryCache: [String: FollowedFolder.Repository?] = [:]
+  /// The canonical root of the repository this window's inspector follows, as it holds it in
+  /// `vcsStatus` (`follow`/`unfollow`), so its status and watch last while some window follows it.
+  // `nonisolated(unsafe)`: written on the main actor, read again only in `deinit`.
+  @ObservationIgnored nonisolated(unsafe) var heldFollowedRepository: String?
   /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
   /// content tab with no folder of its own.
   @ObservationIgnored var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
@@ -1074,6 +1082,11 @@ final class AppStore: ObservableObject {
     case .cwdChanged(let targetID, _):
       guard self.selectedTargetID?.targetID == targetID else { return }
       self.refreshFollowedFolder()
+    // A finished command may have moved the repository without a `cd` (`git switch`, `git init`,
+    // `rm -rf .git`): re-read it, as the Quick Terminal's live branch does (#807).
+    case .commandFinished(let targetID, _):
+      guard self.selectedTargetID?.targetID == targetID else { return }
+      self.reresolveFollowedFolder()
     // Effective focus is the one authority for reading a terminal's notifications (#358).
     case .terminalSeen(_, let tabID):
       notifications.dismiss(tab: tabID)
@@ -1387,6 +1400,7 @@ final class AppStore: ObservableObject {
     if flipped { selectionHasTabs = has }
     // Every caller is a selection, focus or tab change, which can each move the followed folder.
     let followedMoved = updateFollowedFolder()
+    holdFollowedRepository()
     guard flipped || followedMoved else { return }
     // A tab opening (or the last one closing) for the selected workroom flips `inspectorTargetID`
     // (nil↔id). Re-point History from here so it loads the instant its target appears, instead of

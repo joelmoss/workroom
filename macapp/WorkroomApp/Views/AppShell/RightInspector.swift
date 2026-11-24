@@ -142,6 +142,10 @@ struct RightInspector: View {
             .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
               vcsStatus.refreshWorkroomStatuses(force: true)
+              // And the repository a terminal's inspector follows (#807), which no sweep covers.
+              if let root = store.heldFollowedRepository {
+                vcsStatus.refreshFollowedStatus(root, gitHub: true)
+              }
             }
           }
         }

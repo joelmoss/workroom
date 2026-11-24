@@ -85,11 +85,54 @@ extension AppStore {
       let state = FollowedFolderState(
         target: target, folder: FollowedFolder(folder: folder, repository: repository))
       if self.setFollowedFolder(state) {
+        self.holdFollowedRepository()
         self.focusHistoryIfShown()
         self.focusRemoteStateIfShown()
       }
     }
     return changed
+  }
+
+  /// Resolve the followed folder's repository afresh: a command, or a change under the repository,
+  /// may have moved its branch or its root (`git switch`, `git init`, `rm -rf .git`) without a `cd`.
+  /// What each folder in `root` resolved to is forgotten too, so a later `cd` within it never shows
+  /// the old branch. The folder keeps showing what it last resolved to until the fresh resolve lands.
+  func reresolveFollowedFolder(forgetting root: String? = nil) {
+    guard let request = followedFolderRequest else { return }
+    followedRepositoryCache[request.folder] = nil
+    if let root {
+      followedRepositoryCache = followedRepositoryCache.filter { _, repository in
+        repository.flatMap { $0 }.map { VCSStatusService.canonicalPath($0.root) != root } ?? true
+      }
+    }
+    followedFolderRequest = nil
+    refreshFollowedFolder()
+  }
+
+  /// Hold, in the app's status, the repository this window's inspector follows, and let go of the
+  /// one it followed before: what keeps a followed repository's status and watch alive while some
+  /// window follows it, and drops them when none does (#807).
+  func holdFollowedRepository() {
+    var root: String?
+    if case .followed(let followed) = inspectorSubject, let repository = followed.repository {
+      root = VCSStatusService.canonicalPath(repository.root)
+    }
+    guard root != heldFollowedRepository else { return }
+    if let held = heldFollowedRepository { vcsStatus.unfollow(held) }
+    heldFollowedRepository = root
+    if let root { vcsStatus.follow(root) }
+  }
+
+  /// Something changed under the repository this window follows: re-read its branch and root, and
+  /// for a change to its git directory (a commit, a ref moved), its History, as a workroom's git
+  /// directory watch does (`handleRootBranchChange`). A save in the tree reloads Changes only
+  /// (through the status), as for a workroom.
+  func followedRepositoryDidChange(root: String, metadata: Bool) {
+    guard heldFollowedRepository == root else { return }
+    reresolveFollowedFolder(forgetting: root)
+    guard metadata, inspectorIsVisible else { return }
+    if historySectionShown { commitHistory.refresh() }
+    if remoteToolbarShown { remoteState.refresh(force: true) }
   }
 
   /// Wait for the followed folder's resolve in flight. For tests.

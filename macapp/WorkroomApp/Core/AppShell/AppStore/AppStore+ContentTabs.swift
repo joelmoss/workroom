@@ -15,7 +15,8 @@ extension AppStore {
   func openDiffPreview(_ file: ChangedFile, source: DiffSource) {
     guard let target = selectedTarget else { return }
     let diff = DiffDescriptor(
-      path: file.path, change: file.change, source: source, isPreview: true)
+      path: file.path, change: file.change, source: source, isPreview: true,
+      repositoryRoot: followedRepositoryRoot)
     whenHostLayoutRestored(target) { [terminals] target in
       terminals.openDiffPreview(diff, for: target)
     }
@@ -26,7 +27,8 @@ extension AppStore {
   func openDiffPersistent(_ file: ChangedFile, source: DiffSource) {
     guard let target = selectedTarget else { return }
     let diff = DiffDescriptor(
-      path: file.path, change: file.change, source: source, isPreview: false)
+      path: file.path, change: file.change, source: source, isPreview: false,
+      repositoryRoot: followedRepositoryRoot)
     whenHostLayoutRestored(target) { [terminals] target in
       terminals.openDiffPersistent(diff, for: target)
     }
@@ -129,6 +131,12 @@ extension AppStore {
   /// is gone — `DiffDescriptor.change == .deleted`); for a commit diff it opens the working copy,
   /// which may differ from the displayed revision (editing the live file is the useful action).
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {
+    if let root = descriptor.repositoryRoot, !target.isMissing {
+      // A followed repository's change is relative to its root (#807).
+      let absPath = (root as NSString).appendingPathComponent(descriptor.path)
+      TerminalLinkOpener.openFilePath(absPath, cwd: nil, project: root)
+      return
+    }
     Self.openWorkroomFile(relativePath: descriptor.path, for: target)
   }
 
@@ -136,7 +144,9 @@ extension AppStore {
   /// and the row context-menu "Open File in …" (issue #93). No-op when nothing's selected or the
   /// file was deleted (no working file to open — see `resolveOpenTarget`).
   func openChangedFileInEditor(_ file: ChangedFile) {
-    guard let target = selectedTarget, let rel = Self.resolveOpenTarget(file: file) else { return }
+    // A followed repository's change is relative to its root, not the terminal's folder (#807).
+    let target = followedRepositoryRoot != nil ? inspectorHistoryTarget : selectedTarget
+    guard let target, let rel = Self.resolveOpenTarget(file: file) else { return }
     Self.openWorkroomFile(relativePath: rel, for: target)
   }
 

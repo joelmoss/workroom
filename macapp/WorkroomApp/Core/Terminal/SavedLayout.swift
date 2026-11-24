@@ -367,6 +367,8 @@ struct DiffPayload: Codable, Hashable, Sendable {
   var isPreview: Bool
   /// `DiffViewMode.rawValue` — the per-tab unified/side-by-side override, nil to follow the global.
   var viewMode: String?
+  /// The repository the file is in, when not the target's own folder (#807).
+  var repositoryRoot: String? = nil
 }
 
 struct FilePayload: Codable, Hashable, Sendable {

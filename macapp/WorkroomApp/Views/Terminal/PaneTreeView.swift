@@ -528,7 +528,8 @@ struct PaneLeafView: View {
       // tab, so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
       // always a live tab while it renders, so the `else` is just a safety fallback.
       let diff = DiffViewer(
-        descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
+        descriptor: descriptor, directory: descriptor.repositoryRoot ?? target.path,
+        repositoryLocation: target.remoteLocation,
         viewModeOverride: tab?.diffViewModeOverride,
         isFocused: focused, find: host.contentFind, cannedDiffs: host.cannedDiffs
       )
