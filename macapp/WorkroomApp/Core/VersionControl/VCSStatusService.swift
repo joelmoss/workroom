@@ -153,6 +153,18 @@ final class VCSStatusService: ObservableObject {
   /// workroom's coalesce window, so arrow-keying past terminals in other repositories probes none of
   /// them (review of #807, finding 5). Tests set 0.
   @ObservationIgnored var followedProbeDebounce: TimeInterval = 0.3
+  /// How long the last window's unfollow keeps a followed repository's watch and status before
+  /// letting go of them, so focus moving between panes in two repositories re-follows for free.
+  /// Never its writes: those end at the unfollow. 0 lets go at once. A seam for tests.
+  @ObservationIgnored var followedUnfollowGrace: TimeInterval = 10
+  /// The status reads of each followed repository, by root: one in flight at a time, since the
+  /// daemon can't cancel one (`followedRead`).
+  @ObservationIgnored var followedReads: [String: FollowedStatusReads] = [:]
+  /// Reads a followed repository's working status. A seam for tests, which count the reads.
+  @ObservationIgnored var readFollowedWorkingStatus:
+    @Sendable (WorkroomStatusResolver, StatusWorkItem?, String) async -> WorkroomStatus = {
+      await VCSStatusService.readWorkingStatus($0, item: $1, path: $2)
+    }
   /// The home folder, canonical, which no followed repository's tree watch covers
   /// (`HostFileWatcher.isTooBroadToWatch`). A seam for tests.
   @ObservationIgnored var watchHome: String = VCSStatusService.canonicalPath(NSHomeDirectory())

@@ -41,6 +41,90 @@ struct FollowedRepositoryHold {
   var registrationFailures = 0
   /// The wait before the next retry of a registration that came back empty.
   var registrationRetry: Task<Void, Never>? = nil
+  /// What a write captured at the click checks still stands (`followedHold(of:)`): renewed by every
+  /// first follow, so a write captured before the last window let go stays refused after a
+  /// re-follow inside the grace. Apart from `id`, which the watch and registration check.
+  var followToken = UUID()
+  /// The grace the last window's unfollow starts (`followedUnfollowGrace`): the hold keeps its
+  /// watch and status while it runs, never its writes, and is let go of when it ends.
+  var grace: Task<Void, Never>? = nil
+  /// Whether the router hold was let go of when the grace began, so the end of the grace never
+  /// lets go of it twice.
+  var registrationReleased = false
+  /// A change, or a probe cut short, while in the grace: what a re-follow reads again, the local
+  /// status only or with GitHub. Nothing runs while no window follows.
+  var staleLocal = false
+  var staleGitHub = false
+  /// The probe still running in each lane, cleared as it ends.
+  var probeToken: UUID? = nil
+  var localProbeToken: UUID? = nil
+  /// Whether the full probe has reached GitHub: a later batch of the same commit (a local branch
+  /// moving again) never cancels the round in flight to ask again.
+  var askingGitHub = false
+
+  /// In the grace: no window follows it, and nothing writes to it.
+  var isLingering: Bool { holders == 0 }
+}
+
+/// A followed repository's status reads, one in flight at a time (`VCSStatusService.followedRead`):
+/// the daemon can't cancel a `working_status`, so a superseded read still runs its git to the end,
+/// and a second beside it would only double the cost.
+struct FollowedStatusReads {
+  /// The latest demand for a fresh read: each change that needs one, and each follow, sweep or
+  /// Refresh, takes the next. A read serves every demand taken before it started.
+  var demand = 0
+  /// The read in flight, the demand it serves up to, and the row it read for.
+  var inFlight: (task: Task<Void, Never>, demand: Int, registered: SidebarID?)?
+  /// The last read to land.
+  var last: (status: WorkroomStatus, demand: Int, registered: SidebarID?)?
+}
+
+/// What one watch delivery asks of a followed repository (`VCSStatusService.followedChange`).
+struct FollowedRepositoryChange: Equatable {
+  /// Re-read the local status: a save, an index write, a moved ref.
+  var readsStatus = false
+  /// Ask GitHub again: a moved ref (HEAD, a branch, a remote's, a fetch).
+  var asksGitHub = false
+  /// Re-resolve the folder in every window following it, and refresh History and the remote:
+  /// a moved ref, or a `.git` appearing or going.
+  var metadata = false
+  /// Whether every ref it moved is a local branch under `refs/heads/`: a commit's later batch,
+  /// which never interrupts a GitHub round in flight. Not part of its equality.
+  var movesOnlyLocalBranches = false
+
+  static let everything = FollowedRepositoryChange(
+    readsStatus: true, asksGitHub: true, metadata: true)
+
+  static func == (a: Self, b: Self) -> Bool {
+    (a.readsStatus, a.asksGitHub, a.metadata) == (b.readsStatus, b.asksGitHub, b.metadata)
+  }
+
+  /// What one path under a git directory, or in the tree, is.
+  enum PathKind {
+    /// Nothing `git status` or GitHub sees: objects, reflogs, lock files, a sibling worktree's.
+    case ignored
+    /// A file in the tree, or the index.
+    case status
+    /// A local branch under `refs/heads/`.
+    case localBranch
+    /// HEAD, another ref, `packed-refs` or `FETCH_HEAD`.
+    case ref
+    /// A `.git` itself, appearing or going.
+    case gitEntry
+  }
+
+  mutating func add(_ kind: PathKind) {
+    switch kind {
+    case .ignored: return
+    case .status: readsStatus = true
+    case .localBranch:
+      if !asksGitHub { movesOnlyLocalBranches = true }
+      (readsStatus, asksGitHub, metadata) = (true, true, true)
+    case .ref, .gitEntry:
+      (readsStatus, asksGitHub, metadata) = (true, true, true)
+      movesOnlyLocalBranches = false
+    }
+  }
 }
 
 /// The registered project roots and local workrooms by canonical path (`VCSStatusService
@@ -218,7 +302,7 @@ extension VCSStatusService {
   /// so canonical already, and is the key as given: none runs `realpath` on the main actor, where a
   /// stalled network mount would freeze every window (Codex on #812).
   func isFollowing(_ root: String) -> Bool {
-    followedRepositories[root] != nil
+    followedRepositories[root].map { !$0.isLingering } ?? false
   }
 
   // MARK: Holding
@@ -229,6 +313,9 @@ extension VCSStatusService {
     let key = root
     // A registered path that timed out last build is tried again, off the main actor.
     rebuildRegisteredIndex()
+    if let hold = followedRepositories[key], hold.isLingering {
+      return resumeFollowed(key)
+    }
     if var hold = followedRepositories[key] {
       hold.holders += 1
       followedRepositories[key] = hold
@@ -250,28 +337,100 @@ extension VCSStatusService {
     refreshFollowedStatus(key, gitHub: true, debounced: true)
   }
 
-  /// A window's inspector stops following `root`. The last one out stops its watch and drops its
-  /// status, so nothing is left to go stale.
+  /// A window's inspector stops following `root`. The last one out ends its writes at once, and
+  /// starts a grace (`followedUnfollowGrace`) at whose end its watch stops and its status goes, so
+  /// nothing is left to go stale: focus moving between panes in two repositories and back inside
+  /// it sets up nothing again and asks GitHub nothing (#812 perf review).
   func unfollow(_ root: String) {
     let key = root
-    guard var hold = followedRepositories[key] else { return }
+    guard var hold = followedRepositories[key], !hold.isLingering else { return }
     hold.holders -= 1
     if hold.holders > 0 {
       followedRepositories[key] = hold
       return
     }
+    let grace = followedUnfollowGrace
+    guard grace > 0 else {
+      followedRepositories[key] = hold
+      return letGoOfFollowed(key)
+    }
+    // A probe cut short is read again on a re-follow; nothing runs while no window follows.
+    if hold.probeToken != nil { hold.staleGitHub = true }
+    if hold.localProbeToken != nil { hold.staleLocal = true }
+    hold.probe?.cancel()
+    (hold.probe, hold.probeToken, hold.askingGitHub) = (nil, nil, false)
+    hold.localProbe?.cancel()
+    (hold.localProbe, hold.localProbeToken) = (nil, nil)
+    hold.registrationRetry?.cancel()
+    hold.registrationRetry = nil
+    // Its writes end here: the router lets go now, and the grace keeps the watch and status only.
+    releaseFollowed(hold.registration)
+    hold.registrationReleased = true
+    let id = hold.id
+    hold.grace = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(grace))
+      guard !Task.isCancelled, let self, let hold = self.followedRepositories[key],
+        hold.id == id, hold.isLingering
+      else { return }
+      self.letGoOfFollowed(key)
+    }
+    followedRepositories[key] = hold
+  }
+
+  /// A window follows `root` again inside its grace: the watch, the status and the registration
+  /// are reused, the router hold taken again from the registration already resolved (no git), and
+  /// only what changed meanwhile is read.
+  private func resumeFollowed(_ key: String) {
+    guard var hold = followedRepositories[key], hold.isLingering else { return }
+    hold.grace?.cancel()
+    hold.grace = nil
+    hold.holders = 1
+    hold.followToken = UUID()
+    let (kept, earlier, resolve) = (hold.registration, followedRelease, resolveFollowedRegistration)
+    hold.registering = true
+    hold.registrationReleased = false
+    // After the grace's release, so the router's count balances; resolved afresh only when the
+    // kept one came back empty.
+    hold.registration = registerFollowed(key, hold: hold.id) { root in
+      await earlier?.value
+      if let registration = await kept?.value { return registration }
+      return await resolve(root)
+    }
+    let (local, gitHub) = (hold.staleLocal, hold.staleGitHub)
+    (hold.staleLocal, hold.staleGitHub) = (false, false)
+    followedRepositories[key] = hold
+    if gitHub {
+      refreshFollowedStatus(key, gitHub: true, debounced: true)
+    } else if local {
+      refreshFollowedStatus(key, gitHub: false)
+    }
+  }
+
+  /// Let go of the hold on `key`: its watch stops, its probes and router hold go, and its status
+  /// is kept for a revisit, as data only.
+  private func letGoOfFollowed(_ key: String) {
+    guard let hold = followedRepositories[key] else { return }
     hold.probe?.cancel()
     hold.localProbe?.cancel()
     hold.registrationRetry?.cancel()
+    hold.grace?.cancel()
     for watcher in hold.watchers { watcher.stop() }
     followedRepositories[key] = nil
-    // Kept for a revisit, as data only: the hold, its registration and its watch all go.
     if let last = followedStatuses[key], last != .unresolved {
       recentFollowedStatuses.store(last, for: key)
     }
     followedStatuses[key] = nil
     unregisteredFollowedRoots.remove(key)
-    releaseFollowed(hold.registration)
+    if !hold.registrationReleased { releaseFollowed(hold.registration) }
+    // A read in flight lands, and drops its entry, itself (`landFollowedRead`).
+    if followedReads[key]?.inFlight == nil { followedReads[key] = nil }
+  }
+
+  /// Wait for every unfollow's grace to end. For tests.
+  func followedGraceSettled() async {
+    while let grace = followedRepositories.values.lazy.compactMap(\.grace).first {
+      await grace.value
+    }
   }
 
   // MARK: Registration
@@ -285,10 +444,11 @@ extension VCSStatusService {
   /// the windows are told, so they stop offering the writes it would refuse; it is retried after
   /// a backoff, and sooner on a window's follow, `cd` or Refresh (`retryFollowedRegistration`).
   private func registerFollowed(
-    _ key: String, hold: UUID
+    _ key: String, hold: UUID,
+    resolving: (@Sendable (String) async -> RepositoryRouter.Registration?)? = nil
   ) -> Task<RepositoryRouter.Registration?, Never> {
     let router = RepositoryRouter.shared
-    let resolve = resolveFollowedRegistration
+    let resolve = resolving ?? resolveFollowedRegistration
     return Task { [weak self] in
       let registration = await resolve(key)
       // Taken even when the hold is gone meanwhile: its release awaits this and lets go of it.
@@ -310,6 +470,10 @@ extension VCSStatusService {
     if registered {
       entry.registrationFailures = 0
       changed = unregisteredFollowedRoots.remove(key) != nil
+    } else if entry.isLingering {
+      // Retried on the re-follow, if one comes.
+      entry.registrationFailures += 1
+      changed = unregisteredFollowedRoots.insert(key).inserted
     } else {
       entry.registrationFailures += 1
       let (wait, streak) = (followedRegistrationRetryWait, entry.registrationFailures)
@@ -331,7 +495,7 @@ extension VCSStatusService {
   func retryFollowedRegistration(_ root: String) {
     let key = root
     guard unregisteredFollowedRoots.contains(key), var hold = followedRepositories[key],
-      !hold.registering
+      !hold.registering, !hold.isLingering
     else { return }
     hold.registrationRetry?.cancel()
     hold.registrationRetry = nil
@@ -391,7 +555,11 @@ extension VCSStatusService {
   /// registration is in. Nil when no window follows it (any more): a write then addresses nothing,
   /// never whichever repository the terminal has moved to.
   func followedWriteLocation(_ root: String) async -> RepositoryLocation? {
-    guard let registration = followedRepositories[root]?.registration else { return nil }
+    // In the grace nothing writes: the watch and status stay, the right to write does not.
+    guard let hold = followedRepositories[root], !hold.isLingering,
+      let registration = hold.registration
+    else { return nil }
+    let token = hold.followToken
     guard let location = await registration.value?.location else { return nil }
     // Its `.git` may be gone since it was followed, with no watch event in yet to say so: the
     // registration skips the check an unregistered read makes, so it is made here, and git is
@@ -403,7 +571,9 @@ extension VCSStatusService {
     guard isRepository == true else { return nil }
     // Let go of while this waited, and perhaps followed again under a new hold: only the hold
     // whose registration this is may be written through.
-    guard followedRepositories[root]?.registration == registration else { return nil }
+    guard let now = followedRepositories[root], now.registration == registration,
+      now.followToken == token, !now.isLingering
+    else { return nil }
     return location
   }
 
@@ -411,7 +581,8 @@ extension VCSStatusService {
   /// later whether that hold still stands rather than one taken afresh. Not its registration, which
   /// a retry replaces under the same hold.
   func followedHold(of root: String) -> UUID? {
-    followedRepositories[root]?.id
+    guard let hold = followedRepositories[root], !hold.isLingering else { return nil }
+    return hold.followToken
   }
 
   // MARK: Writes
@@ -501,15 +672,28 @@ extension VCSStatusService {
       // A linked worktree's `.git` is a file naming a git directory inside its main repository,
       // which holds the worktree's HEAD and the refs a commit or `git switch` moves.
       guard outside else { return }
+      // Its own git directory (`worktrees/<name>`) and the repository's, in one run.
       let r = await StatusCommandRunner().run(
         "git",
-        GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        GitCommand.hardening + [
+          "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir",
+        ],
         in: key, timeout: 3)
-      let directory = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+      let lines = r.stdout.split(separator: "\n").map {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
       // Let go of while git ran, and perhaps followed again: that hold sets up its own watch.
-      guard r.ok, !directory.isEmpty, self.followedRepositories[key]?.id == hold else { return }
-      let metadata = self.makeRepositoryWatcher { [weak self] _, _ in
-        self?.handleFollowedRepositoryChange(key, paths: [], overflow: true)
+      guard r.ok, lines.count == 2, !lines[0].isEmpty, !lines[1].isEmpty,
+        self.followedRepositories[key]?.id == hold
+      else { return }
+      let (own, directory) = (lines[0], lines[1])
+      // Only its own HEAD, index and FETCH_HEAD, and the shared refs: a sibling worktree's or the
+      // main checkout's index write, or an object, asks nothing (#812 perf review, I5).
+      let metadata = self.makeRepositoryWatcher { [weak self] paths, overflow in
+        self?.applyFollowedChange(
+          key,
+          Self.followedChange(
+            paths: paths, overflow: overflow, gitDirectory: own, commonDirectory: directory))
       }
       metadata.start(path: directory)
       self.followedRepositories[key]?.watchers.append(metadata)
@@ -545,32 +729,111 @@ extension VCSStatusService {
 
   // MARK: Probing
 
+  /// A followed repository's working status: its row's work item's, else its own root's.
+  nonisolated static func readWorkingStatus(
+    _ resolver: WorkroomStatusResolver, item: StatusWorkItem?, path: String
+  ) async -> WorkroomStatus {
+    if let item { return await resolver.working.resolve(item: item) }
+    return await resolver.working.resolveLocal(path: path)
+  }
+
   /// Something changed under a followed repository: re-read its local status (a save fires no `gh`
   /// call, as for the selected workroom), and tell the windows following it. `overflow` means the
   /// paths are incomplete, so it counts as a change to the git directory too. A moved ref (a
   /// `git switch`, a commit, a push or fetch) asks GitHub again too, after the probe's debounce:
   /// the branch's pull request and CI may be another's now (review of #807, finding 2).
   func handleFollowedRepositoryChange(_ root: String, paths: [String], overflow: Bool) {
-    let key = root
-    guard followedRepositories[key] != nil else { return }
     if !overflow, !paths.isEmpty, paths.allSatisfy(AppStore.isJJInternalPath) { return }
-    let incomplete = overflow || paths.isEmpty
-    refreshFollowedStatus(key, gitHub: false)
-    if incomplete || paths.contains(where: Self.isGitRefPath) {
-      refreshFollowedStatus(key, gitHub: true, debounced: true)
+    applyFollowedChange(root, Self.followedChange(paths: paths, overflow: overflow))
+  }
+
+  /// Act on what a delivery asks of `key`. The local lane and the full probe share one read
+  /// (`followedRead`), so a moved ref reads the status once (#812 perf review, I3). A later batch
+  /// of the same commit (only local branches moved) leaves a GitHub round in flight to finish
+  /// rather than cancel it and ask again; a second commit landing mid-round keeps that round's
+  /// answer until the next ref change or the CI TTL.
+  func applyFollowedChange(_ key: String, _ change: FollowedRepositoryChange) {
+    guard var hold = followedRepositories[key],
+      change.readsStatus || change.asksGitHub || change.metadata
+    else { return }
+    if hold.isLingering {
+      hold.staleLocal = hold.staleLocal || change.readsStatus
+      hold.staleGitHub = hold.staleGitHub || change.asksGitHub
+      followedRepositories[key] = hold
+      return
     }
-    let metadata = incomplete || paths.contains { $0.split(separator: "/").contains(".git") }
+    let demand = takeFollowedReadDemand(key)
+    if change.readsStatus { refreshFollowedStatus(key, gitHub: false, demand: demand) }
+    if change.asksGitHub, !(change.movesOnlyLocalBranches && hold.askingGitHub) {
+      refreshFollowedStatus(key, gitHub: true, debounced: true, demand: demand)
+    }
     for window in statusWindows {
-      window.followedRepositoryDidChange(root: key, metadata: metadata)
+      window.followedRepositoryDidChange(root: key, metadata: change.metadata)
     }
   }
 
-  /// Whether `path` is one of a git directory's refs: `HEAD`, `FETCH_HEAD`, `packed-refs`, or under
-  /// `refs/`. Not `index`, which a `git status` itself can rewrite.
-  nonisolated static func isGitRefPath(_ path: String) -> Bool {
-    let parts = path.split(separator: "/")
-    guard let git = parts.lastIndex(of: ".git"), git + 1 < parts.count else { return false }
-    return ["HEAD", "FETCH_HEAD", "packed-refs", "refs"].contains(parts[git + 1])
+  /// What a delivery from a followed repository's tree watch asks (#812 perf review, I6): a file
+  /// in the tree or the index re-reads the status only; HEAD, a ref, `packed-refs` or
+  /// `FETCH_HEAD` also asks GitHub and re-resolves the folder, as does a `.git` appearing or
+  /// going; an object, a reflog or a lock file asks nothing. Incomplete paths ask everything.
+  nonisolated static func followedChange(paths: [String], overflow: Bool)
+    -> FollowedRepositoryChange
+  {
+    guard !overflow, !paths.isEmpty else { return .everything }
+    var change = FollowedRepositoryChange()
+    for path in paths {
+      let parts = path.split(separator: "/")
+      guard let git = parts.lastIndex(of: ".git") else {
+        change.add(.status)
+        continue
+      }
+      change.add(gitDirectoryPathKind(parts[(git + 1)...]))
+    }
+    return change
+  }
+
+  /// What a delivery from a linked worktree's watch on its repository's git directory asks
+  /// (#812 perf review, I5): its own HEAD, `FETCH_HEAD` and index under `gitDirectory`
+  /// (`worktrees/<name>`), and the shared refs and `packed-refs`. Everything else there is the
+  /// main checkout's or a sibling worktree's, or objects, and asks nothing.
+  nonisolated static func followedChange(
+    paths: [String], overflow: Bool, gitDirectory: String, commonDirectory: String
+  ) -> FollowedRepositoryChange {
+    guard !overflow, !paths.isEmpty else { return .everything }
+    var change = FollowedRepositoryChange()
+    for path in paths {
+      if path == gitDirectory || path == commonDirectory {
+        change.add(.gitEntry)
+      } else if path.hasPrefix(gitDirectory + "/") {
+        let rest = path.dropFirst(gitDirectory.count + 1).split(separator: "/")
+        let kind = gitDirectoryPathKind(rest[...])
+        change.add(["HEAD", "FETCH_HEAD", "index"].contains(rest.first) ? kind : .ignored)
+      } else if path.hasPrefix(commonDirectory + "/") {
+        let rest = path.dropFirst(commonDirectory.count + 1).split(separator: "/")
+        let kind = gitDirectoryPathKind(rest[...])
+        change.add(["refs", "packed-refs"].contains(rest.first) ? kind : .ignored)
+      }
+    }
+    return change
+  }
+
+  /// What a path inside a git directory is, given its components below it.
+  nonisolated private static func gitDirectoryPathKind(
+    _ rest: ArraySlice<Substring>
+  ) -> FollowedRepositoryChange.PathKind {
+    guard let first = rest.first else { return .gitEntry }
+    if rest.last?.hasSuffix(".lock") == true { return .ignored }
+    switch first {
+    case "refs": return rest.dropFirst().first == "heads" ? .localBranch : .ref
+    case "HEAD", "packed-refs", "FETCH_HEAD": return .ref
+    case "index": return .status
+    // Objects, reflogs, a sibling worktree's own directory, and what a commit or gc leaves.
+    case "objects", "logs", "worktrees", "COMMIT_EDITMSG", "ORIG_HEAD", "gc.log", "gc.pid",
+      "hooks", "description":
+      return .ignored
+    // Anything else (config, info/exclude, a merge's state) may change what status reports.
+    default: return .status
+    }
   }
 
   /// Re-read a followed repository's local status and, with `gitHub`, its CI and pull request.
@@ -578,15 +841,25 @@ extension VCSStatusService {
   /// for a repository no window follows any more is dropped. `debounced` waits
   /// `followedProbeDebounce` first, so a burst (or a repository passed by) forks nothing.
   ///
+  /// The status read itself is single-flight per repository (`followedRead`): cancelling a probe
+  /// abandons its wait, never the read, which the daemon can't cancel. `demand` is the read it
+  /// needs, taken by the caller when two lanes share one (`applyFollowedChange`), else here.
+  /// In an unfollow's grace it runs nothing, and marks the repository for a re-follow to read.
+  ///
   /// Returns the probe it started, nil when it started none, for a caller that waits on the read.
   @discardableResult
   func refreshFollowedStatus(
-    _ root: String, gitHub: Bool, debounced: Bool = false
+    _ root: String, gitHub: Bool, debounced: Bool = false, demand: Int? = nil
   ) -> Task<Void, Never>? {
     let key = root
     // Probed even under seeded statuses: a followed folder is a real repository (the UI-test
     // fixture's are throwaway ones its shell makes), where a seeded row's path is not one.
     guard var hold = followedRepositories[key] else { return nil }
+    if hold.isLingering {
+      if gitHub { hold.staleGitHub = true } else { hold.staleLocal = true }
+      followedRepositories[key] = hold
+      return nil
+    }
     let registered = registeredSidebarID(forCanonicalRoot: key)
     // A registered row keeps its seeded status, as its own lanes leave it.
     if registered != nil, !probesRepositories { return nil }
@@ -595,25 +868,28 @@ extension VCSStatusService {
     // A followed repository's own commit keeps its read lanes off it too (#808): a `git status`
     // mid-commit contends on `index.lock`, as for a workroom.
     if isCommittingProject(item?.sharedLocation ?? followedSharedLocation(key)) { return nil }
-    let resolver = statusResolver
     let debounce = debounced ? followedProbeDebounce : 0
+    let demand = demand ?? takeFollowedReadDemand(key)
+    let token = UUID()
     let task = Task { [weak self] in
+      defer { self?.followedProbeEnded(key, token: token) }
       if debounce > 0 {
         try? await Task.sleep(for: .seconds(debounce))
         if Task.isCancelled { return }
       }
-      let fresh =
-        if let item {
-          await resolver.working.resolve(item: item)
-        } else {
-          await resolver.working.resolveLocal(path: key)
-        }
+      guard
+        let fresh = await self?.followedRead(
+          key, demand: demand, item: item, registered: registered)
+      else { return }
       // Dropped once the index has moved the root to another source (`rerouteFollowed`).
       guard let self, !Task.isCancelled, self.followedRepositories[key] != nil,
         self.registeredSidebarID(forCanonicalRoot: key) == registered
       else { return }
       self.mergeFollowedStatus(fresh, root: key, registered: registered)
       guard gitHub, fresh.failure == nil, item?.permitsGitHubAccess ?? true else { return }
+      if self.followedRepositories[key]?.probeToken == token {
+        self.followedRepositories[key]?.askingGitHub = true
+      }
       // Seeded statuses have no `gh` behind them (`refreshGitHubCLI` no-ops), so a followed
       // repository there never reaches GitHub: it settles as having no pull request.
       guard self.probesRepositories else {
@@ -639,22 +915,85 @@ extension VCSStatusService {
     }
     if gitHub {
       hold.probe?.cancel()
-      hold.probe = task
+      (hold.probe, hold.probeToken, hold.askingGitHub) = (task, token, false)
     } else {
       hold.localProbe?.cancel()
-      hold.localProbe = task
+      (hold.localProbe, hold.localProbeToken) = (task, token)
     }
     followedRepositories[key] = hold
     return task
   }
 
-  /// Wait for every followed repository's probe in flight. For tests.
+  /// The probe `token` ended, finished or cancelled.
+  private func followedProbeEnded(_ key: String, token: UUID) {
+    guard var hold = followedRepositories[key] else { return }
+    if hold.probeToken == token { (hold.probeToken, hold.askingGitHub) = (nil, false) }
+    if hold.localProbeToken == token { hold.localProbeToken = nil }
+    followedRepositories[key] = hold
+  }
+
+  /// Take the next demand for a fresh read of `key`'s status.
+  func takeFollowedReadDemand(_ key: String) -> Int {
+    followedReads[key, default: FollowedStatusReads()].demand += 1
+    return followedReads[key]?.demand ?? 0
+  }
+
+  /// `key`'s status as read at or after `demand` was taken, for the row `registered` (or none):
+  /// the last read's when it started after that, else the one in flight's when it did, else a new
+  /// one, started only once no other is in flight. A probe cancelled while it waits starts none,
+  /// so a burst of changes during a read costs one follow-up read (#812 perf review, I4).
+  private func followedRead(
+    _ key: String, demand: Int, item: StatusWorkItem?, registered: SidebarID?
+  ) async -> WorkroomStatus? {
+    while true {
+      let reads = followedReads[key] ?? FollowedStatusReads()
+      if let last = reads.last, last.demand >= demand, last.registered == registered {
+        return last.status
+      }
+      if let running = reads.inFlight {
+        await running.task.value
+        continue
+      }
+      guard !Task.isCancelled, followedRepositories[key] != nil else { return nil }
+      let (resolver, read) = (statusResolver, readFollowedWorkingStatus)
+      let serves = max(reads.demand, demand)
+      let task = Task { [weak self] in
+        let status = await read(resolver, item, key)
+        self?.landFollowedRead(key, status, demand: serves, registered: registered)
+      }
+      followedReads[key, default: FollowedStatusReads()].inFlight = (task, serves, registered)
+      await task.value
+    }
+  }
+
+  private func landFollowedRead(
+    _ key: String, _ status: WorkroomStatus, demand: Int, registered: SidebarID?
+  ) {
+    guard followedRepositories[key] != nil else {
+      followedReads[key] = nil
+      return
+    }
+    var reads = followedReads[key] ?? FollowedStatusReads()
+    reads.inFlight = nil
+    reads.last = (status, demand, registered)
+    followedReads[key] = reads
+  }
+
+  /// Wait for every followed repository's probe and read in flight. For tests.
   func followedStatusSettled() async {
     // A rebuild landing re-routes, and re-probes, what it moves.
     await registeredIndexSettled()
-    for hold in followedRepositories.values {
-      await hold.probe?.value
-      await hold.localProbe?.value
+    while true {
+      let probes = followedRepositories.values.flatMap { hold in
+        [
+          hold.probeToken == nil ? nil : hold.probe,
+          hold.localProbeToken == nil ? nil : hold.localProbe,
+        ]
+        .compactMap { $0 }
+      }
+      let reads = followedReads.values.compactMap { $0.inFlight?.task }
+      guard !probes.isEmpty || !reads.isEmpty else { return }
+      for task in probes + reads { await task.value }
     }
   }
 

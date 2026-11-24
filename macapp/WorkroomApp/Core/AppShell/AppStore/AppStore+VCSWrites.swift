@@ -244,6 +244,11 @@ extension AppStore {
       guard let self else { return }
       self.prActionInFlight = false
       let current = write.isCurrent()
+      // One let go of meanwhile may be in its unfollow grace, its kept status still showing the
+      // optimistic flip: it asks GitHub again if a window comes back to it.
+      if !current, case .followed(let root) = target {
+        self.vcsStatus.refreshFollowedStatus(root, gitHub: true)
+      }
       guard current || write.reportsStaleFailure else { return }
       if r.ok {
         guard current else { return }

@@ -502,6 +502,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
       status.isCommittingProject(status.followedSharedLocation(first)),
       "and keeps the followed repository's read lanes off it meanwhile")
     try await cd(store, tab, second)
+    let kept = status.followedStatuses[first]
     XCTAssertEqual(store.inspectorActionTarget, .followed(root: second))
     FileManager.default.createFile(atPath: hook.gate, contents: nil)
     let result = await pending
@@ -511,7 +512,9 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(head(first), "mid-flight", "it lands where the user committed")
     XCTAssertEqual(head(second), "base", "never where the terminal went")
     XCTAssertEqual(changedPaths(store), ["a.txt"], "the second repository's change still shows")
-    XCTAssertNil(status.followedStatuses[first], "nothing re-creates the status of one let go")
+    XCTAssertEqual(
+      status.followedStatuses[first], kept,
+      "nothing writes to the status of one let go, kept through its unfollow grace")
     XCTAssertEqual(store.commitHistory.commits.map(\.summary), ["base"], "History is the second's")
     XCTAssertFalse(status.isWritingProject(location), "the write mark is released")
     XCTAssertTrue(status.committingFollowedRoots.isEmpty)
@@ -908,6 +911,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     Self.seed(Self.pullRequest(5, draft: true), on: target, in: status)
 
     try await cd(store, tab, second)
+    let kept = status.followedStatuses[first]
     let theirs = Self.pullRequest(5, draft: true)
     Self.seed(theirs, on: try XCTUnwrap(store.inspectorActionTarget), in: status)
 
@@ -921,7 +925,9 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     XCTAssertEqual(runner.writes, [], "no gh write runs")
     XCTAssertEqual(store.modals.errorMessage, "That repository is no longer available.")
     XCTAssertEqual(status.followedStatuses[second]?.pr, theirs, "the second's badge is untouched")
-    XCTAssertNil(status.followedStatuses[first], "nothing re-creates the status of one let go")
+    XCTAssertEqual(
+      status.followedStatuses[first], kept,
+      "nothing writes to the status of one let go, kept through its unfollow grace")
   }
 
   /// Value: protects=a pull request write still running when the terminal moves to another
@@ -944,6 +950,7 @@ final class FollowedRepositoryWritesTests: XCTestCase {
     store.performPRAction(.markReady, number: 5, on: target)
     await waitForWrites(runner, count: 1)
     try await cd(store, tab, second)
+    let kept = status.followedStatuses[first]
     let theirs = Self.pullRequest(5, draft: true)
     Self.seed(theirs, on: try XCTUnwrap(store.inspectorActionTarget), in: status)
     runner.release()
@@ -951,7 +958,9 @@ final class FollowedRepositoryWritesTests: XCTestCase {
 
     XCTAssertEqual(runner.writes, [["pr", "ready", "5", "--repo", "github.com/octo/first"]])
     XCTAssertEqual(status.followedStatuses[second]?.pr, theirs, "the revert stays off the second")
-    XCTAssertNil(status.followedStatuses[first], "nothing re-creates the status of one let go")
+    XCTAssertEqual(
+      status.followedStatuses[first], kept,
+      "nothing writes to the status of one let go, kept through its unfollow grace")
     XCTAssertEqual(store.modals.errorMessage, "nope", "the failure is still the user's to see")
     XCTAssertEqual(
       store.modals.errorTitle,

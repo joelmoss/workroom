@@ -36,6 +36,8 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     let pullRequestLists = Mutex<[String?]>([])
     /// How many times `gh` ran at all.
     let gitHubRuns = Mutex(0)
+    /// While set, `gh pr list` waits: a GitHub round held in flight.
+    let holdsPullRequests = Mutex(false)
     init(onGitHub: Bool) { self.onGitHub = onGitHub }
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
@@ -48,6 +50,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
         let branch = args.firstIndex(of: "--head").map { args.index(after: $0) }
           .flatMap { args.indices.contains($0) ? args[$0] : nil }
         pullRequestLists.withLock { $0.append(branch) }
+        while holdsPullRequests.withLock({ $0 }) { try? await Task.sleep(for: .milliseconds(5)) }
       }
       func ok(_ out: String) -> CommandResult {
         CommandResult(stdout: out, stderr: "", exitCode: 0, timedOut: false)
@@ -103,6 +106,8 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     runner = GitHubRunner(onGitHub: onGitHub)
     status.statusResolver = WorkroomStatusResolver(runner: runner)
     status.followedProbeDebounce = debounce
+    // Let go of at once: the grace a last unfollow gets has its own tests, which set it.
+    status.followedUnfollowGrace = 0
     status.makeRepositoryWatcher = { [weak self] onChange in
       let watcher = RecordingWatcher(onChange: onChange)
       self?.watchers.append(watcher)
@@ -806,6 +811,8 @@ final class FollowedRepositoryStatusTests: XCTestCase {
   /// no_claim=the folder's resolve
   func testARepositoryPassedByQuicklyIsNotProbed() async throws {
     let status = makeStatus(onGitHub: true, debounce: 0.3)
+    // Even while the repository passed by lingers in its unfollow grace.
+    status.followedUnfollowGrace = 3600
     let one = repo("one", branch: "passed-by")
     let two = repo("two")
 
@@ -1111,5 +1118,285 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     await status.followedStatusSettled()
     XCTAssertNil(RepositoryRouter.shared.localLocation(for: one), "every router hold released")
     XCTAssertNil(RepositoryRouter.shared.localLocation(for: two))
+  }
+
+  // MARK: Probe cost (#812 perf lane P3)
+
+  /// Counts the followed working-status reads (each one a daemon `working_status`: 2 to 4 git
+  /// processes), and holds them open while `holds` is set, as a slow read on a large tree does.
+  private final class ReadCounter: Sendable {
+    let started = Mutex(0)
+    let running = Mutex(0)
+    let mostAtOnce = Mutex(0)
+    let holds = Mutex(false)
+    var count: Int { started.withLock { $0 } }
+  }
+
+  private func countReads(_ status: VCSStatusService) -> ReadCounter {
+    let counter = ReadCounter()
+    status.readFollowedWorkingStatus = { resolver, item, path in
+      counter.started.withLock { $0 += 1 }
+      let now = counter.running.withLock {
+        $0 += 1
+        return $0
+      }
+      counter.mostAtOnce.withLock { $0 = max($0, now) }
+      while counter.holds.withLock({ $0 }) { try? await Task.sleep(for: .milliseconds(5)) }
+      let read = await VCSStatusService.readWorkingStatus(resolver, item: item, path: path)
+      counter.running.withLock { $0 -= 1 }
+      return read
+    }
+    return counter
+  }
+
+  private func waitUntil(_ condition: () -> Bool) async throws {
+    for _ in 0..<1000 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertTrue(condition(), "timed out")
+  }
+
+  /// Value: protects=one `git status` per ref change (perf I3); fails_when=the local lane and the
+  /// full probe each read the status for the same change; why_new=#812 perf review;
+  /// seam=VCSStatusService change handler (read counted); no_claim=the daemon's own cost
+  func testARefChangeReadsTheStatusOnce() async throws {
+    let status = makeStatus(onGitHub: true)
+    let root = repo("app")
+    status.follow(root)
+    await status.followedStatusSettled()
+    let watch = try XCTUnwrap(watcher(for: root))
+    let reads = countReads(status)
+
+    sh("git commit -qam second", in: root)
+    watch.onChange([root + "/.git/refs/heads/main", root + "/.git/index"], false)
+    await status.followedStatusSettled()
+
+    XCTAssertEqual(reads.count, 1, "the full probe reuses the local lane's read")
+    XCTAssertEqual(pullRequestBranches, ["main", "main"], "and still asks GitHub")
+    XCTAssertEqual(status.followedStatuses[root]?.changedFiles, [])
+  }
+
+  /// Value: protects=single-flight status reads per repository (perf I4); fails_when=a change
+  /// landing while a read runs starts a second read beside it (the daemon can't cancel the
+  /// first), or a burst queues more than one follow-up; why_new=#812 perf review;
+  /// seam=VCSStatusService change handler (read held open); no_claim=the daemon's permit pool
+  func testChangesDuringAReadQueueOneFollowUpAndNeverOverlap() async throws {
+    let status = makeStatus()
+    let root = repo("app")
+    status.follow(root)
+    await status.followedStatusSettled()
+    let watch = try XCTUnwrap(watcher(for: root))
+    let reads = countReads(status)
+    reads.holds.withLock { $0 = true }
+
+    watch.onChange([root + "/src/a.txt"], false)
+    try await waitUntil { reads.count == 1 }
+    try "later\n".write(toFile: root + "/b.txt", atomically: true, encoding: .utf8)
+    for _ in 0..<3 { watch.onChange([root + "/b.txt"], false) }
+    status.refreshFollowedStatus(root, gitHub: false)
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(reads.count, 1, "nothing starts beside the read in flight")
+    reads.holds.withLock { $0 = false }
+    await status.followedStatusSettled()
+
+    XCTAssertEqual(reads.count, 2, "one follow-up for the whole burst")
+    XCTAssertEqual(reads.mostAtOnce.withLock { $0 }, 1)
+    XCTAssertEqual(
+      Set(status.followedStatuses[root]?.changedFiles?.map(\.path) ?? []), ["src/a.txt", "b.txt"],
+      "the follow-up saw the later change")
+  }
+
+  /// Value: protects=a commit the daemon delivers as a leading and a trailing batch costing one
+  /// GitHub round (perf I3); fails_when=the trailing batch cancels the round in flight and asks
+  /// GitHub again; why_new=#812 perf review; seam=VCSStatusService change handler (gh held);
+  /// no_claim=a second commit landing mid-round (it keeps the round's answer until the TTL)
+  func testACommitDeliveredInTwoBatchesAsksGitHubOnce() async throws {
+    let status = makeStatus(onGitHub: true)
+    let root = repo("app")
+    status.follow(root)
+    await status.followedStatusSettled()
+    let watch = try XCTUnwrap(watcher(for: root))
+    let reads = countReads(status)
+    runner.holdsPullRequests.withLock { $0 = true }
+
+    sh("git commit -qam second", in: root)
+    watch.onChange([root + "/.git/refs/heads/main", root + "/.git/index"], false)
+    try await waitUntil { self.pullRequestBranches.count == 2 }
+    watch.onChange([root + "/.git/refs/heads/main", root + "/.git/logs/HEAD"], false)
+    runner.holdsPullRequests.withLock { $0 = false }
+    await status.followedStatusSettled()
+
+    XCTAssertEqual(pullRequestBranches, ["main", "main"], "one GitHub round for the commit")
+    XCTAssertLessThanOrEqual(reads.count, 2)
+    XCTAssertEqual(status.followedStatuses[root]?.pr?.number, 9)
+  }
+
+  /// Value: protects=what a git-directory path costs (perf I6); fails_when=an index write, an
+  /// object or a reflog counts as metadata (a re-resolve per window) or asks GitHub, or a ref
+  /// stops doing either; why_new=#812 perf review; seam=the change classifier;
+  /// no_claim=FSEvents' path spelling
+  func testOnlyRefsAndTheGitEntryCountAsMetadata() {
+    let r = "/r"
+    func change(_ paths: [String], overflow: Bool = false) -> FollowedRepositoryChange {
+      VCSStatusService.followedChange(paths: paths, overflow: overflow)
+    }
+    let none = FollowedRepositoryChange(readsStatus: false, asksGitHub: false, metadata: false)
+    let local = FollowedRepositoryChange(readsStatus: true, asksGitHub: false, metadata: false)
+    let all = FollowedRepositoryChange(readsStatus: true, asksGitHub: true, metadata: true)
+    XCTAssertEqual(change([r + "/src/a.txt"]), local)
+    XCTAssertEqual(change([r + "/.git/index"]), local, "an index write is a local change only")
+    XCTAssertEqual(change([r + "/.git/objects/ab/cdef", r + "/.git/logs/HEAD"]), none)
+    XCTAssertEqual(change([r + "/.git/index.lock", r + "/.git/COMMIT_EDITMSG"]), none)
+    XCTAssertEqual(change([r + "/.git/HEAD"]), all)
+    XCTAssertEqual(change([r + "/.git/refs/heads/main"]), all)
+    XCTAssertEqual(change([r + "/.git/packed-refs"]), all)
+    XCTAssertEqual(change([r + "/.git/FETCH_HEAD"]), all)
+    XCTAssertEqual(change([r + "/sub/.git"]), all, "a `git init` or `rm -rf .git`")
+    XCTAssertEqual(change([r + "/.git/objects/x", r + "/src/a.txt"]), local)
+    XCTAssertEqual(change([], overflow: true), all)
+    XCTAssertEqual(change([]), all)
+    XCTAssertTrue(change([r + "/.git/refs/heads/main"]).movesOnlyLocalBranches)
+    XCTAssertFalse(change([r + "/.git/refs/remotes/origin/main"]).movesOnlyLocalBranches)
+    XCTAssertFalse(change([r + "/.git/HEAD"]).movesOnlyLocalBranches)
+  }
+
+  /// Value: protects=an object or reflog write costing nothing (perf I6); fails_when=it re-reads
+  /// the status or asks GitHub; why_new=#812 perf review; seam=VCSStatusService change handler;
+  /// no_claim=the classifier's every path (above)
+  func testAnObjectWriteReadsNothing() async throws {
+    let status = makeStatus(onGitHub: true)
+    let root = repo("app")
+    status.follow(root)
+    await status.followedStatusSettled()
+    let watch = try XCTUnwrap(watcher(for: root))
+    let reads = countReads(status)
+
+    watch.onChange([root + "/.git/objects/ab/cdef", root + "/.git/logs/HEAD"], false)
+    await status.followedStatusSettled()
+    XCTAssertEqual(reads.count, 0)
+    XCTAssertEqual(pullRequestBranches, ["main"])
+  }
+
+  /// Value: protects=a followed linked worktree ignoring its siblings (perf I5); fails_when=a
+  /// sibling's index write, an object or the main checkout's index in the shared git directory
+  /// reads its status or asks GitHub, or its own HEAD and index stop doing so; why_new=#812 perf
+  /// review; seam=VCSStatusService (watch recorder); no_claim=FSEvents itself
+  func testALinkedWorktreeIgnoresItsSiblingsInTheSharedGitDirectory() async throws {
+    let status = makeStatus(onGitHub: true)
+    let root = repo("app")
+    sh("git commit -qam edit", in: root)
+    let linked = worktree(of: root, "feature")
+    _ = worktree(of: root, "other")
+    status.follow(linked)
+    await status.followedWatchesSettled()
+    await status.followedStatusSettled()
+    let gitDirectory = try XCTUnwrap(watcher(for: root + "/.git"))
+    let reads = countReads(status)
+    let asked = pullRequestBranches.count
+
+    gitDirectory.onChange(
+      [
+        root + "/.git/worktrees/other/index", root + "/.git/worktrees/other/HEAD",
+        root + "/.git/objects/ab/cdef", root + "/.git/index",
+      ], false)
+    await status.followedStatusSettled()
+    XCTAssertEqual(reads.count, 0, "a sibling's writes read nothing")
+    XCTAssertEqual(pullRequestBranches.count, asked)
+
+    gitDirectory.onChange([root + "/.git/worktrees/feature/index"], false)
+    await status.followedStatusSettled()
+    XCTAssertEqual(reads.count, 1, "its own index re-reads Changes")
+    XCTAssertEqual(pullRequestBranches.count, asked, "and asks GitHub nothing")
+
+    gitDirectory.onChange([root + "/.git/refs/heads/feature"], false)
+    await status.followedStatusSettled()
+    XCTAssertEqual(pullRequestBranches.count, asked + 1, "a ref asks GitHub")
+  }
+
+  // MARK: Unfollow grace (#812 perf lane P3)
+
+  /// Value: protects=focus moving between panes in two repositories (perf-files note);
+  /// fails_when=the last unfollow drops the watch at once, so a re-follow sets it up and asks
+  /// GitHub again, or the grace keeps the right to write; why_new=#812 perf review;
+  /// seam=VCSStatusService follow/unfollow + writeLocation; no_claim=the router's own refusals
+  func testAReFollowInsideTheGraceReusesTheWatchAndStatusButNotTheWrite() async throws {
+    let status = makeStatus(onGitHub: true)
+    status.followedUnfollowGrace = 3600
+    let root = repo("app")
+    status.follow(root)
+    await status.followedStatusSettled()
+    await status.followedRegistrationsSettled()
+    let watch = try XCTUnwrap(watcher(for: root))
+    let hold = try XCTUnwrap(status.followedHold(of: root))
+    let watches = watchers.count
+    let reads = countReads(status)
+    let gitHubRuns = runner.gitHubRuns.withLock { $0 }
+
+    status.unfollow(root)
+    XCTAssertFalse(watch.stopped, "the watch outlives the unfollow")
+    XCTAssertNotNil(status.followedStatuses[root], "so does the status")
+    XCTAssertFalse(status.isFollowing(root))
+    XCTAssertFalse(status.canAddress(.followed(root: root)))
+    XCTAssertNil(status.followedHold(of: root))
+    let refused = await status.followedWriteLocation(root)
+    XCTAssertNil(refused, "nothing writes through a repository no window follows")
+    do {
+      _ = try await status.writeLocation(for: .followed(root: root))
+      XCTFail("refused")
+    } catch is FollowedRepositoryGone {}
+    await status.followedRegistrationsSettled()
+    XCTAssertNil(RepositoryRouter.shared.localLocation(for: root), "the router lets go at once")
+
+    status.follow(root)
+    await status.followedStatusSettled()
+    await status.followedRegistrationsSettled()
+    XCTAssertEqual(watchers.count, watches, "no new watch")
+    XCTAssertFalse(watch.stopped)
+    XCTAssertEqual(reads.count, 0, "no status read")
+    XCTAssertEqual(runner.gitHubRuns.withLock { $0 }, gitHubRuns, "and no GitHub round")
+    XCTAssertTrue(status.isFollowing(root))
+    let renewed = try XCTUnwrap(status.followedHold(of: root))
+    XCTAssertNotEqual(renewed, hold, "a write captured before the unfollow stays refused")
+    let live = await status.followedWriteLocation(root)
+    XCTAssertEqual(live.map { VCSStatusService.canonicalPath($0.path) }, root)
+
+    status.followedUnfollowGrace = 0
+    status.unfollow(root)
+    XCTAssertTrue(watch.stopped)
+    await status.followedRegistrationsSettled()
+    XCTAssertNil(RepositoryRouter.shared.localLocation(for: root))
+  }
+
+  /// Value: protects=the grace costing nothing and ending (perf-files note); fails_when=a change
+  /// while no window follows reads or asks GitHub, a re-follow after one shows it stale, or the
+  /// watch and status outlive the grace; why_new=#812 perf review; seam=VCSStatusService;
+  /// no_claim=the 10 s figure
+  func testAChangeInTheGraceWaitsForAReFollowAndTheGraceEnds() async throws {
+    let status = makeStatus(onGitHub: true)
+    status.followedUnfollowGrace = 3600
+    let root = repo("app")
+    status.follow(root)
+    await status.followedStatusSettled()
+    let watch = try XCTUnwrap(watcher(for: root))
+    let reads = countReads(status)
+    status.unfollow(root)
+
+    sh("git commit -qam second", in: root)
+    watch.onChange([root + "/.git/refs/heads/main"], false)
+    await status.followedStatusSettled()
+    XCTAssertEqual(reads.count, 0, "nothing reads while no window follows it")
+    XCTAssertEqual(pullRequestBranches, ["main"])
+
+    status.follow(root)
+    await status.followedStatusSettled()
+    XCTAssertEqual(reads.count, 1, "the re-follow reads what changed")
+    XCTAssertEqual(pullRequestBranches, ["main", "main"])
+    XCTAssertEqual(status.followedStatuses[root]?.changedFiles, [])
+
+    status.followedUnfollowGrace = 0.01
+    status.unfollow(root)
+    XCTAssertFalse(watch.stopped)
+    await status.followedGraceSettled()
+    XCTAssertTrue(watch.stopped, "the grace ends")
+    XCTAssertNil(status.followedStatuses[root])
+    XCTAssertFalse(status.isFollowing(root))
   }
 }
