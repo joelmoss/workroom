@@ -66,6 +66,9 @@ final class TerminalsSection {
   /// The Quick Terminal's panel, which answers for the built-in group even while it holds none of
   /// its terminals: its row's click slides it in.
   @ObservationIgnored weak var quickTerminalHolder: (any TerminalsSectionHolder)?
+  /// Whether each group's starting folder is there, answered without touching the disk
+  /// (`TerminalGroup.workingDirectory(presence:)`). A test stands in its own.
+  @ObservationIgnored var folderPresence: FolderPresence = .shared
 
   /// Loads `file` synchronously, so the section is known before anything resolves a saved id: the
   /// launch's restore and its orphaned-session sweep both run after this. No file keeps the section
@@ -80,6 +83,12 @@ final class TerminalsSection {
     for case .group(let group) in stored where group.isBuiltIn {
       quickTerminal.startingFolder = group.startingFolder
       quickTerminal.isFolded = group.isFolded
+    }
+    // Each starting folder's check starts now, off the main actor, so the windows' restore that
+    // follows the project load reads its answer: a folder that has gone restores in "New terminals
+    // open in", as before. Recovery checks again before it reattaches (`checkStartingFolders`).
+    for case .group(let group) in stored {
+      if let path = group.startingPath { _ = folderPresence.isFolder(path) }
     }
   }
 
@@ -245,7 +254,7 @@ final class TerminalsSection {
     case .group(let group):
       return TerminalTarget(
         id: id, title: group.title(terminalNames: terminalNames(of: id)),
-        path: group.workingDirectory, unavailability: nil)
+        path: group.workingDirectory(presence: folderPresence), unavailability: nil)
     }
   }
 

@@ -83,7 +83,7 @@ final class QuickTerminalGroupTests: XCTestCase {
   /// Value: protects=the Quick Terminal's starting folder following the group rules (story 40);
   /// fails_when=its new terminals ignore Set Starting Folder…, or a folder that has gone strands
   /// them; why_new=it was its own setting (#661); seam=the section; no_claim=the folder picker
-  func testItsStartingFolderFollowsTheGroupRules() throws {
+  func testItsStartingFolderFollowsTheGroupRules() async throws {
     let folder = FileManager.default.temporaryDirectory
       .appendingPathComponent("qt-folder-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -97,6 +97,8 @@ final class QuickTerminalGroupTests: XCTestCase {
     XCTAssertEqual(panel.terminals.surface(tab)?.workingDirectory, folder.path)
 
     try FileManager.default.removeItem(at: folder)
+    // Once its folder is checked again, off the main actor (`FolderPresence`).
+    await section.folderPresence.check(folder.path)
     XCTAssertEqual(panel.target.path, TerminalsSection.newTerminalDirectory(), "gone: the default")
     store.setTerminalGroupStartingFolder(builtIn, to: nil)
     XCTAssertEqual(panel.target.path, TerminalsSection.newTerminalDirectory())

@@ -376,7 +376,7 @@ APP_SWIFT_PATHS := WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessi
 app-format: ## Format Swift sources in place (swift-format)
 	cd macapp && xcrun swift-format format --in-place --parallel --recursive $(APP_SWIFT_PATHS)
 
-# check-main-actor-fs.py: no synchronous file-system call in the git and inspector code outside a
+# check-main-actor-fs.py: no synchronous file-system call in the git, inspector and terminal code outside a
 # bounded off-main read or its allowlist (docs/macapp-perf-facts.md). swift-format has no custom rules.
 app-lint: ## Lint Swift with swift-format (--strict), then check-main-actor-fs.py
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive $(APP_SWIFT_PATHS)

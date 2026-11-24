@@ -194,7 +194,7 @@ final class TerminalGroupTests: XCTestCase {
   /// Value: protects=a group's terminals start in its own folder (story 7), else in "New terminals
   /// open in"; fails_when=the folder is ignored, or a gone folder leaves its terminals homeless;
   /// why_new=#658; seam=AppStore; no_claim=the folder picker
-  func testAGroupsTerminalsStartInItsStartingFolder() throws {
+  func testAGroupsTerminalsStartInItsStartingFolder() async throws {
     let store = makeStore()
     let sid = try group(store)
     let folder = FileManager.default.temporaryDirectory
@@ -209,6 +209,8 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertEqual(tab.terminal?.launchDirectory, folder.path)
 
     try FileManager.default.removeItem(at: folder)
+    // Once its folder is checked again, off the main actor (`FolderPresence`).
+    await section.folderPresence.check(folder.path)
     XCTAssertEqual(store.target(for: sid)?.path, TerminalsSection.newTerminalDirectory())
 
     store.setTerminalGroupStartingFolder(sid, to: nil)

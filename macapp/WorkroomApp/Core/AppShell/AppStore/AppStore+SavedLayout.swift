@@ -295,8 +295,10 @@ extension AppStore {
   /// Which of the held targets' local paths exist, stat-ed at once off the main actor, each under
   /// `reattachStatTimeout`: a path on a stalled mount reads as gone, so its panes start fresh
   /// shells. A target with no tabs, or one that only appears later, is not stat-ed and so doesn't
-  /// reattach.
+  /// reattach. A terminal group's starting folder is checked first, the same way, so a group on a
+  /// stalled mount reattaches in "New terminals open in", as one whose folder is gone does.
   func presentTargetPaths() async -> Set<String> {
+    await terminalsSection.checkStartingFolders(of: terminals.heldTargetIDs)
     let paths = Set(
       terminals.heldTargetIDs.compactMap { id -> String? in
         guard let target = terminalTarget(forID: id), !target.isMissing,

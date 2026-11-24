@@ -256,4 +256,92 @@ final class MainActorFileSystemTests: XCTestCase {
     await eventually { model.isWatching }
     XCTAssertEqual(model.home, "/resolved/home")
   }
+
+  // MARK: A terminal group's starting folder
+
+  /// A window over `section` with a group starting in `folder`.
+  private func storeWithAGroup(
+    startingIn folder: String, section: TerminalsSection
+  ) throws -> (AppStore, SidebarID) {
+    let store = AppStore(terminalsSection: section)
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    let sid = try XCTUnwrap(store.newTerminalGroup(named: "Ops"))
+    store.setTerminalGroupStartingFolder(sid, to: folder)
+    return (store, sid)
+  }
+
+  /// A section whose folder checks are stuck until the test ends.
+  private func sectionWithAStuckStat() -> TerminalsSection {
+    let section = TerminalsSection()
+    section.folderPresence = FolderPresence(
+      timeout: 0.5, stat: { [stat = stuck(true)] _ in stat() })
+    return section
+  }
+
+  /// Value: protects=a group's new terminal never statting its starting folder on the main actor,
+  /// and an unreachable one starting in "New terminals open in", as a missing one does;
+  /// fails_when=TerminalGroup.workingDirectory stats synchronously, or a timed-out check keeps the
+  /// folder; why_new=check-main-actor-fs over Core/Terminal; seam=TerminalsSection.folderPresence;
+  /// no_claim=the folder picker
+  func testAStuckGroupFolderNeverStallsANewTerminalAndStartsInTheDefault() async throws {
+    let path = scratch.appendingPathComponent("stalled-group").path
+    let section = sectionWithAStuckStat()
+    let (store, sid) = try storeWithAGroup(startingIn: path, section: section)
+    let group = try XCTUnwrap(store.terminalGroup(sid))
+
+    let started = ContinuousClock.now
+    XCTAssertEqual(store.target(for: sid)?.path, path, "not checked yet: taken as there")
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(1), "read without the disk")
+
+    let checked = await whileMainActorStaysFree {
+      await group.checkedWorkingDirectory(presence: section.folderPresence)
+    }
+    XCTAssertEqual(checked, TerminalsSection.newTerminalDirectory(), "unreachable: the default")
+    XCTAssertEqual(store.target(for: sid)?.path, TerminalsSection.newTerminalDirectory())
+  }
+
+  /// Value: protects=session recovery never statting a restored group's starting folder on the
+  /// main actor, and a group on a stalled mount reattaching in "New terminals open in", as one
+  /// whose folder is gone does; fails_when=presentTargetPaths reads the group's folder through a
+  /// synchronous stat, or recovery keeps the stalled folder; why_new=check-main-actor-fs over
+  /// Core/Terminal; seam=TerminalsSection.folderPresence; no_claim=a live helper
+  func testAStuckGroupFolderNeverStallsRecoveryAndReattachesInTheDefault() async throws {
+    let path = scratch.appendingPathComponent("stalled-restore").path
+    let section = sectionWithAStuckStat()
+    let (store, sid) = try storeWithAGroup(startingIn: path, section: section)
+    let id = try XCTUnwrap(sid.targetID)
+    _ = store.terminals.addTab(for: try XCTUnwrap(store.target(for: sid)), focus: false)
+
+    let present = await whileMainActorStaysFree { await store.presentTargetPaths() }
+
+    XCTAssertEqual(store.target(for: sid)?.path, TerminalsSection.newTerminalDirectory())
+    XCTAssertTrue(store.reattachesLocally(id, present: present), "in the default folder")
+  }
+
+  /// The healthy path: a group's starting folder that is there is where its terminals start and
+  /// reattach, at once and once checked; one that has gone falls back once checked.
+  func testAGroupFolderThatIsThereIsWhereItsTerminalsStart() async throws {
+    let folder = scratch.appendingPathComponent("group")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let section = TerminalsSection()
+    section.folderPresence = FolderPresence()
+    let (store, sid) = try storeWithAGroup(startingIn: folder.path, section: section)
+    let id = try XCTUnwrap(sid.targetID)
+    let group = try XCTUnwrap(store.terminalGroup(sid))
+    _ = store.terminals.addTab(for: try XCTUnwrap(store.target(for: sid)), focus: false)
+
+    XCTAssertEqual(store.target(for: sid)?.path, folder.path)
+    let checked = await group.checkedWorkingDirectory(presence: section.folderPresence)
+    XCTAssertEqual(checked, folder.path)
+    let present = await store.presentTargetPaths()
+    XCTAssertTrue(present.contains(folder.path))
+    XCTAssertTrue(store.reattachesLocally(id, present: present))
+
+    try FileManager.default.removeItem(at: folder)
+    let gone = await group.checkedWorkingDirectory(presence: section.folderPresence)
+    XCTAssertEqual(gone, TerminalsSection.newTerminalDirectory())
+    XCTAssertEqual(store.target(for: sid)?.path, TerminalsSection.newTerminalDirectory())
+  }
 }
