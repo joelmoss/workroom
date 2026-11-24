@@ -21,8 +21,11 @@ struct FollowedRepositoryHold {
   /// The working tree's watch, and for a linked worktree a second one on its repository's git
   /// directory, where its HEAD and refs live, outside the tree.
   var watchers: [any RepositoryWatching]
-  /// The probe in flight, cancelled and replaced by the next.
-  var probe: Task<Void, Never>?
+  /// The full probe (local, then GitHub) in flight, cancelled and replaced by the next full one.
+  var probe: Task<Void, Never>? = nil
+  /// The local-only probe a change under the tree runs: its own lane, so a save never cancels the
+  /// pull request's probe (as the selected workroom's watch lane is apart from its selection's).
+  var localProbe: Task<Void, Never>? = nil
 }
 
 /// One GitHub probe result, for whichever status it lands in.
@@ -85,7 +88,7 @@ extension VCSStatusService {
       hold.holders += 1
       followedRepositories[key] = hold
     } else {
-      followedRepositories[key] = FollowedRepositoryHold(holders: 1, watchers: [], probe: nil)
+      followedRepositories[key] = FollowedRepositoryHold(holders: 1, watchers: [])
       if registeredSidebarID(forRepositoryRoot: key) == nil, followedStatuses[key] == nil {
         followedStatuses[key] = .unresolved
       }
@@ -106,6 +109,7 @@ extension VCSStatusService {
       return
     }
     hold.probe?.cancel()
+    hold.localProbe?.cancel()
     for watcher in hold.watchers { watcher.stop() }
     followedRepositories[key] = nil
     followedStatuses[key] = nil
@@ -163,8 +167,8 @@ extension VCSStatusService {
   }
 
   /// Re-read a followed repository's local status and, with `gitHub`, its CI and pull request.
-  /// Cancel-and-replace, so the latest change wins; a result for a repository no window follows any
-  /// more is dropped.
+  /// Cancel-and-replace within its lane (local-only, or full), so the latest change wins; a result
+  /// for a repository no window follows any more is dropped.
   func refreshFollowedStatus(_ root: String, gitHub: Bool) {
     let key = Self.canonicalPath(root)
     guard probesRepositories, var hold = followedRepositories[key] else { return }
@@ -173,8 +177,7 @@ extension VCSStatusService {
     if let registered, isCreating(registered) { return }
     if isCommittingProject(item?.sharedLocation) { return }
     let resolver = statusResolver
-    hold.probe?.cancel()
-    hold.probe = Task { [weak self] in
+    let task = Task { [weak self] in
       let fresh =
         if let item {
           await resolver.working.resolve(item: item)
@@ -201,12 +204,22 @@ extension VCSStatusService {
           self?.applyFollowedGitHub(update, root: key, registered: registered)
         })
     }
+    if gitHub {
+      hold.probe?.cancel()
+      hold.probe = task
+    } else {
+      hold.localProbe?.cancel()
+      hold.localProbe = task
+    }
     followedRepositories[key] = hold
   }
 
   /// Wait for every followed repository's probe in flight. For tests.
   func followedStatusSettled() async {
-    for hold in followedRepositories.values { await hold.probe?.value }
+    for hold in followedRepositories.values {
+      await hold.probe?.value
+      await hold.localProbe?.value
+    }
   }
 
   private func mergeFollowedStatus(_ fresh: WorkroomStatus, root: String, registered: SidebarID?) {

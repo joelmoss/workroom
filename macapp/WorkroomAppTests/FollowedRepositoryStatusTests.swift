@@ -27,9 +27,12 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     func stop() { stopped = true }
   }
 
-  /// `git` runs for real; `gh` answers as a GitHub repository with one open pull request.
+  /// `git` runs for real; `gh` never does. With `onGitHub` it answers as a GitHub repository with
+  /// one open pull request, else as a repository with no GitHub remote.
   private final class GitHubRunner: StatusCommandRunning, Sendable {
     private let real = StatusCommandRunner()
+    private let onGitHub: Bool
+    init(onGitHub: Bool) { self.onGitHub = onGitHub }
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
@@ -40,6 +43,11 @@ final class FollowedRepositoryStatusTests: XCTestCase {
         CommandResult(stdout: out, stderr: "", exitCode: 0, timedOut: false)
       }
       if args.first == "--version" { return ok("gh version 2.60.0 (2024-10-01)\n") }
+      guard onGitHub else {
+        if args.first == "auth" { return ok("") }
+        return CommandResult(
+          stdout: "", stderr: "no git remotes found", exitCode: 1, timedOut: false)
+      }
       if args.prefix(2) == ["repo", "view"] { return ok("https://github.com/octo/repo\n") }
       if args.prefix(2) == ["pr", "checks"] { return ok("[]") }
       if args.contains("graphql") {
@@ -70,8 +78,9 @@ final class FollowedRepositoryStatusTests: XCTestCase {
 
   // MARK: Scaffold
 
-  private func makeStatus() -> VCSStatusService {
+  private func makeStatus(onGitHub: Bool = false) -> VCSStatusService {
     let status = VCSStatusService(projectStore: projects)
+    status.statusResolver = WorkroomStatusResolver(runner: GitHubRunner(onGitHub: onGitHub))
     status.makeRepositoryWatcher = { [weak self] onChange in
       let watcher = RecordingWatcher(onChange: onChange)
       self?.watchers.append(watcher)
@@ -195,8 +204,7 @@ final class FollowedRepositoryStatusTests: XCTestCase {
   /// probe never runs for a followed repository, or lands nowhere the panel reads; why_new=#807;
   /// seam=VCSStatusService (gh stubbed, git real); no_claim=the PR actions (#808)
   func testPullRequestShowsTheFollowedBranchsPullRequest() async throws {
-    let status = makeStatus()
-    status.statusResolver = WorkroomStatusResolver(runner: GitHubRunner())
+    let status = makeStatus(onGitHub: true)
     let store = makeStore(status)
     let tab = try await openTerminal(store)
     let root = repo("app", branch: "feature/x")
@@ -206,6 +214,23 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     let followed = try XCTUnwrap(status.status(for: store.inspectorSubject))
     XCTAssertEqual(followed.pr?.number, 9)
     XCTAssertNotNil(followed.prCheckedAt)
+  }
+
+  /// Value: protects=a save while the pull request is being read; fails_when=the watch's
+  /// local-only re-read cancels the PR probe, leaving "Checking…" until a manual refresh;
+  /// why_new=#807; seam=VCSStatusService; no_claim=timing of the real watch
+  func testASaveWhileThePullRequestLoadsDoesNotCancelIt() async throws {
+    let status = makeStatus(onGitHub: true)
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let root = repo("app", branch: "feature/x")
+
+    try XCTUnwrap(store.terminals.surface(tab)).handlePwd(root)
+    await store.followedFolderResolved()
+    try XCTUnwrap(watcher(for: root)).onChange([root + "/src/a.txt"], false)
+    await settle(store)
+
+    XCTAssertEqual(status.status(for: store.inspectorSubject)?.pr?.number, 9)
   }
 
   /// Value: protects=a followed repository with no GitHub remote settling (no "Checking…" forever);
@@ -244,6 +269,57 @@ final class FollowedRepositoryStatusTests: XCTestCase {
     XCTAssertEqual(status.status(for: store.inspectorSubject), status.workroomStatuses[row])
     XCTAssertEqual(changedPaths(store), ["src/a.txt"])
     XCTAssertTrue(status.followedStatuses.isEmpty)
+  }
+
+  /// Value: protects=the registered match comparing canonical paths (parent decision after #805):
+  /// a workroom registered as `/var/...` while git names it `/private/var/...`; fails_when=the
+  /// spelling difference makes it a second, sidebar-less entry; why_new=#807;
+  /// seam=VCSStatusService; no_claim=remote workrooms (never matched)
+  func testAWorkroomRegisteredByAnotherSpellingStillShowsInPlace() async throws {
+    let root = repo("wr")
+    let spelled = root.hasPrefix("/private/") ? String(root.dropFirst("/private".count)) : root
+    try XCTSkipIf(spelled == root, "the scratch folder has no second spelling")
+    projects.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [Workroom(name: "a", path: spelled, vcsName: "workroom/a", warnings: [])])
+    ]
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+
+    try await cd(store, tab, root)
+
+    let row = SidebarID.workroom(project: "/p", name: "a")
+    XCTAssertEqual(status.registeredSidebarID(forRepositoryRoot: root), row)
+    XCTAssertEqual(status.workroomStatuses[row]?.changedFiles?.map(\.path), ["src/a.txt"])
+    XCTAssertTrue(status.followedStatuses.isEmpty)
+  }
+
+  /// Value: protects=a diff opened from a followed repository reading that repository, and two
+  /// repositories' same-named files staying apart; fails_when=the diff reads the terminal's folder,
+  /// or repo two's `src/a.txt` re-selects repo one's tab; why_new=#807; seam=AppStore content
+  /// tabs; no_claim=the diff's rendering
+  func testADiffFromAFollowedRepositoryReadsThatRepository() async throws {
+    let status = makeStatus()
+    let store = makeStore(status)
+    let tab = try await openTerminal(store)
+    let one = repo("one")
+    let two = repo("two")
+    let target = try XCTUnwrap(store.selectedTarget)
+    let file = ChangedFile(path: "src/a.txt", change: .modified)
+    func focusedDiffRoot() -> String? {
+      guard case .diff(let d) = store.terminals.focusedTab(for: target)?.content else { return nil }
+      return d.repositoryRoot
+    }
+
+    try await cd(store, tab, one)
+    store.openDiffPersistent(file, source: .gitWorktree)
+    XCTAssertEqual(focusedDiffRoot(), one)
+
+    try await cd(store, tab, two)
+    store.openDiffPersistent(file, source: .gitWorktree)
+    XCTAssertEqual(focusedDiffRoot(), two)
   }
 
   /// Value: protects=the not-a-repo state's store half (AC 5); fails_when=a folder outside any
