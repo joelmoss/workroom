@@ -92,6 +92,15 @@ final class VCSStatusService: ObservableObject {
   private var storedFollowedStatuses: [String: WorkroomStatus] = [:]
   /// Who follows which repository, and its watches (`VCSStatusService+Followed.swift`).
   @ObservationIgnored var followedRepositories: [String: FollowedRepositoryHold] = [:]
+  /// The followed repositories with a commit in flight, by canonical root: what `committingTargets`
+  /// is for a sidebar row (#808).
+  var committingFollowedRoots: Set<String> {
+    get { storedCommittingFollowedRoots }
+    set { storedCommittingFollowedRoots = newValue }
+  }
+  private var storedCommittingFollowedRoots: Set<String> = []
+  /// The router releases in flight, chained in order (`releaseFollowed`).
+  @ObservationIgnored var followedRelease: Task<Void, Never>?
   /// Makes a watch on a followed repository's tree, or on a linked worktree's git directory. The
   /// host file watcher in the app; tests record it and drive the change handler themselves.
   @ObservationIgnored var makeRepositoryWatcher:
@@ -208,6 +217,20 @@ final class VCSStatusService: ObservableObject {
       return status(forFollowedRoot: root)
     case .nothing: return nil
     }
+  }
+
+  /// The status a version-control action reads: a row's, or a followed repository's own.
+  func status(for target: VCSActionTarget) -> WorkroomStatus? {
+    switch target {
+    case .row(let sid): return sid.isStatusable ? workroomStatuses[sid] : nil
+    case .followed(let root): return followedStatuses[root]
+    }
+  }
+
+  /// The status of what the toolbar's model is pointed at.
+  func status(for target: RemoteStateModel.Target) -> WorkroomStatus? {
+    if let root = target.followedRoot { return followedStatuses[root] }
+    return workroomStatuses[target.sid]
   }
 
   /// Hand `window` every local status merged while it lives. Idempotent.
@@ -607,6 +630,34 @@ final class VCSStatusService: ObservableObject {
   /// than queuing into the gate and racing the one already running.
   func isWritingProject(_ repository: RepositoryLocation) -> Bool {
     writingProjectRoots[repository, default: 0] > 0
+  }
+
+  func isCommitting(_ target: VCSActionTarget) -> Bool {
+    switch target {
+    case .row(let sid): return isCommitting(sid)
+    case .followed(let root): return committingFollowedRoots.contains(root)
+    }
+  }
+
+  /// `beginCommit(sid:root:)` for whatever a commit acts on. Pair with `endCommit(_:root:)`.
+  func beginCommit(_ target: VCSActionTarget, root: RepositoryLocation) {
+    switch target {
+    case .row(let sid): beginCommit(sid: sid, root: root)
+    case .followed(let followed):
+      committingFollowedRoots.insert(followed)
+      committingProjectRoots[root, default: 0] += 1
+      beginWrite(projectRoot: root)
+    }
+  }
+
+  func endCommit(_ target: VCSActionTarget, root: RepositoryLocation) {
+    switch target {
+    case .row(let sid): endCommit(sid: sid, root: root)
+    case .followed(let followed):
+      Self.decrement(&committingProjectRoots, at: root)
+      endWrite(projectRoot: root)
+      committingFollowedRoots.remove(followed)
+    }
   }
 
   /// Mark a commit of `sid` starting against `root`: the row's button state, the read lanes'

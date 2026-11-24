@@ -10,19 +10,65 @@ import WorkroomVCS
 extension AppStore {
   /// Whether `sid` has anything a commit could record, and none is in flight: the Changes header's
   /// commit button and Room ▸ Commit… both ask this.
-  func canCommit(_ sid: SidebarID?) -> Bool {
-    guard let sid, sid.isStatusable, let status = vcsStatus.workroomStatuses[sid],
-      !vcsStatus.isCommitting(sid)
+  @_disfavoredOverload
+  func canCommit(_ sid: SidebarID?) -> Bool { canCommit(sid.map(VCSActionTarget.row)) }
+
+  /// Whether `target` has anything a commit could record, and none is in flight. A followed
+  /// repository's (#808) answers from its own status, which is there only while a window follows it.
+  func canCommit(_ target: VCSActionTarget?) -> Bool {
+    guard let target, let status = vcsStatus.status(for: target), !vcsStatus.isCommitting(target)
     else { return false }
     return !(status.isClean || status.isUnknown)
   }
 
   /// Open the commit dialog for `sid`, when it has something to commit.
-  func requestCommit(_ sid: SidebarID?) {
-    guard let sid, canCommit(sid), vcsStatus.selectedStatusWorkItem(for: sid) != nil else {
-      return
+  @_disfavoredOverload
+  func requestCommit(_ sid: SidebarID?) { requestCommit(sid.map(VCSActionTarget.row)) }
+
+  /// Open the commit dialog for `target`, when it has something to commit.
+  func requestCommit(_ target: VCSActionTarget?) {
+    guard let target, canCommit(target) else { return }
+    switch target {
+    case .row(let sid): guard vcsStatus.selectedStatusWorkItem(for: sid) != nil else { return }
+    case .followed(let root): guard vcsStatus.followedRepositories[root] != nil else { return }
     }
-    modals.pendingCommit = PendingCommit(sid: sid)
+    modals.pendingCommit = PendingCommit(target: target)
+  }
+
+  /// What a version-control action in the inspector acts on: its workroom or project root, or the
+  /// repository a terminal's inspector follows (#808). A followed repository that is a registered
+  /// row's acts as that row, in place. Nil when there is no repository to act on: nothing selected,
+  /// a folder outside a repository, one git couldn't tell about, a repository this window no longer
+  /// holds, or one the app can't write to.
+  var inspectorActionTarget: VCSActionTarget? {
+    switch inspectorSubject {
+    case .target(let sid): return .row(sid)
+    case .followed(let followed):
+      guard let repository = followed.repository, repository.isWritable,
+        let root = heldFollowedRepository, root == repository.root
+      else { return nil }
+      if let sid = vcsStatus.registeredSidebarID(forCanonicalRoot: root) { return .row(sid) }
+      return .followed(root: root)
+    case .nothing: return nil
+    }
+  }
+
+  /// Where a write to `target` lands, resolved when the write runs from what was captured at the
+  /// click. A followed repository's is its registration's, awaited: nil once no window follows it,
+  /// so the write is refused rather than sent wherever the terminal has gone since.
+  private func writeLocation(for target: VCSActionTarget) async throws -> RepositoryLocation {
+    switch target {
+    case .row(let sid):
+      guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
+        throw RepositoryRoutingError.registrationRequired
+      }
+      return try await item.resolvedLocation()
+    case .followed(let root):
+      guard let location = await vcsStatus.followedWriteLocation(root) else {
+        throw FollowedRepositoryGone()
+      }
+      return location
+    }
   }
 
   /// Run a PR write action (Phase 2b) on the selected workroom's PR: shell to `gh`, refresh the PR
@@ -117,8 +163,28 @@ extension AppStore {
     _ request: VCSCommitRequest, on sid: SidebarID,
     completion: @escaping (VCSCommitResult) -> Void
   ) {
-    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
-      return completion(.failed(.other("That workroom is no longer available.")))
+    performCommit(request, on: .row(sid), completion: completion)
+  }
+
+  /// Record a commit for `target`, a row or a followed repository (#808), captured by the caller: a
+  /// terminal can `cd` to another repository while a hook runs, and the commit and every refresh
+  /// below belong to the repository the sheet was opened for.
+  func performCommit(
+    _ request: VCSCommitRequest, on target: VCSActionTarget,
+    completion: @escaping (VCSCommitResult) -> Void
+  ) {
+    let item: VCSStatusService.StatusWorkItem?
+    switch target {
+    case .row(let sid):
+      guard let found = vcsStatus.selectedStatusWorkItem(for: sid) else {
+        return completion(.failed(.other("That workroom is no longer available.")))
+      }
+      item = found
+    case .followed(let root):
+      guard vcsStatus.followedRepositories[root] != nil else {
+        return completion(.failed(.other(FollowedRepositoryGone().localizedDescription)))
+      }
+      item = nil
     }
     // The services' local writer, when they have one (the fixture's `FixtureVCSWriter`, since its
     // paths aren't real repos and a live write would only ever fail), replaces only the WRITER:
@@ -132,7 +198,7 @@ extension AppStore {
       let root: RepositoryLocation
       let commit: () async -> VCSCommitResult
       do {
-        if let localWriter {
+        if let localWriter, let item {
           let local = try await RepositoryLocation.local(item.projectRoot)
           let writer = try localWriter(try local.requireLocalURL())
           root = local
@@ -140,7 +206,7 @@ extension AppStore {
             await writer.commit(path: item.path, projectRoot: local.path, request: request)
           }
         } else {
-          let location = try await item.resolvedLocation()
+          let location = try await self.writeLocation(for: target)
           let writer = try await RepositoryRouter.shared.writer(for: location)
           root = try writer.context.requireOwnership()
           commit = { await writer.commit(request: request) }
@@ -159,18 +225,30 @@ extension AppStore {
       // permanently, since nothing else ever decrements it, refusing every future write for this
       // project, in every window, until the app restarts.
       let vcsStatus = self.vcsStatus
-      vcsStatus.beginCommit(sid: sid, root: root)
+      vcsStatus.beginCommit(target, root: root)
       let result = await commit()
-      vcsStatus.endCommit(sid: sid, root: root)
+      vcsStatus.endCommit(target, root: root)
       switch result {
       case .ok, .committedThenFailed:
-        // Refresh by the CAPTURED sid: the watcher lane is suppressed while the commit runs
+        // Refresh by the CAPTURED target: the watcher lane is suppressed while the commit runs
         // (`isCommittingProject`), so the commit's own churn never refreshes the Changes list.
-        vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: false)
+        switch target {
+        case .row(let sid):
+          vcsStatus.refreshLocalStatus(for: sid, skippingCreatesAndCommits: false)
+          // A registered row a terminal's inspector follows in place: its followed lane too, which
+          // is the one that reads it while no workroom is selected.
+          if let held = self.heldFollowedRepository,
+            vcsStatus.registeredSidebarID(forCanonicalRoot: held) == sid
+          {
+            vcsStatus.refreshFollowedStatus(held, gitHub: false)
+          }
+        case .followed(let followed):
+          vcsStatus.refreshFollowedStatus(followed, gitHub: false)
+        }
         // History gained a commit, and the ahead count and Push button both moved. Only refresh the
-        // models that are still pointed at the row we committed — otherwise switching workrooms
-        // mid-commit would repoint them at the wrong repo's log.
-        if self.inspectorTargetID == sid {
+        // models that are still pointed at what we committed — otherwise switching workrooms, or a
+        // `cd` to another repository, mid-commit would repoint them at the wrong repo's log.
+        if self.inspectorActionTarget == target {
           self.commitHistory.refresh()
           self.remoteState.refresh()
         }
@@ -188,13 +266,17 @@ extension AppStore {
   func stagedContentAtRisk(
     on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
   ) {
+    stagedContentAtRisk(on: .row(sid), files: files, completion: completion)
+  }
+
+  func stagedContentAtRisk(
+    on target: VCSActionTarget, files: [ChangedFile],
+    completion: @escaping (Result<[String], Error>) -> Void
+  ) {
     guard vcsStatus.probesRepositories else { return completion(.success([])) }
-    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
-      return completion(.failure(RepositoryRoutingError.registrationRequired))
-    }
     Task {
       do {
-        let location = try await item.resolvedLocation()
+        let location = try await self.writeLocation(for: target)
         let writer = try await RepositoryRouter.shared.writer(for: location)
         completion(.success(try await writer.stagedContentAtRisk(files: files)))
       } catch { completion(.failure(error)) }
@@ -213,12 +295,15 @@ extension AppStore {
   func commitPreflight(
     on sid: SidebarID, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
   ) {
-    guard let item = vcsStatus.selectedStatusWorkItem(for: sid) else {
-      return completion(.failure(RepositoryRoutingError.registrationRequired))
-    }
+    commitPreflight(on: .row(sid), completion: completion)
+  }
+
+  func commitPreflight(
+    on target: VCSActionTarget, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
+  ) {
     Task {
       do {
-        let location = try await item.resolvedLocation()
+        let location = try await self.writeLocation(for: target)
         let writer = try await RepositoryRouter.shared.writer(for: location)
         completion(.success(try await writer.commitPreflight()))
       } catch { completion(.failure(error)) }

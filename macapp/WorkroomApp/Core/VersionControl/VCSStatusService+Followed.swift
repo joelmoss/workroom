@@ -26,6 +26,10 @@ struct FollowedRepositoryHold {
   /// The local-only probe a change under the tree runs: its own lane, so a save never cancels the
   /// pull request's probe (as the selected workroom's watch lane is apart from its selection's).
   var localProbe: Task<Void, Never>? = nil
+  /// Its registration with the repository router (#808), held from the first window's follow to
+  /// the last one's unfollow: what lets a write address it. Nil inside when its location couldn't
+  /// be told.
+  var registration: Task<RepositoryRouter.Registration?, Never>? = nil
 }
 
 /// One GitHub probe result, for whichever status it lands in.
@@ -61,7 +65,7 @@ extension VCSStatusService {
   /// The registered row whose canonical path is `root`, already canonical (git names a repository
   /// by its real path). Reads an index of the registered paths, built once per change to the
   /// projects, so the inspector's reads run no `realpath` (review of #807, finding 4).
-  private func registeredSidebarID(forCanonicalRoot root: String) -> SidebarID? {
+  func registeredSidebarID(forCanonicalRoot root: String) -> SidebarID? {
     let projects = projectStore.projects
     if let index = registeredIndex, index.projects == projects { return index.ids[root] }
     var ids: [String: SidebarID] = [:]
@@ -98,7 +102,8 @@ extension VCSStatusService {
       hold.holders += 1
       followedRepositories[key] = hold
     } else {
-      followedRepositories[key] = FollowedRepositoryHold(holders: 1, watchers: [])
+      followedRepositories[key] = FollowedRepositoryHold(
+        holders: 1, watchers: [], registration: registerFollowed(key))
       if registeredSidebarID(forRepositoryRoot: key) == nil, followedStatuses[key] == nil {
         followedStatuses[key] = .unresolved
       }
@@ -123,6 +128,85 @@ extension VCSStatusService {
     for watcher in hold.watchers { watcher.stop() }
     followedRepositories[key] = nil
     followedStatuses[key] = nil
+    releaseFollowed(hold.registration)
+  }
+
+  // MARK: Registration
+
+  /// Register a followed repository with the router, so a commit, push, pull or fetch in it routes
+  /// as a workroom's does (#808). One hold on the router per hold here, taken once its location is
+  /// known and released by `releaseFollowed` only after that, so the two always balance: a
+  /// repository let go and followed again while this runs ends with exactly the new hold's.
+  private func registerFollowed(_ key: String) -> Task<RepositoryRouter.Registration?, Never> {
+    let router = RepositoryRouter.shared
+    return Task {
+      guard let registration = await VCSStatusService.followedRegistration(root: key) else {
+        return nil
+      }
+      router.holdFollowed(registration)
+      return registration
+    }
+  }
+
+  /// Release what `registration` took, once it has taken it: nothing, when it registered nothing.
+  private func releaseFollowed(_ registration: Task<RepositoryRouter.Registration?, Never>?) {
+    guard let registration else { return }
+    let router = RepositoryRouter.shared
+    let earlier = followedRelease
+    followedRelease = Task {
+      await earlier?.value
+      if let held = await registration.value { router.releaseFollowed(held.location) }
+    }
+  }
+
+  /// A followed repository's registration: itself as the repository its writes are serialised on,
+  /// or for a linked worktree its main working tree, whose refs and objects it shares. A submodule
+  /// or a worktree of a bare repository (a git directory that is no `<tree>/.git`) is its own.
+  nonisolated static func followedRegistration(root: String) async
+    -> RepositoryRouter.Registration?
+  {
+    guard let location = try? await RepositoryLocation.local(root) else { return nil }
+    var shared = location
+    let path = location.path
+    if (try? await runBlocking({ gitDirectoryIsOutsideTree(path) })) == true {
+      let r = await StatusCommandRunner().run(
+        "git",
+        GitCommand.hardening + ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        in: path, timeout: 3)
+      let directory = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) as NSString
+      if r.ok, directory.lastPathComponent == ".git",
+        let main = try? await RepositoryLocation.local(directory.deletingLastPathComponent)
+      {
+        shared = main
+      }
+    }
+    return try? RepositoryRouter.Registration(
+      location: location, sharedLocation: shared, localSourcePath: root)
+  }
+
+  /// Where a write to the followed repository at `root` lands: its registered location, once its
+  /// registration is in. Nil when no window follows it (any more): a write then addresses nothing,
+  /// never whichever repository the terminal has moved to.
+  func followedWriteLocation(_ root: String) async -> RepositoryLocation? {
+    guard let registration = followedRepositories[root]?.registration else { return nil }
+    let registered = await registration.value
+    // Let go of while it was awaited, and perhaps followed again under a new hold: only the hold
+    // whose registration this is may be written through.
+    guard followedRepositories[root]?.registration == registration else { return nil }
+    return registered?.location
+  }
+
+  /// The repository a followed root's writes are serialised on, once it is registered: what the
+  /// read lanes stand clear of while a commit runs there.
+  func followedSharedLocation(_ root: String) -> RepositoryLocation? {
+    let router = RepositoryRouter.shared
+    return router.localLocation(for: root).flatMap { router.entry(for: $0)?.sharedLocation }
+  }
+
+  /// Wait for every followed repository's registration, and every release, in flight. For tests.
+  func followedRegistrationsSettled() async {
+    for hold in followedRepositories.values { _ = await hold.registration?.value }
+    await followedRelease?.value
   }
 
   private func startWatching(_ key: String) {
@@ -206,7 +290,9 @@ extension VCSStatusService {
     let registered = registeredSidebarID(forRepositoryRoot: key)
     let item = registered.flatMap(selectedStatusWorkItem(for:))
     if let registered, isCreating(registered) { return }
-    if isCommittingProject(item?.sharedLocation) { return }
+    // A followed repository's own commit keeps its read lanes off it too (#808): a `git status`
+    // mid-commit contends on `index.lock`, as for a workroom.
+    if isCommittingProject(item?.sharedLocation ?? followedSharedLocation(key)) { return }
     let resolver = statusResolver
     let debounce = debounced ? followedProbeDebounce : 0
     let task = Task { [weak self] in

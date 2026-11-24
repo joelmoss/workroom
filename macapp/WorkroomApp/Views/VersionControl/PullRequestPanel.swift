@@ -34,7 +34,8 @@ struct PullRequestPanel: View {
         case .target(let sid) where sid.isStatusable:
           content(for: sid)
         case .followed:
-          // A followed repository's pull request is read-only here: its actions are #808's.
+          // A followed repository's pull request is read-only here: #808 gave it the Changes
+          // actions (commit, push, pull, fetch), not the pull request's.
           content(for: nil)
         case .target, .nothing:
           inspectorMessage("Select a workroom to see its pull request.")

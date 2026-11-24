@@ -7,8 +7,12 @@ import WorkroomVCS
 /// `.sheet(item:)` keys on `id`, so the sheet's `@State` — the draft and the selection — is rebuilt
 /// per target and can never leak from one workroom into another.
 struct PendingCommit: Identifiable, Equatable, Sendable {
-  let sid: SidebarID
-  var id: String { "\(sid.hashValue)" }
+  /// What the commit records into: a row's working copy, or a followed repository (#808).
+  let target: VCSActionTarget
+  var id: String { "\(target.hashValue)" }
+
+  init(target: VCSActionTarget) { self.target = target }
+  init(sid: SidebarID) { self.target = .row(sid) }
 }
 
 /// The commit sheet's pure logic: what the message is, what is selected, and what the button says.

@@ -32,6 +32,11 @@ final class RemoteStateModel: ObservableObject {
     let path: String
     let projectRoot: String
     var location: RepositoryLocation? = nil
+    /// Set for a repository a terminal's inspector follows that is no sidebar row's (#808): its
+    /// canonical root, which is also `path`. `sid` is then the terminal's row, which names no
+    /// repository, so the root is what tells two followed repositories apart. Its location is
+    /// resolved through `followedLocation` on every read and action, never from the path.
+    var followedRoot: String? = nil
   }
 
   @Published private(set) var state: State = .idle
@@ -115,6 +120,10 @@ final class RemoteStateModel: ObservableObject {
   /// `performCommit` pairs its own `beginWrite`/`endWrite` calls.
   var writeDidStart: (@MainActor (RepositoryLocation) -> Void)?
   var writeDidFinish: (@MainActor (RepositoryLocation) -> Void)?
+  /// Where a followed repository's reads and writes land (`Target.followedRoot`): its registration's
+  /// location, awaited, or nil once no window follows it, which refuses the read or the action.
+  /// Wired post-init to `VCSStatusService.followedWriteLocation`.
+  var followedLocation: (@MainActor (String) async -> RepositoryLocation?)?
 
   init(
     makeWriter: (@Sendable (URL) throws -> LocalVCSWriting)? = nil,
@@ -133,7 +142,12 @@ final class RemoteStateModel: ObservableObject {
 
   private func resolveWriter(_ target: Target) async throws -> VCSWriting {
     let location: RepositoryLocation
-    if let supplied = target.location {
+    if let root = target.followedRoot {
+      // Registered while some window follows it, and addressed only through that registration: a
+      // repository let go since the click resolves to nothing, never to wherever the path leads.
+      guard let held = await followedLocation?(root) else { throw FollowedRepositoryGone() }
+      location = held
+    } else if let supplied = target.location {
       location = supplied
     } else {
       location = try await RepositoryLocation.local(target.path)
@@ -475,6 +489,11 @@ final class RemoteStateModel: ObservableObject {
   /// still have left the working copy conflicted.
   /// `sid` is the workroom the pull ran in — checked, not trusted, for the same reason `finish` checks it:
   /// the sweep this waits on is async, so the selection can move before it lands.
+  func noteConflictState(_ conflicted: Bool, for pulled: Target) {
+    guard target == pulled, lastAction == .pull, lastFailure == nil else { return }
+    lastPullConflicted = conflicted
+  }
+
   func noteConflictState(
     _ conflicted: Bool, for sid: SidebarID, location: RepositoryLocation? = nil
   ) {

@@ -60,7 +60,9 @@ struct RightInspector: View {
     ) { item in
       // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
       // the selection can move while it's open and `performRemoteAction` would re-derive the target.
-      Button(item.action.label) { store.runRemoteAction(item.action, on: item.sid) }
+      Button(item.action.label) {
+        store.runRemoteAction(item.action, on: item.sid, followedRoot: item.followedRoot)
+      }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
       Text("Your uncommitted changes will be stashed and reapplied after the rebase.")
@@ -108,7 +110,7 @@ struct RightInspector: View {
   }
 
   /// Whether the inspector's subject has anything a commit could record.
-  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorSubject.sidebarID) }
+  private var canCommitSelectedTarget: Bool { store.canCommit(store.inspectorActionTarget) }
 
   private var commitButtonHelp: String {
     canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
@@ -141,7 +143,7 @@ struct RightInspector: View {
               systemImage: "checkmark.circle", help: commitButtonHelp,
               disabled: !canCommitSelectedTarget
             ) {
-              store.requestCommit(store.inspectorSubject.sidebarID)
+              store.requestCommit(store.inspectorActionTarget)
             }
             .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {

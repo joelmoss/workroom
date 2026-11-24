@@ -11,5 +11,9 @@ import WorkroomVCS
 struct PendingVCSAction: Identifiable, Equatable, Sendable {
   let action: VCSRemoteAction
   let sid: SidebarID
-  var id: String { "\(action.rawValue)-\(sid.hashValue)" }
+  /// The followed repository it was raised for (`RemoteStateModel.Target.followedRoot`), nil for a
+  /// row's: the terminal's row is the same wherever its shell `cd`s, so the root is what
+  /// `runRemoteAction` verifies for one (#808).
+  var followedRoot: String? = nil
+  var id: String { "\(action.rawValue)-\(sid.hashValue)-\(followedRoot ?? "")" }
 }

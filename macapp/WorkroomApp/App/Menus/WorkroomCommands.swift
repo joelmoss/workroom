@@ -512,7 +512,7 @@ struct WorkroomCommands: Commands {
 
       Divider()
       // The Changes header's commit button.
-      Button("Commit…") { store?.requestCommit(store?.inspectorTargetID) }
+      Button("Commit…") { store?.requestCommit(store?.inspectorActionTarget) }
         .shortcut(.commit)
         .disabled(!workroomCommandEnabled(canCommit))
       Button("Fetch") { store?.performRemoteAction(.fetch) }

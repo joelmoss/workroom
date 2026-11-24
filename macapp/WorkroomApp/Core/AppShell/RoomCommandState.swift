@@ -20,7 +20,8 @@ struct RoomCommandState: Equatable {
     // without making the Commands body itself observe the whole status dictionary.
     let canReveal = store.selectedTarget.map { !$0.isMissing } ?? false
     let subject = store.inspectorSubject
-    guard !store.modals.hasModalPresentation, let sid = subject.sidebarID else {
+    // Commit and the pull request items act on a followed repository too (#808).
+    guard !store.modals.hasModalPresentation, let target = store.inspectorActionTarget else {
       return Self(
         canCommit: false, pullRequest: nil, canChangeDraft: false, canRevealInFinder: canReveal)
     }
@@ -31,7 +32,7 @@ struct RoomCommandState: Equatable {
       PRAction.available(for: $0).first { $0 == .markReady || $0 == .convertToDraft }
     }
     return Self(
-      canCommit: store.canCommit(sid),
+      canCommit: store.canCommit(target),
       pullRequest: pr.map { PullRequest(number: $0.number, url: $0.url, draftAction: draftAction) },
       canChangeDraft: draftAction != nil && !store.prActionInFlight,
       canRevealInFinder: canReveal)

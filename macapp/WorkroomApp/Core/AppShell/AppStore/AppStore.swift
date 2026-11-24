@@ -543,11 +543,23 @@ final class AppStore: ObservableObject {
   /// A `.project` row is deliberately not statusable — it's the collapsible header, not a working copy —
   /// so it resolves to nil and the toolbar shows its "no workroom selected" state.
   func remoteTarget() -> RemoteStateModel.Target? {
-    let sid: SidebarID
     switch inspectorSubject {
-    case .target(let item): sid = item
-    case .followed, .nothing: return nil
+    case .target(let sid): return remoteTarget(for: sid)
+    case .followed(let followed):
+      // A terminal's followed repository (#808): the one this window holds, so its registration
+      // is there to write through. A registered row's is that row's own target, in place.
+      guard let repository = followed.repository, let root = heldFollowedRepository,
+        root == repository.root, let sid = selectedTargetID
+      else { return nil }
+      if let registered = vcsStatus.registeredSidebarID(forCanonicalRoot: root) {
+        return remoteTarget(for: registered)
+      }
+      return RemoteStateModel.Target(sid: sid, path: root, projectRoot: root, followedRoot: root)
+    case .nothing: return nil
     }
+  }
+
+  private func remoteTarget(for sid: SidebarID) -> RemoteStateModel.Target? {
     let projectPath: String
     let path: String
     switch sid {
@@ -769,11 +781,12 @@ final class AppStore: ObservableObject {
     guard let target = remoteState.target else { return }
     // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
     // will stash and reapply, which is worth saying before it happens.
-    if action == .pull, vcsStatus.workroomStatuses[target.sid]?.dirty == true {
-      modals.pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
+    if action == .pull, vcsStatus.status(for: target)?.dirty == true {
+      modals.pendingRemoteConfirm = PendingVCSAction(
+        action: action, sid: target.sid, followedRoot: target.followedRoot)
       return
     }
-    runRemoteAction(action, on: target.sid)
+    runRemoteAction(action, on: target.sid, followedRoot: target.followedRoot)
   }
 
   /// Run a confirmed action against the workroom it was confirmed FOR.
@@ -781,8 +794,15 @@ final class AppStore: ObservableObject {
   /// The `sid` is checked rather than trusted: the confirmation dialog is not modal to the sidebar, so
   /// the selection can move while it is open. Re-deriving the target at click time would silently run
   /// the pull against a different workroom than the one the dirty-tree warning described.
-  func runRemoteAction(_ action: VCSRemoteAction, on sid: SidebarID) {
-    guard let target = remoteState.target, target.sid == sid else { return }
+  ///
+  /// `followedRoot` is checked the same way for a followed repository (#808): its `sid` is the
+  /// terminal's row, which stays put while the shell `cd`s to another repository.
+  func runRemoteAction(
+    _ action: VCSRemoteAction, on sid: SidebarID, followedRoot: String? = nil
+  ) {
+    guard let target = remoteState.target, target.sid == sid,
+      target.followedRoot == followedRoot
+    else { return }
     guard vcsAllowsRemoteActions else { return }
     remoteState.perform(action, setUpstream: remoteState.snapshot?.tracking?.gone == true)
   }
@@ -928,16 +948,31 @@ final class AppStore: ObservableObject {
     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
     // every branch-showing surface reads through `branchName(for:)`.
     self.remoteState.onBranchResolved = { [weak self] target, name in
-      guard let self,
+      // A followed repository's branch is its folder's resolve's: `target.sid` there is the
+      // terminal's row, which caches no branch.
+      guard let self, target.followedRoot == nil,
         self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
       else { return }
       self.setResolvedBranchName(name, for: target.sid)
     }
     self.remoteState.onDidMutate = { [weak self] action, target in
-      guard let self,
-        self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      guard let self else { return }
+      if let root = target.followedRoot {
+        return self.handleFollowedRemoteMutation(action, root: root, target: target)
+      }
+      guard self.vcsStatus.selectedStatusWorkItem(for: target.sid)?.location == target.location
       else { return }
+      // A registered row a terminal's inspector follows in place (#808): no selection refresh
+      // reaches it, so its followed lane re-reads it.
+      if let held = self.heldFollowedRepository,
+        self.vcsStatus.registeredSidebarID(forCanonicalRoot: held) == target.sid
+      {
+        return self.handleFollowedRemoteMutation(action, root: held, target: target)
+      }
       self.handleRemoteMutation(action, on: target.sid, location: target.location)
+    }
+    self.remoteState.followedLocation = { [vcsStatus = self.vcsStatus] root in
+      await vcsStatus.followedWriteLocation(root)
     }
     // Only the store can name a target, and the model needs the name to attribute a failure that
     // outlived the selection it started from.
@@ -3075,6 +3110,31 @@ final class AppStore: ObservableObject {
       guard let self else { return }
       self.remoteState.noteConflictState(
         self.vcsStatus.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
+    }
+  }
+
+  /// `handleRemoteMutation` for a repository a terminal's inspector follows (#808): `root`'s own
+  /// probe re-reads it (and a registered row's, in place), since no selection refresh reaches it.
+  /// `target` is what the action ran against, handed over by the model: History and the conflict
+  /// flag move only while the toolbar is still pointed at it, so a `cd` to another repository
+  /// mid-pull attributes nothing to the new one.
+  private func handleFollowedRemoteMutation(
+    _ action: VCSRemoteAction, root: String, target: RemoteStateModel.Target
+  ) {
+    guard action != .fetch else { return }
+    // The local read at once, for the conflict flag below; then its pull request and CI, which a
+    // push or a pull may have moved.
+    vcsStatus.refreshFollowedStatus(root, gitHub: false)
+    let refresh = vcsStatus.followedRepositories[root]?.localProbe
+    vcsStatus.refreshFollowedStatus(root, gitHub: true, debounced: true)
+    guard remoteState.target == target else { return }
+    if historySectionShown { commitHistory.refresh() }
+    guard action == .pull else { return }
+    Task { [weak self] in
+      await refresh?.value
+      guard let self else { return }
+      self.remoteState.noteConflictState(
+        self.vcsStatus.status(for: target)?.conflicted == true, for: target)
     }
   }
 

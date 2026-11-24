@@ -116,10 +116,10 @@ struct VCSToolbar: View {
   /// and is never revised. Reading `workroomStatuses` here means resolving the conflicts in a terminal
   /// clears the message on the next sweep, instead of it lingering until the next action.
   private var pullConflicted: Bool {
-    guard let sid = model.target?.sid else { return false }
+    guard let target = model.target else { return false }
     return VCSSyncPresenter.pullConflicted(
       lastPullConflicted: model.lastPullConflicted,
-      statusConflicted: vcsStatus.workroomStatuses[sid]?.conflicted == true)
+      statusConflicted: vcsStatus.status(for: target)?.conflicted == true)
   }
 
   var body: some View {

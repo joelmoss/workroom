@@ -39,7 +39,7 @@ struct CommitSheet: View {
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
   private static let renderCap = 200
 
-  private var status: WorkroomStatus? { vcsStatus.workroomStatuses[pending.sid] }
+  private var status: WorkroomStatus? { vcsStatus.status(for: pending.target) }
 
   /// Every changed file.
   private var files: [ChangedFile] { status?.changedFiles ?? [] }
@@ -359,7 +359,7 @@ struct CommitSheet: View {
   /// the fields then.
   private var flowContext: CommitFlow.Context {
     .store(
-      store, sid: pending.sid,
+      store, target: pending.target,
       draft: {
         CommitFlow.Draft(
           message: CommitDraft.message(summary: summary, body: messageBody), files: selectedFiles)
