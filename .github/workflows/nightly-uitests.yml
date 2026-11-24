@@ -1,0 +1,138 @@
+name: Nightly UI tests
+
+# The macapp's XCUITest suite, which no other workflow runs: `make app-uitest-vm` runs it in a Tart
+# guest on a developer's Mac, and nothing ran it on master, so two TerminalGroupUITests went red
+# unseen. A hosted macOS runner is itself a throwaway machine, logged in at the console (ci-app.yml's
+# `make app-test` boots the app, window and all, on the same image), so the suite runs on it
+# directly (`make app-uitest`), with no VM and no GUI lock.
+#
+# Its own workflow, not a job in nightly.yml: that one holds the `appcast-feed` concurrency group
+# for its whole run, and a UI-test run must neither queue behind a release nor hold one up. An hour
+# before the nightly build, so a red run is on the summary by the time that night's build ships.
+on:
+  schedule:
+    - cron: "0 4 * * *" # daily ~04:00 UTC
+  workflow_dispatch:
+    inputs:
+      # Empty runs the default selection (mk/app.mk's APP_UITEST_FLAGS, which skips three slow
+      # relaunch and timing cases). e.g. `-only-testing:WorkroomAppUITests/TerminalGroupUITests` for
+      # one class, or `-only-testing:WorkroomAppUITests` for the whole suite, the skipped ones too.
+      selection:
+        description: "Test selection (xcodebuild -only-testing: or -skip-testing: flags); empty for the default"
+        type: string
+        default: ""
+
+permissions: {}
+
+# One run at a time; a dispatch while the night's run is going waits for it.
+concurrency:
+  group: nightly-uitests
+  cancel-in-progress: false
+
+jobs:
+  uitests:
+    runs-on: xcode-27
+    # A cold build (no build-dir cache: see below), then the suite: about half of it took 885 s in
+    # a 4-core VM guest (docs/designs/parallel-workroom-testing.md). The per-test allowance below
+    # stops a stalled test long before this does.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Xcode and XcodeGen, as ci-app.yml's `app`. Homebrew bash for
+      # EngineBumpSmokeUITests.testBashExitStatusReachesTheApp, which skips without it (the VM base
+      # image installs it the same way).
+      - name: Set up the app build
+        uses: ./.github/actions/setup-app-build
+        with:
+          formulae: xcodegen bash
+
+      # The app bundles `workroomd`, and the Debug build bundles the Linux daemons too (#227).
+      - name: Set up the daemon build
+        uses: ./.github/actions/setup-daemon-build
+        with:
+          targets: aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+
+      # The same key as ci-app.yml's `app`: the engine pin alone decides what is in it.
+      - name: Cache libghostty-vt and GhosttyKit
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-kit-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      # Restore only, under ci-app.yml's exact key (see its comment on why there is no fallback).
+      # ci-app.yml's cargo and Xcode build-dir caches are left alone: reusing them needs its
+      # source-mtime bookkeeping, and a nightly can afford the cold build.
+      - name: Restore SPM packages
+        id: spm
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: macapp/DerivedData/SourcePackages
+          key: >-
+            spm-${{ runner.os }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
+            }}
+
+      - name: Resolve SPM packages (retry on network flake)
+        if: steps.spm.outputs.cache-hit != 'true'
+        working-directory: macapp
+        run: |
+          xcodegen generate
+          for attempt in 1 2 3; do
+            xcodebuild -project WorkroomApp.xcodeproj -scheme WorkroomAppUITests \
+              -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages \
+              -resolvePackageDependencies && exit 0
+            echo "::warning::SPM resolve attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::SPM resolve failed after 3 attempts"; exit 1
+
+      # XCUITest drives the app through Automation Mode, which asks for an admin password the first
+      # time unless it is allowed without one, as the Cirrus images the VM run uses allow it. Allowed
+      # here with the runner's passwordless sudo, rather than trusting the image to; the timeout
+      # fails the run fast if this ever prompts instead, where the suite would hang on a prompt
+      # nobody can answer ("Timed out while enabling automation mode").
+      - name: Allow Automation Mode without authentication
+        timeout-minutes: 2
+        run: |
+          sudo automationmodetool enable-automationmode-without-authentication
+          automationmodetool
+
+      # Ad-hoc signed as in ci-app.yml: the runner has no signing certificate or team. The UI-test
+      # runner and the app it launches are both built here, so nothing needs a TCC grant carried
+      # over from a signed build. WR_GUI_LOCK=off: nothing else runs on this machine's screen.
+      #
+      # The selection is the default (or the dispatch's) plus a per-test allowance, so a test that
+      # stalls (one sat 75 min in its Set Up in the VM) fails naming itself instead of eating the
+      # job's timeout. Diagnostics are left on (xcodebuild collects them for failures), for the
+      # uploaded bundle.
+      - name: Test (UI)
+        env:
+          SELECTION: ${{ inputs.selection }}
+          WR_GUI_LOCK: "off"
+        run: |
+          selection="${SELECTION:-$(make -s print-APP_UITEST_FLAGS)}"
+          make app-uitest \
+            APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM=" \
+            APP_UITEST_FLAGS="$selection -test-timeouts-enabled YES -default-test-execution-time-allowance 600"
+
+      # A UI test skips when the machine lacks what it needs (an editor, Homebrew bash, a Settings
+      # window that opened): green, but proving nothing. Any skip fails the job unless listed here,
+      # one `Class/testMethod()` per line, with why it may skip on this runner.
+      - name: Fail on unexpected skips
+        env:
+          ALLOWED_SKIPS: ""
+        run: python3 scripts/ci/xcresult_skips.py macapp/DerivedData/Logs/Test
+
+      - name: Upload test results (xcresult)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: xcresult-uitests
+          path: macapp/DerivedData/Logs/Test/*.xcresult
+          retention-days: 14
+          if-no-files-found: warn

@@ -91,8 +91,9 @@ APP_TEST_DIAGNOSTICS ?= -collect-test-diagnostics never
 APP_TEST_RETRY ?= -retry-tests-on-failure -test-iterations 2
 
 # Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
-# does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
-# `make app-uitest` was paying ~4-5 min for tests that are only load-bearing right before a release.
+# does a real quit+relaunch or a hard timing budget): a routine `make app-uitest` was paying ~4-5
+# min for tests that are only load-bearing right before a release. CI runs only the nightly UI-test
+# workflow (nightly-uitests.yml), on this same selection unless dispatched with another.
 # The isolation guard the REST of this suite depends on (no session read or write without a seeded
 # path) has its decision logic pinned by unit tests, in `SessionStoreTests` (`forEnvironment`); the
 # launch wiring that feeds it is covered only by the skipped `SessionRestoreUITests`. Run the full suite
