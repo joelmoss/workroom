@@ -48,6 +48,9 @@ struct HistoryPanel: View {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
         InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
+      } else if inputs.repositoryPending {
+        // A followed folder whose repository is still resolving (ms): wait without a message.
+        EmptyView()
       } else if let folder = inputs.notARepository {
         // A terminal's followed folder outside any repository (#805), or in one git couldn't tell:
         // no log to read.
@@ -159,17 +162,24 @@ struct HistoryPanelInputs {
   var hasTarget: Bool
   /// Changes when the inspector's target changes or the History section shows or hides; the panel
   /// re-runs `HistoryPanelActions.activate` on each.
-  var activationKey: String
+  var activationKey: Activation
   /// The folder a terminal's inspector follows, when it is in no git repository (#805): the pane
   /// says so instead of reading a log. Nil for a workroom, a project, or a folder in a repository.
   var notARepository: String? = nil
   /// Whether git couldn't tell which repository `notARepository` is in, rather than answering none.
   var repositoryUndetermined = false
+  /// Whether the followed folder's repository is still resolving: the pane waits, saying nothing.
+  var repositoryPending = false
   /// What the list's scroll position is remembered under for a followed repository (#810); nil
   /// for a workroom or project, whose History remembers none.
-  var scrollMemoryKey: String? = nil
+  var scrollMemoryKey: InspectorMemoryKey? = nil
   /// Where it is remembered: the window's.
   var scrollMemory: InspectorScrollMemory? = nil
+  /// What `activationKey` is made of.
+  struct Activation: Hashable {
+    var subject: InspectorSubject.Key
+    var shown: Bool
+  }
   /// The commit id of the focused changeset tab, or `nil`.
   ///
   /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
@@ -206,9 +216,11 @@ struct HistoryPanelAdapter: View {
   private var inputs: HistoryPanelInputs {
     HistoryPanelInputs(
       hasTarget: store.inspectorSubject != .nothing,
-      activationKey: store.inspectorSubject.repositoryKey + "\u{1F}\(store.historySectionShown)",
+      activationKey: .init(
+        subject: store.inspectorSubject.repositoryKey, shown: store.historySectionShown),
       notARepository: notARepository,
       repositoryUndetermined: repositoryUndetermined,
+      repositoryPending: repositoryPending,
       scrollMemoryKey: store.inspectorMemoryKey(for: .history),
       scrollMemory: store.inspectorScrollMemory,
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
@@ -220,10 +232,16 @@ struct HistoryPanelAdapter: View {
 
   /// The followed folder, when it is in no repository.
   private var notARepository: String? {
-    guard case .followed(let followed) = store.inspectorSubject, followed.repository == nil else {
-      return nil
-    }
+    guard case .followed(let followed) = store.inspectorSubject, followed.repository == nil,
+      !followed.repositoryPending
+    else { return nil }
     return followed.folder
+  }
+
+  /// Whether the followed folder's repository is still resolving.
+  private var repositoryPending: Bool {
+    guard case .followed(let followed) = store.inspectorSubject else { return false }
+    return followed.repositoryPending
   }
 
   /// Whether git couldn't tell which repository the followed folder is in.
@@ -490,7 +508,8 @@ struct HistoryRefChips: View {
     HistoryPanel(
       model: model,
       inputs: HistoryPanelInputs(
-        hasTarget: true, activationKey: "preview", selectedCommitID: { "fixturecommit2" }),
+        hasTarget: true, activationKey: .init(subject: .none, shown: true),
+        selectedCommitID: { "fixturecommit2" }),
       actions: HistoryPanelActions(
         activate: { model.activate(target: target) }, open: { _, _ in })
     )

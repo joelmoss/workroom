@@ -19,7 +19,10 @@ struct PullRequestPanel: View {
 
   var body: some View {
     Group {
-      if case .followed(let followed) = store.inspectorSubject,
+      if case .followed(let followed) = store.inspectorSubject, followed.repositoryPending {
+        // Its repository is still resolving (ms): wait without a message, then show it.
+        EmptyView()
+      } else if case .followed(let followed) = store.inspectorSubject,
         followed.repository == nil
           || vcsStatus.status(for: store.inspectorSubject)?.failure?.meansNoRepository == true
       {

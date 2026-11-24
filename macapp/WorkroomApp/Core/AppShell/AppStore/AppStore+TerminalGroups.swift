@@ -61,15 +61,21 @@ extension AppStore {
     var first: SidebarID?
     for tab in terminals.tabs(for: from) {
       let id = terminalsSection.addStandalone(after: anchor)
-      guard let into = terminalTarget(forID: id), await retarget(tab.id, from: from, to: into)
+      // The selected group's first terminal to move takes the selection with it, in the same
+      // step, so the inspector moves once, to it, rather than hop through each terminal left in the
+      // group as they move out one at a time (#806).
+      let selects = wasSelected && first == nil
+      guard let into = terminalTarget(forID: id),
+        await retarget(tab.id, from: from, to: into, inPlace: selects)
       else {
         terminalsSection.remove(id)
         continue
       }
       anchor = id
       first = first ?? id.sidebarID
+      if selects, let first { moveSelection(withMovedTab: tab.id, to: first) }
     }
-    if wasSelected, let first {
+    if wasSelected, let first, selectedTargetID != first {
       selectedTargetID = first
       refreshSelectionHasTabs()
     }
@@ -77,12 +83,26 @@ extension AppStore {
     return anchor
   }
 
+  /// Selects `row`, which tab `tabID` was just moved to in place out of the selected group, and
+  /// points the inspector at it: the one move it makes for the delete. The tidy-up a close gets,
+  /// which the in-place move skipped, isn't wanted (the group's selection is moved here, its row
+  /// goes with the delete), apart from the back/forward history naming the group's tab.
+  private func moveSelection(withMovedTab tabID: TerminalTab.ID, to row: SidebarID) {
+    history.prune(removing: [tabID])
+    selectedTargetID = row
+    refreshSelectionHasTabs()
+    focusHistoryIfShown()
+    focusRemoteStateIfShown()
+  }
+
   /// Moves this window's tab `tabID` from `from` to `into`, both this window's targets, keeping its
   /// shell: its session is retagged as `into`'s first, and nothing moves if that fails. The one
   /// step a group's delete takes per terminal, which a group forming and dissolving takes too.
-  func retarget(_ tabID: TerminalTab.ID, from: TerminalTarget, to into: TerminalTarget) async
-    -> Bool
-  {
+  /// `inPlace`: the hand-over itself is a move in place (`isMovingTerminalsInPlace`), so the
+  /// inspector holds still through it and the caller points it on.
+  func retarget(
+    _ tabID: TerminalTab.ID, from: TerminalTarget, to into: TerminalTarget, inPlace: Bool = false
+  ) async -> Bool {
     let sessionID = terminals.sessionID(forTab: tabID, inTarget: from.id)
     let service = terminals.sessionService
     if let sessionID,
@@ -91,7 +111,13 @@ extension AppStore {
       return false
     }
     notifications.repoint(tab: tabID, to: into.id, in: paneMoveOrigin)
-    guard let handOff = terminals.handOffTab(tabID, from: from, to: into) else {
+    // Held only over the synchronous hand-over, never across an await, so no other target's
+    // close is taken for a move.
+    if inPlace { isMovingTerminalsInPlace = true }
+    let handOff = terminals.handOffTab(tabID, from: from, to: into)
+    if let handOff { terminals.adopt(handOff) }
+    if inPlace { isMovingTerminalsInPlace = false }
+    guard handOff != nil else {
       // A popped-out pane stays where it is, under its old tag.
       if let sessionID {
         _ = await service.retag(sessionID: sessionID, workroom: from.sessionWorkroomKey)
@@ -99,7 +125,6 @@ extension AppStore {
       notifications.repoint(tab: tabID, to: from.id, in: paneMoveOrigin)
       return false
     }
-    terminals.adopt(handOff)
     return true
   }
 

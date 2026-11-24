@@ -456,7 +456,7 @@ struct InspectorWorkroomHeader: View {
     .help(
       followed.repositoryUndetermined
         ? NotARepositoryMessage.help(path: followed.folder, undetermined: true)
-        : repository == nil
+        : followed.isOutsideRepository
           ? "The terminal's folder, \(followed.folder), is not in a git repository"
           : "The terminal's folder: \(followed.folder)"
     )
@@ -464,9 +464,11 @@ struct InspectorWorkroomHeader: View {
     .accessibilityLabel(
       followed.repositoryUndetermined
         ? "Following folder \(name), repository unreadable, at \(shownPath)"
-        : repository == nil
-          ? "Following folder \(name), not a git repository, at \(shownPath)"
-          : "Following repository \(name), on \(branch ?? ""), at \(shownPath)"
+        : followed.repositoryPending
+          ? "Following folder \(name), at \(shownPath)"
+          : repository == nil
+            ? "Following folder \(name), not a git repository, at \(shownPath)"
+            : "Following repository \(name), on \(branch ?? ""), at \(shownPath)"
     )
     .accessibilityIdentifier("inspector.workroomHeader")
   }

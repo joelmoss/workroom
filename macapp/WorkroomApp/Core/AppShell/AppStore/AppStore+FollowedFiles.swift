@@ -14,9 +14,12 @@ struct FilesBrowse: Equatable {
 /// browses another folder in Files alone; the terminal's next folder change snaps Files back.
 extension AppStore {
   /// What Files lists for a followed folder: the browsed folder, else the terminal's. Nil for any
-  /// other subject, whose Files lists its target's tree.
+  /// other subject, whose Files lists its target's tree, and while the folder's repository is
+  /// pending, which decides how it lists.
   var followedFilesRoot: FilesRoot? {
-    guard case .followed(let followed) = inspectorSubject else { return nil }
+    guard case .followed(let followed) = inspectorSubject, !followed.repositoryPending else {
+      return nil
+    }
     if let browsed = currentFilesBrowse(followed) { return browsed.root }
     guard let repository = followed.repository else { return .folder(followed.folder) }
     return .repository(root: repository.root, subfolder: repository.subfolder)
@@ -24,7 +27,9 @@ extension AppStore {
 
   /// The breadcrumb above a followed folder's Files tree; nil for any other subject.
   var filesBreadcrumb: FilesBreadcrumb? {
-    guard case .followed(let followed) = inspectorSubject else { return nil }
+    guard case .followed(let followed) = inspectorSubject, !followed.repositoryPending else {
+      return nil
+    }
     return FilesBreadcrumb.make(
       folder: followed.folder, repository: followed.repository, home: NSHomeDirectory(),
       shown: currentFilesBrowse(followed)?.root)
@@ -35,6 +40,8 @@ extension AppStore {
 
   /// Point Files at the inspector's subject: a followed folder's tree, else the target's.
   func activateFileTree() {
+    // A pending folder lists once its repository is known; the answer re-keys Files.
+    if case .followed(let followed) = inspectorSubject, followed.repositoryPending { return }
     if let root = followedFilesRoot {
       fileTree.activate(root: root)
     } else {

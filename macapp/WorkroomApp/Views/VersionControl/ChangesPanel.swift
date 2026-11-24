@@ -259,7 +259,10 @@ struct ChangesPanel: View {
         content
       case .followed(let followed):
         // A terminal's followed folder (#807): its repository's changes, committed from here as a workroom's are (#808).
-        if followed.repository == nil
+        if followed.repositoryPending {
+          // Its repository is still resolving (ms): wait without a message, then show it.
+          EmptyView()
+        } else if followed.repository == nil
           || vcsStatus.status(for: inputs.subject)?.failure?.meansNoRepository == true
         {
           NotARepositoryMessage(

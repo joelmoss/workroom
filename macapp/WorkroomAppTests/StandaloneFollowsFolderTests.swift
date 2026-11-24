@@ -450,7 +450,7 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     XCTAssertEqual(followed(store)?.repositoryUndetermined, true)
     XCTAssertNil(store.inspectorHistoryTarget, "History addresses no repository")
     XCTAssertNil(store.followedRepositoryRoot)
-    XCTAssertNil(store.followedRepositoryCache[refused], "and nothing is cached for the folder")
+    XCTAssertNil(store.followedFolder.cache[refused], "and nothing is cached for the folder")
 
     // Focus and tab events meanwhile wait for the retry rather than each re-running git.
     store.refreshFollowedFolder()
@@ -468,11 +468,29 @@ final class StandaloneFollowsFolderTests: XCTestCase {
     await store.followedFolderRetried()
     XCTAssertEqual(streaks.withLock { $0 }, [1, 2], "each retry counts the failures before it")
     XCTAssertEqual(
-      [1, 2, 3, 6, 9].map(AppStore.followedFolderRetryDelay),
+      [1, 2, 3, 6, 9].map(FollowedFolderTracker.retryDelay),
       [.seconds(2), .seconds(4), .seconds(8), .seconds(60), .seconds(60)],
       "and waits longer for each, up to a minute")
     XCTAssertEqual(followed(store)?.repository?.root, refused, "the retry resolves it")
     XCTAssertEqual(followed(store)?.repositoryUndetermined, false)
+  }
+
+  /// Value: protects=a first visit whose resolve can't tell showing the folder undetermined, not
+  /// pending for good (review C1); fails_when=the pending folder shown at once is taken for the
+  /// folder already shown, so the answer never replaces it; why_new=#803 code review;
+  /// seam=AppStore; no_claim=the retry (testAFolderThatCannotTellShowsItselfUndeterminedAndRetries)
+  func testAFirstVisitThatCannotTellShowsTheFolderUndetermined() async throws {
+    let store = makeStore()
+    store.followedFolderRetryWait = { _ in try? await Task.sleep(for: .seconds(3600)) }
+    store.resolveFollowedRepository = { _ in .unknown }
+
+    store.newTerminalInSelectedTarget()
+    XCTAssertEqual(followed(store)?.repositoryPending, true)
+    await store.followedFolderResolved()
+
+    XCTAssertEqual(followed(store)?.repositoryPending, false)
+    XCTAssertEqual(followed(store)?.repositoryUndetermined, true)
+    store.followedFolder.retryTask?.cancel()
   }
 
   /// One waiter let through per `open()`, whichever comes first.
@@ -520,7 +538,7 @@ final class StandaloneFollowsFolderTests: XCTestCase {
 
     XCTAssertEqual(followed(store)?.repository?.root, app)
     XCTAssertEqual(followed(store)?.repositoryUndetermined, false)
-    store.followedFolderRetryTask?.cancel()
+    store.followedFolder.retryTask?.cancel()
   }
 
   /// Value: protects=a wedged mount costing one blocked thread, not one per event (re-review R2);

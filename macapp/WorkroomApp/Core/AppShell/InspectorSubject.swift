@@ -18,25 +18,42 @@ enum InspectorSubject: Equatable, Sendable {
     return nil
   }
 
+  /// What an inspector section reloads on: a change of key re-points it.
+  enum Key: Hashable, Sendable {
+    /// Nothing to inspect.
+    case none
+    /// A workroom or project.
+    case target(TargetID)
+    /// A followed folder's repository, by its root.
+    case repository(root: String)
+    /// A followed folder in no repository, or one git couldn't tell.
+    case folder(String)
+    /// A followed folder whose repository git is still telling: a section waits, and re-keys on
+    /// the answer.
+    case pending(folder: String)
+  }
+
   /// What the version-control sections (Changes, History, Pull Request and the toolbar) reload on.
   /// A followed folder inside a repository keys on the repository's root, so a `cd` within one
   /// repository reloads nothing; outside one it keys on the folder those sections name.
-  var repositoryKey: String {
+  var repositoryKey: Key {
     switch self {
-    case .target(let sid): return sid.targetID?.encoded ?? ""
+    case .target(let sid): return sid.targetID.map(Key.target) ?? .none
     case .followed(let followed):
-      return followed.repository.map { "repository\u{1F}\($0.root)" }
-        ?? "folder\u{1F}\(followed.folder)"
-    case .nothing: return ""
+      if followed.repositoryPending { return .pending(folder: followed.folder) }
+      return followed.repository.map { .repository(root: $0.root) } ?? .folder(followed.folder)
+    case .nothing: return .none
     }
   }
 
   /// What the Files section reloads on: a followed folder's tree follows every folder change.
-  var folderKey: String {
+  var folderKey: Key {
     switch self {
-    case .target(let sid): return sid.targetID?.encoded ?? ""
-    case .followed(let followed): return "folder\u{1F}\(followed.folder)"
-    case .nothing: return ""
+    case .target(let sid): return sid.targetID.map(Key.target) ?? .none
+    case .followed(let followed):
+      return followed.repositoryPending
+        ? .pending(folder: followed.folder) : .folder(followed.folder)
+    case .nothing: return .none
     }
   }
 }
@@ -46,13 +63,30 @@ enum InspectorSubject: Equatable, Sendable {
 struct FollowedFolder: Equatable, Sendable {
   /// The focused terminal's folder: its live working directory, else the folder it started in.
   var folder: String
-  /// The innermost git repository containing `folder`, nil outside one and while
-  /// `repositoryUndetermined`.
+  /// The innermost git repository containing `folder`, nil outside one and until `lookup` has
+  /// found it.
   var repository: Repository?
-  /// Whether git couldn't tell which repository `folder` is in, if any (a timeout, a repository it
-  /// refused): `repository` is nil, but the folder is not known to be outside one. Nothing reads or
-  /// writes a repository for it until a retry tells.
-  var repositoryUndetermined = false
+  /// How far git has got telling which repository `folder` is in.
+  var lookup: Lookup = .resolved
+
+  /// How far git has got telling which repository a followed folder is in.
+  enum Lookup: Equatable, Sendable {
+    /// It has answered: `repository`, or none.
+    case resolved
+    /// It is still running for a folder shown for the first time: the header and Details show
+    /// the folder, and the repository sections wait without a message.
+    case pending
+    /// It couldn't tell (a timeout, a repository it refused): the folder is not known to be
+    /// outside one. Nothing reads or writes a repository for it until a retry tells.
+    case undetermined
+  }
+
+  /// Whether git is still telling which repository `folder` is in.
+  var repositoryPending: Bool { lookup == .pending }
+  /// Whether git couldn't tell which repository `folder` is in, if any.
+  var repositoryUndetermined: Bool { lookup == .undetermined }
+  /// Whether `folder` is known to be in no git repository: what "Not a git repository" says.
+  var isOutsideRepository: Bool { repository == nil && lookup == .resolved }
 
   struct Repository: Equatable, Sendable {
     /// The repository's root: the top level of the working tree `folder` is in.

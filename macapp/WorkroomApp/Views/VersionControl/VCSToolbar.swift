@@ -175,7 +175,7 @@ struct VCSToolbar: View {
 
   /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the subject's identity rather
   /// than the whole `Target`, which carries paths that never change independently of it.
-  private var activationKey: String { store.inspectorSubject.repositoryKey }
+  private var activationKey: InspectorSubject.Key { store.inspectorSubject.repositoryKey }
 
   /// Full-bleed, unlike `TitlebarDivider` (a 14pt inline group rule) — it's what makes the three cells
   /// read as segments rather than as a row of controls.

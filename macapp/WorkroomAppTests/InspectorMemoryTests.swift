@@ -309,7 +309,7 @@ final class InspectorMemoryTests: XCTestCase {
     let pane = InspectorPaneViewController()
     pane.view.frame = NSRect(x: 0, y: 0, width: 300, height: 200)
     let scroll = try XCTUnwrap(pane.view.subviews.compactMap { $0 as? NSScrollView }.first)
-    func show(_ height: CGFloat, under key: String) {
+    func show(_ height: CGFloat, under key: InspectorMemoryKey) {
       pane.setContent(
         header: AnyView(EmptyView()),
         body: AnyView(Color.clear.frame(width: 300, height: height)), collapsed: false)
@@ -319,19 +319,21 @@ final class InspectorMemoryTests: XCTestCase {
       pane.view.layoutSubtreeIfNeeded()
     }
     var offset: CGFloat { scroll.contentView.bounds.origin.y }
+    let a = InspectorMemoryKey.section(.changes, .repository(root: "/a"))
+    let b = InspectorMemoryKey.section(.changes, .repository(root: "/b"))
 
-    show(2000, under: "a")
+    show(2000, under: a)
     scroll.contentView.scroll(to: NSPoint(x: 0, y: 300))
     scroll.reflectScrolledClipView(scroll.contentView)
     NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
-    XCTAssertEqual(memory.offset(under: "a"), 300)
+    XCTAssertEqual(memory.offset(under: a), 300)
 
-    show(2000, under: "b")
+    show(2000, under: b)
     XCTAssertEqual(offset, 0, "another repository opens at its top")
 
-    show(50, under: "a")
-    XCTAssertEqual(memory.offset(under: "a"), 300, "a short body's clamp is not remembered")
-    show(2000, under: "a")
+    show(50, under: a)
+    XCTAssertEqual(memory.offset(under: a), 300, "a short body's clamp is not remembered")
+    show(2000, under: a)
     XCTAssertEqual(offset, 300, "restored once the content is there")
   }
 

@@ -7,8 +7,8 @@ import XCTest
 
 /// The inspector subject (#803, #804): the one window-scoped value the inspector's header and
 /// sections read. A workroom or a project root with an open tab is the subject; no selection, a
-/// selection with no open tab, a standalone terminal (until it follows its folder, #805) and the
-/// Quick Terminal are nothing.
+/// selection with no open tab and the Quick Terminal are nothing; a standalone terminal follows its
+/// folder (#805).
 @MainActor
 final class InspectorSubjectTests: XCTestCase {
   private let projects = ProjectStore()
@@ -112,17 +112,47 @@ final class InspectorSubjectTests: XCTestCase {
     XCTAssertEqual(store.inspectorSubject, .target(workroom))
   }
 
-  /// Value: protects=a standalone terminal inspects nothing until it follows its folder (#805);
-  /// fails_when=its sidebar item becomes the subject, which no section can show; why_new=#804;
-  /// seam=AppStore; no_claim=the followed folder (#805)
-  func testAStandaloneTerminalIsNothingYet() throws {
+  /// Value: protects=a standalone terminal's first visit showing its folder at once, its repository
+  /// pending, never "Select a workroom…" nor "Not a git repository" while git runs (review C1);
+  /// fails_when=the subject is nothing until the first resolve lands, or the pending folder reads
+  /// as one outside any repository; why_new=#803 code review; seam=AppStore over a resolve held
+  /// open; no_claim=the panels' rendering of the pending state
+  func testAStandaloneTerminalShowsItsFolderAtOnceWhileItsRepositoryResolves() async throws {
     let store = makeStore()
+    let (held, release) = AsyncStream<Void>.makeStream()
+    store.resolveFollowedRepository = { _ in
+      for await _ in held { break }
+      return .notARepository
+    }
+
     store.newTerminalInSelectedTarget()
+
     let sid = try XCTUnwrap(store.selectedTargetID)
     XCTAssertTrue(sid.isStandaloneTerminal)
-    XCTAssertTrue(store.selectionHasTabs)
+    guard case .followed(let pending) = store.inspectorSubject else {
+      return XCTFail("subject is \(store.inspectorSubject), before the resolve lands")
+    }
+    XCTAssertEqual(pending.folder, store.followedTerminalFolder())
+    XCTAssertFalse(pending.folder.isEmpty)
+    XCTAssertTrue(pending.repositoryPending)
+    XCTAssertNil(pending.repository)
+    XCTAssertFalse(pending.isOutsideRepository, "pending is not \"Not a git repository\"")
+    XCTAssertFalse(pending.repositoryUndetermined)
+    XCTAssertNil(store.inspectorTargetID, "a followed folder is no sidebar item")
 
-    XCTAssertEqual(store.inspectorSubject, .nothing)
+    release.finish()
+    await store.followedFolderResolved()
+
+    guard case .followed(let resolved) = store.inspectorSubject else {
+      return XCTFail("subject is \(store.inspectorSubject)")
+    }
+    XCTAssertEqual(resolved.folder, pending.folder)
+    XCTAssertFalse(resolved.repositoryPending)
+    XCTAssertTrue(resolved.isOutsideRepository)
+    let before = InspectorSubject.followed(pending)
+    let after = InspectorSubject.followed(resolved)
+    XCTAssertNotEqual(after.repositoryKey, before.repositoryKey, "the repository sections re-key")
+    XCTAssertNotEqual(after.folderKey, before.folderKey, "and Files does, on the answer")
   }
 
   /// Value: protects=the Quick Terminal never feeds a window's inspector (stories 28–29): its row

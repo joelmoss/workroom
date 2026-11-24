@@ -64,11 +64,16 @@ final class FileTreeModel: ObservableObject {
   /// (`activate(root:)`); a workroom's starts collapsed on every switch, as it always has.
   private var remembersExpansion = false
   /// Each followed folder's expanded directories, by `shownFolderKey`.
-  private var expansionMemory: [String: Set<String>] = [:]
+  private var expansionMemory: [ShownFolder: Set<String>] = [:]
   /// The folder the tree shows, and how it is listed: what its expansion is remembered under.
-  private var shownFolderKey: String? {
+  private var shownFolderKey: ShownFolder? {
     guard remembersExpansion, let currentPath else { return nil }
-    return "\(isPlain ? "folder" : "repository")\u{1F}\(currentPath)\u{1F}\(subfolder)"
+    return ShownFolder(isPlain: isPlain, path: currentPath, subfolder: subfolder)
+  }
+  private struct ShownFolder: Hashable {
+    var isPlain: Bool
+    var path: String
+    var subfolder: String
   }
   private var plainTask: Task<Void, Never>?
   private let runner: StatusCommandRunning

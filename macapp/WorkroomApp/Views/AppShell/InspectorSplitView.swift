@@ -151,7 +151,7 @@ final class InspectorPaneViewController: NSViewController {
 
   // MARK: Scroll memory (#810)
 
-  private var scrollKey: String?
+  private var scrollKey: InspectorMemoryKey?
   private var scrollMemory: InspectorScrollMemory?
   /// The offset a return to `scrollKey` restores. Its content may arrive after the switch (a
   /// status read), and is clamped meanwhile, so every document resize re-applies it until the user
@@ -162,7 +162,7 @@ final class InspectorPaneViewController: NSViewController {
   /// Remember a scroll-mode body's offset under `key` as the user scrolls, and restore the one
   /// remembered for it when `key` changes. A nil key (a workroom's inspector) leaves the scroll view
   /// alone. A fill-mode body scrolls itself (`inspectorScrollMemory(key:in:)`).
-  func remembersScroll(under key: String?, in memory: InspectorScrollMemory?) {
+  func remembersScroll(under key: InspectorMemoryKey?, in memory: InspectorScrollMemory?) {
     guard !fillsBody, key != scrollKey else { return }
     _ = view
     scrollKey = key
@@ -562,7 +562,7 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   var forcesOverlayScrollers = false
   /// What each pane's scroll position is remembered under (#810), nil for none; empty for no
   /// memory at all.
-  var scrollKeys: [String?] = []
+  var scrollKeys: [InspectorMemoryKey?] = []
   /// Where those positions are remembered.
   var scrollMemory: InspectorScrollMemory? = nil
 

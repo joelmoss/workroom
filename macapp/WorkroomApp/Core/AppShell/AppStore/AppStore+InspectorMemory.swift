@@ -5,12 +5,20 @@ import SwiftUI
 /// must not re-render anything.
 @MainActor
 final class InspectorScrollMemory {
-  private var offsets: [String: CGFloat] = [:]
+  private var offsets: [InspectorMemoryKey: CGFloat] = [:]
 
   /// The offset last remembered under `key`, nil for one never scrolled.
-  func offset(under key: String) -> CGFloat? { offsets[key] }
+  func offset(under key: InspectorMemoryKey) -> CGFloat? { offsets[key] }
 
-  func remember(_ offset: CGFloat, under key: String) { offsets[key] = offset }
+  func remember(_ offset: CGFloat, under key: InspectorMemoryKey) { offsets[key] = offset }
+}
+
+/// What an inspector section remembers its scroll under for a followed folder (#810).
+enum InspectorMemoryKey: Hashable, Sendable {
+  /// Changes, History or Pull Request, per repository (or folder outside one).
+  case section(InspectorSectionKind, InspectorSubject.Key)
+  /// Files, per folder it shows: the root files open against, and the folder within it.
+  case files(fileRoot: String, path: String)
 }
 
 /// Per-repository and per-folder inspector memory for a followed folder (#810, ADR 0081). Changes
@@ -20,13 +28,16 @@ final class InspectorScrollMemory {
 extension AppStore {
   /// The key `section` remembers its state under for the inspector's subject, nil for a subject
   /// other than a followed folder.
-  func inspectorMemoryKey(for section: InspectorSectionKind) -> String? {
-    guard case .followed = inspectorSubject else { return nil }
+  /// Nil too while the folder's repository is pending, whose sections show nothing to scroll.
+  func inspectorMemoryKey(for section: InspectorSectionKind) -> InspectorMemoryKey? {
+    guard case .followed(let followed) = inspectorSubject, !followed.repositoryPending else {
+      return nil
+    }
     switch section {
     case .changes, .history, .pullRequest:
-      return "\(section)\u{1F}\(inspectorSubject.repositoryKey)"
+      return .section(section, inspectorSubject.repositoryKey)
     case .files:
-      return followedFilesRoot.map { "files\u{1F}\($0.fileRoot)\u{1F}\($0.path)" }
+      return followedFilesRoot.map { .files(fileRoot: $0.fileRoot, path: $0.path) }
     }
   }
 }
@@ -36,12 +47,12 @@ extension AppStore {
 /// `memory` leaves the scroll view alone. Jumps, never animates: the inspector's existing content change is
 /// the only transition.
 struct InspectorScrollMemoryModifier: ViewModifier {
-  let key: String?
+  let key: InspectorMemoryKey?
   let memory: InspectorScrollMemory?
   @State private var position = ScrollPosition(edge: .top)
   /// The key whose offset the view now shows. Until a restore lands no scroll is recorded, so the
   /// last folder's offset is never kept under the next one's key.
-  @State private var restored: String?
+  @State private var restored: InspectorMemoryKey?
 
   func body(content: Content) -> some View {
     content
@@ -70,7 +81,9 @@ struct InspectorScrollMemoryModifier: ViewModifier {
 
 extension View {
   /// Remember this scroll view's offset per followed repository or folder (#810).
-  func inspectorScrollMemory(key: String?, in memory: InspectorScrollMemory?) -> some View {
+  func inspectorScrollMemory(key: InspectorMemoryKey?, in memory: InspectorScrollMemory?)
+    -> some View
+  {
     modifier(InspectorScrollMemoryModifier(key: key, memory: memory))
   }
 }

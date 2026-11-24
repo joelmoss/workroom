@@ -39,7 +39,11 @@ struct FilesPanel: View {
 
   @ViewBuilder private func content(followed: Bool) -> some View {
     Group {
-      if store.inspectorSubject == .nothing {
+      if case .followed(let followed) = store.inspectorSubject, followed.repositoryPending {
+        // The folder's repository is still resolving (ms), which decides how it lists: wait
+        // without a message, rather than list it twice.
+        EmptyView()
+      } else if store.inspectorSubject == .nothing {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than list a stale workroom.
         InlineMessage("No open terminal", systemImage: "folder")
@@ -76,10 +80,17 @@ struct FilesPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private var activationKey: String {
-    let browsed = store.followedFilesRoot.map { "\u{1F}\($0.path)" } ?? ""
-    return store.inspectorSubject.folderKey + browsed
-      + "\u{1F}\(store.activeInspectorSection == .files)"
+  private var activationKey: Activation {
+    Activation(
+      subject: store.inspectorSubject.folderKey, browsed: store.followedFilesRoot?.path,
+      active: store.activeInspectorSection == .files)
+  }
+
+  /// What the tree re-points on: the subject, the folder browsed to, and Files showing.
+  private struct Activation: Hashable {
+    var subject: InspectorSubject.Key
+    var browsed: String?
+    var active: Bool
   }
 
   /// `LazyVStack`, not `VStack`: rows are fixed-height (single-line, truncated — no soft-wrap, unlike

@@ -231,6 +231,68 @@ final class TerminalGroupFollowsFocusTests: XCTestCase {
     XCTAssertEqual(provider.logRoots.last, root)
   }
 
+  /// Value: protects=a group with a content tab focused following the terminal it focused last,
+  /// not its first (story 6); fails_when=a diff or commit tab blanks the subject, or falls back to
+  /// the group's first terminal; why_new=deferred from #806; seam=AppStore's content tabs;
+  /// no_claim=the content tab's own load
+  func testAGroupWithAContentTabFocusedFollowsTheTerminalItFocusedLast() async throws {
+    let store = makeStore()
+    let (target, first, second) = try await groupOfTwo(store)
+    let one = repo("one")
+    let two = repo("two")
+    try await cd(store, first, one)
+    try await cd(store, second, two)
+    XCTAssertEqual(store.terminals.focusedTab(for: target)?.id, second.id)
+    XCTAssertEqual(followed(store)?.repository?.root, two)
+
+    store.openChangesetPersistent(commitID: "abc", title: "base")
+    await settle(store)
+
+    let focused = try XCTUnwrap(store.terminals.focusedTab(for: target))
+    guard case .changeset = focused.content else {
+      return XCTFail("\(focused.content) is not the commit's tab")
+    }
+    XCTAssertEqual(followed(store)?.repository?.root, two, "the terminal focused last")
+    try await cd(store, first, one + "/src")
+    XCTAssertEqual(
+      followed(store)?.repository?.root, two, "an unfocused terminal's cd moves nothing")
+  }
+
+  /// Value: protects=deleting a selected group moving the subject once, from its focused terminal
+  /// to the window's new selection (story 8); fails_when=the subject hops through each terminal
+  /// left in the group as its terminals move out one at a time, re-reading their logs;
+  /// why_new=deferred from #806; seam=AppStore over a shared section + HistoryModel;
+  /// no_claim=which terminal's row is selected after (TerminalGroupTests)
+  func testDeletingASelectedGroupMovesTheSubjectOnce() async throws {
+    let store = makeStore()
+    let (target, first, second) = try await groupOfTwo(store)
+    let one = repo("one")
+    let two = repo("two")
+    try await cd(store, second, two)
+    try await cd(store, first, one)
+    store.terminals.select(first.id, for: target)
+    await settle(store)
+    XCTAssertEqual(followed(store)?.repository?.root, one)
+    let reads = provider.logRoots.count
+    let asked = Mutex<[String]>([])
+    store.resolveFollowedRepository = { folder in
+      asked.withLock { $0.append(folder) }
+      return await GitRepositoryProbe().discoverRepository(containing: folder)
+    }
+
+    await store.deleteTerminalGroup(try XCTUnwrap(target.id.sidebarID))
+    await settle(store)
+
+    guard case .standalone = store.selectedTargetID else {
+      return XCTFail("\(String(describing: store.selectedTargetID)) is not standalone")
+    }
+    XCTAssertEqual(followed(store)?.repository?.root, one, "the first terminal's row")
+    XCTAssertFalse(
+      provider.logRoots.dropFirst(reads).contains(two),
+      "the subject never hopped to the terminal left in the group")
+    XCTAssertFalse(asked.withLock { $0 }.contains(two), "nor resolved its folder")
+  }
+
   /// Value: protects=the Quick Terminal's group never following a folder (story 30), whatever its
   /// panel's selection; fails_when=`followsFolder` takes every group; why_new=#806; seam=AppStore;
   /// no_claim=none

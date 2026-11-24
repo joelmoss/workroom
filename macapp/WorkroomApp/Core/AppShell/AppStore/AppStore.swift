@@ -125,7 +125,7 @@ final class AppStore: ObservableObject {
     // A closed window no longer holds its workroom's host connected (#356).
     RemoteHosts.shared.reachability.select(nil, in: ObjectIdentifier(self))
     // Nor does it follow its terminal's repository any more (#807).
-    if let root = heldFollowedRepository {
+    if let root = followedFolder.heldRepository {
       Task { @MainActor [vcsStatus] in vcsStatus.unfollow(root) }
     }
   }
@@ -237,43 +237,9 @@ final class AppStore: ObservableObject {
   var filesBrowse: FilesBrowse?
   /// Where each followed repository's and folder's inspector sections were scrolled to (#810).
   @ObservationIgnored let inspectorScrollMemory = InspectorScrollMemory()
-  /// What `refreshFollowedFolder` last asked to resolve: the target and its terminal's folder, so a
-  /// repeat (every focus or tab event re-asks) runs no `git`.
-  @ObservationIgnored var followedFolderRequest: (target: TargetID, folder: String)?
-  /// The resolve in flight for `followedFolderRequest`.
-  @ObservationIgnored var followedFolderTask: Task<Void, Never>?
-  /// The retry of a resolve that couldn't tell, for `followedFolderRequest`.
-  @ObservationIgnored var followedFolderRetryTask: Task<Void, Never>?
-  /// How many resolves in a row couldn't tell, per folder: what spaces out its retries.
-  @ObservationIgnored var followedFolderUndeterminedStreak: [String: Int] = [:]
-  /// Wait before retrying a folder whose resolve couldn't tell `streak` times in a row: 2 s,
-  /// doubling to 60 s. A seam for tests.
-  @ObservationIgnored var followedFolderRetryWait: @Sendable (_ streak: Int) async -> Void = {
-    streak in try? await Task.sleep(for: AppStore.followedFolderRetryDelay(streak))
-  }
-  /// How long `followedFolderRetryWait` waits by default.
-  nonisolated static func followedFolderRetryDelay(_ streak: Int) -> Duration {
-    .seconds(min(60, 2 << min(max(streak, 1) - 1, 5)))
-  }
-  /// What each folder resolved to last, so returning to a terminal shows its repository at once,
-  /// before the fresh resolve (for a branch switched meanwhile) lands.
-  @ObservationIgnored var followedRepositoryCache: [String: FollowedFolder.Repository?] = [:]
-  /// The canonical root of the repository this window's inspector follows, as it holds it in
-  /// `vcsStatus` (`follow`/`unfollow`), so its status and watch last while some window follows it.
-  // `nonisolated(unsafe)`: written on the main actor, read again only in `deinit`.
-  @ObservationIgnored nonisolated(unsafe) var heldFollowedRepository: String?
-  /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
-  /// content tab with no folder of its own.
-  @ObservationIgnored var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
-  /// The innermost git repository containing a folder on this Mac, or that there is none, or that
-  /// git could not tell. A seam for tests.
-  @ObservationIgnored var resolveFollowedRepository:
-    @Sendable (String) async -> GitRepositoryProbe.Discovery = { folder in
-      // The user's `GIT_CEILING_DIRECTORIES` comes from the launch shell probe: a resolve before it
-      // lands would read past it (a `$HOME` dotfiles repository) and cache that (re-review R3).
-      await ShellEnvironment.settled()
-      return await GitRepositoryProbe().discoverRepository(containing: folder)
-    }
+  /// How this window follows its terminal's folder: the resolve asked for and in flight, its
+  /// retry, what each folder resolved to, and the repository held in `vcsStatus` (#803).
+  @ObservationIgnored let followedFolder = FollowedFolderTracker()
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
   /// the sidebar's `List` until some *other* state changes (e.g. the pointer moving over a row), so

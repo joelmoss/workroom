@@ -9,10 +9,115 @@ struct FollowedFolderState: Equatable {
   var folder: FollowedFolder
 }
 
+/// How a window follows its terminal's folder (#803, ADR 0081): what it last asked git to
+/// resolve, the resolve in flight and its retry, how often each folder couldn't tell, what each
+/// folder resolved to, the terminal each target focused last, and the repository it holds in the
+/// app's status. The subject it publishes (`AppStore.followedFolderState`) stays on the store,
+/// which observes it; none of this is observed.
+@MainActor
+final class FollowedFolderTracker {
+  /// What was last asked to resolve: the target and its terminal's folder, so a repeat (every
+  /// focus or tab event re-asks) runs no `git`.
+  var request: (target: TargetID, folder: String)?
+  /// The resolve in flight for `request`.
+  var task: Task<Void, Never>?
+  /// The retry of a resolve that couldn't tell, for `request`.
+  var retryTask: Task<Void, Never>?
+  /// How many resolves in a row couldn't tell, per folder: what spaces out its retries.
+  private var undeterminedStreak: [String: Int] = [:]
+  /// Wait before retrying a folder whose resolve couldn't tell `streak` times in a row: 2 s,
+  /// doubling to 60 s. A seam for tests.
+  var retryWait: @Sendable (_ streak: Int) async -> Void = { streak in
+    try? await Task.sleep(for: FollowedFolderTracker.retryDelay(streak))
+  }
+  /// What each folder resolved to last, so returning to a terminal shows its repository at once,
+  /// before the fresh resolve (for a branch switched meanwhile) lands.
+  var cache: [String: FollowedFolder.Repository?] = [:]
+  /// The canonical root of the repository the window's inspector follows, as it holds it in
+  /// `vcsStatus` (`follow`/`unfollow`), so its status and watch last while some window follows it.
+  // `nonisolated(unsafe)`: written on the main actor, read again only in the store's `deinit`.
+  nonisolated(unsafe) var heldRepository: String?
+  /// The terminal tab each Terminals-section target last focused, for when its focused tab is a
+  /// content tab with no folder of its own.
+  var lastFocusedTerminalTab: [TargetID: TerminalTab.ID] = [:]
+  /// The innermost git repository containing a folder on this Mac, or that there is none, or that
+  /// git could not tell. A seam for tests.
+  var resolve: @Sendable (String) async -> GitRepositoryProbe.Discovery = { folder in
+    // The user's `GIT_CEILING_DIRECTORIES` comes from the launch shell probe: a resolve before it
+    // lands would read past it (a `$HOME` dotfiles repository) and cache that (re-review R3).
+    await ShellEnvironment.settled()
+    return await GitRepositoryProbe().discoverRepository(containing: folder)
+  }
+
+  /// How long `retryWait` waits by default.
+  nonisolated static func retryDelay(_ streak: Int) -> Duration {
+    .seconds(min(60, 2 << min(max(streak, 1) - 1, 5)))
+  }
+
+  /// Whether `request` is for `target`'s `folder`.
+  func isRequested(target: TargetID, folder: String) -> Bool {
+    request.map { $0.target == target && $0.folder == folder } ?? false
+  }
+
+  /// Stop following: forget the request, so the next one resolves again, and cancel its resolve
+  /// and retry.
+  func stop() {
+    request = nil
+    cancelResolve()
+  }
+
+  /// Cancel the resolve in flight and any retry, for a new one.
+  func cancelResolve() {
+    task?.cancel()
+    task = nil
+    retryTask?.cancel()
+    retryTask = nil
+  }
+
+  /// `folder` resolved: what it resolved to is cached, and its run of failures ends.
+  func resolved(_ folder: String, to repository: FollowedFolder.Repository?) {
+    undeterminedStreak[folder] = nil
+    cache[folder] = .some(repository)
+  }
+
+  /// `folder` couldn't tell once more: how many times in a row it now has.
+  func couldNotTell(_ folder: String) -> Int {
+    let streak = (undeterminedStreak[folder] ?? 0) + 1
+    undeterminedStreak[folder] = streak
+    return streak
+  }
+
+  /// Forget what `folder`, and every folder in repository `root`, resolved to.
+  func forget(_ folder: String, inRoot root: String?) {
+    cache[folder] = nil
+    guard let root else { return }
+    cache = cache.filter { _, repository in
+      // git names a root by its real path: compared as it is, with no `realpath` per entry.
+      repository.flatMap { $0 }.map { $0.root != root } ?? true
+    }
+  }
+}
+
 /// The inspector following the selected terminal's folder (#803, ADR 0081). The folder is the
 /// focused terminal's live working directory (OSC 7), else the folder it started in. Only this
 /// window's selection feeds it, and the Quick Terminal never does (its panes are its panel's).
 extension AppStore {
+  /// The canonical root of the repository this window's inspector holds in `vcsStatus`
+  /// (`FollowedFolderTracker.heldRepository`).
+  var heldFollowedRepository: String? { followedFolder.heldRepository }
+
+  /// The resolve seam (`FollowedFolderTracker.resolve`). For tests.
+  var resolveFollowedRepository: @Sendable (String) async -> GitRepositoryProbe.Discovery {
+    get { followedFolder.resolve }
+    set { followedFolder.resolve = newValue }
+  }
+
+  /// The retry's wait (`FollowedFolderTracker.retryWait`). For tests.
+  var followedFolderRetryWait: @Sendable (_ streak: Int) async -> Void {
+    get { followedFolder.retryWait }
+    set { followedFolder.retryWait = newValue }
+  }
+
   /// Whether `sid`'s inspector follows its terminal's folder: a standalone terminal, or a terminal
   /// group, which follows its focused terminal (#806). Never the Quick Terminal's group, which no
   /// window selects and `followedTerminalFolder` names on its own.
@@ -40,10 +145,12 @@ extension AppStore {
       return state.cwd ?? state.launchDirectory
     }
     if let focused = terminals.focusedTab(for: target), let path = folder(focused) {
-      lastFocusedTerminalTab[target.id] = focused.id
+      followedFolder.lastFocusedTerminalTab[target.id] = focused.id
       return path
     }
-    let last = lastFocusedTerminalTab[target.id].flatMap { id in tabs.first { $0.id == id } }
+    let last = followedFolder.lastFocusedTerminalTab[target.id].flatMap { id in
+      tabs.first { $0.id == id }
+    }
     return folder(last) ?? tabs.lazy.compactMap(folder).first ?? target.path
   }
 
@@ -61,32 +168,31 @@ extension AppStore {
   func updateFollowedFolder() -> Bool {
     guard let folder = followedTerminalFolder(), let target = selectedTarget?.id else {
       // Left the terminal: the next return resolves again, for a branch switched meanwhile.
-      followedFolderRequest = nil
-      followedFolderTask?.cancel()
-      followedFolderTask = nil
-      followedFolderRetryTask?.cancel()
-      followedFolderRetryTask = nil
+      followedFolder.stop()
       return false
     }
-    if let request = followedFolderRequest, request.target == target, request.folder == folder {
-      return false
-    }
-    followedFolderRequest = (target, folder)
+    if followedFolder.isRequested(target: target, folder: folder) { return false }
+    followedFolder.request = (target, folder)
     // A folder change, or another terminal: Files snaps back to following it.
     filesBrowse = nil
     var changed = false
     // A folder seen before shows straight away. A new one keeps the target's last folder showing
-    // until it resolves, so a `cd` never blanks the inspector.
-    if let cached = followedRepositoryCache[folder] {
+    // until it resolves, so a `cd` never blanks the inspector; with none shown for the target yet
+    // (a first visit), the folder shows at once, its repository pending (review C1).
+    if let cached = followedFolder.cache[folder] {
       changed = setFollowedFolder(
         FollowedFolderState(
           target: target, folder: FollowedFolder(folder: folder, repository: cached)))
+    } else if followedFolderState?.target != target
+      || followedFolderState?.folder.repositoryPending == true
+    {
+      changed = setFollowedFolder(
+        FollowedFolderState(
+          target: target, folder: FollowedFolder(folder: folder, lookup: .pending)))
     }
-    let resolve = resolveFollowedRepository
-    followedFolderTask?.cancel()
-    followedFolderRetryTask?.cancel()
-    followedFolderRetryTask = nil
-    followedFolderTask = Task { [weak self] in
+    let resolve = followedFolder.resolve
+    followedFolder.cancelResolve()
+    followedFolder.task = Task { [weak self] in
       var discovery = await resolve(folder)
       // Placed off the main actor, under the probe's timeout: it reads the folder's real path, which
       // a stale mount can block. A placement that can't finish can't tell where the folder is.
@@ -96,18 +202,17 @@ extension AppStore {
       }
       guard let self, !Task.isCancelled else { return }
       // A later request (another folder, another target) has taken over.
-      let current = self.followedFolderRequest.map { $0.target == target && $0.folder == folder }
+      let current = self.followedFolder.isRequested(target: target, folder: folder)
       let repository: FollowedFolder.Repository?
       switch discovery {
       case .repository(let found): repository = found
       case .notARepository: repository = nil
       case .unknown:
-        if current == true { self.followedFolderCouldNotTell(target: target, folder: folder) }
+        if current { self.followedFolderCouldNotTell(target: target, folder: folder) }
         return
       }
-      self.followedFolderUndeterminedStreak[folder] = nil
-      self.followedRepositoryCache[folder] = .some(repository)
-      guard current == true else { return }
+      self.followedFolder.resolved(folder, to: repository)
+      guard current else { return }
       let state = FollowedFolderState(
         target: target, folder: FollowedFolder(folder: folder, repository: repository))
       if self.setFollowedFolder(state) {
@@ -123,15 +228,9 @@ extension AppStore {
   /// What each folder in `root` resolved to is forgotten too, so a later `cd` within it never shows
   /// the old branch. The folder keeps showing what it last resolved to until the fresh resolve lands.
   func reresolveFollowedFolder(forgetting root: String? = nil) {
-    guard let request = followedFolderRequest else { return }
-    followedRepositoryCache[request.folder] = nil
-    if let root {
-      followedRepositoryCache = followedRepositoryCache.filter { _, repository in
-        // git names a root by its real path: compared as it is, with no `realpath` per entry.
-        repository.flatMap { $0 }.map { $0.root != root } ?? true
-      }
-    }
-    followedFolderRequest = nil
+    guard let request = followedFolder.request else { return }
+    followedFolder.forget(request.folder, inRoot: root)
+    followedFolder.request = nil
     // The same folder, re-read: a folder Files is browsing stays (a save must not snap it back).
     let browse = filesBrowse
     refreshFollowedFolder()
@@ -146,9 +245,9 @@ extension AppStore {
     if case .followed(let followed) = inspectorSubject, let repository = followed.repository {
       root = VCSStatusService.canonicalPath(repository.root)
     }
-    guard root != heldFollowedRepository else { return }
-    if let held = heldFollowedRepository { vcsStatus.unfollow(held) }
-    heldFollowedRepository = root
+    guard root != followedFolder.heldRepository else { return }
+    if let held = followedFolder.heldRepository { vcsStatus.unfollow(held) }
+    followedFolder.heldRepository = root
     if let root { vcsStatus.follow(root) }
   }
 
@@ -166,40 +265,41 @@ extension AppStore {
   }
 
   /// The resolve couldn't tell which repository `folder` is in (a timeout, a repository git
-  /// refused). A re-read of the folder already shown keeps what it shows; any other folder shows as
-  /// itself, undetermined, never as the repository the terminal was in before (re-review R1).
+  /// refused). A re-read of the folder already shown keeps what it shows; any other folder, and one
+  /// still pending, shows as itself, undetermined, never as the repository the terminal was in before (re-review R1).
   /// Nothing is cached, and the request stands, so focus and tab events run nothing until a retry,
   /// spaced out the longer the folder keeps failing: a wedged mount is asked at a bounded rate.
   private func followedFolderCouldNotTell(target: TargetID, folder: String) {
-    if followedFolderState?.target != target || followedFolderState?.folder.folder != folder {
+    if followedFolderState?.target != target || followedFolderState?.folder.folder != folder
+      || followedFolderState?.folder.repositoryPending == true
+    {
       let state = FollowedFolderState(
         target: target,
-        folder: FollowedFolder(folder: folder, repository: nil, repositoryUndetermined: true))
+        folder: FollowedFolder(folder: folder, repository: nil, lookup: .undetermined))
       if setFollowedFolder(state) {
         focusHistoryIfShown()
         focusRemoteStateIfShown()
       }
     }
-    let streak = (followedFolderUndeterminedStreak[folder] ?? 0) + 1
-    followedFolderUndeterminedStreak[folder] = streak
-    let wait = followedFolderRetryWait
-    followedFolderRetryTask?.cancel()
-    followedFolderRetryTask = Task { [weak self] in
+    let streak = followedFolder.couldNotTell(folder)
+    let wait = followedFolder.retryWait
+    followedFolder.retryTask?.cancel()
+    followedFolder.retryTask = Task { [weak self] in
       await wait(streak)
-      guard let self, !Task.isCancelled, let request = self.followedFolderRequest,
-        request.target == target, request.folder == folder
+      guard let self, !Task.isCancelled,
+        self.followedFolder.isRequested(target: target, folder: folder)
       else { return }
       self.reresolveFollowedFolder()
     }
   }
 
   /// Wait for the followed folder's resolve in flight. For tests.
-  func followedFolderResolved() async { await followedFolderTask?.value }
+  func followedFolderResolved() async { await followedFolder.task?.value }
 
   /// Wait for the scheduled retry of a resolve that couldn't tell, and the resolve it starts. For
   /// tests.
   func followedFolderRetried() async {
-    await followedFolderRetryTask?.value
+    await followedFolder.retryTask?.value
     await followedFolderResolved()
   }
 
