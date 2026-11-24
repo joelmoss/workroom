@@ -232,6 +232,9 @@ final class AppStore: ObservableObject {
   /// and which target it was resolved for, so a value never outlives its selection. Written only by
   /// `refreshFollowedFolder`; read through `inspectorSubject`.
   var followedFolderState: FollowedFolderState?
+  /// Whether the followed folder's pending lookup has outlasted the loader's delay: what
+  /// `followedFolderLoaderShown` reads. Written only by `syncFollowedFolderLoader`.
+  var followedFolderLoaderElapsedFlag = false
   /// The folder this window's Files section was browsed to from its breadcrumb (#809), nil while it
   /// shows the followed folder. Cleared by the terminal's next folder change (snap-back).
   var filesBrowse: FilesBrowse?

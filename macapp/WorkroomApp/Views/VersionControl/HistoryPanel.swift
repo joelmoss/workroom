@@ -49,8 +49,9 @@ struct HistoryPanel: View {
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
         InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
       } else if inputs.repositoryPending {
-        // A followed folder whose repository is still resolving (ms): wait without a message.
-        EmptyView()
+        // A followed folder whose repository is still resolving: blank at first, so a fast answer
+        // never flashes a loader, then the section's own loader.
+        if inputs.showsPendingLoader { loadingIndicator } else { EmptyView() }
       } else if let folder = inputs.notARepository {
         // A terminal's followed folder outside any repository (#805), or in one git couldn't tell:
         // no log to read.
@@ -152,6 +153,9 @@ struct HistoryPanel: View {
       Text("Loading history…").font(.callout).foregroundStyle(.secondary)
     }
     .padding(.vertical, 6).padding(.horizontal, 8)
+    .help("Loading history")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Loading history")
   }
 }
 
@@ -168,8 +172,12 @@ struct HistoryPanelInputs {
   var notARepository: String? = nil
   /// Whether git couldn't tell which repository `notARepository` is in, rather than answering none.
   var repositoryUndetermined = false
-  /// Whether the followed folder's repository is still resolving: the pane waits, saying nothing.
+  /// Whether the followed folder's repository is still resolving: the pane waits blank, then
+  /// shows its loader once `showsPendingLoader`.
   var repositoryPending = false
+  /// Whether it has been pending long enough to show the loader
+  /// (`AppStore.followedFolderLoaderShown`).
+  var showsPendingLoader = false
   /// What the list's scroll position is remembered under for a followed repository (#810); nil
   /// for a workroom or project, whose History remembers none.
   var scrollMemoryKey: InspectorMemoryKey? = nil
@@ -221,6 +229,7 @@ struct HistoryPanelAdapter: View {
       notARepository: notARepository,
       repositoryUndetermined: repositoryUndetermined,
       repositoryPending: repositoryPending,
+      showsPendingLoader: store.followedFolderLoaderShown,
       scrollMemoryKey: store.inspectorMemoryKey(for: .history),
       scrollMemory: store.inspectorScrollMemory,
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).

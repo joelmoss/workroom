@@ -240,6 +240,9 @@ struct ChangesPanelInputs {
   /// What the focused content tab shows. A closure, called only while the file list renders, so the
   /// focused-tab and `TerminalPanes` reads stay the panel's own (see `ChangesPanel.fileList`).
   var selection: () -> FocusedTabSelection?
+  /// Whether a followed folder's repository has been pending long enough to show the loader
+  /// (`AppStore.followedFolderLoaderShown`); before that the pane stays blank.
+  var showsPendingLoader = false
 }
 
 /// The Changes section body: the selected workroom's branch, sync state, working-tree changes
@@ -264,8 +267,9 @@ struct ChangesPanel: View {
       case .followed(let followed):
         // A terminal's followed folder (#807): its repository's changes, committed from here as a workroom's are (#808).
         if followed.repositoryPending {
-          // Its repository is still resolving (ms): wait without a message, then show it.
-          EmptyView()
+          // Its repository is still resolving: blank at first, so a fast answer never flashes a
+          // loader, then the section's own loader.
+          if inputs.showsPendingLoader { checkingMessage } else { EmptyView() }
         } else if followed.repository == nil
           || vcsStatus.status(for: inputs.subject)?.failure?.meansNoRepository == true
         {
@@ -281,6 +285,12 @@ struct ChangesPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  /// The section's loader: while a workroom's status is read, and once a followed folder's
+  /// repository has been pending a moment.
+  private var checkingMessage: some View {
+    inspectorCheckingMessage(help: "Reading the repository's changes")
+  }
+
   /// Read here, in the panel, so a status sweep re-runs the panel and not its adapter.
   @ViewBuilder
   private var content: some View {
@@ -290,7 +300,7 @@ struct ChangesPanel: View {
     if let reason = target?.terminalUnavailability {
       inspectorMessage("\(reason.title).")
     } else if status == nil || status?.lastChecked == nil {
-      inspectorMessage("Checking\u{2026}")
+      checkingMessage
     } else if let status {
       // The branch name is NOT repeated here — the VCS toolbar above this section shows it, through
       // the same `AppStore.branchName(for:)` accessor this panel used to read, so the pill was saying
@@ -398,7 +408,8 @@ struct ChangesPanelAdapter: View {
         // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
         selection: { [store] in
           FocusedTabSelection.current(store: store)
-        }),
+        },
+        showsPendingLoader: store.followedFolderLoaderShown),
       actions: actions)
   }
 
@@ -436,6 +447,16 @@ func inspectorMessage(_ text: String) -> some View {
     .foregroundStyle(.secondary)
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(12)
+}
+
+/// The inspector's "Checking…" loader line, shared by the Changes and Pull Request panels: what
+/// they show while a status is read, and once a followed folder's repository has been pending a
+/// moment. `help` is its tooltip and accessibility label.
+func inspectorCheckingMessage(help: String) -> some View {
+  inspectorMessage("Checking\u{2026}")
+    .help(help)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(help)
 }
 
 #if DEBUG

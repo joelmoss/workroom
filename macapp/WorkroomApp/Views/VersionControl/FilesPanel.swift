@@ -37,12 +37,26 @@ struct FilesPanel: View {
     }
   }
 
+  /// The section's loader: while the tree lists, and once a followed folder's repository has been
+  /// pending a moment.
+  private var listingIndicator: some View {
+    HStack(spacing: 6) {
+      ProgressView().controlSize(.small)
+      Text("Listing files…").font(.callout).foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 6).padding(.horizontal, 8)
+    .help("Listing files")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Listing files")
+  }
+
   @ViewBuilder private func content(followed: Bool) -> some View {
     Group {
       if case .followed(let followed) = store.inspectorSubject, followed.repositoryPending {
-        // The folder's repository is still resolving (ms), which decides how it lists: wait
-        // without a message, rather than list it twice.
-        EmptyView()
+        // The folder's repository is still resolving, which decides how it lists: wait rather
+        // than list it twice. Blank at first, so a fast answer never flashes a loader, then the
+        // section's own loader.
+        if store.followedFolderLoaderShown { listingIndicator } else { EmptyView() }
       } else if store.inspectorSubject == .nothing {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than list a stale workroom.
@@ -53,11 +67,7 @@ struct FilesPanel: View {
           InlineMessage(
             followed ? "No open terminal" : "No workroom selected", systemImage: "folder")
         case .loading:
-          HStack(spacing: 6) {
-            ProgressView().controlSize(.small)
-            Text("Listing files…").font(.callout).foregroundStyle(.secondary)
-          }
-          .padding(.vertical, 6).padding(.horizontal, 8)
+          listingIndicator
         case .failed(let message):
           InlineMessage(message, systemImage: "exclamationmark.triangle")
         case .unavailable:
