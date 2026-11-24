@@ -67,6 +67,8 @@ struct FilesPanel: View {
             InlineMessage(followed ? "Empty folder" : "No files", systemImage: "folder")
           } else {
             ScrollView { fileList }
+              .inspectorScrollMemory(
+                key: store.inspectorMemoryKey(for: .files), in: store.inspectorScrollMemory)
           }
         }
       }

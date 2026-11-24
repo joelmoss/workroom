@@ -28,7 +28,8 @@ final class FileTreeModel: ObservableObject {
   /// The sorted root nodes of the current target's tree.
   @Published private(set) var roots: [FileNode] = []
   @Published private(set) var state: State = .idle
-  /// Expanded directory paths. Reset on target switch; the panel toggles entries.
+  /// Expanded directory paths; the panel toggles entries. Reset on a target switch, and restored
+  /// for a followed folder the tree returns to (#810).
   @Published var expanded: Set<String> = []
 
   /// Max rows the panel renders at once (a guard for pathologically large trees); the panel notes
@@ -58,6 +59,16 @@ final class FileTreeModel: ObservableObject {
   private var diskBase: String? {
     if isPlain { return "" }
     return readsSubfolderFromDisk ? subfolder : nil
+  }
+  /// Whether the tree remembers each folder's expansion (#810): a followed folder's tree only
+  /// (`activate(root:)`); a workroom's starts collapsed on every switch, as it always has.
+  private var remembersExpansion = false
+  /// Each followed folder's expanded directories, by `shownFolderKey`.
+  private var expansionMemory: [String: Set<String>] = [:]
+  /// The folder the tree shows, and how it is listed: what its expansion is remembered under.
+  private var shownFolderKey: String? {
+    guard remembersExpansion, let currentPath else { return nil }
+    return "\(isPlain ? "folder" : "repository")\u{1F}\(currentPath)\u{1F}\(subfolder)"
   }
   private var plainTask: Task<Void, Never>?
   private let runner: StatusCommandRunning
@@ -101,9 +112,10 @@ final class FileTreeModel: ObservableObject {
       return activate(path: target?.path)
     }
     // Forgotten, so a later `activate(path:)` back to that path is not taken for a no-op.
-    currentPath = nil
+    forgetPath()
     subfolder = ""
     isPlain = false
+    remembersExpansion = false
     // No watcher refreshes a remote tree, so coming back to it is when it is read again. One this
     // app can't reach, or whose recorded path can't name a location, shows nothing, never that path
     // on this Mac.
@@ -121,23 +133,40 @@ final class FileTreeModel: ObservableObject {
     case .repository(let path, let subfolder):
       if isPlain { forgetPath() }
       if path == currentPath {
+        // Set first: a workroom's tree at this same path becomes a followed one here.
+        remembersExpansion = true
         guard subfolder != self.subfolder else { return }
+        rememberExpansion()
         self.subfolder = subfolder
-        expanded = []
+        expanded = recalledExpansion()
         plainListings = [:]
         reroot()
         return
       }
-      activate(path: path, subfolder: subfolder, plain: false)
+      activate(path: path, subfolder: subfolder, plain: false, remembers: true)
     case .folder(let path):
       if !isPlain { forgetPath() }
-      activate(path: path, subfolder: "", plain: true)
+      activate(path: path, subfolder: "", plain: true, remembers: true)
     }
+  }
+
+  /// Keep the shown folder's expansion for when the tree returns to it.
+  private func rememberExpansion() {
+    guard let key = shownFolderKey else { return }
+    expansionMemory[key] = expanded.isEmpty ? nil : expanded
+  }
+
+  /// The expansion the shown folder had when the tree last left it; none for a workroom's tree.
+  private func recalledExpansion() -> Set<String> {
+    shownFolderKey.flatMap { expansionMemory[$0] } ?? []
   }
 
   /// Leave the current path, so the next activation of it is not taken for a no-op: a switch
   /// between listing modes on one path.
-  private func forgetPath() { currentPath = nil }
+  private func forgetPath() {
+    rememberExpansion()
+    currentPath = nil
+  }
 
   /// Point the model at a target directory (a workroom/project root), or `nil` to clear. Starts
   /// watching it and lists it. No-op if already on this path (so re-renders don't re-list).
@@ -147,7 +176,7 @@ final class FileTreeModel: ObservableObject {
     activate(path: path, subfolder: "", plain: false)
   }
 
-  private func activate(path: String?, subfolder: String, plain: Bool) {
+  private func activate(path: String?, subfolder: String, plain: Bool, remembers: Bool = false) {
     // Compared against the RAW path, never against `currentLocation.path`: `RepositoryLocation`
     // canonicalizes (resolves symlinks — `/tmp` is `/private/tmp` on macOS), so re-selecting the
     // same on-screen target would otherwise look like a fresh activation on every re-render,
@@ -156,11 +185,13 @@ final class FileTreeModel: ObservableObject {
     guard path != currentPath else { return }
     loadTask?.cancel()
     cancelListing()
+    rememberExpansion()
     currentPath = path
     self.subfolder = subfolder
     isPlain = plain
+    remembersExpansion = remembers
     readsSubfolderFromDisk = false
-    expanded = []
+    expanded = recalledExpansion()
     currentLocation = nil
     watcher?.stop()
     watcher = nil
@@ -189,7 +220,7 @@ final class FileTreeModel: ObservableObject {
     listedRoots = []
     plainListings = [:]
     roots = []
-    expanded = []
+    expanded = recalledExpansion()
     guard let location else {
       state = .idle
       return
@@ -224,7 +255,7 @@ final class FileTreeModel: ObservableObject {
   /// stack that many listings on the host.
   func reload() {
     guard let location = currentLocation else { return }
-    if isPlain { return listPlain(Array(plainListings.keys) + [""], at: location) }
+    if isPlain { return listPlain(Array(plainListings.keys) + [""] + expanded, at: location) }
     if let listing, listing.location == location {
       followUp = true
       return
@@ -325,7 +356,8 @@ final class FileTreeModel: ObservableObject {
     readsSubfolderFromDisk = true
     if plainListings[subfolder] == nil { state = .loading }
     if let location = currentLocation {
-      listPlain(Array(plainListings.keys) + [subfolder], at: location)
+      // An expansion recalled for the folder (#810) lists its directories too.
+      listPlain(Array(plainListings.keys) + [subfolder] + expanded, at: location)
     }
   }
 

@@ -148,6 +148,74 @@ final class InspectorPaneViewController: NSViewController {
     bodyHost.rootView = body.hostedRoot(glass: glass)
     (fillsBody ? bodyHost.view : bodyScroll).isHidden = collapsed
   }
+
+  // MARK: Scroll memory (#810)
+
+  private var scrollKey: String?
+  private var scrollMemory: InspectorScrollMemory?
+  /// The offset a return to `scrollKey` restores. Its content may arrive after the switch (a
+  /// status read), and is clamped meanwhile, so every document resize re-applies it until the user
+  /// scrolls.
+  private var pendingOffset: CGFloat?
+  private var observesScroll = false
+
+  /// Remember a scroll-mode body's offset under `key` as the user scrolls, and restore the one
+  /// remembered for it when `key` changes. A nil key (a workroom's inspector) leaves the scroll view
+  /// alone. A fill-mode body scrolls itself (`inspectorScrollMemory(key:in:)`).
+  func remembersScroll(under key: String?, in memory: InspectorScrollMemory?) {
+    guard !fillsBody, key != scrollKey else { return }
+    _ = view
+    scrollKey = key
+    scrollMemory = memory
+    observeScrollIfNeeded()
+    guard let key, let memory else {
+      pendingOffset = nil
+      return
+    }
+    pendingOffset = memory.offset(under: key) ?? 0
+    applyPendingOffset()
+  }
+
+  /// Only the user's own scrolls (live scrolls) are remembered: a clip view clamped by a body
+  /// that is briefly short must not overwrite where they left it.
+  private func observeScrollIfNeeded() {
+    guard !observesScroll else { return }
+    observesScroll = true
+    bodyHost.view.postsFrameChangedNotifications = true
+    let center = NotificationCenter.default
+    center.addObserver(
+      self, selector: #selector(userWillScroll(_:)),
+      name: NSScrollView.willStartLiveScrollNotification, object: bodyScroll)
+    for name in [NSScrollView.didLiveScrollNotification, NSScrollView.didEndLiveScrollNotification]
+    {
+      center.addObserver(
+        self, selector: #selector(userDidScroll(_:)), name: name, object: bodyScroll)
+    }
+    center.addObserver(
+      self, selector: #selector(documentFrameDidChange(_:)),
+      name: NSView.frameDidChangeNotification, object: bodyHost.view)
+  }
+
+  @objc private func userWillScroll(_ notification: Notification) { pendingOffset = nil }
+
+  @objc private func userDidScroll(_ notification: Notification) {
+    pendingOffset = nil
+    guard let scrollKey else { return }
+    scrollMemory?.remember(bodyScroll.contentView.bounds.origin.y, under: scrollKey)
+  }
+
+  @objc private func documentFrameDidChange(_ notification: Notification) {
+    applyPendingOffset()
+  }
+
+  /// Scroll as near `pendingOffset` as the content allows, without animating.
+  private func applyPendingOffset() {
+    guard let target = pendingOffset else { return }
+    let clip = bodyScroll.contentView
+    let limit = max(0, bodyHost.view.frame.height - clip.bounds.height)
+    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(target, limit)))
+    bodyScroll.reflectScrolledClipView(clip)
+  }
 }
 
 // MARK: - Split container
@@ -492,6 +560,11 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   /// Whether the fill-mode panes draw overlay scrollers whatever the system setting
   /// (`InspectorPaneViewController.forcesOverlayScrollers`).
   var forcesOverlayScrollers = false
+  /// What each pane's scroll position is remembered under (#810), nil for none; empty for no
+  /// memory at all.
+  var scrollKeys: [String?] = []
+  /// Where those positions are remembered.
+  var scrollMemory: InspectorScrollMemory? = nil
 
   func makeNSViewController(context: Context) -> InspectorSplitContainerController {
     let panes = makePanes()
@@ -554,6 +627,9 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     for (index, pane) in panes.enumerated() {
       pane.setContent(
         header: headers[index], body: bodies[index], collapsed: collapsed[index], glass: glass)
+      if index < scrollKeys.count {
+        pane.remembersScroll(under: scrollKeys[index], in: scrollMemory)
+      }
     }
   }
 
