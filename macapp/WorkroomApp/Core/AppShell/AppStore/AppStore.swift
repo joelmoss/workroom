@@ -1418,6 +1418,18 @@ final class AppStore: ObservableObject {
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
 
+  /// Whether this window's selection has an inspector (#803): a workroom or a project, or a
+  /// terminal whose inspector follows its folder (`followsFolder`). False with no selection and for
+  /// the Quick Terminal's row. The one gate for the inspector column, the activity bar's panes and
+  /// the View menu's inspector items, so they agree in a window with no projects.
+  ///
+  /// Keyed on the row, not on `inspectorSubject`, which is `.nothing` until a selection opens a tab
+  /// and its folder resolves: the chrome would otherwise flash shut on every new selection.
+  var selectionIsInspectable: Bool {
+    guard let sid = selectedTargetID, selectedTarget != nil else { return false }
+    return !sid.isInTerminalsSection || Self.followsFolder(sid)
+  }
+
   /// What this window's inspector is about (#803): the one value its header and every section
   /// read. It is the selection, but only while it has open tabs (`selectionHasTabs`), so the
   /// sections empty when all its tabs close. `.nothing` ⇒ the inspector shows its empty state.

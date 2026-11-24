@@ -152,12 +152,9 @@ struct RootView: View {
     // (`AppStore.inspectorToggles`).
     let _ = store.inspectorToggles
     // A Terminals-section row shows it only while it follows its terminal's folder (#803): the
-    // inspector is then about that folder. Keyed on the row, not on `inspectorSubject`, which is
-    // `.nothing` until a first selection's folder resolves, so the column doesn't flash shut.
-    let inspectorVisible =
-      showInspector && store.selectedTarget != nil
-      && store.selectedTargetID.map { !$0.isInTerminalsSection || AppStore.followsFolder($0) }
-        == true
+    // inspector is then about that folder. The same gate as the activity bar's panes and the View
+    // menu's inspector items (`AppStore.selectionIsInspectable`).
+    let inspectorVisible = showInspector && store.selectionIsInspectable
     // Same reasoning as `inspectorVisible`: with zero projects, `SidebarColumn` has nothing to list
     // but its own "No projects yet" empty state — which `detailContent`'s empty state now also shows
     // (with the same "Add Project…" action), so the sidebar just doubles it. Gated on

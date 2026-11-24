@@ -12,7 +12,6 @@ import SwiftUI
 /// `.onHover` tracking (a raw content view near the title bar loses it, issue #114).
 struct ActivityBar: View {
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var vcsStatus: VCSStatusService
   @Default(.showInspector) private var showInspector
   @Environment(\.themeTokens) private var tokens
@@ -26,8 +25,9 @@ struct ActivityBar: View {
     // Re-renders on every click, so `showInspector` is read fresh (`AppStore.inspectorToggles`).
     let _ = store.inspectorToggles
     VStack(spacing: 2) {
-      // No projects: no inspector to show, so only Settings stays on the rail.
-      ForEach(projectStore.projects.isEmpty ? [] : ActivitySection.allCases) { section in
+      // Nothing selected to inspect (no selection, the Quick Terminal): no inspector to show, so
+      // only Settings stays on the rail. A terminal with no project has one: it follows its folder.
+      ForEach(store.selectionIsInspectable ? ActivitySection.allCases : []) { section in
         ActivityBarButton(
           section: section,
           // Active only while the pane is actually shown — a closed inspector highlights nothing
