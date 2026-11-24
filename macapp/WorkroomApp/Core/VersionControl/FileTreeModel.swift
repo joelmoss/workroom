@@ -75,8 +75,8 @@ final class FileTreeModel: ObservableObject {
   /// Whether the tree remembers each folder's expansion (#810): a followed folder's tree only
   /// (`activate(root:)`); a workroom's starts collapsed on every switch, as it always has.
   private var remembersExpansion = false
-  /// Each followed folder's expanded directories, by `shownFolderKey`.
-  private var expansionMemory: [ShownFolder: Set<String>] = [:]
+  /// Each followed folder's expanded directories, by `shownFolderKey`: the 64 most recently shown.
+  private var expansionMemory = RecentCache<ShownFolder, Set<String>>(capacity: 64)
   /// The folder the tree shows, and how it is listed: what its expansion is remembered under.
   private var shownFolderKey: ShownFolder? {
     guard remembersExpansion, let currentPath else { return nil }

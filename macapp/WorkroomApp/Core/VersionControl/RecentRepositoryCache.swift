@@ -61,6 +61,11 @@ struct RecentCache<Key: Hashable, Value> {
     entries = entries.filter { !shouldRemove($0.key, $0.value.value) }
   }
 
+  /// Change entries in place, leaving how recently each was used as it was.
+  mutating func updateEach(_ body: (Key, inout Value) -> Void) {
+    for key in Array(entries.keys) { body(key, &entries[key]!.value) }
+  }
+
   /// Dictionary-style access: a read is a use, as `value(for:)` is; writing nil forgets.
   subscript(key: Key) -> Value? {
     mutating get { value(for: key) }

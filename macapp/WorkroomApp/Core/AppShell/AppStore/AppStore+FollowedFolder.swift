@@ -23,8 +23,9 @@ final class FollowedFolderTracker {
   var task: Task<Void, Never>?
   /// The retry of a resolve that couldn't tell, for `request`.
   var retryTask: Task<Void, Never>?
-  /// How many resolves in a row couldn't tell, per folder: what spaces out its retries.
-  private var undeterminedStreak: [String: Int] = [:]
+  /// How many resolves in a row couldn't tell, per folder: what spaces out its retries. Bounded:
+  /// a folder dropped from it starts its retries over at 2 s.
+  private var undeterminedStreak = RecentCache<String, Int>(capacity: 64)
   /// Wait before retrying a folder whose resolve couldn't tell `streak` times in a row: 2 s,
   /// doubling to 60 s. A seam for tests.
   var retryWait: @Sendable (_ streak: Int) async -> Void = { streak in
@@ -33,7 +34,8 @@ final class FollowedFolderTracker {
   /// What each folder resolved to last, so returning to a terminal shows its repository at once.
   /// An entry that is fresh, or watched (`CacheEntry.watched`), is trusted as it is, with no `git`
   /// run; any other is shown while a fresh resolve (for a branch switched meanwhile) runs.
-  var cache: [String: CacheEntry] = [:]
+  /// Bounded to the 64 most recently used folders.
+  var cache = RecentCache<String, CacheEntry>(capacity: 64)
 
   /// What a folder resolved to, and since when it is known to still hold.
   struct CacheEntry {
@@ -143,16 +145,20 @@ final class FollowedFolderTracker {
   /// from here on.
   func holding(_ root: String) {
     let now = now()
-    for (folder, entry) in cache where entry.repository?.root == root && !entry.watched {
-      if now - entry.at < .seconds(1) { cache[folder]?.watched = true }
+    cache.updateEach { _, entry in
+      if entry.repository?.root == root, !entry.watched, now - entry.at < .seconds(1) {
+        entry.watched = true
+      }
     }
   }
 
   /// This window let go of `root`: its answers held until now, and are trusted only while fresh.
   func released(_ root: String) {
     let now = now()
-    for (folder, entry) in cache where entry.repository?.root == root && entry.watched {
-      cache[folder] = CacheEntry(repository: entry.repository, at: now)
+    cache.updateEach { _, entry in
+      if entry.repository?.root == root, entry.watched {
+        entry = CacheEntry(repository: entry.repository, at: now)
+      }
     }
   }
 
@@ -167,9 +173,9 @@ final class FollowedFolderTracker {
   func forget(_ folder: String?, inRoot root: String?) {
     if let folder { cache[folder] = nil }
     guard let root else { return }
-    cache = cache.filter { _, entry in
+    cache.removeAll { _, entry in
       // git names a root by its real path: compared as it is, with no `realpath` per entry.
-      entry.repository.map { $0.root != root } ?? true
+      entry.repository?.root == root
     }
   }
 }
