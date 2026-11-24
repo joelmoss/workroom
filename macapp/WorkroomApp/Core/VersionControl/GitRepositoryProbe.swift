@@ -267,16 +267,14 @@ struct GitRepositoryProbe: Sendable {
   /// its GCD thread until the kernel gives up, and a thread per ask would drain the global pool
   /// every `runBlocking` read shares (re-review R2). A key names the read and its path, so the
   /// joined read computes the same thing.
+  ///
+  /// A read that outruns its bound and lands later is kept for its key a short while
+  /// (`BlockingReads`), so a slow but live path, whose every read takes a little longer than the
+  /// bound and so lands in its caller's backoff gap, resolves on the next try (#812).
   static func blockingRead<T: Sendable>(
     _ key: String, timeout: TimeInterval, _ work: @escaping @Sendable () -> T
   ) async -> T? {
-    let read = blockingReads.join(key) { () async throws -> any Sendable in
-      try await runBlocking { work() }
-    }
-    let value: (any Sendable)? = try? await withTimeout(seconds: timeout) {
-      () async throws -> any Sendable in try await read.value
-    }
-    return value as? T
+    await blockingReads.read(key, timeout: timeout) { try await runBlocking { work() } } as? T
   }
 
   /// `work`, which runs its own blocking part on GCD, joined by `key` and bounded by `timeout` as
@@ -284,11 +282,7 @@ struct GitRepositoryProbe: Sendable {
   static func boundedRead<T: Sendable>(
     _ key: String, timeout: TimeInterval, _ work: @escaping @Sendable () async -> T
   ) async -> T? {
-    let read = blockingReads.join(key) { () async throws -> any Sendable in await work() }
-    let value: (any Sendable)? = try? await withTimeout(seconds: timeout) {
-      () async throws -> any Sendable in try await read.value
-    }
-    return value as? T
+    await blockingReads.read(key, timeout: timeout) { await work() } as? T
   }
 
   /// `path` as a local repository location (`RepositoryLocation.local`, which resolves its
@@ -303,7 +297,7 @@ struct GitRepositoryProbe: Sendable {
     return location ?? nil
   }
 
-  private static let blockingReads = BlockingReads()
+  private static let blockingReads = BlockingReads()  // late results kept 30 s
 
   // MARK: Local-only derivation (a local host reads these from its own checkout)
 
@@ -348,31 +342,116 @@ struct GitRepositoryProbe: Sendable {
   }
 }
 
-/// The blocking reads in flight, by key, for `GitRepositoryProbe.blockingRead`. An entry lasts
-/// until its closure actually returns, however many callers gave up waiting on it.
-private final class BlockingReads: @unchecked Sendable {
-  private let lock = NSLock()
-  private var reads: [String: Task<any Sendable, Error>] = [:]
+/// The blocking reads in flight, by key, for `GitRepositoryProbe.blockingRead`, and the late
+/// results of those that outran a caller's bound. An in-flight entry lasts until its closure
+/// actually returns, however many callers gave up waiting on it.
+///
+/// A read a caller gave up on keeps its result for its key for `keepFor` once it lands, so that
+/// caller's retry gets it at once rather than starting a read that outruns the bound again (#812).
+/// Only a late result is kept: a read that lands in time clears its key, so a healthy path is read
+/// afresh every time. A kept result is never served past `keepFor`, and at most `capacity` are
+/// kept (the oldest go first), as keys are per path.
+final class BlockingReads: @unchecked Sendable {
+  let keepFor: Duration
+  let capacity: Int
 
-  /// The read of `key` in flight, else `work` started as it.
-  func join(_ key: String, _ work: @escaping @Sendable () async throws -> any Sendable)
-    -> Task<any Sendable, Error>
+  private let lock = NSLock()
+  private var reads: [String: Read] = [:]
+  private var kept: [String: (value: any Sendable, landed: ContinuousClock.Instant)] = [:]
+
+  init(keepFor: Duration = .seconds(30), capacity: Int = 256) {
+    self.keepFor = keepFor
+    self.capacity = capacity
+  }
+
+  /// One read in flight. Its state is guarded by the owning `BlockingReads`'s lock.
+  private final class Read: @unchecked Sendable {
+    var task: Task<any Sendable, Error>?
+    /// Whether a caller gave up waiting on it, so its result is kept once it lands.
+    var abandoned = false
+    /// Its result once it landed (nil for a read that threw).
+    var landed: (any Sendable)?
+  }
+
+  /// `work`'s result under `timeout`, nil when it outruns it: a kept late result for `key`, else
+  /// the read of `key` in flight joined, else `work` started as it.
+  func read(
+    _ key: String, timeout: TimeInterval,
+    _ work: @escaping @Sendable () async throws -> any Sendable
+  ) async -> (any Sendable)? {
+    let joined: Read
+    switch join(key, work) {
+    case .kept(let value): return value
+    case .read(let read): joined = read
+    }
+    guard let task = lock.withLock({ joined.task }) else { return nil }
+    do {
+      return try await withTimeout(seconds: timeout) {
+        () async throws -> any Sendable in try await task.value
+      }
+    } catch {
+      return abandon(joined)
+    }
+  }
+
+  private enum Joined {
+    case kept(any Sendable)
+    case read(Read)
+  }
+
+  private func join(_ key: String, _ work: @escaping @Sendable () async throws -> any Sendable)
+    -> Joined
   {
     lock.lock()
     defer { lock.unlock() }
-    if let read = reads[key] { return read }
+    if let read = reads[key] { return .read(read) }
+    if let late = kept[key] {
+      if ContinuousClock.now - late.landed < keepFor { return .kept(late.value) }
+      kept[key] = nil
+    }
+    let read = Read()
     // Its `finish` takes the lock, so it can't run before the entry is in.
-    let read = Task<any Sendable, Error> { [self] in
-      defer { finish(key) }
-      return try await work()
+    read.task = Task<any Sendable, Error> { [self] in
+      do {
+        let value = try await work()
+        finish(key, read, value)
+        return value
+      } catch {
+        finish(key, read, nil)
+        throw error
+      }
     }
     reads[key] = read
-    return read
+    return .read(read)
   }
 
-  private func finish(_ key: String) {
+  /// A caller gave up on `read`: its result, should it have landed in the meantime, else nil, and
+  /// it is kept once it lands.
+  private func abandon(_ read: Read) -> (any Sendable)? {
     lock.lock()
     defer { lock.unlock() }
-    reads[key] = nil
+    read.abandoned = true
+    return read.landed
+  }
+
+  private func finish(_ key: String, _ read: Read, _ value: (any Sendable)?) {
+    lock.lock()
+    defer { lock.unlock() }
+    if reads[key] === read { reads[key] = nil }
+    read.landed = value
+    // The newest landing replaces whatever was kept: a late one is kept, an in-time one clears it.
+    guard read.abandoned, let value else {
+      kept[key] = nil
+      return
+    }
+    let now = ContinuousClock.now
+    kept[key] = (value, now)
+    guard kept.count > capacity else { return }
+    kept = kept.filter { now - $0.value.landed < keepFor }
+    while kept.count > capacity,
+      let oldest = kept.min(by: { $0.value.landed < $1.value.landed })?.key
+    {
+      kept[oldest] = nil
+    }
   }
 }
