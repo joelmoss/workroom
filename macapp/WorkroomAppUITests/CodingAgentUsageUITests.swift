@@ -128,8 +128,8 @@ final class CodingAgentUsageUITests: XCTestCase {
       "terminal.statusBar.codingAgentUsage.enableClaude"]
     XCTAssertTrue(enable.waitForExistence(timeout: 15))
     enable.click()
-    XCTAssertTrue(app.buttons["Enable"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.buttons["Cancel"].exists)
+    XCTAssertTrue(app.sheets.buttons["Enable"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.sheets.buttons["Cancel"].exists)
   }
 
   /// A running agent with no reading yet shows nothing in the footer until its first one (#480):
