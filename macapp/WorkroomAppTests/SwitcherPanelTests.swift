@@ -42,7 +42,7 @@ final class SwitcherPanelTests: XCTestCase {
     // Twice over: ⌘`'s `isCycleableWindow` requires `canBecomeKey`, and `.ignoresCycle` is belt and
     // braces on top.
     let (controller, panel) = try preparedPanel()
-    panel.orderFrontRegardless()
+    showTestWindow(panel)
     defer { panel.orderOut(nil) }
     XCTAssertFalse(WindowRegistry().isCycleableWindow(panel), "⌘` must never land on the rail")
     XCTAssertTrue(panel.collectionBehavior.contains(.ignoresCycle))
@@ -102,7 +102,8 @@ final class SwitcherPanelTests: XCTestCase {
   func testThePanelTakesMouseEvents() throws {
     // Hover and click are part of the spec, so it must not be a pass-through overlay.
     let (controller, panel) = try preparedPanel()
-    XCTAssertFalse(panel.ignoresMouseEvents)
+    // What the panel's code set, which the run's cloak holds back once it is shown.
+    XCTAssertFalse(TestWindowCloak.requested(panel).ignoresMouseEvents)
     withExtendedLifetime(controller) {}
   }
 

@@ -106,7 +106,7 @@ final class DiffViewerStaleLoadTests: XCTestCase {
     // ARC — same reasoning as `DiffViewerLazyRenderingTests.host`.
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return (window, hosting)
   }
 

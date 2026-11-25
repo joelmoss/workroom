@@ -168,7 +168,7 @@ final class TerminalFocusReconciliationTests: XCTestCase {
     let (window, surface) = windowedSurface()
     XCTAssertTrue(window.makeFirstResponder(nil))
     // `beginSheet` is a no-op on a window that was never ordered in.
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     defer { window.close() }
     let sheet = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),

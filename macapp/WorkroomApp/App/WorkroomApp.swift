@@ -113,6 +113,8 @@ struct WorkroomApp: App {
     // (an existing install with projects that just never completed onboarding).
     let onboardingMightShow = OnboardingGate.mightShow(
       hasCompleted: Defaults[.hasCompletedOnboarding])
+    // A hosted unit run opens neither (`AppEnvironment.opensWindowsAtLaunch`).
+    let opensAtLaunch = AppEnvironment.opensWindowsAtLaunch()
 
     // Value-based scene (issue #70): SwiftUI mints one window — and one fresh `AppStore` — per
     // `WindowSeed`, guaranteeing independent per-window state (and sidestepping the documented
@@ -144,7 +146,7 @@ struct WorkroomApp: App {
     // is the actual, Apple-provided lever for "don't auto-open this scene's window at launch."
     // Explicit `openWindow(value:)` calls later (from `OnboardingWindow`, once it's done) are
     // unaffected by this — it only governs automatic launch behavior.
-    .defaultLaunchBehavior(onboardingMightShow ? .suppressed : .automatic)
+    .defaultLaunchBehavior(opensAtLaunch && !onboardingMightShow ? .automatic : .suppressed)
     // `session.json` reopens the windows; macOS restoring one too adds a window. See
     // `AppStore.attachWindow` for why `isRestorable = false` isn't enough on its own.
     .restorationBehavior(.disabled)
@@ -181,7 +183,7 @@ struct WorkroomApp: App {
     }
     .windowResizability(.contentSize)
     .windowStyle(.hiddenTitleBar)
-    .defaultLaunchBehavior(onboardingMightShow ? .presented : .suppressed)
+    .defaultLaunchBehavior(opensAtLaunch && onboardingMightShow ? .presented : .suppressed)
     .commandsRemoved()
 
     // The system menu-bar item (issue #33) is hand-managed by `AppDelegate`'s `MenuBarController`

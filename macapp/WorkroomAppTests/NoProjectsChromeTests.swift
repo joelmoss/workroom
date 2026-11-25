@@ -86,7 +86,7 @@ final class NoProjectsChromeTests: XCTestCase {
       backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false  // ARC owns it; see PaneRenderingTests.host
     window.contentView = hosting
-    window.orderFrontRegardless()
+    showTestWindow(window)
     defer { window.close() }
 
     // SwiftUI builds its accessibility nodes only for an assistive client; this attribute, which

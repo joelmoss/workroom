@@ -48,7 +48,7 @@ final class PaneRenderingTests: XCTestCase {
     // over-release that corrupts the heap. Opt out so ARC is the sole owner.
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return (window, hosting)
   }
 
@@ -277,7 +277,7 @@ final class PaneRenderingTests: XCTestCase {
 
     s.detachPane(detached, for: target, at: .zero)
     detachedWindow.contentView = detachedHost
-    detachedWindow.makeKeyAndOrderFront(nil)
+    showTestWindow(detachedWindow, makeKey: true)
 
     // Let BOTH trees settle — the origin's trailing update pass is the one that used to steal it.
     for _ in 0..<10 {

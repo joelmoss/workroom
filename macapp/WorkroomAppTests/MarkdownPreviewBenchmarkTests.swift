@@ -39,7 +39,7 @@ final class MarkdownPreviewBenchmarkTests: XCTestCase {
       styleMask: [.titled], backing: .buffered, defer: false)
     window.title = "Markdown preview benchmark"
     window.isReleasedWhenClosed = false
-    window.orderFrontRegardless()
+    showTestWindow(window)
   }
 
   override func tearDown() async throws {

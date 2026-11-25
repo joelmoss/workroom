@@ -4,7 +4,8 @@ import XCTest
 
 /// The unit-test bundle's principal class (`NSPrincipalClass`, `project.yml`): XCTest makes one as
 /// the bundle loads, before any test runs. It turns a `HostedRunSessionGuard` refusal into a failure
-/// of the test that was running, named in the message, rather than a crash of the whole test host.
+/// of the test that was running, named in the message, rather than a crash of the whole test host,
+/// and hides every window the run shows from the developer (`TestWindowCloak`).
 @objc(HostedRunGuardObserver)
 final class HostedRunGuardObserver: NSObject, XCTestObservation, @unchecked Sendable {
   private let lock = NSLock()
@@ -14,6 +15,8 @@ final class HostedRunGuardObserver: NSObject, XCTestObservation, @unchecked Send
 
   override init() {
     super.init()
+    // Before any test can show a window: from here on none appears over the developer's work.
+    TestWindowCloak.install()
     XCTestObservationCenter.shared.addTestObserver(self)
     HostedRunSessionGuard.reportViolation = { [weak self] in self?.fail($0) }
   }

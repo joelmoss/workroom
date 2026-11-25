@@ -87,7 +87,7 @@ final class DeleteMountsNoPaneTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.orderFront(nil)
+    showTestWindow(window)
     await settle()
     XCTAssertFalse(opened.contains(goneID), "precondition: withheld behind its create")
     return Fixture(store: store, project: project, cli: cli, window: window, opened: { opened })

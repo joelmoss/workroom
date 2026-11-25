@@ -140,7 +140,7 @@ final class CodingAgentUsagePollingTests: XCTestCase {
     NSApp.updateWindows()
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(monitor.completedPollCount, 0, "a hidden window cannot release the pollers")
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     window.displayIfNeeded()
     NSApp.updateWindows()
     await waitForPoll(monitor, count: 2)

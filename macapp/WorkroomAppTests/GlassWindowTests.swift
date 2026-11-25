@@ -125,16 +125,21 @@ final class GlassWindowTests: XCTestCase {
     return window.occlusionState.contains(.visible) == visible
   }
 
+  /// Why `occlusionSteps` shows its windows as the user would see them, the one place a unit test
+  /// does (`showTestWindowVisibly`): the window server counts only opaque coverage as occluding.
+  private static let seenBecause =
+    "occlusion is counted only from opaque coverage, so this check needs real, opaque windows"
+
   /// Covers `window` with an opaque window above it and reports whether `window` saw each step:
   /// visible uncovered, not visible covered, visible again uncovered, not visible ordered out.
   private func occlusionSteps(of window: NSWindow) -> [Bool] {
-    window.orderFrontRegardless()
+    showTestWindowVisibly(window, because: Self.seenBecause)
     let shown = wait(for: window, visible: true)
     let cover = makeWindow(
       window.frame.insetBy(dx: -40, dy: -40),
       level: NSWindow.Level(rawValue: window.level.rawValue + 1))
     cover.backgroundColor = .black
-    cover.orderFrontRegardless()
+    showTestWindowVisibly(cover, because: Self.seenBecause)
     let covered = wait(for: window, visible: false)
     cover.orderOut(nil)
     let uncovered = wait(for: window, visible: true)

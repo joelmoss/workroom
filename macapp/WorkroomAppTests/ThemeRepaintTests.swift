@@ -45,7 +45,7 @@ final class ThemeRepaintTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false  // ARC owns it; see PaneRenderingTests.host
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return window
   }
 

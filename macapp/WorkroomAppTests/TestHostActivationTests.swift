@@ -14,6 +14,14 @@ final class TestHostActivationTests: XCTestCase {
       "a fixture or XCUITest launch has no XCTestConfigurationFilePath and must activate")
   }
 
+  func testOnlyAHostedUnitRunOpensNoWindowsAtLaunch() {
+    XCTAssertFalse(
+      AppEnvironment.opensWindowsAtLaunch(environment: ["XCTestConfigurationFilePath": "/x"]))
+    XCTAssertTrue(
+      AppEnvironment.opensWindowsAtLaunch(environment: [:]),
+      "a fixture or XCUITest launch opens its main window or the Welcome wizard as a user's does")
+  }
+
   func testThisTestHostCannotActivate() {
     // The real wiring: this process is the hosted app, so launch already set the policy.
     XCTAssertEqual(NSApp.activationPolicy(), .prohibited)

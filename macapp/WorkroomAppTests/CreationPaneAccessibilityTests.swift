@@ -46,7 +46,7 @@ final class CreationPaneAccessibilityTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false  // ARC owns it; see PaneRenderingTests.host
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     defer { window.close() }
 
     var pane: AnyObject?

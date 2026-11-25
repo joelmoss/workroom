@@ -112,7 +112,7 @@ final class OutputFloodBenchmarkTests: XCTestCase {
       if let producer, kill(producer, 0) == 0 { kill(producer, SIGTERM) }
     }
     window.contentView = view
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     window.makeFirstResponder(view)
     _ = try XCTUnwrap(view.surface, "the benchmark requires the real engine")
     for _ in 0..<100 {

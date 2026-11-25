@@ -17,7 +17,7 @@ func hostInWindow<Content: View>(
   // top of ARC — same reasoning as `PaneRenderingTests.host`.
   window.isReleasedWhenClosed = false
   window.contentView = hosting
-  window.orderFront(nil)
+  showTestWindow(window)
   return (window, hosting)
 }
 

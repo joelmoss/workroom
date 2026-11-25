@@ -132,7 +132,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     // top of ARC — same reasoning as `PaneRenderingTests.host`.
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return (window, hosting)
   }
 

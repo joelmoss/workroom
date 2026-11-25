@@ -50,7 +50,7 @@ final class DiffViewerLazyRenderingTests: XCTestCase {
     // of ARC — same reasoning as `PaneRenderingTests.host`/`HistoryRowInvalidationTests.host`.
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return (window, hosting)
   }
 
