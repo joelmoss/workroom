@@ -48,11 +48,11 @@ jobs:
       # largest mode; the step logs every mode on offer and warns rather than fails when none is
       # 1920x1080 or more, so the run still reports the tests that don't need the room.
       - name: Raise the display resolution
+        # (system_profiler SPDisplaysDataType reports no resolution for the runner's virtual display;
+        # the script prints the mode before and after itself.)
         run: |
-          system_profiler SPDisplaysDataType | grep -E 'Resolution|UI Looks like' || true
           swift scripts/ci/set-display-mode.swift \
             || echo "::warning::The display stays below 1920x1080; split and wide-window UI tests will fail"
-          system_profiler SPDisplaysDataType | grep -E 'Resolution|UI Looks like' || true
 
       # libghostty starts the user record's login shell, not $SHELL, and the runner's is /bin/bash
       # (3.2, no Ghostty shell integration), so the terminal tests' hermetic zsh never ran. The VM
