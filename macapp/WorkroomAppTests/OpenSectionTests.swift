@@ -221,7 +221,7 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertTrue(try row(two, in: store).isFolded)
   }
 
-  func testAFoldChoiceStaysAndTheSelectedRowCannotFold() throws {
+  func testAFoldChoiceStays() throws {
     let store = makeStore()
     try open(one, in: store)
     try open(two, in: store)
@@ -231,9 +231,21 @@ final class OpenSectionTests: XCTestCase {
     store.selectWorkroomTab(one)
     store.selectWorkroomTab(two)
     XCTAssertFalse(try row(one, in: store).isFolded, "unfolded by hand, it stays unfolded")
+  }
 
+  func testTheSelectedRowFoldsUntilItIsNextSelected() throws {
+    let store = makeStore()
+    try open(one, in: store)
+    try open(two, in: store)
+
+    XCTAssertTrue(try row(two, in: store).canFold, "its chevron stays live")
     store.setOpenRow(two, folded: true)
-    XCTAssertFalse(try row(two, in: store).isFolded, "the selected row stays unfolded")
+    XCTAssertTrue(try row(two, in: store).isFolded, "the selected row folds")
+
+    store.selectWorkroomTab(one)
+    XCTAssertTrue(try row(two, in: store).isFolded)
+    store.selectWorkroomTab(two)
+    XCTAssertFalse(try row(two, in: store).isFolded, "selecting it again unfolds it")
   }
 
   func testEachWindowHasItsOwnRowsAndFolds() throws {

@@ -51,17 +51,19 @@ extension AppStore {
 
   // MARK: Fold state
 
-  /// Whether `sid`'s row hides its tabs. The selected target is always unfolded; any other is
-  /// folded until it is unfolded by hand.
+  /// Whether `sid`'s row hides its tabs. Selecting a target unfolds its row, and it stays
+  /// unfolded unless folded by hand until it is next selected; any other row is folded until it is
+  /// unfolded by hand.
   func isOpenRowFolded(_ sid: SidebarID) -> Bool {
-    guard sid != selectedTargetID, let id = sid.targetID else { return false }
+    guard let id = sid.targetID else { return false }
+    if sid == selectedTargetID { return foldedSelectedOpenTarget == id }
     return !unfoldedOpenTargets.contains(id)
   }
 
-  /// Fold or unfold `sid`'s row. The selected target's row stays unfolded, so folding it does
-  /// nothing.
+  /// Fold or unfold `sid`'s row by hand. The selected row folds too, until it is next selected.
   func setOpenRow(_ sid: SidebarID, folded: Bool) {
-    guard let id = sid.targetID, sid != selectedTargetID else { return }
+    guard let id = sid.targetID else { return }
+    if sid == selectedTargetID { foldedSelectedOpenTarget = folded ? id : nil }
     if folded { unfoldedOpenTargets.remove(id) } else { unfoldedOpenTargets.insert(id) }
   }
 
@@ -126,8 +128,8 @@ struct OpenSectionRow: Identifiable {
   let tabs: [OpenSectionTabRow]
 
   var id: SidebarID { sid }
-  /// Whether the disclosure chevron can fold it: not while it is selected, nor with nothing in it.
-  var canFold: Bool { !isSelected && !tabs.isEmpty }
+  /// Whether the disclosure chevron can fold it: not with nothing in it.
+  var canFold: Bool { !tabs.isEmpty }
 }
 
 /// One tab's row under its workroom: what its strip chip shows.

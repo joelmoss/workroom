@@ -207,6 +207,8 @@ final class AppStore: ObservableObject {
     // instead of lingering on the previous workroom's commits until the panel's `.task` catches
     // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
     if selectedTargetID != oldValue {
+      // Selecting a target unfolds its Open section row (#819).
+      foldedSelectedOpenTarget = nil
       // Opening a container workroom starts its container if it was stopped (#309).
       let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
       RemoteHosts.shared.reachability.select(selected, in: ObjectIdentifier(self))
@@ -439,6 +441,9 @@ final class AppStore: ObservableObject {
   var unfoldedOpenTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
+  /// The selected target, when its Open section row was folded by hand since it was selected
+  /// (#819). Selecting a target clears it, so selecting unfolds the row.
+  var foldedSelectedOpenTarget: TerminalTarget.ID?
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   var prActionInFlight = false
 
