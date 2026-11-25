@@ -58,16 +58,24 @@ struct SidebarDragPlumbing: Equatable, Sendable {
   /// `drag`), and on release over a pane it forms or extends the workroom split, as the chip does.
   /// Attached with `.simultaneousGesture` so it coexists with the List's vertical scroll;
   /// `minimumDistance` keeps a plain click selecting the row (a zero-translation tap never starts
-  /// the drag).
-  @MainActor func splitGesture(_ id: SidebarID, actions: SidebarActions) -> some Gesture {
+  /// the drag). `ghostTitle`: the ghost shows anywhere in the window, with that title, for a row
+  /// whose drag draws no picture of its own (an Open row, #819); out of the window it is left to
+  /// the row's other drags.
+  @MainActor func splitGesture(
+    _ id: SidebarID, actions: SidebarActions, ghostTitle: String? = nil
+  ) -> some Gesture {
     let handlers = handlers
     return DragGesture(minimumDistance: 6, coordinateSpace: .global)
       .onChanged { value in
         handlers.drag.wrappedValue = handlers.localize(value.location).map {
           WorkroomPaneDrag(sid: id, location: $0)
         }
-        // Over the panes, the shared ghost carries its name (#652).
-        if handlers.drag.wrappedValue != nil {
+        if let ghostTitle {
+          if !isDragOutsideWindow(value.location) {
+            DragGhost.shared.show(title: ghostTitle, at: NSEvent.mouseLocation)
+          }
+        } else if handlers.drag.wrappedValue != nil {
+          // Over the panes, the shared ghost carries its name (#652).
           DragGhost.shared.show(title: id.ghostTitle, at: NSEvent.mouseLocation)
         } else {
           DragGhost.shared.hide()
