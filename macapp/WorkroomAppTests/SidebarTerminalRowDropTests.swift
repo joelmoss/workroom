@@ -622,60 +622,6 @@ final class SidebarTerminalRowDropTests: XCTestCase {
       scene.drag.listMoves(.init(pressedAt: next, point: gap)), "the next drag")
   }
 
-  // MARK: The List's drop
-
-  private let s = TargetID.standalone(UUID())
-  private let g = SidebarID.terminalGroup(UUID())
-  private let h = SidebarID.terminalGroup(UUID())
-  private let (g1, g2, h1) = (UUID(), UUID(), UUID())
-  /// A standalone terminal, group g with two terminals, then group h with one.
-  private var items: [SidebarTerminalsList.Item] {
-    [
-      .entry(s), .entry(g.targetID!), .terminal(g1, group: g), .terminal(g2, group: g),
-      .entry(h.targetID!), .terminal(h1, group: h),
-    ]
-  }
-  private func lands(_ from: Int, _ to: Int) -> SidebarTerminalsList.RowMove {
-    SidebarTerminalsList.rowMove(items, from: from, to: to)
-  }
-
-  /// Value: protects=a standalone terminal's row let go among a group's terminals joins the group
-  /// just above the terminal below the gap; elsewhere it reorders, and a group's row only reorders
-  /// (#652 follow-up); fails_when=it lands after the group, or a group row joins a group;
-  /// why_new=the owner wants the drop's position to count; seam=SidebarTerminalsList.rowMove;
-  /// no_claim=the List calling it
-  func testWhereTheListsDropOfAnEntrysRowLands() {
-    XCTAssertEqual(lands(0, 3), .joins(g, before: g2), "between g's two terminals")
-    XCTAssertEqual(lands(0, 2), .joins(g, before: g1), "above g's first terminal")
-    XCTAssertEqual(lands(0, 5), .joins(h, before: h1), "above h's terminal")
-    XCTAssertEqual(lands(0, 4), .reorders(before: h.targetID), "below g's last: between rows")
-    XCTAssertEqual(lands(0, 6), .reorders(before: nil), "at the end")
-    XCTAssertEqual(lands(0, 0), .stays, "in its own place")
-    XCTAssertEqual(lands(0, 1), .stays, "just below itself")
-    XCTAssertEqual(lands(4, 3), .stays, "a group's row among g's terminals: after g, its place")
-    XCTAssertEqual(lands(4, 0), .reorders(before: s))
-  }
-
-  /// Value: protects=where the List's drop of a group's terminal row lands: in its own place it
-  /// stays, among its own group's terminals it moves to that place, among another group's it
-  /// joins that group there, and between top-level rows it becomes standalone above the next one;
-  /// fails_when=a drop inside a group makes a standalone, the position is lost, or one between
-  /// rows is lost; why_new=#652; seam=SidebarTerminalsList.rowMove; no_claim=the List calling it
-  func testWhereTheListsDropOfAGroupsTerminalLands() {
-    XCTAssertEqual(lands(2, 2), .stays, "in its own place")
-    XCTAssertEqual(lands(2, 3), .stays, "just below itself")
-    XCTAssertEqual(lands(3, 2), .joins(g, before: g1), "above its own group's first: it moves")
-    XCTAssertEqual(lands(2, 5), .joins(h, before: h1), "among another group's terminals")
-    XCTAssertEqual(lands(2, 0), .standalone(before: s), "above the first row")
-    XCTAssertEqual(lands(2, 1), .standalone(before: g.targetID), "above its own group")
-    XCTAssertEqual(lands(2, 4), .standalone(before: h.targetID), "below its own group")
-    XCTAssertEqual(
-      lands(3, 4), .standalone(before: h.targetID),
-      "its group's last terminal, let go just below it: out of the group")
-    XCTAssertEqual(lands(5, 6), .standalone(before: nil), "the last row, let go below the section")
-    XCTAssertEqual(lands(2, 6), .standalone(before: nil), "at the end")
-  }
-
   // MARK: A folded group's row
 
   /// Value: protects=a row let go anywhere on a folded group's row below its top quarter drops on
@@ -697,26 +643,5 @@ final class SidebarTerminalRowDropTests: XCTestCase {
     }
     XCTAssertEqual(open, CGRect(x: 0, y: 110, width: 200, height: 20), "unfolded: the middle half")
     XCTAssertFalse(open.contains(CGPoint(x: 50, y: 105)), "unfolded, its lower edge is a gap")
-  }
-
-  /// Value: protects=the List's gap just below a folded group's row, which is also the next row's
-  /// top edge, still reorders above that row (the folded row's own lower edge drops on it before
-  /// the List moves anything, testAFoldedGroupsRowTakesADropAnywhereBelowItsTopQuarter);
-  /// fails_when=that gap joins the folded group, so nothing could go just below it, or just below
-  /// the Quick Terminal's row at the section's top; why_new=#652 owner report;
-  /// seam=SidebarTerminalsList.rowMove; no_claim=the pointer's position (TerminalGroupUITests)
-  func testTheListsGapBelowAFoldedGroupStillReorders() {
-    // g is folded: none of its terminals' rows are listed.
-    let items: [SidebarTerminalsList.Item] = [
-      .entry(.quickTerminal), .entry(s), .entry(g.targetID!), .entry(h.targetID!),
-      .terminal(h1, group: h),
-    ]
-    func lands(_ from: Int, _ to: Int) -> SidebarTerminalsList.RowMove {
-      SidebarTerminalsList.rowMove(items, from: from, to: to)
-    }
-    XCTAssertEqual(lands(1, 3), .reorders(before: h.targetID), "a standalone just below g")
-    XCTAssertEqual(lands(4, 3), .standalone(before: h.targetID), "h's terminal just below g")
-    XCTAssertEqual(lands(3, 1), .reorders(before: s), "a group's row just below the top")
-    XCTAssertEqual(lands(4, 1), .standalone(before: s), "h's terminal at the section's top")
   }
 }

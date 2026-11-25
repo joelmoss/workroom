@@ -269,6 +269,68 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertEqual(store.captureWindowSession().unfoldedOpenTargets, [one.targetID!.encoded])
   }
 
+  // MARK: The pane
+
+  /// A drag's travel counts rows, clamped to the list.
+  func testADragReachesTheRowItsTravelCounts() {
+    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: 26, pitch: 24, count: 5), 2)
+    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: -11, pitch: 24, count: 5), 1)
+    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: -100, pitch: 24, count: 5), 0)
+    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: 500, pitch: 24, count: 5), 4)
+  }
+
+  /// A workroom row dragged over another's tabs passes that workroom; over its row going down it
+  /// passes it too, going up it lands above it.
+  func testAWorkroomRowLandsAmongTheWorkroomTabs() {
+    let three = SidebarID.workroom(project: "/p", name: "three")
+    let items: [OpenSectionItem] = [
+      .workroom(one), .tab(UUID(), in: one), .tab(UUID(), in: one), .workroom(two),
+      .workroom(three),
+    ]
+    XCTAssertNil(OpenSectionReorder.workroomIndex(items, from: 0, to: 2), "over its own tabs")
+    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 0, to: 3), 1, "past two")
+    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 0, to: 4), 2, "to the end")
+    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 4, to: 3), 1, "above two")
+    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 4, to: 1), 1, "over one's tabs")
+    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 4, to: 0), 0, "above one")
+    XCTAssertNil(
+      OpenSectionReorder.workroomIndex(items, from: 1, to: 0), "a tab row is no workroom")
+  }
+
+  /// The pane sizes to its rows, a folded row's tabs left out, and to one row when nothing is
+  /// open, which shows "Nothing open".
+  func testThePaneSizesToTheRowsItShows() throws {
+    let store = makeStore()
+    let pitch = SidebarOpenList.rowPitch
+    let empty = SidebarOpenList.contentHeight(of: [])
+    try open(one, in: store)
+    let target = try XCTUnwrap(store.target(for: one))
+    store.terminals.addTab(for: target)
+    try open(two, in: store)
+
+    XCTAssertEqual(
+      SidebarOpenList.items(of: store.openSectionRows()).count, 3, "one folded; two and its tab")
+    XCTAssertEqual(SidebarOpenList.contentHeight(of: store.openSectionRows()), empty + 2 * pitch)
+    store.setOpenRow(one, folded: false)
+    XCTAssertEqual(
+      SidebarOpenList.contentHeight(of: store.openSectionRows()), empty + 4 * pitch,
+      "one's two tabs too")
+  }
+
+  /// The selection scrolls into view: its focused tab's row, or its own row once folded.
+  func testTheSelectedRowIsWhatScrollsIntoView() throws {
+    let store = makeStore()
+    try open(one, in: store)
+    let target = try XCTUnwrap(store.target(for: one))
+    store.terminals.addTab(for: target)
+    let focused = try XCTUnwrap(store.terminals.activeTab(for: target)?.id)
+
+    XCTAssertEqual(
+      SidebarOpenList.scrollTarget(of: store.openSectionRows()), .tab(focused, in: one))
+    store.setOpenRow(one, folded: true)
+    XCTAssertEqual(SidebarOpenList.scrollTarget(of: store.openSectionRows()), .workroom(one))
+  }
+
   // MARK: Actions
 
   func testSelectingATabRowSelectsItsWorkroomAndTheTab() throws {

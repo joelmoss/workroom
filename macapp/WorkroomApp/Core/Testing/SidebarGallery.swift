@@ -7,8 +7,8 @@
   /// `-WorkroomUITestSidebarGallery 1`, with `-WorkroomUITestFixture 1`: the sidebar showing every
   /// kind of row in every state its marks can take, for looking at, not for asserting on
   /// (`make app-sidebar-gallery`). Projects, roots, workrooms, a create's own row and terminal rows
-  /// in the Projects section; the Quick Terminals, standalone terminals and groups in the Terminals
-  /// section.
+  /// in the Projects section; every workroom tab they open, standalone terminals and groups among
+  /// them, in the Open section (#819), its rows unfolded where the tree's are expanded.
   ///
   /// Everything is seeded as model state: no program runs, no run command starts and no host is
   /// reached. Only the selected workroom's terminal mounts, and it is a plain idle one. The table
@@ -396,7 +396,10 @@
       _ notes: inout [WorkroomNotification]
     ) {
       let tabs = seedTerminals(seed.terminals, target: target, in: store.terminals, &notes)
-      if seed.expanded { store.expandedTerminalTargets.insert(target.id) }
+      if seed.expanded {
+        store.expandedTerminalTargets.insert(target.id)
+        store.unfoldedOpenTargets.insert(target.id)
+      }
       if seed.unread { notes.append(note(target: target.id, tab: UUID(), title: "Build finished")) }
       if let run = seed.run, let tab = tabs.first {
         store.runCommand.runStates[target.id] = .running(tab: tab, interrupted: run == .stopping)
@@ -487,7 +490,11 @@
       }
       for group in groups {
         let id = section.addGroup(named: group.name)
-        if group.folded { section.setFolded(id, true) }
+        if group.folded {
+          section.setFolded(id, true)
+        } else {
+          store.unfoldedOpenTargets.insert(id)
+        }
         guard let sid = id.sidebarID, let target = store.target(for: sid),
           !group.terminals.isEmpty
         else { continue }

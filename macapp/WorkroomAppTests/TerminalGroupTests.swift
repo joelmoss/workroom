@@ -366,34 +366,6 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertEqual(rows, [g, a, b], "onto itself, it stays")
   }
 
-  /// A drag in the sidebar lands above the next row of the section; among a group's terminals,
-  /// that is after the group.
-  func testADragLandsAboveTheNextRow() throws {
-    let store = makeStore()
-    store.newStandaloneTerminal()
-    let a = try XCTUnwrap(store.selectedTargetID?.targetID)
-    let gSid = try group(store)
-    let g = try XCTUnwrap(gSid.targetID)
-    store.selectedTargetID = nil
-    store.newStandaloneTerminal()
-    let b = try XCTUnwrap(store.selectedTargetID?.targetID)
-    let items: [SidebarTerminalsList.Item] = [
-      .entry(a), .entry(g), .terminal(UUID(), group: gSid), .terminal(UUID(), group: gSid),
-      .entry(b),
-    ]
-
-    SidebarTerminalsList.move(items, [4], to: 3, in: section)
-    XCTAssertEqual(section.entries.map(\.targetID), [a, g, b], "among g's terminals: after g")
-    SidebarTerminalsList.move(items, [0], to: 3, in: section)
-    XCTAssertEqual(section.entries.map(\.targetID), [g, a, b])
-    let now: [SidebarTerminalsList.Item] = [
-      .entry(g), .terminal(UUID(), group: gSid), .terminal(UUID(), group: gSid), .entry(a),
-      .entry(b),
-    ]
-    SidebarTerminalsList.move(now, [4], to: 0, in: section)
-    XCTAssertEqual(section.entries.map(\.targetID), [b, g, a])
-  }
-
   // MARK: Nothing project-shaped
 
   /// Value: protects=no sidebar-keyed version control or Run for a group (story 48–49); its

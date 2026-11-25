@@ -54,14 +54,15 @@ struct ProjectSidebar: View, Equatable {
   static let sectionRowInsets = rowInsets
   /// What a plain `List` adds above and below its rows, for sizing the Terminals pane to them.
   static let listPadding: CGFloat = 12
-  /// The Terminals pane's floor: its heading and one row, the Quick Terminal's, which it always has.
+  /// The Open pane's floor: its heading and one row, a workroom tab's or its "Nothing open".
   static let terminalsPaneMinHeight: CGFloat =
     SectionHeaderMetrics.height + SidebarRowMetrics.rowHeight + sectionRowInsets.top
     + sectionRowInsets.bottom + listPadding + SidebarRowMetrics.headingGap
   /// The Projects pane's floor: its heading and a few rows.
   static let projectsPaneMinHeight: CGFloat = 120
-  /// The most of the sidebar the Terminals pane takes when sized to its rows.
-  static let terminalsPaneCap: CGFloat = 0.4
+  /// The most of the sidebar the Open pane takes when sized to its rows (#819); the divider drags
+  /// past it.
+  static let terminalsPaneCap: CGFloat = 0.5
 
   /// How the sidebar's split sizes its panes: the Terminals pane floored at one row and held
   /// through a window resize, so the Projects pane takes the slack; folding a pane and unfolding it
@@ -98,22 +99,19 @@ struct ProjectSidebar: View, Equatable {
     // `pendingDeletion`).
   }
 
-  /// The Terminals and Projects sections as the inspector's panes (#652): each a sticky heading over
+  /// The Open and Projects sections as the inspector's panes (#652, #819): each a sticky heading over
   /// its own scrolling list, the divider between them resizing both. Collapsing a pane folds its
   /// section (`AppStore.sidebarPanesCollapsed`). While the user hasn't dragged the divider, the
-  /// Terminals pane is sized to its rows, up to `terminalsPaneCap`, and Projects takes the rest.
+  /// Open pane is sized to its rows, up to `terminalsPaneCap`, and Projects takes the rest.
   private var split: some View {
     let weights = store.sidebarPaneWeights
     return InspectorSplitView(
       headers: [
-        hosted(SidebarTerminalsHeader(store: store)),
+        hosted(SidebarOpenHeader(store: store)),
         hosted(SidebarProjectsHeading(store: store)),
       ],
       bodies: [
-        hosted(
-          SidebarTerminalsList(
-            store: store
-          ).equatable()),
+        hosted(SidebarOpenList(store: store, drag: drag).equatable()),
         hosted(SidebarProjectsList(drag: drag).equatable()),
       ],
       collapsed: store.sidebarPanesCollapsed,
@@ -126,7 +124,7 @@ struct ProjectSidebar: View, Equatable {
       preferredHeights: weights.isEmpty
         ? [
           SectionHeaderMetrics.height
-            + SidebarTerminalsList.contentHeight(of: store.terminalsSection, in: store),
+            + SidebarOpenList.contentHeight(of: store.openSectionRows()),
           nil,
         ] : nil,
       sizing: Self.splitSizing,

@@ -179,8 +179,11 @@ final class SharedPrefDefaultsTests: XCTestCase {
     let store = AppStore(terminalsSection: section)
     XCTAssertEqual(store.sidebarPanesCollapsed, [false, false])
 
-    store.setCollapsed(.terminals, true)
-    XCTAssertTrue(section.isFolded, "the Terminals pane folds the shared section")
+    store.setCollapsed(.open, true)
+    XCTAssertTrue(
+      section.isFolded,
+      "the Open pane folds the shared section: the retired Terminals section's saved fold carries over (#819)"
+    )
     XCTAssertFalse(store.projectsFolded)
     XCTAssertEqual(store.sidebarPanesCollapsed, [true, false])
 

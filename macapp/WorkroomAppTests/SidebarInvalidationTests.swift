@@ -149,8 +149,9 @@ final class SidebarInvalidationTests: XCTestCase {
       return view.subviews.flatMap { tables($0) }
     }
     let lists = tables(f.view)
-    XCTAssertEqual(lists.count, 2, "one native List per pane, Terminals and Projects")
-    return lists.map { $0.numberOfRows - 1 }.reduce(0, +)
+    XCTAssertEqual(lists.count, 2, "one native List per pane, Open and Projects")
+    // The Projects pane's: the Open pane's rows are the window's workroom tabs (`OpenSectionTests`).
+    return (lists.last?.numberOfRows ?? 1) - 1
   }
 
   // MARK: Terminals
@@ -180,14 +181,14 @@ final class SidebarInvalidationTests: XCTestCase {
     let f = try fixture()
     defer { close(f) }
     try await render(f)
-    // The Quick Terminal's row, projects A and B, A's root and workroom, B's root.
-    XCTAssertEqual(try listRows(f), 6)
+    // Projects A and B, A's root and workroom, B's root.
+    XCTAssertEqual(try listRows(f), 5)
 
     _ = f.store.terminals.addTab(for: f.a.rootTarget)
     f.store.toggleTerminals(for: f.a.rootTarget.id)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 8, "A's root lists its two terminals")
+    XCTAssertEqual(try listRows(f), 7, "A's root lists its two terminals")
     XCTAssertGreaterThan(SidebarRowPasses.terminal, 0, "the terminal rows drew")
   }
 
@@ -607,86 +608,22 @@ final class SidebarInvalidationTests: XCTestCase {
 
   // MARK: Terminals section
 
-  /// A standalone terminal's agent stopping changes what its row shows (its spinner), and nothing
-  /// of any other row, the group's beside it included.
-  func testAnAgentInAStandaloneTerminalReRunsOnlyItsRow() async throws {
-    let f = try fixture(section: true)
-    defer { close(f) }
-    let sid = try XCTUnwrap(f.standalone)
-    let surface = try surface(of: sid, f)
-    try await render(f)
-    try await agentStartsWorking(on: surface)
-    try await render(f)
-    let id = try XCTUnwrap(sid.targetID)
-    XCTAssertTrue(f.store.terminals.isRunning(forTargetID: id))
-
-    SidebarRowPasses.reset()
-    surface.handleProgressReport(false)
-    try await render(f)
-
-    XCTAssertFalse(f.store.terminals.isRunning(forTargetID: id), "the change landed")
-    XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [sid], "only its row shows its agent")
-  }
-
-  /// A standalone terminal held by a window opened after this sidebar was drawn still shows its
-  /// agent on this window's row (story 13).
-  func testAnAgentInAnotherWindowsStandaloneTerminalShowsOnThisWindowsRow() async throws {
-    let f = try fixture()
-    defer { close(f) }
-    try await render(f)
-    let other = AppStore(terminalsSection: f.store.terminalsSection)
-    makeInert(other)
-    defer { Task { await other.terminals.reapAll() } }
-    other.newStandaloneTerminal()
-    let sid = try XCTUnwrap(other.selectedTargetID)
-    let target = try XCTUnwrap(other.target(for: sid))
-    let surface = try XCTUnwrap(
-      other.terminals.surface(try XCTUnwrap(other.terminals.tabs(for: target).first)))
-    try await render(f)
-
-    SidebarRowPasses.reset()
-    surface.handleProgressReport(true)
-    try await render(f)
-
-    XCTAssertEqual(f.store.terminals.tabCount(forTargetID: target.id), 0, "held by the other")
-    XCTAssertGreaterThan(SidebarRowPasses.byRow[sid] ?? 0, 0, "this window's row shows it")
-  }
-
   /// Value: protects=the Projects heading's fold hides every project's rows and brings them back,
-  /// leaving the Terminals section and the heading itself; fails_when=folding leaves a project row,
+  /// leaving the Open section and the heading itself; fails_when=folding leaves a project row,
   /// or takes the heading or a Terminals row with it; no_claim=the chevron's click (a UI test's)
   func testFoldingTheProjectsHidesEveryProjectsRows() async throws {
     let f = try fixture()
     defer { close(f) }
     try await render(f)
-    XCTAssertEqual(try listRows(f), 6)
+    XCTAssertEqual(try listRows(f), 5)
 
     f.store.projectsFolded = true
     try await render(f)
-    XCTAssertEqual(try listRows(f), 1, "the Quick Terminal's row")
+    XCTAssertEqual(try listRows(f), 0, "no project's row")
 
     f.store.projectsFolded = false
     try await render(f)
-    XCTAssertEqual(try listRows(f), 6, "unfolded, every project's rows are back")
-  }
-
-  /// The Quick Terminal's row lists its panel's terminals under it (story 10), also when the
-  /// panel and its terminals came after this sidebar was first drawn.
-  func testTheQuickTerminalsRowListsItsPanelsTerminals() async throws {
-    let f = try fixture()
-    defer { close(f) }
-    try await render(f)
-    XCTAssertEqual(try listRows(f), 6)
-
-    let panel = makeQuickTerminalHost(
-      notifications: f.store.notifications, section: f.store.terminalsSection)
-    defer { Task { await panel.terminals.reapAll() } }
-    _ = panel.terminals.addTab(for: panel.target)
-    _ = panel.terminals.addTab(for: panel.target)
-    try await render(f)
-
-    XCTAssertEqual(try listRows(f), 8, "one row per terminal in the panel, under its row")
-    XCTAssertEqual(f.store.terminals.tabCount(forTargetID: .quickTerminal), 0, "none here")
+    XCTAssertEqual(try listRows(f), 5, "unfolded, every project's rows are back")
   }
 
   /// A terminal opening in a project re-runs no row of the Terminals section, whose group row
@@ -704,26 +641,6 @@ final class SidebarInvalidationTests: XCTestCase {
 
     XCTAssertEqual(f.store.terminals.tabs(for: f.b.rootTarget).count, 3, "the change landed")
     XCTAssertEqual(SidebarRowPasses.section, 0, "no Terminals-section row shows it")
-  }
-
-  /// A group's row is hovered as a workroom's is (#652): the pointer over it re-runs that row
-  /// alone, which swaps its glyph for the fold chevron while it can fold.
-  func testHoveringAGroupsRowReRunsOnlyThatRow() async throws {
-    // The rows first draw while the fixture hosts them, so the hook is set before it.
-    var hovers: [SidebarID: Binding<Bool>] = [:]
-    ProjectSidebar.didRenderHover = { rowID, binding in hovers[rowID] = binding }
-    defer { ProjectSidebar.didRenderHover = nil }
-    let f = try fixture(section: true)
-    defer { close(f) }
-    let group = try XCTUnwrap(f.group)
-    try await render(f)
-    let binding = try XCTUnwrap(hovers[group], "the group's row must register its hover")
-
-    SidebarRowPasses.reset()
-    binding.wrappedValue = true
-    try await render(f)
-
-    XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [group], "only the hovered row re-runs")
   }
 
   /// A group's row leaves out only the terminals listed under it, whose own rows show their
@@ -816,14 +733,13 @@ final class SidebarInvalidationTests: XCTestCase {
     f.store.selectedTargetID = f.rootA
     f.store.selectionStatusTask?.cancel()
     try await render(f)
-    // With the Quick Terminal's row, first in the Terminals section.
-    XCTAssertEqual(try listRows(f), 8)
+    XCTAssertEqual(try listRows(f), 7)
 
     SidebarRowPasses.reset()
     f.store.collapsedProjects.insert(f.a.path)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 4, "collapse removes A's root, its terminals and workroom")
+    XCTAssertEqual(try listRows(f), 3, "collapse removes A's root, its terminals and workroom")
     XCTAssertGreaterThan(
       SidebarRowPasses.byRow[.project(f.a.path)] ?? 0, 0, "A's row shows its chevron turn")
   }
