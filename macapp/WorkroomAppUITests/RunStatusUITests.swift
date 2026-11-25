@@ -141,7 +141,7 @@ final class RunStatusUITests: XCTestCase {
     XCTAssertTrue(control.waitForExistence(timeout: 5), app.debugDescription)
     XCTAssertEqual(control.label, "Stop run command")
     runTabChip(app).click()
-    control.click()
+    control.clickWhereHoverSettlesIt()
     XCTAssertTrue(control.exists, app.debugDescription)
     XCTAssertEqual(control.label, "Stopping run command", "sidebar acknowledges Stop immediately")
     XCTAssertEqual(

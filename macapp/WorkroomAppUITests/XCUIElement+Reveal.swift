@@ -33,4 +33,32 @@ extension XCUIElement {
     XCTAssertTrue(revealed, "could not scroll \(identifier) into view in \(maxScrolls) scrolls")
     return revealed
   }
+
+  /// Click a sidebar row's trailing mark (its run control, its waiting hand) as a pointer reaches
+  /// it: hover first, so the row's hover controls take the trailing column and the mark slides one
+  /// slot left (`SidebarHoverTrailing`, 59cdd570), then click the mark where it settled. A bare
+  /// `click()` jumps the pointer onto the mark at rest; the mark slides out from under it and the
+  /// click lands on the row, which lists its terminals instead. The pointer goes by coordinate: an
+  /// element's own `hover()` and `click()` scroll it into view first, and a row that moves lets go
+  /// of its hover, so the mark slides back under the pointer.
+  func clickWhereHoverSettlesIt(timeout: TimeInterval = 3) {
+    // Resolved on each use, so it is wherever the element is by then.
+    var center: XCUICoordinate { coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)) }
+    let rest = frame
+    center.hover()
+    var last = rest
+    var settled = false
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+      let now = frame
+      if now != rest, now == last {
+        settled = true
+        break
+      }
+      last = now
+    }
+    XCTAssertTrue(settled, "hovering its row never slid \(identifier) \(label) over: \(frame)")
+    center.click()
+  }
 }
