@@ -235,7 +235,8 @@ struct SidebarOpenList: View, Equatable {
 
   /// A workroom row's drag, as its title-bar chip's: onto a tab, row or title bar that takes its
   /// terminals (a standalone terminal's or group's, `TerminalDragSession`), into the content for a
-  /// workroom split (`SidebarDragPlumbing`), else a reorder of the workroom tabs.
+  /// workroom split (`SidebarDragPlumbing`), out of the window into another or a new one
+  /// (`WorkroomWindowDrag`), else a reorder of the workroom tabs.
   private func workroomDrag(
     _ row: OpenSectionRow, offset: Int, items: [OpenSectionItem]
   ) -> some Gesture {
@@ -244,6 +245,15 @@ struct SidebarOpenList: View, Equatable {
       .onChanged { [store] value in
         let overTerminalDrop = store.terminalDrag.moved(
           .entry(row.sid), from: .sidebar, to: NSEvent.mouseLocation)
+        // Out of the window: into another window, or a new one, as its chip goes (#444).
+        if isDragOutsideWindow(value.location) {
+          reorder = nil
+          if overTerminalDrop { return WorkroomWindowDrag.cancel() }
+          return WorkroomWindowDrag.update(
+            store: store, sid: row.sid, target: row.target,
+            width: store.workroomTabFrames[row.sid]?.width ?? 0)
+        }
+        WorkroomWindowDrag.cancel()
         let inContent = drag.drag.wrappedValue != nil
         reorder =
           overTerminalDrop || inContent
@@ -258,7 +268,12 @@ struct SidebarOpenList: View, Equatable {
       .onEnded { [store] value in
         let landing = reorder?.row
         reorder = nil
-        if store.terminalDrag.ended(at: NSEvent.mouseLocation) { return }
+        if store.terminalDrag.ended(at: NSEvent.mouseLocation) {
+          return WorkroomWindowDrag.cancel()
+        }
+        if isDragOutsideWindow(value.location) {
+          return WorkroomWindowDrag.end(store: store, sid: row.sid)
+        }
         guard drag.drag.wrappedValue == nil, let landing,
           let index = OpenSectionReorder.workroomIndex(items, from: offset, to: landing)
         else { return }
