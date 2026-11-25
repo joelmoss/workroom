@@ -10,13 +10,14 @@ final class SidebarPanesUITests: XCTestCase {
   /// The Quick Terminal's group row, always first in the Terminals section.
   private let quickTerminal = "sidebar.group.group:51C10A7E-0D4F-4E6A-9B2C-000000000001"
 
-  /// Sixteen workrooms in a short window, so the Projects list is longer than its pane.
+  /// Sixteen workrooms (the fixture's most) in a short window, so the Projects list runs several
+  /// rows past its pane. The window fits a 1024×768 screen, so its size, not the screen's, sets that.
   private func launchedApp() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += [
       "-WorkroomUITestFixture", "1",
       "-WorkroomUITestWorkroomCount", "16",
-      "-WorkroomUITestWindowFrame", "{{80, 80}, {1200, 620}}",
+      "-WorkroomUITestWindowFrame", "{{40, 40}, {1000, 520}}",
       "-ApplePersistenceIgnoreState", "YES",
     ]
     app.launch()
@@ -46,6 +47,9 @@ final class SidebarPanesUITests: XCTestCase {
   }
 
   /// Scrolling the Projects list moves its rows and leaves both headings hittable, in place.
+  ///
+  /// Measured by which rows show, not by how far one moved: a row scrolled out of the list leaves
+  /// the accessibility tree, so its frame says nothing once it has gone.
   func testScrollingTheProjectsListKeepsBothHeadingsInPlace() {
     let app = launchedApp()
     let terminals = element(app, "sidebar.terminals")
@@ -53,15 +57,21 @@ final class SidebarPanesUITests: XCTestCase {
     XCTAssertTrue(projects.waitForExistence(timeout: 15), "the Projects heading")
     XCTAssertTrue(terminals.exists, "the Terminals heading")
     let project = element(app, "sidebar.project.UITestProject")
+    let lastRow = element(app, "sidebar.workroom.uitest-room-16")
     XCTAssertTrue(project.waitForExistence(timeout: 6), "the project's row")
+    XCTAssertTrue(project.isHittable, "the list starts at the top, with the project's row showing")
+    XCTAssertFalse(
+      lastRow.exists && lastRow.isHittable, "the list runs past its pane, hiding the last row")
     let terminalsFrame = terminals.frame
     let projectsFrame = projects.frame
-    let projectY = project.frame.minY
 
     project.scroll(byDeltaX: 0, deltaY: -600)
 
     XCTAssertTrue(
-      eventually { project.frame.minY < projectY - 50 }, "the Projects list scrolled its rows up")
+      eventually {
+        lastRow.exists && lastRow.isHittable && !(project.exists && project.isHittable)
+      },
+      "the Projects list scrolled its rows up: the last row in, the project's row out")
     XCTAssertEqual(terminals.frame, terminalsFrame, "the Terminals heading stays put")
     XCTAssertEqual(projects.frame, projectsFrame, "the Projects heading stays put")
     XCTAssertTrue(terminals.isHittable, "the Terminals heading stays clickable")
