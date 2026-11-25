@@ -13,6 +13,7 @@ for a test that needs an ordinary window, `showTestWindowVisibly(_:because:)`, b
 """
 
 import argparse
+import importlib.util
 import os
 import re
 import sys
@@ -24,10 +25,14 @@ CALL = re.compile(r"\b(orderFront|orderFrontRegardless|makeKeyAndOrderFront)\s*\
 ALLOW = re.compile(r"//\s*check-test-windows:\s*allow\b")
 
 
-def strip_comment(line):
-    """The line without a trailing `//` comment, so prose naming a call isn't flagged."""
-    index = line.find("//")
-    return line if index < 0 else line[:index]
+def load_strip():
+    """`check-main-actor-fs.py`'s `strip`: comments and string-literal contents blanked, lines kept,
+    so prose or a string naming a call is never flagged. Loaded by path: the name has hyphens."""
+    spec = importlib.util.spec_from_file_location(
+        "check_main_actor_fs", os.path.join(HERE, "check-main-actor-fs.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.strip
 
 
 def main():
@@ -35,9 +40,10 @@ def main():
     parser.add_argument("--root", default=DEFAULT_ROOT)
     args = parser.parse_args()
     root = os.path.abspath(args.root)
+    strip = load_strip()
     failures = []
     for folder, _, files in os.walk(root):
-        for name in sorted(files):
+        for name in files:
             if not name.endswith(".swift"):
                 continue
             path = os.path.join(folder, name)
@@ -45,12 +51,12 @@ def main():
             if relative == HELPER:
                 continue
             with open(path, encoding="utf-8") as f:
-                for number, line in enumerate(f, start=1):
-                    if ALLOW.search(line):
-                        continue
-                    match = CALL.search(strip_comment(line))
-                    if match:
-                        failures.append(f"{relative}:{number}: {match.group(1)}")
+                source = f.read()
+            code = strip(source).split("\n")
+            for number, line in enumerate(source.split("\n"), start=1):
+                match = CALL.search(code[number - 1])
+                if match and not ALLOW.search(line):
+                    failures.append(f"{relative}:{number}: {match.group(1)}")
     if failures:
         print(
             "A unit test shows a window the plain way, over the developer's work. Use "

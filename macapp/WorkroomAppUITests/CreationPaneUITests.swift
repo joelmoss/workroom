@@ -166,10 +166,7 @@ final class CreationPaneUITests: XCTestCase {
   // Done (its click selects the pane anyway)
   func testASplitCreatesTerminalTakesTheKeyboardWhenItsChecklistClosesItself() {
     let app = startSplitCreateFromATerminal(closesWhenDone: true)
-    XCTAssertTrue(
-      element(app, "CreationPane").waitForNonExistence(timeout: 30),
-      "the checklist didn't close by itself")
-    assertTypingReachesTheNewTerminal(app)
+    assertTheChecklistClosesItselfThenTypingReachesTheNewTerminal(app)
   }
 
   // Value: protects=the reported bug as the app runs it, panes attached through `workroomd`;
@@ -177,10 +174,7 @@ final class CreationPaneUITests: XCTestCase {
   // keyboard; no_claim=a real `workroom create`
   func testASplitCreatesDaemonTerminalTakesTheKeyboardWhenItsChecklistClosesItself() {
     let app = startSplitCreateFromATerminal(closesWhenDone: true, throughTheDaemon: true)
-    XCTAssertTrue(
-      element(app, "CreationPane").waitForNonExistence(timeout: 30),
-      "the checklist didn't close by itself")
-    assertTypingReachesTheNewTerminal(app)
+    assertTheChecklistClosesItselfThenTypingReachesTheNewTerminal(app)
   }
 
   // Value: protects=the reported bug, a split create (⌥⌘N) from a pane running Claude Code, which
@@ -194,10 +188,7 @@ final class CreationPaneUITests: XCTestCase {
       closesWhenDone: true, throughTheDaemon: true,
       callerRuns: "printf '\\e[?1004h\\e]0;Claude Code\\a'; sleep 0.5;"
         + " while :; do printf '\\e]0;%s Fixing the build\\a' $RANDOM; sleep 0.1; done")
-    XCTAssertTrue(
-      element(app, "CreationPane").waitForNonExistence(timeout: 30),
-      "the checklist didn't close by itself")
-    assertTypingReachesTheNewTerminal(app)
+    assertTheChecklistClosesItselfThenTypingReachesTheNewTerminal(app)
   }
 
   // Value: protects=the reported bug, a split create (⌥⌘N) whose checklist waits for Done (the
@@ -263,6 +254,15 @@ final class CreationPaneUITests: XCTestCase {
     XCTAssertEqual(
       closeWhenDone.value as? Int, closesWhenDone ? 1 : 0, "the setting wasn't set from launch")
     return app
+  }
+
+  private func assertTheChecklistClosesItselfThenTypingReachesTheNewTerminal(
+    _ app: XCUIApplication
+  ) {
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 30),
+      "the checklist didn't close by itself")
+    assertTypingReachesTheNewTerminal(app)
   }
 
   private func assertTypingReachesTheNewTerminal(_ app: XCUIApplication) {

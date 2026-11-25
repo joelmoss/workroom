@@ -19,18 +19,25 @@ import ObjectiveC
 /// Launch windows open before the bundle loads, so a hosted run opens none
 /// (`AppEnvironment.opensWindowsAtLaunch`).
 enum TestWindowCloak {
-  /// What a window's code last set, which a cloaked window holds back.
-  struct Requested {
+  /// What a window's code last set, which a cloaked window holds back. One per cloaked window,
+  /// made as it is cloaked and updated in place by its setters.
+  final class Requested {
     var alpha: CGFloat
     var ignoresMouseEvents: Bool
     var animationBehavior: NSWindow.AnimationBehavior
+
+    /// What `window` holds now.
+    init(of window: NSWindow) {
+      alpha = window.alphaValue
+      ignoresMouseEvents = window.ignoresMouseEvents
+      animationBehavior = window.animationBehavior
+    }
   }
 
-  nonisolated(unsafe) private static var installed = false
+  /// Swaps the setters in, once however often it is called.
+  static func install() { _ = swapped }
 
-  static func install() {
-    guard !installed else { return }
-    installed = true
+  private static let swapped: Void = {
     let swaps: [(Selector, Selector)] = [
       (#selector(NSWindow.order(_:relativeTo:)), #selector(NSWindow.cloakedOrder(_:relativeTo:))),
       (
@@ -53,21 +60,18 @@ enum TestWindowCloak {
       else { preconditionFailure("NSWindow has no \(original)") }
       method_exchangeImplementations(a, b)
     }
-  }
+  }()
 
   /// What `window`'s code last set: what a cloaked window holds back, or what an uncloaked one
   /// holds.
   static func requested(_ window: NSWindow) -> Requested {
-    stored(window)
-      ?? Requested(
-        alpha: window.alphaValue, ignoresMouseEvents: window.ignoresMouseEvents,
-        animationBehavior: window.animationBehavior)
+    held(by: window) ?? Requested(of: window)
   }
 
   /// Lets `window` show as the user would see it: what its code set, taking clicks as it said.
   static func exempt(_ window: NSWindow) {
     objc_setAssociatedObject(window, &Keys.exempt, true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-    guard let held = stored(window) else { return }
+    guard let held = held(by: window) else { return }
     objc_setAssociatedObject(window, &Keys.requested, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     window.alphaValue = held.alpha
     window.ignoresMouseEvents = held.ignoresMouseEvents
@@ -76,31 +80,19 @@ enum TestWindowCloak {
 
   /// Hides `window` from the developer as it goes on screen, keeping what its code had set.
   fileprivate static func cloak(_ window: NSWindow) {
-    guard stored(window) == nil, objc_getAssociatedObject(window, &Keys.exempt) as? Bool != true
+    guard held(by: window) == nil, objc_getAssociatedObject(window, &Keys.exempt) as? Bool != true
     else { return }
-    let held = Requested(
-      alpha: window.alphaValue, ignoresMouseEvents: window.ignoresMouseEvents,
-      animationBehavior: window.animationBehavior)
+    let held = Requested(of: window)
     // Through the original setters: the swapped ones would hold these back too.
     window.cloakedSetAlphaValue(0)
     window.cloakedSetIgnoresMouseEvents(true)
     window.cloakedSetAnimationBehavior(.none)
-    store(held, on: window)
+    objc_setAssociatedObject(window, &Keys.requested, held, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
   }
 
   /// What a cloaked `window` holds back, or nil for a window not cloaked.
-  fileprivate static func stored(_ window: NSWindow) -> Requested? {
-    (objc_getAssociatedObject(window, &Keys.requested) as? Box)?.value
-  }
-
-  fileprivate static func store(_ value: Requested, on window: NSWindow) {
-    objc_setAssociatedObject(
-      window, &Keys.requested, Box(value), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-  }
-
-  private final class Box {
-    let value: Requested
-    init(_ value: Requested) { self.value = value }
+  fileprivate static func held(by window: NSWindow) -> Requested? {
+    objc_getAssociatedObject(window, &Keys.requested) as? Requested
   }
 
   private enum Keys {
@@ -124,24 +116,24 @@ extension NSWindow {
   }
 
   @objc dynamic fileprivate func cloakedSetAlphaValue(_ value: CGFloat) {
-    guard var held = TestWindowCloak.stored(self) else { return cloakedSetAlphaValue(value) }
-    held.alpha = value
-    TestWindowCloak.store(held, on: self)
+    hold(value, as: \.alpha) { cloakedSetAlphaValue(value) }
   }
 
   @objc dynamic fileprivate func cloakedSetIgnoresMouseEvents(_ value: Bool) {
-    guard var held = TestWindowCloak.stored(self) else {
-      return cloakedSetIgnoresMouseEvents(value)
-    }
-    held.ignoresMouseEvents = value
-    TestWindowCloak.store(held, on: self)
+    hold(value, as: \.ignoresMouseEvents) { cloakedSetIgnoresMouseEvents(value) }
   }
 
   @objc dynamic fileprivate func cloakedSetAnimationBehavior(_ value: NSWindow.AnimationBehavior) {
-    guard var held = TestWindowCloak.stored(self) else {
-      return cloakedSetAnimationBehavior(value)
-    }
-    held.animationBehavior = value
-    TestWindowCloak.store(held, on: self)
+    hold(value, as: \.animationBehavior) { cloakedSetAnimationBehavior(value) }
+  }
+
+  /// A swapped setter's body: a cloaked window keeps `value` as what its code asked for, any other
+  /// sets it through the original (`set`).
+  private func hold<T>(
+    _ value: T, as field: ReferenceWritableKeyPath<TestWindowCloak.Requested, T>,
+    else set: () -> Void
+  ) {
+    guard let held = TestWindowCloak.held(by: self) else { return set() }
+    held[keyPath: field] = value
   }
 }
