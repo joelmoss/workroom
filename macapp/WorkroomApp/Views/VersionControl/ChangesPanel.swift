@@ -33,9 +33,6 @@ struct ChangedFileRow: View, Equatable {
   /// source are arguments, not captures), which is what lets `==` leave it out.
   let actions: ChangedFileActions
   @State private var hovering = false
-  /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
-  /// single/double discrimination — the single click never waits).
-  @State private var lastClick: Date?
 
   #if DEBUG
     /// Body evaluations across all rows this process — the Changes-panel counterpart of
@@ -109,17 +106,10 @@ struct ChangedFileRow: View, Equatable {
     .onTapGesture {
       if NSEvent.modifierFlags.contains(.command) {
         actions.openInEditor(file)  // ⌘-click → open the file, not the diff (issue #93)
-        lastClick = nil  // clear any pending double-click state so the next plain click is fresh
         return
       }
-      let now = Date()
-      if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
-        actions.openDiff(file, source, true)  // quick second click → persist
-        lastClick = nil
-      } else {
-        actions.openDiff(file, source, false)  // eager: open the preview immediately
-        lastClick = now
-      }
+      // Eager: the first click previews immediately; a double-click's second click persists.
+      actions.openDiff(file, source, RepeatClick.isCurrentRepeat)
     }
     .accessibilityElement(children: .ignore)
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)

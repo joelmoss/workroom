@@ -327,8 +327,6 @@ struct HistoryRow: View, Equatable {
   /// persists (quick double-click).
   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
   @State private var hovering = false
-  /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
-  @State private var lastClick: Date?
   @Environment(\.themeTokens) private var tokens
 
   /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
@@ -436,18 +434,9 @@ struct HistoryRow: View, Equatable {
       )
       .contentShape(Rectangle())
       .onHover { hovering = $0 }
-      // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
-      // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
-      .onTapGesture {
-        let now = Date()
-        if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
-          open(commit, true)
-          lastClick = nil
-        } else {
-          open(commit, false)
-          lastClick = now
-        }
-      }
+      // Eager single-click preview, and a double-click's second click persists — the same
+      // `RepeatClick` gate the Changes panel uses (avoids SwiftUI's count:2 delay).
+      .onTapGesture { open(commit, RepeatClick.isCurrentRepeat) }
     }
   }
 
