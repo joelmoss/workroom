@@ -797,11 +797,15 @@ private struct AppearanceSettingsPane: View {
             .accessibilityLabel("Glass")
             .accessibilityValue(Text(Self.glassReadout(GlassService.shared.opacity)))
             .accessibilityIdentifier("settings.control.glass")
-          // Fixed width, so the slider holds still as the readout changes length.
-          Text(Self.glassReadout(GlassService.shared.opacity))
+          // Fixed width, so the slider holds still as the readout changes length. Identified by
+          // its text: on macOS 27 the Text redraws with the new value but its accessibility element
+          // kept the first one ("Off" while it showed 85%), so each value gets a fresh element.
+          let readout = Self.glassReadout(GlassService.shared.opacity)
+          Text(readout)
             .monospacedDigit()
             .foregroundStyle(.secondary)
             .frame(width: 34, alignment: .trailing)
+            .id(readout)
             .accessibilityIdentifier("settings.control.glassReadout")
         }
       } label: {
