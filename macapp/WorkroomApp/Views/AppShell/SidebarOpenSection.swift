@@ -196,7 +196,11 @@ struct SidebarOpenList: View, Equatable {
           if insertionEdge(of: item, in: items) != nil { DropInsertionMark(vertical: false) }
         }
         .paneDropZone(.target(row.sid), store: store)
-        .simultaneousGesture(workroomDrag(row, offset: offset, items: items))
+        // Not while its name edits in place: a drag in the field selects its text.
+        .simultaneousGesture(
+          workroomDrag(row, offset: offset, items: items),
+          including: store.sidebarRename.editing == row.sid ? .subviews : .all
+        )
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         .listRowBackground(
@@ -436,6 +440,7 @@ struct SidebarOpenWorkroomRow: View {
         sid: row.sid, target: row.target, closeName: presentation.closeName, style: .openRow)
     }
     .sidebarInlineRename(row.sid, in: store.sidebarRename, begin: beginRename)
+    .onChange(of: renaming) { _, now in store.sidebarRename.setEditing(row.sid, now) }
     .help("\(presentation.fullTitle)\n\(row.target.path)")
     .accessibilityElement(children: .contain)
     .accessibilityAddTraits(row.isSelected ? [.isButton, .isSelected] : .isButton)

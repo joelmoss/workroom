@@ -10,6 +10,9 @@ import WorkroomDomain
 final class SidebarInlineRename {
   /// The row asked to begin, until it does.
   private(set) var pending: SidebarID?
+  /// The row whose name field shows now: its row drag stays off meanwhile, so a drag in the field
+  /// selects its text rather than dragging the row.
+  private(set) var editing: SidebarID?
   /// How many times each row is drawn now: a row's view can appear again before the old one goes.
   @ObservationIgnored private var drawn: [SidebarID: Int] = [:]
 
@@ -19,6 +22,7 @@ final class SidebarInlineRename {
     let count = (drawn[sid] ?? 1) - 1
     drawn[sid] = count > 0 ? count : nil
     if count <= 0, pending == sid { pending = nil }
+    if count <= 0, editing == sid { editing = nil }
   }
 
   func isDrawn(_ sid: SidebarID) -> Bool { drawn[sid] != nil }
@@ -28,6 +32,15 @@ final class SidebarInlineRename {
     guard isDrawn(sid) else { return false }
     pending = sid
     return true
+  }
+
+  /// Row `sid`'s name field shows, or goes.
+  func setEditing(_ sid: SidebarID, _ isEditing: Bool) {
+    if isEditing {
+      if editing != sid { editing = sid }
+    } else if editing == sid {
+      editing = nil
+    }
   }
 
   /// The row `sid` takes the ask: true once, when it was asked.

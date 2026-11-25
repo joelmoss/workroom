@@ -64,6 +64,25 @@ final class SidebarInlineRenameTests: XCTestCase {
     XCTAssertNil(renames.pending, "an ask the row never took goes with it")
   }
 
+  /// The row whose name field shows is the one editing, which keeps its row drag off; it stops on
+  /// its own field going or the row going, not on another row's.
+  func testTheRowEditingItsNameIsTheOneWhoseFieldShows() {
+    let renames = SidebarInlineRename()
+    let sid = SidebarID.standalone(UUID())
+    renames.rowAppeared(sid)
+
+    renames.setEditing(sid, true)
+    XCTAssertEqual(renames.editing, sid)
+    renames.setEditing(.terminalGroup(UUID()), false)
+    XCTAssertEqual(renames.editing, sid, "another row's field going leaves it")
+    renames.setEditing(sid, false)
+    XCTAssertNil(renames.editing)
+
+    renames.setEditing(sid, true)
+    renames.rowDisappeared(sid)
+    XCTAssertNil(renames.editing, "a row that goes edits nothing")
+  }
+
   // MARK: From the tab
 
   /// Value: protects=Rename… on a section target's tab edits its row in place only when the row is
