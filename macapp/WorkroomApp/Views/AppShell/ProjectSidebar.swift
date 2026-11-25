@@ -524,18 +524,19 @@ struct SidebarIconGlyph: View {
   @Environment(\.sidebarHoverReveal) private var reveal
 
   var body: some View {
+    // Faded by `reveal` through its colours, not `.opacity`: a menu whose whole label is fully
+    // transparent leaves accessibility at rest, and `CreateRowButton`'s "+" must stay in it.
     Image(systemName: systemImage)
       .font(font)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(.secondary.opacity(reveal))
       .frame(
         width: SidebarRowMetrics.iconColumnWidth, height: SidebarRowMetrics.iconColumnWidth
       )
       .background {
         RoundedRectangle(cornerRadius: Radius.xs)
-          .fill(tokens.hover.opacity(hovering ? 1 : 0))
+          .fill(tokens.hover.opacity(hovering ? reveal : 0))
           .frame(width: SidebarRowMetrics.hoverWell, height: SidebarRowMetrics.hoverWell)
       }
-      .opacity(reveal)
       .contentShape(Rectangle())
   }
 }
