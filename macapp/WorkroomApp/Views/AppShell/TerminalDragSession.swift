@@ -2,7 +2,7 @@ import AppKit
 import WorkroomDomain
 
 /// The one drag of terminals a window has at a time (#652), whichever surface it started on: a
-/// sidebar row (`SidebarRowDrag`), a title-bar tab (`WorkroomTabBar`), a pane tab
+/// sidebar Open row (`SidebarOpenList`), a title-bar tab (`WorkroomTabBar`), a pane tab
 /// (`TerminalTabStrip`) or a pane's own title bar (`PaneTreeView`), both through
 /// `AppStore.paneDragMoved`, or a group's title bar in a split (`WorkroomPaneTitleBar`). Each reports its pointer here and, when its own drag ends, asks
 /// `ended` first; what a drop does is `AppStore.terminalDrop`'s, so every surface has one rule set.
@@ -340,11 +340,10 @@ extension AppStore {
     return marked
   }
 
-  /// Whether `zone` is a folded group's row in the Terminals section.
-  private func isFoldedGroup(_ zone: PaneDropZone) -> Bool {
-    guard case .target(let sid) = zone, case .terminalGroup = sid, let id = sid.targetID else {
-      return false
-    }
-    return terminalsSection.group(id)?.isFolded == true
+  /// Whether `zone` is a group's row folded in the Open section: no tab rows under it take its
+  /// lower edge's drops (#819).
+  func isFoldedGroup(_ zone: PaneDropZone) -> Bool {
+    guard case .target(let sid) = zone, case .terminalGroup = sid else { return false }
+    return isOpenRowFolded(sid)
   }
 }

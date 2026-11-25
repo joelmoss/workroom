@@ -11,7 +11,7 @@ enum OpenSectionItem: Hashable {
 
 /// Where a dragged Open row lands. Every row is one height, so the drag's vertical travel counts
 /// rows; a reorder is the pointer's row, not a gap the List opens (the List's own drag would take
-/// the mouse from the split and tear-off drags, `SidebarRowDrag`).
+/// the mouse from the split and tear-off drags).
 enum OpenSectionReorder {
   /// The row `translation` points travel from `offset` reaches, among `count` rows.
   static func row(from offset: Int, translation: CGFloat, pitch: CGFloat, count: Int) -> Int {
@@ -357,12 +357,16 @@ struct SidebarOpenRowBackground: View {
 /// A workroom tab's row in the Open section: what its title-bar chip shows (glyph tinted by VCS
 /// state, unavailable warning, waiting glyph, unread-accented title, run mark, busy spinner), a
 /// disclosure chevron in the glyph's slot on hover, and a hover ✕ that asks as the chip's does.
-/// Its menu is the chip's.
+/// Its menu is the chip's, a standalone terminal's with Move to… and Pop Out too
+/// (`WorkroomMenuModel.Style.openRow`). A standalone terminal's or group's name edits in place,
+/// from Rename… on its menu or its title-bar chip (`SidebarInlineRename`).
 struct SidebarOpenWorkroomRow: View {
   let row: OpenSectionRow
   let hovered: Bool
   let store: AppStore
   @Environment(\.themeTokens) private var tokens
+  @State private var renaming = false
+  @State private var draft = ""
 
   private var presentation: WorkroomTabPresentation { row.presentation }
   private var marks: WorkroomTabMarks { row.marks }
@@ -375,9 +379,9 @@ struct SidebarOpenWorkroomRow: View {
         WarningGlyph().font(.system(size: 10)).help(reason.title)
           .accessibilityLabel(reason.title)
       }
-      title
+      if renaming { nameField } else { title }
       Spacer(minLength: 0)
-      SidebarHoverTrailing(hovered: hovered && presentation.closeName != nil) {
+      SidebarHoverTrailing(hovered: hovered && !renaming && presentation.closeName != nil) {
         statusMark
         runMark
       } buttons: {
@@ -389,8 +393,9 @@ struct SidebarOpenWorkroomRow: View {
     .onTapGesture { store.selectWorkroomTab(row.sid) }
     .contextMenu {
       WorkroomMenuAdapter(
-        sid: row.sid, target: row.target, closeName: presentation.closeName, style: .full)
+        sid: row.sid, target: row.target, closeName: presentation.closeName, style: .openRow)
     }
+    .sidebarInlineRename(row.sid, in: store.sidebarRename, begin: beginRename)
     .help("\(presentation.fullTitle)\n\(row.target.path)")
     .accessibilityElement(children: .contain)
     .accessibilityAddTraits(row.isSelected ? [.isButton, .isSelected] : .isButton)
@@ -406,7 +411,7 @@ struct SidebarOpenWorkroomRow: View {
     .overlay(alignment: .trailing) {
       if let closeName = presentation.closeName {
         CloseTerminalRowButton(
-          title: closeName, visible: hovered, help: "Close \(closeName)",
+          title: closeName, visible: hovered && !renaming, help: "Close \(closeName)",
           id: "sidebar.open.close.\(id)"
         ) { requestClose() }
         .padding(.trailing, SidebarRowMetrics.iconColumnInset)
@@ -463,6 +468,42 @@ struct SidebarOpenWorkroomRow: View {
     .font(.callout)
     .lineLimit(1)
     .truncationMode(.tail)
+  }
+
+  /// The name field Rename… shows in the title's place: a group's name, or a standalone
+  /// terminal's, where an empty one gives the default back.
+  @ViewBuilder private var nameField: some View {
+    let group = row.sid.isStandaloneTerminal == false
+    SidebarInlineNameField(
+      placeholder: group ? "Terminal group name" : presentation.fullTitle, draft: $draft,
+      help: group
+        ? "The group's name. Leave it empty to label the group by its terminals' names"
+        : "The terminal's name. Leave it empty to show the title the program sets",
+      id: "sidebar.open.rename.\(id)",
+      commit: {
+        renaming = false
+        if group {
+          store.renameTerminalGroup(row.sid, to: draft)
+        } else {
+          store.renameStandaloneTerminal(row.sid, to: draft)
+        }
+      },
+      cancel: { renaming = false })
+  }
+
+  /// Shows the name field, starting from the name the user gave it (empty for none), so keeping
+  /// it unchanged never pins a default name. Not for a workroom, nor the built-in Quick Terminal.
+  private func beginRename() {
+    switch row.sid {
+    case .standalone:
+      draft = store.standaloneTerminal(row.sid)?.tab.terminal?.userTitle ?? ""
+    case .terminalGroup:
+      guard let group = store.terminalGroup(row.sid), !group.isBuiltIn else { return }
+      draft = group.name ?? ""
+    case .project, .root, .workroom, .creation:
+      return
+    }
+    renaming = true
   }
 
   /// Waiting first (which focuses the terminal that has waited longest), else a busy spinner, red

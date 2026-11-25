@@ -110,6 +110,36 @@ final class WorkroomMenuModelTests: XCTestCase {
       model.entries(for: .full), [.rename, .divider, .close, .moveToNewWindow(enabled: false)])
   }
 
+  /// Value: protects=a standalone terminal's Open row keeps its old Terminals row's Move to… and
+  /// Pop Out beside the chip's items, Pop Out off once it is popped out (#819 story 46);
+  /// fails_when=either is missing, out of order, or reaches the title-bar chip's menu;
+  /// seam=WorkroomMenuModel.entries
+  func testAStandaloneTerminalsOpenRowAddsMoveToAndPopOut() {
+    var model = WorkroomMenuModel(
+      run: .off, closeName: "Terminal 1", showsMoveToNewWindow: true, canMoveWorkroom: true,
+      section: .standalone)
+    XCTAssertEqual(
+      model.entries(for: .openRow),
+      [
+        .rename, .moveTo, .popOut(enabled: true), .divider, .close,
+        .moveToNewWindow(enabled: true),
+      ])
+    XCTAssertEqual(
+      model.entries(for: .full), [.rename, .divider, .close, .moveToNewWindow(enabled: true)],
+      "the chip's menu is unchanged")
+    model.isPoppedOut = true
+    XCTAssertEqual(model.entries(for: .openRow)[2], .popOut(enabled: false))
+  }
+
+  /// A group's Open row offers just what its chip does: that menu already holds its old row's.
+  func testAGroupsOpenRowOffersItsChipsItems() {
+    let model = WorkroomMenuModel(
+      run: .off, closeName: "Ops", canOpenInSplit: true,
+      section: .group(
+        builtIn: false, hasStartingFolder: true, title: "Ops", newTerminal: "New Terminal in Ops"))
+    XCTAssertEqual(model.entries(for: .openRow), model.entries(for: .full))
+  }
+
   // MARK: A root
 
   /// A project root on its tab chip: Close names the project, and there is nothing to label or
