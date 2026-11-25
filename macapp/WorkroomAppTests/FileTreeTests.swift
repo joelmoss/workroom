@@ -511,12 +511,16 @@ final class FileTreeModelPerfTests: XCTestCase {
     model.activate(path: b)
     await waitUntil { model.roots.map(\.name) == ["b.txt"] }
 
+    // Settle the fixture's own writes: the watcher can re-list a checkout once for them.
+    try await Task.sleep(for: .milliseconds(200))
+    let settled = runner.calls
+
     runner.set("a", "a.txt\0new.txt\0")
     model.activate(path: a)
     XCTAssertEqual(model.state, .loaded, "no loader on a revisit")
     XCTAssertEqual(model.roots.map(\.name), ["a.txt"], "the cached tree, at once")
     await waitUntil { model.roots.map(\.name) == ["a.txt", "new.txt"] }
-    XCTAssertEqual(runner.calls, 3)
+    XCTAssertEqual(runner.calls, settled + 1, "the revisit lists once, to refresh")
   }
 
   /// Value: protects=a workroom's tree at the repository a followed subfolder was listed from
