@@ -112,8 +112,13 @@ final class GhosttyActionDispatchUITests: XCTestCase {
     focusTerminal(app)
     run(app, "sleep 6")
 
+    // By its label: a terminal chip's identifier is its fixed default name ("Terminal 1") since
+    // b5e44d4d, while the label follows the title.
     let titled = app.descendants(matching: .any)
-      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.sleep"))
+      .matching(
+        NSPredicate(
+          format: "identifier BEGINSWITH %@ AND label BEGINSWITH %@", "terminal.tab.", "sleep")
+      )
       .firstMatch
     XCTAssertTrue(
       titled.waitForExistence(timeout: 20),
