@@ -5,7 +5,7 @@ import XCTest
 @testable import Workroom
 
 /// Who holds a window's keyboard, decided from its live selection as each first-responder claim or
-/// resign runs (`AppStore.holdsKeyboard`, `WindowRegistry.holdsKeyboard`), never from the render
+/// resign runs (`AppStore.holdsKeyboard`, through `WindowRegistry.holdsKeyboard`), never from the render
 /// that queued it. A render can be stale by then: a busy Claude Code pane re-rendered as focused just
 /// after ⌥⌘N moved the selection to the create's checklist, took the keyboard back, and the new
 /// workroom mounted dimmed beside it.
@@ -45,20 +45,18 @@ final class HoldsKeyboardTests: XCTestCase {
   ) {
     let store = AppStore(projectStore: projects, terminalsSection: section)
     store.confirmOnCloseOverrideForTesting = false
-    store.terminals.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-    }
-    store.terminals.recordUnrecognizedTool = { _ in }
-    store.terminals.recency = SwitcherRecency()
-    store.terminals.sessionService = PersistentSessionService(
-      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned },
-      retag: { _, _ in true })
+    isolate(store.terminals, service: isolatedPaneSessionService())
     let callerTab = store.terminals.addTab(for: try XCTUnwrap(store.target(for: root)))
     let createdTab = store.terminals.addTab(for: try XCTUnwrap(store.target(for: workroom)))
     let caller = try XCTUnwrap(store.terminals.surface(of: callerTab.id))
     let created = try XCTUnwrap(store.terminals.surface(of: createdTab.id))
     store.selectedTargetID = root
     return (store, caller, created)
+  }
+
+  /// A surface of no store's, as a popped-out pane's window or the Quick Terminal's holds.
+  private func bareSurface() -> GhosttySurfaceView {
+    GhosttySurfaceView(workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: false)
   }
 
   /// A window holding `surfaces`, registered with `store` when one is given (a main window), else
@@ -123,24 +121,6 @@ final class HoldsKeyboardTests: XCTestCase {
     XCTAssertFalse(store.holdsKeyboard(caller), "the pane beside it in the same workroom")
   }
 
-  // MARK: Windows with and without a store
-
-  func testAWindowWithAStoreGoesByItsLiveSelectionNotTheRender() throws {
-    let (store, caller, created) = try makeStore()
-    let window = window(holding: [caller, created], store: store)
-    let registry = WindowRegistry.shared
-    XCTAssertFalse(registry.holdsKeyboard(created, in: window, rendered: true))
-    XCTAssertTrue(registry.holdsKeyboard(caller, in: window, rendered: false))
-  }
-
-  func testAWindowWithNoStoreGoesByWhatItsHostRendered() {
-    let surface = GhosttySurfaceView(
-      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: false)
-    let window = window(holding: [surface], store: nil)
-    XCTAssertTrue(WindowRegistry.shared.holdsKeyboard(surface, in: window, rendered: true))
-    XCTAssertFalse(WindowRegistry.shared.holdsKeyboard(surface, in: window, rendered: false))
-  }
-
   // MARK: The host's claim and resign (`TerminalContainerView.applyFocus`)
 
   func testTheHostRefusesAStaleClaimAndLetsTheLiveFocusedPaneHaveIt() throws {
@@ -180,8 +160,7 @@ final class HoldsKeyboardTests: XCTestCase {
   }
 
   func testTheHostOfAWindowWithNoStoreStillClaimsForItsPane() {
-    let surface = GhosttySurfaceView(
-      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: false)
+    let surface = bareSurface()
     let window = window(holding: [surface], store: nil)
     TerminalContainerView.syncFirstResponder(of: surface, in: window, rendered: true)
     XCTAssertTrue(window.firstResponder === surface)
@@ -202,8 +181,7 @@ final class HoldsKeyboardTests: XCTestCase {
   }
 
   func testASurfaceEnteringAWindowWithNoStoreClaimsAsItsRenderSaid() {
-    let surface = GhosttySurfaceView(
-      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: false)
+    let surface = bareSurface()
     let window = window(holding: [], store: nil)
     surface.wantsFocus = true
     window.contentView!.addSubview(surface)

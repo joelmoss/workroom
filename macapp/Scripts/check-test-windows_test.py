@@ -60,6 +60,17 @@ class CheckTests(unittest.TestCase):
         })
         self.assertEqual(code, 0)
 
+    def test_a_call_after_a_string_holding_slashes_fails(self):
+        code, err = self.run_check({
+            "PaneTests.swift": 'let url = "https://x"; w.orderFront(nil)\n',
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("PaneTests.swift:1", err)
+
+    def test_a_string_naming_a_call_passes(self):
+        code, _ = self.run_check({"PaneTests.swift": 'let s = "w.orderFront(nil)"\n'})
+        self.assertEqual(code, 0)
+
     def test_a_line_marked_allow_passes(self):
         code, _ = self.run_check({
             "CloakTests.swift": "w.orderFront(nil)  // check-test-windows: allow (the cloak's test)\n",
