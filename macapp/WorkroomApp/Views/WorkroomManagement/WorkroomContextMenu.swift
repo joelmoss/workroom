@@ -70,6 +70,9 @@ struct WorkroomMenuModel: Equatable {
     /// The inspector header's actions, in Apple's order: no run, Close or split items, and the
     /// destructive one last, apart.
     case inspectorHeader
+    /// The sidebar Open section's workroom row (#819): the chip's items, and for a standalone
+    /// terminal its old Terminals row's Move to… and Pop Out too.
+    case openRow
   }
 
   /// One item or divider, in the order it shows.
@@ -96,6 +99,11 @@ struct WorkroomMenuModel: Equatable {
     case clearStartingFolder
     /// "Delete “<group>”…", as its row words it.
     case deleteGroup(title: String)
+    /// A standalone terminal's Open row: its terminal's "Move to…" submenu.
+    case moveTo
+    /// A standalone terminal's Open row: "Pop Out", off while its terminal is in a window of its
+    /// own.
+    case popOut(enabled: Bool)
   }
 
   /// A target in the Terminals section (ADR 0077), which has no run command: its tab's menu offers
@@ -140,6 +148,8 @@ struct WorkroomMenuModel: Equatable {
   var workroom: WorkroomState? = nil
   /// Set for a standalone terminal or a terminal group: no run items, its row's items instead.
   var section: SectionTarget? = nil
+  /// A standalone terminal's terminal is popped out into a window of its own.
+  var isPoppedOut = false
 
   func entries(for style: Style) -> [Entry] {
     // A workroom whose host is gone has nothing left to run, open, label or move.
@@ -174,7 +184,8 @@ struct WorkroomMenuModel: Equatable {
     var own: [[Entry]] = []
     switch section {
     case .standalone:
-      own.append([.rename])
+      own.append(
+        style == .openRow ? [.rename, .moveTo, .popOut(enabled: !isPoppedOut)] : [.rename])
     case .group(let builtIn, let hasStartingFolder, _, let newTerminal):
       let new = Entry.newTerminalInGroup(title: newTerminal)
       own.append(builtIn ? [new] : [new, .rename])
@@ -220,6 +231,9 @@ struct WorkroomMenuActions {
   var clearStartingFolder: () -> Void = {}
   /// Asks first when the group has terminals.
   var deleteGroup: () -> Void = {}
+  /// A standalone terminal's Move to… choices, read as its menu opens.
+  var moveChoices: () -> [PaneWorkroomGroup] = { [] }
+  var popOut: () -> Void = {}
 
   /// Does nothing, for previews.
   static var inert: WorkroomMenuActions {
@@ -313,6 +327,23 @@ struct WorkroomMenuItems: View {
         Label("Delete “\(title)”…", systemImage: "trash")
       }
       .help("Delete this group; its terminals stay open")
+    case .moveTo:
+      Menu {
+        PaneMoveChoicesList(groups: actions.moveChoices())
+      } label: {
+        Label {
+          Text("Move to…")
+        } icon: {
+          Image(nsImage: .moveTerminal)
+        }
+      }
+      .help("Move this terminal into a group or a workroom")
+    case .popOut(let enabled):
+      Button(action: actions.popOut) {
+        Label("Pop Out", systemImage: "macwindow.badge.plus")
+      }
+      .disabled(!enabled)
+      .help("Show this terminal in a window of its own")
     }
   }
 }
@@ -340,7 +371,10 @@ extension WorkroomMenuModel {
           isCreating: lifecycle.isCreatingWorkroom($0.workroom, in: $0.project),
           hostGone: GoneHosts.shared.contains($0.workroom.host?.id))
       },
-      section: Self.section(of: sid, in: store))
+      section: Self.section(of: sid, in: store),
+      isPoppedOut: store.standaloneTerminal(sid).map {
+        $0.holder.terminals.detachedTabIDs.contains($0.tab.id)
+      } ?? false)
   }
 
   /// What `sid` is in the Terminals section, or nil when it is a project's.
@@ -428,6 +462,14 @@ struct WorkroomMenuAdapter: View {
         guard TerminalGroupPrompts.confirmDelete(title, asks: store.terminalGroupDeleteAsks(sid))
         else { return }
         Task { await store.deleteTerminalGroup(sid) }
+      },
+      moveChoices: { [store, sid] in
+        guard let (holder, target, tab) = store.standaloneTerminal(sid) else { return [] }
+        return holder.paneMoveChoices(tab.id, of: target, windows: WindowRegistry.shared.allStores)
+      },
+      popOut: { [store, sid] in
+        guard let (holder, target, tab) = store.standaloneTerminal(sid) else { return }
+        holder.togglePaneWindow(tab.id, targetID: target.id)
       })
   }
 
