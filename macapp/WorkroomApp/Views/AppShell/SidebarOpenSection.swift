@@ -285,8 +285,9 @@ struct SidebarOpenList: View, Equatable {
   }
 
   /// A tab row's drag, as its strip chip's: onto a sidebar row, a title-bar tab, a pane tab or the
-  /// Open heading (`AppStore.paneDragMoved`); out of the window it tears off; else a reorder among
-  /// its workroom's tabs.
+  /// Open heading (`AppStore.paneDragMoved`); out of the window it tears off; into its workroom's
+  /// panes while they are on screen it splits them (`TabContentDrop`); else a reorder among its
+  /// workroom's tabs.
   private func tabDrag(
     _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
   ) -> some Gesture {
@@ -295,8 +296,9 @@ struct SidebarOpenList: View, Equatable {
     return DragGesture(minimumDistance: 6, coordinateSpace: .global)
       .onChanged { [store] value in
         let panes = store.terminals
-        if Self.isOutsideWindow(NSEvent.mouseLocation) {
+        if isDragOutsideWindow(value.location) {
           reorder = nil
+          panes.contentDrop(for: tab.target.id).preview = nil
           if store.paneDragMoved(tab.tab.id, of: tab.target, to: NSEvent.mouseLocation) {
             panes.hideDragOutside()
           } else {
@@ -306,6 +308,11 @@ struct SidebarOpenList: View, Equatable {
         }
         panes.hideDragOutside()
         if store.paneDragMoved(tab.tab.id, of: tab.target, to: NSEvent.mouseLocation) {
+          reorder = nil
+          panes.contentDrop(for: tab.target.id).preview = nil
+          return
+        }
+        if dragTab(tab, overContentAt: value.location) {
           reorder = nil
           return
         }
@@ -319,11 +326,21 @@ struct SidebarOpenList: View, Equatable {
         let panes = store.terminals
         panes.hideDragOutside()
         reorder = nil
-        if store.paneDragEnded(tab.tab.id, of: tab.target, at: NSEvent.mouseLocation) { return }
-        if Self.isOutsideWindow(NSEvent.mouseLocation) {
+        if store.paneDragEnded(tab.tab.id, of: tab.target, at: NSEvent.mouseLocation) {
+          panes.contentDrop(for: tab.target.id).preview = nil
+          return
+        }
+        if isDragOutsideWindow(value.location) {
+          panes.contentDrop(for: tab.target.id).preview = nil
           panes.dropOutside(tab.tab.id, for: tab.target)
           return
         }
+        if store.onScreenTarget(forID: tab.target.id) != nil,
+          panes.dropTab(tab.tab.id, of: tab.target, onContentAt: value.location)
+        {
+          return
+        }
+        panes.contentDrop(for: tab.target.id).preview = nil
         let moved = Int((value.translation.height / Self.rowPitch).rounded())
         let to = min(max(index + moved, 0), row.tabs.count - 1)
         guard to != index else { return }
@@ -333,10 +350,15 @@ struct SidebarOpenList: View, Equatable {
       }
   }
 
-  /// Whether a screen point has left the key window, where a drag started.
-  private static func isOutsideWindow(_ screenPoint: CGPoint) -> Bool {
-    guard let frame = NSApp.keyWindow?.frame else { return false }
-    return !frame.contains(screenPoint)
+  /// Previews a drop of `tab` into its workroom's panes while they are on screen and under the
+  /// pointer, as its strip chip does. Returns whether it is over them.
+  private func dragTab(_ tab: OpenSectionTabRow, overContentAt global: CGPoint) -> Bool {
+    let panes = store.terminals
+    guard store.onScreenTarget(forID: tab.target.id) != nil else {
+      panes.contentDrop(for: tab.target.id).preview = nil
+      return false
+    }
+    return panes.dragTab(tab.tab.id, of: tab.target, overContentAt: global)
   }
 }
 

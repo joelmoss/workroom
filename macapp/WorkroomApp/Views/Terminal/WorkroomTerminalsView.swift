@@ -8,10 +8,9 @@ import WorkroomDomain
 /// pane changes re-run none of it.
 ///
 /// This view coordinates the tab strip (`TerminalTabStrip`) and the pane content
-/// (`PaneTreeView`), owning the cross-component drag-into-pane wiring: `chipPaneDrag` (the live
-/// drop preview the pane tree renders) and `contentFrame` (the pane area's global rect, used to
-/// tell "over the strip" reorder from "over a pane" drop-to-split and to localise the cursor).
-/// The strip is handed those via a binding plus the `chipLocal`/`chipDropTarget` closures.
+/// (`PaneTreeView`) for a tab dragged into the panes to split them: the target's `TabContentDrop`
+/// holds the live preview the pane tree renders and the pane area's frame, which this view
+/// measures. The strip and the sidebar's Open rows (#819) both drive it.
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   let panes: TerminalPanes
@@ -31,13 +30,10 @@ struct WorkroomTerminalsView: View {
   /// setting gates it too (see `PaneTreeView.shouldRecede`).
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
 
-  // Drag a tab chip down into a pane to split (issue #3). `chipPaneDrag` is the live drop preview
-  // (content-local), shown by `PaneTreeView`; `contentFrame` is the pane area's global rect, used to
-  // tell "over the strip" (reorder) from "over a pane" (drop-to-split) and to localise the cursor.
-  @State private var chipPaneDrag: PaneDragState?
-  @State private var contentFrame: CGRect = .zero
-
   var body: some View {
+    // Drag a tab chip, or its Open row (#819), down into a pane to split (issue #3): the target's
+    // `TabContentDrop` holds the live preview `PaneTreeView` draws and the pane area's frame.
+    let drop = panes.contentDrop(for: target.id)
     let tabs = panes.tabs(for: target)
     let active = panes.activeTab(for: target)
     // The terminal (or empty state) fills the pane; the tab bar rides on safeAreaInset so it only
@@ -50,8 +46,8 @@ struct WorkroomTerminalsView: View {
         // earlier split→solo bug came from two `TerminalContainerView`s (the solo branch and the dying
         // split leaf) fighting over the same surface and stranding it in a detached container (#3).
         PaneTreeView(
-          layout: contentLayout(active: active), target: target, panes: panes,
-          externalDrag: chipPaneDrag, surfaceActive: surfaceActive,
+          layout: panes.split(for: target) ?? .leaf(active.id), target: target, panes: panes,
+          externalDrag: drop.preview, surfaceActive: surfaceActive,
           workroomIsSplit: workroomIsSplit
         )
         .background(
@@ -94,7 +90,11 @@ struct WorkroomTerminalsView: View {
     .padding(.bottom, 1)
     .padding(.top, 0)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }
+    .onPreferenceChange(ContentFrameKey.self) { [drop] frame in
+      MainActor.assumeIsolated { drop.frame = frame == .zero ? nil : frame }
+    }
+    .onDisappear { drop.frame = nil }
+    .onChange(of: target.id) { old, _ in panes.contentDrop(for: old).frame = nil }
     .safeAreaInset(edge: .top, spacing: 0) {
       // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T) cover
       // adding one, so the strip and its "+" would be redundant. A split member's remove-from-split ✕
@@ -104,9 +104,9 @@ struct WorkroomTerminalsView: View {
       if TerminalPanes.showsTabStrip(tabCount: tabs.count, for: target.id) {
         TerminalTabStrip(
           tabs: tabs, activeID: active?.id, target: target, panes: panes,
-          chipPaneDrag: $chipPaneDrag,
-          localize: { chipLocal($0) },
-          dropTarget: { chipDropTarget(at: $0) }
+          chipPaneDrag: Binding(get: { drop.preview }, set: { drop.preview = $0 }),
+          localize: { drop.localize($0) },
+          dropTarget: { panes.contentDropTarget(at: $0, for: target) }
         )
         // A backgrounded workroom (`!surfaceActive` — a non-focused workroom *split* member, or a
         // backgrounded solo workroom, issue #82) dims its terminals via the per-pane scrim in
@@ -157,31 +157,6 @@ struct WorkroomTerminalsView: View {
     // Go ▸ Terminal Tab's items (#148): ids only, see `TerminalTabIDsKey`.
     .focusedSceneValue(
       \.terminalTabIDs, modals.hasModalPresentation ? [] : tabs.prefix(9).map(\.id))
-  }
-
-  /// The layout the content area renders: the focused tab's group when it has one, else that tab
-  /// solo. `split(for:)` is nil exactly when the focused tab is solo, so the nil-coalesce below is
-  /// the whole decision.
-  private func contentLayout(active: TerminalTab) -> TerminalPaneLayout {
-    panes.split(for: target) ?? .leaf(active.id)
-  }
-
-  /// The content-local point for a chip drag at `global`, or nil when the cursor is outside the pane
-  /// area (i.e. still over the strip → a reorder, not a drop-into-pane).
-  private func chipLocal(_ global: CGPoint) -> CGPoint? {
-    guard contentFrame.contains(global) else { return nil }
-    return CGPoint(x: global.x - contentFrame.minX, y: global.y - contentFrame.minY)
-  }
-
-  /// Where a chip dropped at `global` lands (pane + edge), using the same pane plan the renderer uses,
-  /// or nil if it isn't over a pane.
-  private func chipDropTarget(at global: CGPoint) -> (tab: TerminalTab.ID, edge: PaneEdge)? {
-    guard let local = chipLocal(global), let active = panes.activeTab(for: target) else {
-      return nil
-    }
-    let plan = PaneTreeLayout.plan(
-      contentLayout(active: active), in: CGRect(origin: .zero, size: contentFrame.size))
-    return PaneTreeLayout.dropTarget(at: local, panes: plan.panes)
   }
 }
 

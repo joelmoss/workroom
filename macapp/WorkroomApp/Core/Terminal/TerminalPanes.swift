@@ -777,6 +777,17 @@ final class TerminalPanes {
   /// same posture `PaneTreeLayout.canSplit` takes for a zero rect.
   @ObservationIgnored var paneSpace: [TerminalTarget.ID: CGRect] = [:]
 
+  /// Each target's drop of a tab into its panes (`TabContentDrop`), made on first use. The map is
+  /// not observed: each drop observes its own preview, so one target's drag re-runs no other's view.
+  @ObservationIgnored private var contentDrops: [TerminalTarget.ID: TabContentDrop] = [:]
+
+  func contentDrop(for id: TerminalTarget.ID) -> TabContentDrop {
+    if let drop = contentDrops[id] { return drop }
+    let drop = TabContentDrop()
+    contentDrops[id] = drop
+    return drop
+  }
+
   /// Issue #126's auto-even pref, read live so the Settings toggle applies to the very next split
   /// without a relaunch. Injected rather than read inline so tests can drive both states: a parallel
   /// test worker shares (and wipes) the `Defaults` domain cross-process, which is why
@@ -2339,6 +2350,7 @@ final class TerminalPanes {
     targets[target.id]?.empty()
     paneRects[target.id] = nil
     paneSpace[target.id] = nil
+    contentDrops[target.id]?.frame = nil
     // Released once the layout no longer names them; a tab in transit takes no store (`TabRecords`).
     tabRegistry.release(ids, by: holder)
     onEvent?(.tabsRemoved(target.id, ids))
