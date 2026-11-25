@@ -67,7 +67,7 @@ final class ProgramStatusUITests: XCTestCase {
     XCTAssertFalse(waiting.isSelected)
 
     XCTAssertTrue(workroomGlyph(app).waitForExistence(timeout: 10))
-    workroomGlyph(app).click()
+    workroomGlyph(app).clickWhereHoverSettlesIt()
 
     XCTAssertTrue(
       poll(timeout: 5) { waiting.isSelected }, "the glyph focused the terminal waiting longest")

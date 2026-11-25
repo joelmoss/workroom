@@ -144,8 +144,13 @@ final class CodingAgentUsageUITests: XCTestCase {
 
   func testNonAgentTabKeepsRunningAgentQuotaSegment() {
     let app = launchedApp(agent: "codex", terminalTabs: 2)
-    app.descendants(matching: .any).matching(identifier: "terminal.tab.Codex").firstMatch
-      .click()
+    // A chip's identifier is its terminal's default title (b5e44d4d); the seeded agent title is
+    // in its label, which is how this is known to be the agent's tab.
+    let agentTab = app.descendants(matching: .any).matching(identifier: "terminal.tab.Terminal 1")
+      .firstMatch
+    XCTAssertTrue(agentTab.waitForExistence(timeout: 15))
+    XCTAssertTrue(agentTab.label.contains("Codex"), "the agent's tab: \(agentTab.label)")
+    agentTab.click()
     XCTAssertTrue(
       app.descendants(matching: .any)["terminal.statusBar.codingAgentUsage"].waitForExistence(
         timeout: 15)
