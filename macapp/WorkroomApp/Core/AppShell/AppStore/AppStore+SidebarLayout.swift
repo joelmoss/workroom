@@ -1,16 +1,18 @@
 import Foundation
 
-/// The sidebar's two panes (#652), top to bottom: the Terminals section and the Projects section.
+/// The sidebar's two panes (#652), top to bottom: the Open section (#819, in the Terminals section's
+/// old slot, so a saved divider position carries over) and the Projects section.
 /// Each is a sticky heading over its own scrolling list, in the inspector's split
 /// (`InspectorSplitView`).
 enum SidebarPane: Int, CaseIterable {
-  case terminals
+  case open
   case projects
 }
 
 /// The sidebar's split layout. A pane's collapse is its section's fold, so there is one fold state
-/// per section: the Terminals section's is `TerminalsSection.isFolded`, shared by every window and
-/// kept in its file; the Projects section's is `projectsFolded`. The divider's position is
+/// per section: the Open section's is the retired Terminals section's, `TerminalsSection.isFolded`,
+/// so a user's fold carries over (shared by every window, kept in its file); the Projects section's
+/// is `projectsFolded`. The divider's position is
 /// `sidebarPaneWeights`.
 extension AppStore {
   /// Each pane's collapse, in `SidebarPane` order: its section's fold.
@@ -20,7 +22,7 @@ extension AppStore {
 
   func isCollapsed(_ pane: SidebarPane) -> Bool {
     switch pane {
-    case .terminals: terminalsSection.isFolded
+    case .open: terminalsSection.isFolded
     case .projects: projectsFolded
     }
   }
@@ -28,7 +30,7 @@ extension AppStore {
   /// Collapse or expand a pane: fold or unfold its section.
   func setCollapsed(_ pane: SidebarPane, _ collapsed: Bool) {
     switch pane {
-    case .terminals: terminalsSection.isFolded = collapsed
+    case .open: terminalsSection.isFolded = collapsed
     case .projects: projectsFolded = collapsed
     }
   }
