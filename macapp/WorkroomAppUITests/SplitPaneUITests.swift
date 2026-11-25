@@ -304,7 +304,7 @@ final class SplitPaneUITests: XCTestCase {
     delete?.click()
 
     XCTAssertTrue(
-      app.buttons["Delete"].waitForExistence(timeout: 4),
+      app.sheets.buttons["Delete"].waitForExistence(timeout: 4),
       "deleting from the split title bar should raise the confirmation dialog")
     app.typeKey(.escape, modifierFlags: [])  // dismiss (cancel role) without deleting
   }

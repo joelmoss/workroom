@@ -134,7 +134,7 @@ final class EngineBumpSmokeUITests: XCTestCase {
     RunLoop.current.run(until: Date().addingTimeInterval(1))
 
     clickMenu(app, "Room", "Delete Workroom…")
-    let confirm = app.buttons["Delete"]
+    let confirm = app.sheets.buttons["Delete"]
     XCTAssertTrue(confirm.waitForExistence(timeout: 5), "the delete confirmation appeared")
     confirm.click()
 

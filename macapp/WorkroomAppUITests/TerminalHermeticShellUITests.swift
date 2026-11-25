@@ -71,7 +71,7 @@ final class TerminalHermeticShellUITests: XCTestCase {
     // `${X8;5ut}`).
     app.typeText(
       "[[ $ZDOTDIR == */workroom-tests-zdotdir-* ]]; echo WRZ=$?; "
-        + "echo WRS=$SHELL; whence -w _ghostty_precmd\r")
+        + "echo WRS=$SHELL; echo WRN=$ZSH_NAME; whence -w _ghostty_precmd\r")
     let result = waitForScreen(surface, containing: "_ghostty_precmd: ")
     XCTAssertTrue(result.found, "the probe produced no output. Screen was:\n\(result.screen)")
 
@@ -88,6 +88,11 @@ final class TerminalHermeticShellUITests: XCTestCase {
     XCTAssertTrue(
       result.screen.contains("WRS=/bin/zsh"),
       "the pane's shell was not the hermetic /bin/zsh. Screen was:\n\(result.screen)")
+    // `$SHELL` is only the environment; `$ZSH_NAME` is set by the running shell itself. Red on an
+    // account whose login shell is bash (a hosted runner's) when Ghostty's `command` isn't zsh.
+    XCTAssertTrue(
+      result.screen.contains("WRN=zsh"),
+      "the pane ran the account's login shell, not zsh. Screen was:\n\(result.screen)")
     XCTAssertTrue(
       result.screen.contains("_ghostty_precmd: function"),
       """
