@@ -153,9 +153,6 @@ struct FileTreeRowView: View, Equatable {
   /// False for a target whose files aren't on this Mac, such as a remote workroom's.
   let canOpenInEditor: Bool
   @State private var hovering = false
-  /// Tracks the previous click time so a quick second click promotes the preview to a persisted tab
-  /// (same manual double-click handling the Changes panel uses).
-  @State private var lastClick: Date?
   @Environment(\.themeTokens) private var tokens
 
   private var node: FileNode { row.node }
@@ -229,21 +226,14 @@ struct FileTreeRowView: View, Equatable {
   private func handleTap() {
     if node.isDirectory {
       onToggle()
-      lastClick = nil
       return
     }
     if NSEvent.modifierFlags.contains(.command) {
       onOpenInEditor()  // ⌘-click → external editor, not the in-app viewer
-      lastClick = nil
       return
     }
-    let now = Date()
-    if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
-      onOpenPersistent()  // quick second click → persist
-      lastClick = nil
-    } else {
-      onOpenPreview()  // eager: show the read-only preview immediately
-      lastClick = now
-    }
+    // Eager: the first click shows the read-only preview immediately; a double-click's second click
+    // persists it (the `RepeatClick` gate the Changes panel uses).
+    if RepeatClick.isCurrentRepeat { onOpenPersistent() } else { onOpenPreview() }
   }
 }
