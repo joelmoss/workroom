@@ -189,8 +189,8 @@ struct SidebarOpenList: View, Equatable {
   private func workroomRow(_ row: OpenSectionRow, items: [OpenSectionItem]) -> some View {
     let item = OpenSectionItem.workroom(row.sid)
     let offset = items.firstIndex(of: item) ?? 0
-    return SidebarHoverRegion { hovered in
-      SidebarOpenWorkroomRow(row: row, hovered: hovered, store: store)
+    return SidebarHoverRegion(openItem: item) { hovered in
+      SidebarOpenWorkroomRow(row: row, hovered: hovered, store: store).equatable()
         .modifier(SidebarDragDim(id: row.sid, drag: drag.drag))
         .overlay(alignment: insertionEdge(of: item, in: items) ?? .top) {
           if insertionEdge(of: item, in: items) != nil { DropInsertionMark(vertical: false) }
@@ -213,7 +213,7 @@ struct SidebarOpenList: View, Equatable {
     _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
   ) -> some View {
     let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
-    return SidebarHoverRegion { hovered in
+    return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenTabRow(row: tab, hovered: hovered, store: store)
         .overlay(alignment: insertionEdge(of: item, in: items) ?? .top) {
           if insertionEdge(of: item, in: items) != nil { DropInsertionMark(vertical: false) }
@@ -373,7 +373,10 @@ struct SidebarOpenWorkroomRow: View {
   private var id: String { row.target.id.encoded }
 
   var body: some View {
-    HStack(spacing: Spacing.s) {
+    #if DEBUG
+      SidebarRowPasses.openRows[.workroom(row.sid), default: 0] += 1
+    #endif
+    return HStack(spacing: Spacing.s) {
       leadingSlot
       if let reason = row.target.terminalUnavailability {
         WarningGlyph().font(.system(size: 10)).help(reason.title)
@@ -581,7 +584,10 @@ struct SidebarOpenTabRow: View {
   private var indicator: PaneIndicator { tab.indicator }
 
   var body: some View {
-    HStack(spacing: Spacing.s) {
+    #if DEBUG
+      SidebarRowPasses.openRows[.tab(tab.id, in: row.sid), default: 0] += 1
+    #endif
+    return HStack(spacing: Spacing.s) {
       SidebarTabIcon(glyph: tab.content.glyph ?? "terminal", tool: tab.recognizedTool)
         .frame(width: SidebarRowMetrics.caretWidth, alignment: .center)
       TabTitleReader(content: tab.content) { title in
@@ -690,5 +696,19 @@ struct SidebarOpenTabRow: View {
     if row.hasUnread { parts.append("unread activity") }
     if row.isVisibleInSplit { parts.append("on screen in a split") }
     return parts.joined(separator: ", ")
+  }
+}
+
+/// A workroom row redraws only when what it draws changes: the list rebuilds every row from
+/// `openSectionRows()` whenever any of them changes, as one agent starting or stopping does.
+extension SidebarOpenWorkroomRow: Equatable {
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    MainActor.assumeIsolated {
+      lhs.store === rhs.store && lhs.hovered == rhs.hovered && lhs.row.sid == rhs.row.sid
+        && lhs.row.target == rhs.row.target && lhs.row.presentation == rhs.row.presentation
+        && lhs.row.marks == rhs.row.marks && lhs.row.isSelected == rhs.row.isSelected
+        && lhs.row.isVisibleInSplit == rhs.row.isVisibleInSplit
+        && lhs.row.isFolded == rhs.row.isFolded && lhs.row.tabs.count == rhs.row.tabs.count
+    }
   }
 }

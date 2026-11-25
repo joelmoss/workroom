@@ -25,6 +25,9 @@ struct ProjectSidebar: View, Equatable {
     static var rowEvaluations = 0
     static var menuEvaluations = 0
     static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
+    /// The Open section's rows' hover, by row: kept apart from `didRenderHover`, whose ids a
+    /// project's root and workroom rows share with their Open rows.
+    static var didRenderOpenHover: ((OpenSectionItem, Binding<Bool>) -> Void)?
   #endif
   @EnvironmentObject var store: AppStore
 
@@ -334,6 +337,9 @@ extension View {
     static var terminalTitles: [TerminalTab.ID: String] = [:]
     /// The fill each terminal row's background last drew, by tab.
     static var terminalFills: [TerminalTab.ID: Color] = [:]
+    /// The Open section's workroom and tab rows (#819), by row. Not in `byRow` or `total`: a
+    /// project's root and workroom rows share their ids with their Open rows.
+    static var openRows: [OpenSectionItem: Int] = [:]
 
     static var total: Int { project + root + workroom + terminal }
 
@@ -354,6 +360,7 @@ extension View {
       createSteps = [:]
       terminalTitles = [:]
       terminalFills = [:]
+      openRows = [:]
     }
   }
 #endif
@@ -361,12 +368,15 @@ extension View {
 /// Hover belongs to a row: changing it must not invalidate the sidebar's List (#534).
 struct SidebarHoverRegion<Content: View>: View {
   var id: SidebarID? = nil
+  /// An Open section row's, for `ProjectSidebar.didRenderOpenHover`.
+  var openItem: OpenSectionItem? = nil
   @ViewBuilder let content: (Bool) -> Content
   @State private var hovered = false
 
   var body: some View {
     #if DEBUG
       if let id { ProjectSidebar.didRenderHover?(id, $hovered) }
+      if let openItem { ProjectSidebar.didRenderOpenHover?(openItem, $hovered) }
     #endif
     return content(hovered).sidebarRowHover($hovered)
   }

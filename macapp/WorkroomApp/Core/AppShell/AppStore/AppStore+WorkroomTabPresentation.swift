@@ -81,7 +81,7 @@ struct WorkroomTabPresentation: Equatable {
 }
 
 /// A workroom tab's state marks.
-struct WorkroomTabMarks {
+struct WorkroomTabMarks: Equatable {
   enum Run: Equatable { case running, failed }
 
   /// Tints the glyph with the VCS dirty state.
