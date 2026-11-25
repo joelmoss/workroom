@@ -43,6 +43,26 @@ jobs:
         with:
           persist-credentials: false
 
+      # The runner boots at 1024x768, which clamps the fixture's 1450x780 windows and leaves the
+      # terminal pane too narrow for any split (the VM runs at 1920x1200). Raised to the display's
+      # largest mode; the step logs every mode on offer and warns rather than fails when none is
+      # 1920x1080 or more, so the run still reports the tests that don't need the room.
+      - name: Raise the display resolution
+        run: |
+          system_profiler SPDisplaysDataType | grep -E 'Resolution|UI Looks like' || true
+          swift scripts/ci/set-display-mode.swift \
+            || echo "::warning::The display stays below 1920x1080; split and wide-window UI tests will fail"
+          system_profiler SPDisplaysDataType | grep -E 'Resolution|UI Looks like' || true
+
+      # libghostty starts the user record's login shell, not $SHELL, and the runner's is /bin/bash
+      # (3.2, no Ghostty shell integration), so the terminal tests' hermetic zsh never ran. The VM
+      # user's is zsh, as on any Mac set up since 10.15.
+      - name: Make zsh the login shell
+        run: |
+          sudo chsh -s /bin/zsh "$USER"
+          dscl . -read "/Users/$USER" UserShell
+          [ "$(dscl . -read "/Users/$USER" UserShell)" = "UserShell: /bin/zsh" ]
+
       # Xcode and XcodeGen, as ci-app.yml's `app`. Homebrew bash for
       # EngineBumpSmokeUITests.testBashExitStatusReachesTheApp, which skips without it (the VM base
       # image installs it the same way).
