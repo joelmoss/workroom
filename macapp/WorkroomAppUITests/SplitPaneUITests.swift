@@ -427,19 +427,22 @@ final class SplitPaneUITests: XCTestCase {
     app.launch()
     try openWorkroom(app)
 
+    // Each chip is renamed as soon as it exists, while it is still in view: an unnamed chip shows its
+    // shell's program and folder, so four of them overflow the strip and scroll the first out of
+    // reach of `rename`'s right-click.
     // Group 1: ⌘D splits the fixture's Terminal 1 → [Terminal 1, Terminal 2].
     app.typeKey("d", modifierFlags: .command)
     assertCount(panes(app), reaches: 2)
+    rename(
+      app, "Terminal 1", to: "workroom detail panel title bar rendering fixture for a long name")
     // ⌘T opens Terminal 3 SOLO and focuses it, so group 1 goes off screen but must persist…
     app.typeKey("t", modifierFlags: .command)
     assertCount(panes(app), reaches: 1)
+    rename(app, "Terminal 3", to: "C")
     // …and ⌘D on that solo tab seeds group 2: [Terminal 3, Terminal 4].
     app.typeKey("d", modifierFlags: .command)
     assertCount(panes(app), reaches: 2)
     assertCount(tabs(app), reaches: 4)
-    rename(
-      app, "Terminal 1", to: "workroom detail panel title bar rendering fixture for a long name")
-    rename(app, "Terminal 3", to: "C")
     rename(app, "Terminal 4", to: "D")
 
     let bracketA = app.descendants(matching: .any)["terminal.tab.splitBracket.0"]

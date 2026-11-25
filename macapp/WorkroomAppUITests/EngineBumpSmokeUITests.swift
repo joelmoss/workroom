@@ -70,9 +70,14 @@ final class EngineBumpSmokeUITests: XCTestCase {
       app.typeKey("d", modifierFlags: down ? [.command, .shift] : .command)
       assertCount(panes(app), reaches: 2, "round \(round): the split opened")
       if round % 4 >= 2 {
-        // Focus the original pane, so ⌘W closes it and the new one survives.
-        tabs(app).element(boundBy: 0).click()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        // Focus the original pane, so ⌘W closes it and the new one survives. By coordinate: in a
+        // fixture run the group's bracket is an accessibility element over its chips, so XCUITest
+        // calls a grouped chip "not hittable" (see `SplitPaneUITests.rename`). The selection check
+        // proves the pointer reached the chip.
+        let original = tabs(app).element(boundBy: 0)
+        original.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        XCTAssertTrue(
+          poll(timeout: 5) { original.isSelected }, "round \(round): the original pane is focused")
       }
       app.typeKey("w", modifierFlags: .command)
       assertCount(panes(app), reaches: 1, "round \(round): the split closed")
