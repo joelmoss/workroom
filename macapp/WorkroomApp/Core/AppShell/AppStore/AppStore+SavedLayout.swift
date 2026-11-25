@@ -24,7 +24,9 @@ extension AppStore {
       targets: captureTargetSessions(),
       workroomSplits: captureWorkroomSplits(),
       expandedTargets: expandedTerminalTargets.isEmpty
-        ? nil : expandedTerminalTargets.sorted().map(\.encoded))
+        ? nil : expandedTerminalTargets.sorted().map(\.encoded),
+      unfoldedOpenTargets: unfoldedOpenTargets.isEmpty
+        ? nil : unfoldedOpenTargets.sorted().map(\.encoded))
   }
 
   private static let sessionLogger = Logger(
@@ -178,6 +180,11 @@ extension AppStore {
     // A held target's flag is kept for when it comes back; below two tabs it renders nothing.
     expandedTerminalTargets = Set(
       (session.expandedTargets ?? []).compactMap(TargetID.init(encoded:))
+    )
+    .intersection(restoredTargetIDs.union(deferredTargetSessions.keys))
+    // Open section folds (#819), for the same targets.
+    unfoldedOpenTargets = Set(
+      (session.unfoldedOpenTargets ?? []).compactMap(TargetID.init(encoded:))
     )
     .intersection(restoredTargetIDs.union(deferredTargetSessions.keys))
 

@@ -100,9 +100,8 @@ struct WorkroomTerminalsView: View {
       // adding one, so the strip and its "+" would be redundant. A split member's remove-from-split ✕
       // now lives in its pane title bar (issue #110), drawn by the leaf above this view and present
       // even with zero tabs — so the strip no longer needs to stay alive just to host the ✕.
-      // A standalone terminal is one terminal (ADR 0077): its sidebar row and title-bar tab already
-      // name it, so a strip of one chip would only repeat them.
-      if !tabs.isEmpty, !(target.id.isStandaloneTerminal && tabs.count == 1) {
+      // A standalone terminal's one terminal shows none (`showsTabStrip`).
+      if TerminalPanes.showsTabStrip(tabCount: tabs.count, for: target.id) {
         TerminalTabStrip(
           tabs: tabs, activeID: active?.id, target: target, panes: panes,
           chipPaneDrag: $chipPaneDrag,

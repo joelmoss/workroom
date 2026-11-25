@@ -507,11 +507,14 @@ struct WindowSession: Codable, Hashable, Sendable {
   @Lossy var workroomSplits: [LayoutNode<String>]
   /// `AppStore.expandedTerminalTargets` — which sidebar terminal subtrees are open.
   var expandedTargets: [String]?
+  /// `AppStore.unfoldedOpenTargets` — which Open section rows were unfolded by hand (#819).
+  var unfoldedOpenTargets: [String]?
 
   init(
     windowKey: String, frame: String? = nil, isKey: Bool = false,
     selectedTargetID: String? = nil, targets: [TargetSession] = [],
-    workroomSplits: [LayoutNode<String>] = [], expandedTargets: [String]? = nil
+    workroomSplits: [LayoutNode<String>] = [], expandedTargets: [String]? = nil,
+    unfoldedOpenTargets: [String]? = nil
   ) {
     self.windowKey = windowKey
     self.frame = frame
@@ -520,6 +523,7 @@ struct WindowSession: Codable, Hashable, Sendable {
     self.targets = targets
     self.workroomSplits = workroomSplits
     self.expandedTargets = expandedTargets
+    self.unfoldedOpenTargets = unfoldedOpenTargets
   }
 }
 
@@ -676,6 +680,9 @@ extension WindowSession {
     }
     window.expandedTargets = expandedTargets.map { expanded in
       Array(Set(expanded)).sorted().map { String($0.prefix(SessionLimits.maxStringLength)) }
+    }
+    window.unfoldedOpenTargets = unfoldedOpenTargets.map { unfolded in
+      Array(Set(unfolded)).sorted().map { String($0.prefix(SessionLimits.maxStringLength)) }
     }
     return window
   }

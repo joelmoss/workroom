@@ -434,10 +434,7 @@ struct WorkroomTabBar: View {
     }
     settleIndex = target
     settle(id, hidden: false)
-    var order = tabs.compactMap { $0.sid.targetID }
-    let moved = order.remove(at: from)
-    order.insert(moved, at: target)
-    store.workroomTabOrder = order
+    store.moveWorkroomTab(id, toIndex: target)
   }
 
   /// Where the tab at `index` would land with the pointer at `point`, when some tab takes its drop.
@@ -538,9 +535,9 @@ private struct WorkroomTabChip: View {
   let showLeadingSeparator: Bool
 
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var vcsStatus: VCSStatusService
-  @EnvironmentObject var lifecycle: WorkroomLifecycle
+  /// Not Observation-tracked: held so the chip re-renders when its unread count changes, which
+  /// `marks` reads.
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
@@ -552,45 +549,13 @@ private struct WorkroomTabChip: View {
     return false
   }
 
-  /// A house marks a project root, a terminal a standalone terminal, stacked squares a terminal
-  /// group, else the workroom's glyph.
-  private var glyph: String {
-    switch sid {
-    case .root: return "house"
-    case .standalone, .terminalGroup: return sid.terminalsGlyph ?? TerminalGroup.glyph
-    case .project, .workroom, .creation: return target.workroomGlyph
-    }
+  /// Its names, glyph and close name, shared with its Open section row (#819).
+  private var presentation: WorkroomTabPresentation {
+    store.workroomTabPresentation(sid: sid, target: target)
   }
 
-  /// The project name — the chip's primary label for every kind of target. A workroom's own name
-  /// rides alongside as `workroomName` (secondary text); a root is marked by its house glyph.
-  private var primaryLabel: String {
-    switch sid {
-    case .workroom(let project, _), .root(let project), .project(let project),
-      .creation(let project, _):
-      return (project as NSString).lastPathComponent
-    case .standalone, .terminalGroup:
-      // A standalone terminal's tab is its terminal's name, a group's its own (ADR 0077).
-      return target.title
-    }
-  }
-
-  /// A standalone terminal's title in its parts, so the chip fades a default title's folder; nil
-  /// for any other kind of tab.
-  private var standaloneTitle: TerminalTitle? {
-    guard case .standalone = sid, let id = sid.targetID else { return nil }
-    return store.terminalsSection.terminalTitles(of: id).first
-  }
-
-  /// A workroom's own name (nil for a root/project) — rendered as trailing secondary text. Resolves
-  /// to the display label when one is set (issue #41); this also feeds the "Close" prompt below, so
-  /// that dialog shows the label too.
-  private var workroomName: String? {
-    if case .workroom(let project, let name) = sid {
-      return store.displayName(forWorkroom: name, inProject: project)
-    }
-    return nil
-  }
+  /// Its state marks, shared with its Open section row (#819).
+  private var marks: WorkroomTabMarks { store.workroomTabMarks(sid: sid, target: target) }
 
   /// A root's branch (nil for a workroom), reusing the sidebar's root presentation.
   private var branchLabel: String? {
@@ -598,29 +563,21 @@ private struct WorkroomTabChip: View {
     return vcsStatus.rootPresentation(for: project).label
   }
 
-  /// The full, untruncated rendered title — what the (possibly capped) title HStack shows. Feeds the
-  /// tooltip so a tail-truncated chip still reveals its whole name on hover, mirroring
-  /// `TerminalTabChip.help(tab.title)`. Formatted by `WorkroomLabel` so this can't drift from the
-  /// split title bar's tooltip or a notification's origin line again — which it had, on the separator.
-  private var fullTitle: String {
-    WorkroomLabel(project: primaryLabel, workroom: workroomName).full
-  }
-
-  /// The name Close asks about, for the right-click menu and the hover ✕. Nil while a create's run
-  /// lasts (#483): its chip has no terminals to close then, and its pane's own actions end it.
-  private var closeName: String? {
-    lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel
-  }
+  private var glyph: String { presentation.glyph }
+  private var primaryLabel: String { presentation.primaryLabel }
+  private var standaloneTitle: TerminalTitle? { presentation.standaloneTitle }
+  private var workroomName: String? { presentation.workroomName }
+  /// The full, untruncated rendered title, for the tooltip (as `TerminalTabChip.help(tab.title)`).
+  private var fullTitle: String { presentation.fullTitle }
+  /// The name Close asks about, for the right-click menu and the hover ✕.
+  private var closeName: String? { presentation.closeName }
+  private var hasActivity: Bool { marks.hasUnread }
 
   /// Close every terminal of this tab, as the menu's Close does: it asks first.
   private func requestClose() {
     guard let closeName else { return }
     store.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
   }
-
-  private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
-  private var hasRunTab: Bool { runCommand.runTabID(for: target.id) != nil }
-  private var runRunning: Bool { runCommand.isRunCommandRunning(for: target.id) }
 
   // The chip is deliberately built in three stages — `contentRow` (the icons + title), `pill` (its
   // fills, outline and margin) and `body` (the tooltip, menu and a11y) — rather than one long
@@ -641,7 +598,7 @@ private struct WorkroomTabChip: View {
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(
-        accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)
+        accessibilityLabel(hasActivity: hasActivity, running: marks.run == .running)
       )
       // The hover ✕ is hidden until the pointer is over the tab, so Close is an action here too.
       .accessibilityActions {
@@ -721,14 +678,14 @@ private struct WorkroomTabChip: View {
       // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the
       // last run FAILED (#79 — distinct glyph, not just a red tint, for colourblind safety); hidden
       // once it has a run tab but is cleanly stopped.
-      if hasRunTab {
-        if runRunning {
+      if let run = marks.run {
+        if run == .running {
           Image(systemName: "play.circle.fill")
             .font(.system(size: 10))
             .foregroundStyle(tokens.success)
             .help("Run command running")
             .accessibilityLabel("run running")
-        } else if runCommand.runFailed(for: target.id) {
+        } else {
           Image(systemName: "xmark.octagon.fill")
             .font(.system(size: 10))
             .foregroundStyle(tokens.failure)
@@ -786,12 +743,11 @@ private struct WorkroomTabChip: View {
       // A waiting terminal (#358) or one stopped on an error holds a static line instead.
       .overlay(alignment: .bottom) {
         Group {
-          if terminals.needsAttention(forTargetID: target.id) {
-            StatusUnderline(color: tokens.warning)
-          } else if terminals.hasProgramError(forTargetID: target.id) {
-            StatusUnderline(color: tokens.failure)
-          } else if terminals.isRunning(forTargetID: target.id) {
-            RunningUnderline(failed: terminals.isProgressFailed(forTargetID: target.id))
+          switch marks.busy {
+          case .blocked: StatusUnderline(color: tokens.warning)
+          case .error: StatusUnderline(color: tokens.failure)
+          case .running(let failed): RunningUnderline(failed: failed)
+          case .done, .none: EmptyView()
           }
         }
         .padding(.horizontal, 6)
