@@ -165,13 +165,77 @@ final class CreationPaneUITests: XCTestCase {
   // so keys keep going to that terminal; no_claim=a real `workroom create`, a create that waits for
   // Done (its click selects the pane anyway)
   func testASplitCreatesTerminalTakesTheKeyboardWhenItsChecklistClosesItself() {
+    let app = startSplitCreateFromATerminal(closesWhenDone: true)
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 30),
+      "the checklist didn't close by itself")
+    assertTypingReachesTheNewTerminal(app)
+  }
+
+  // Value: protects=the reported bug as the app runs it, panes attached through `workroomd`;
+  // fails_when=the daemon-backed terminal that replaces a self-closing checklist never takes the
+  // keyboard; no_claim=a real `workroom create`
+  func testASplitCreatesDaemonTerminalTakesTheKeyboardWhenItsChecklistClosesItself() {
+    let app = startSplitCreateFromATerminal(closesWhenDone: true, throughTheDaemon: true)
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 30),
+      "the checklist didn't close by itself")
+    assertTypingReachesTheNewTerminal(app)
+  }
+
+  // Value: protects=the reported bug, a split create (⌥⌘N) from a pane running Claude Code, which
+  // asks for focus reports and retitles its terminal several times a second, hands the keyboard to
+  // the new terminal; fails_when=the caller's pane takes the keyboard back; no_claim=Claude itself
+  // (a shell loop stands in)
+  func testASplitCreatesTerminalTakesTheKeyboardFromABusyAgentPane() {
+    // Recognised as Claude by its exact title, as the app reads it, then retitled with a spinner
+    // the way Claude Code does while it works.
+    let app = startSplitCreateFromATerminal(
+      closesWhenDone: true, throughTheDaemon: true,
+      callerRuns: "printf '\\e[?1004h\\e]0;Claude Code\\a'; sleep 0.5;"
+        + " while :; do printf '\\e]0;%s Fixing the build\\a' $RANDOM; sleep 0.1; done")
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 30),
+      "the checklist didn't close by itself")
+    assertTypingReachesTheNewTerminal(app)
+  }
+
+  // Value: protects=the reported bug, a split create (⌥⌘N) whose checklist waits for Done (the
+  // default) hands the keyboard to the new workroom's terminal when Return answers Done;
+  // fails_when=the terminal that replaces the checklist mounts without first responder, so keys go
+  // nowhere or to the workroom beside it; no_claim=a real `workroom create`
+  func testASplitCreatesTerminalTakesTheKeyboardWhenReturnAnswersDone() {
+    let app = startSplitCreateFromATerminal(closesWhenDone: false)
+    XCTAssertTrue(
+      element(app, "CreationPane.Done").waitForExistence(timeout: 30), "the create never finished")
+    app.typeKey(.return, modifierFlags: [])
+    assertTypingReachesTheNewTerminal(app)
+  }
+
+  // Value: protects=the reported bug, as above when Done is clicked; fails_when=the click leaves
+  // first responder with the checklist's hosting view as it fades, so the new terminal never takes
+  // the keyboard; no_claim=a real `workroom create`
+  func testASplitCreatesTerminalTakesTheKeyboardWhenDoneIsClicked() {
+    let app = startSplitCreateFromATerminal(closesWhenDone: false)
+    let done = element(app, "CreationPane.Done")
+    XCTAssertTrue(done.waitForExistence(timeout: 30), "the create never finished")
+    done.click()
+    assertTypingReachesTheNewTerminal(app)
+  }
+
+  /// Launches the fixture, clicks into its workroom's terminal and starts a scripted split create
+  /// (⌥⌘N) beside it, with "Close automatically when done" set to `closesWhenDone` from launch.
+  private func startSplitCreateFromATerminal(
+    closesWhenDone: Bool, throughTheDaemon: Bool = false, callerRuns command: String? = nil
+  ) -> XCUIApplication {
     let app = XCUIApplication()
+    if throughTheDaemon { _ = app.useScratchDaemon() }
     app.launchArguments += [
       "-WorkroomUITestFixture", "1", "-WorkroomUITestScriptedCreate", "1",
       "-ApplePersistenceIgnoreState", "YES",
       // A plist value, so the argument domain holds a Bool that `Defaults` reads (a bare YES is a
       // string, which it doesn't); the checkbox assertion below goes red if that ever stops.
-      "-closeCreationPaneWhenDone", "<true/>",
+      "-closeCreationPaneWhenDone", closesWhenDone ? "<true/>" : "<false/>",
     ]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
@@ -181,6 +245,10 @@ final class CreationPaneUITests: XCTestCase {
     XCTAssertTrue(chip.waitForExistence(timeout: 20), "the fixture workroom has a terminal tab")
     chip.click()
     RunLoop.current.run(until: Date().addingTimeInterval(1))
+    if let command {
+      app.typeText(command + "\r")
+      RunLoop.current.run(until: Date().addingTimeInterval(1))
+    }
     // New Workroom (split right), ⌥⌘N: the workroom typed in stays on screen beside the create.
     app.typeKey("n", modifierFlags: [.command, .option])
     let project = element(app, "newWorkroom.project.UITestProject")
@@ -189,14 +257,12 @@ final class CreationPaneUITests: XCTestCase {
     let thisMac = app.buttons["newWorkroom.place.thisMac"]
     XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
     thisMac.click()
-    // On from launch, as Settings leaves it: nothing in the pane is clicked.
+    // Set from launch, as Settings leaves it: nothing in the pane is clicked.
     let closeWhenDone = element(app, "CreationPane.closeWhenDone")
     XCTAssertTrue(closeWhenDone.waitForExistence(timeout: 5), "the checkbox isn't offered mid-run")
-    XCTAssertEqual(closeWhenDone.value as? Int, 1, "the setting wasn't on from launch")
-    XCTAssertTrue(
-      element(app, "CreationPane").waitForNonExistence(timeout: 30),
-      "the checklist didn't close by itself")
-    assertTypingReachesTheNewTerminal(app)
+    XCTAssertEqual(
+      closeWhenDone.value as? Int, closesWhenDone ? 1 : 0, "the setting wasn't set from launch")
+    return app
   }
 
   private func assertTypingReachesTheNewTerminal(_ app: XCUIApplication) {

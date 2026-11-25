@@ -113,21 +113,32 @@ struct TerminalContainerView: NSViewRepresentable {
   /// AppKit short-circuits: `becomeFirstResponder` (hence `.focused`) never fires and the click can't
   /// refocus the terminal. Terminal→terminal doesn't need this (the new pane claiming first responder
   /// resigns the old one), so the guard makes this a no-op there.
+  ///
+  /// Both run a turn after the render that queued them, so the window's live selection has the last
+  /// word (`WindowRegistry.holdsKeyboard`), not the `isFocusedPane` that render captured: a render can
+  /// be stale by then (`AppStore.holdsKeyboard` says how a busy Claude Code pane's was).
   private func applyFocus(in container: NSView) {
-    DispatchQueue.main.async {
+    DispatchQueue.main.async { [view, isFocusedPane] in
       guard let window = container.window else { return }
-      if isFocusedPane {
-        // While this pane's find bar is open, the search field owns first responder — don't reclaim
-        // it for the terminal. Opening the bar re-renders this pane (the overlay appears), which runs
-        // applyFocus; without this guard it would steal focus straight back from the field, so ⌘F
-        // would never land you in the search box.
-        if view.searchModel.isActive { return }
-        guard window.firstResponder !== view else { return }
-        window.makeFirstResponder(view)
-      } else {
-        guard window.firstResponder === view else { return }
-        window.makeFirstResponder(nil)  // → the window; lets a later click refocus this terminal
-      }
+      Self.syncFirstResponder(of: view, in: window, rendered: isFocusedPane)
+    }
+  }
+
+  /// `applyFocus`'s decision, as it runs: claim first responder for `view` when it should hold the
+  /// keyboard and doesn't, resign it when it shouldn't and does. `rendered` is what the host last
+  /// rendered, which only a window with no store goes by.
+  static func syncFirstResponder(of view: GhosttySurfaceView, in window: NSWindow, rendered: Bool) {
+    if WindowRegistry.shared.holdsKeyboard(view, in: window, rendered: rendered) {
+      // While this pane's find bar is open, the search field owns first responder — don't reclaim
+      // it for the terminal. Opening the bar re-renders this pane (the overlay appears), which runs
+      // applyFocus; without this guard it would steal focus straight back from the field, so ⌘F
+      // would never land you in the search box.
+      if view.searchModel.isActive { return }
+      guard window.firstResponder !== view else { return }
+      window.makeFirstResponder(view)
+    } else {
+      guard window.firstResponder === view else { return }
+      window.makeFirstResponder(nil)  // → the window; lets a later click refocus this terminal
     }
   }
 }
