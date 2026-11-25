@@ -36,7 +36,7 @@ final class SidebarRowHitUITests: XCTestCase {
     repeat {
       var seen = Set<String>()
       let rows = app.descendants(matching: .any)
-        .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.terminal."))
+        .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.open.tab."))
         .allElementsBoundByIndex.filter { seen.insert($0.identifier).inserted }
       if rows.count == 2 { return rows.sorted { $0.frame.minY < $1.frame.minY } }
       Thread.sleep(forTimeInterval: 0.25)
@@ -68,8 +68,8 @@ final class SidebarRowHitUITests: XCTestCase {
 
   func testATerminalRowSelectsFromItsTopEdgeToItsBottomEdge() {
     let app = launchedApp()
-    let first = element(app, "sidebar.standalone.\(standalone[0])")
-    let second = element(app, "sidebar.standalone.\(standalone[1])")
+    let first = element(app, "sidebar.open.workroom.\(standalone[0])")
+    let second = element(app, "sidebar.open.workroom.\(standalone[1])")
     XCTAssertTrue(first.waitForExistence(timeout: 15), "the first standalone terminal's row")
     XCTAssertTrue(second.waitForExistence(timeout: 5), "the second's")
     let children = groupTerminalRows(app)

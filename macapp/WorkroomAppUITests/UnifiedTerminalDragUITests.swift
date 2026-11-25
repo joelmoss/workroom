@@ -74,26 +74,26 @@ final class UnifiedTerminalDragUITests: XCTestCase {
   /// How many terminals' rows Ops lists under its row (above Dev's, while Dev is there). The
   /// sidebar, not the strip: a hovered pane tab hides its title under its close button.
   private func opsTerminals(_ app: XCUIApplication) -> Int {
-    let opsRow = element(app, "sidebar.group.\(ops)")
-    let devRow = element(app, "sidebar.group.\(dev)")
+    let opsRow = element(app, "sidebar.open.workroom.\(ops)")
+    let devRow = element(app, "sidebar.open.workroom.\(dev)")
     guard opsRow.exists else { return 0 }
     let top = opsRow.frame.maxY
     let bottom = devRow.exists ? devRow.frame.minY : .greatestFiniteMagnitude
     let rows = app.descendants(matching: .any).matching(
-      NSPredicate(format: "identifier BEGINSWITH 'sidebar.terminal.'")
+      NSPredicate(format: "identifier BEGINSWITH 'sidebar.open.tab.'")
     ).allElementsBoundByIndex.filter { $0.frame.midY > top && $0.frame.midY < bottom }
     return Set(rows.map(\.identifier)).count
   }
 
   private func groupRows(_ app: XCUIApplication) -> Int {
-    [ops, dev].filter { element(app, "sidebar.group.\($0)").exists }.count
+    [ops, dev].filter { element(app, "sidebar.open.workroom.\($0)").exists }.count
   }
 
   // MARK: Sidebar rows
 
   private func assertStandaloneRowJoinsAGroupsTitleBarTab(hold: TimeInterval) {
     let app = launchedApp()
-    let row = element(app, "sidebar.standalone.\(standalone)")
+    let row = element(app, "sidebar.open.workroom.\(standalone)")
     let opsTab = element(app, "workroom.tab.\(ops)")
     XCTAssertTrue(row.waitForExistence(timeout: 15))
     XCTAssertTrue(opsTab.waitForExistence(timeout: 5))
@@ -124,8 +124,8 @@ final class UnifiedTerminalDragUITests: XCTestCase {
   /// #652 report); why_new=#652 owner report; seam=the real sidebar drag; no_claim=order
   func testAStandaloneRowHeldThenDroppedOnAGroupsRowJoinsIt() {
     let app = launchedApp()
-    let row = element(app, "sidebar.standalone.\(standalone)")
-    let opsRow = element(app, "sidebar.group.\(ops)")
+    let row = element(app, "sidebar.open.workroom.\(standalone)")
+    let opsRow = element(app, "sidebar.open.workroom.\(ops)")
     XCTAssertTrue(row.waitForExistence(timeout: 15))
     XCTAssertTrue(waitFor { self.opsTerminals(app) == 2 })
 
@@ -137,8 +137,8 @@ final class UnifiedTerminalDragUITests: XCTestCase {
 
   private func assertGroupRowMergesIntoAnother(hold: TimeInterval) {
     let app = launchedApp()
-    let opsRow = element(app, "sidebar.group.\(ops)")
-    let devRow = element(app, "sidebar.group.\(dev)")
+    let opsRow = element(app, "sidebar.open.workroom.\(ops)")
+    let devRow = element(app, "sidebar.open.workroom.\(dev)")
     XCTAssertTrue(opsRow.waitForExistence(timeout: 15))
     XCTAssertTrue(devRow.waitForExistence(timeout: 5))
 
@@ -167,7 +167,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
   /// no_claim=the exact position (TerminalDropTests)
   func testAStandaloneRowDroppedOnAPaneTabJoinsThatGroup() {
     let app = launchedApp()
-    let row = element(app, "sidebar.standalone.\(standalone)")
+    let row = element(app, "sidebar.open.workroom.\(standalone)")
     XCTAssertTrue(row.waitForExistence(timeout: 15))
     select(app, ops, tabs: 2)
     let second = paneTabs(app)[1]
@@ -185,7 +185,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
   /// no_claim=the position (TerminalDropTests)
   func testAPaneTabDroppedOnAGroupsRowMovesThere() {
     let app = launchedApp()
-    let opsRow = element(app, "sidebar.group.\(ops)")
+    let opsRow = element(app, "sidebar.open.workroom.\(ops)")
     XCTAssertTrue(opsRow.waitForExistence(timeout: 15))
     select(app, dev, tabs: 1)
 
@@ -265,7 +265,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
     let before = titleBarTabs(app)
     guard let lastID = before.last else { return XCTFail("no title-bar tabs") }
     let standalones = app.descendants(matching: .any).matching(
-      NSPredicate(format: "identifier BEGINSWITH 'sidebar.standalone.'"))
+      NSPredicate(format: "identifier BEGINSWITH 'sidebar.open.workroom.standalone:'"))
     XCTAssertEqual(Set(standalones.allElementsBoundByIndex.map(\.identifier)).count, 1)
 
     drag(handle, onto: element(app, lastID), dx: 1.4, hold: 0.8)
@@ -308,13 +308,13 @@ final class UnifiedTerminalDragUITests: XCTestCase {
   /// no_claim=sessions (TerminalDropTests)
   func testAPaneTitleBarDroppedOnAnotherGroupsRowMovesItsTerminalThere() {
     let app = launchedApp()
-    let devRow = element(app, "sidebar.group.\(dev)")
+    let devRow = element(app, "sidebar.open.workroom.\(dev)")
     XCTAssertTrue(devRow.waitForExistence(timeout: 15))
     select(app, ops, tabs: 2)
     let bar = element(app, "terminal.pane.titlebar")
     XCTAssertTrue(bar.waitForExistence(timeout: 5))
     let terminalRows = app.descendants(matching: .any).matching(
-      NSPredicate(format: "identifier BEGINSWITH 'sidebar.terminal.'"))
+      NSPredicate(format: "identifier BEGINSWITH 'sidebar.open.tab.'"))
     let devTerminals = {
       Set(
         terminalRows.allElementsBoundByIndex.filter { $0.frame.midY > devRow.frame.maxY }

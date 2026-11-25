@@ -1,7 +1,7 @@
 import XCTest
 
 /// Moving a terminal anywhere in the real window (#660): a workroom terminal's tab dragged onto the
-/// Terminals heading becomes a standalone terminal with a row of its own, whose menu has Rename…,
+/// Open heading becomes a standalone terminal with a row of its own, whose menu has Rename…,
 /// Move to…, Pop Out and Close. Driven through the fixture (`-WorkroomUITestFixture 1`), never a
 /// real project. Run in the VM: `make app-uitest-vm`.
 final class PaneMoveUITests: XCTestCase {
@@ -11,7 +11,7 @@ final class PaneMoveUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: id).firstMatch
   }
 
-  func testATabDraggedOntoTheTerminalsHeadingBecomesAStandaloneTerminal() {
+  func testATabDraggedOntoTheOpenHeadingBecomesAStandaloneTerminal() {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1", "-ApplePersistenceIgnoreState", "YES"]
     app.launch()
@@ -19,10 +19,10 @@ final class PaneMoveUITests: XCTestCase {
 
     let chip = element(app, "terminal.tab.Terminal 1")
     XCTAssertTrue(chip.waitForExistence(timeout: 15), "the fixture workroom's terminal tab")
-    let heading = element(app, "sidebar.terminals")
-    XCTAssertTrue(heading.waitForExistence(timeout: 5), "the Terminals heading")
+    let heading = element(app, "sidebar.open")
+    XCTAssertTrue(heading.waitForExistence(timeout: 5), "the Open heading")
     let standalone = app.descendants(matching: .any).matching(
-      NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.standalone.")
+      NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.open.workroom.standalone:")
     ).firstMatch
     XCTAssertFalse(standalone.exists, "no standalone terminal yet")
 

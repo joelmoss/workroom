@@ -1,6 +1,6 @@
 import XCTest
 
-/// The sidebar's Projects heading (#652): "Projects" under the Terminals section, a fold chevron
+/// The sidebar's Projects heading (#652): "Projects" under the Open section, a fold chevron
 /// that hides every project's rows, and Add Project in the trailing "+" column, shown with no
 /// projects too. Fixture only, never a real project or config.
 final class ProjectsHeadingUITests: XCTestCase {
@@ -42,20 +42,20 @@ final class ProjectsHeadingUITests: XCTestCase {
     XCTAssertTrue(waitGone(sheet), "Cancel closes it")
   }
 
-  /// The heading sits below the Terminals heading; its chevron hides the project rows and shows
+  /// The heading sits below the Open heading; its chevron hides the project rows and shows
   /// them again.
   func testTheHeadingFoldsTheProjects() {
     let app = launchedApp()
     let heading = element(app, "sidebar.projects")
     XCTAssertTrue(heading.waitForExistence(timeout: 15), "the Projects heading")
-    let terminals = element(app, "sidebar.terminals")
+    let terminals = element(app, "sidebar.open")
     XCTAssertTrue(terminals.exists)
     let project = element(app, "sidebar.project.UITestProject")
     XCTAssertTrue(project.waitForExistence(timeout: 6), "a project's row")
-    XCTAssertLessThan(terminals.frame.minY, heading.frame.minY, "under the Terminals section")
+    XCTAssertLessThan(terminals.frame.minY, heading.frame.minY, "under the Open section")
     XCTAssertLessThan(heading.frame.maxY, project.frame.minY + 1, "above the projects")
     XCTAssertEqual(
-      heading.frame.height, terminals.frame.height, accuracy: 0.5, "as tall as Terminals'")
+      heading.frame.height, terminals.frame.height, accuracy: 0.5, "as tall as Open's")
     XCTAssertEqual(heading.frame.minX, terminals.frame.minX, accuracy: 0.5, "and as inset")
 
     heading.click()
@@ -65,13 +65,13 @@ final class ProjectsHeadingUITests: XCTestCase {
     XCTAssertTrue(project.waitForExistence(timeout: 6), "unfolded, they come back")
   }
 
-  /// The Terminals and Projects headings are the inspector's section headers: as tall as Changes',
+  /// The Open and Projects headings are the inspector's section headers: as tall as Changes',
   /// and reaching the sidebar's leading edge, past the rows' inset, as the band does.
   func testTheHeadingsLookLikeTheInspectorsSectionHeaders() {
     let app = launchedApp()
     let heading = element(app, "sidebar.projects")
     XCTAssertTrue(heading.waitForExistence(timeout: 15), "the Projects heading")
-    let terminals = element(app, "sidebar.terminals")
+    let terminals = element(app, "sidebar.open")
     let changes = element(app, "inspector.header.Changes")
     XCTAssertTrue(changes.waitForExistence(timeout: 10), "the inspector's Changes header")
     let project = element(app, "sidebar.project.UITestProject")

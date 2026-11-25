@@ -3,7 +3,7 @@ import XCTest
 /// The Quick Terminal's window (issue #39), hosted by `QuickTerminalHost`: summoned from File ▸
 /// Quick Terminal, its tabs and splits driven by the keys `AppDelegate`'s monitor routes to it
 /// (`QuickTerminalKey`) and by a pane's right-click menu, hidden with its last tab, summoned
-/// fresh, a pane moved out into a workroom, and its sidebar row sliding it in (#661).
+/// fresh, and a pane moved out into a workroom.
 ///
 /// Summoned from the menu item, never its key equivalent: that is ⌥§ by default, which no test
 /// should rely on. Every count is scoped to the Quick Terminal's window, because the fixture's
@@ -164,88 +164,6 @@ final class QuickTerminalUITests: XCTestCase {
       "the Quick Terminal's only tab left it, so it hides")
   }
 
-  /// #661: the Quick Terminal is the built-in group, listed first in the Terminals section, above
-  /// the projects. Clicking its row slides its panel in, with a terminal, and the window stays on
-  /// the workroom it showed, opening no terminal of its own.
-  func testItsSidebarRowSlidesThePanelInAndKeepsTheWindowsSelection() {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    let workroom = workroomWindow(app)
-    XCTAssertTrue(
-      panes(in: workroom).firstMatch.waitForExistence(timeout: 15),
-      "the fixture workroom should render a terminal pane on launch")
-    let workroomTabsBefore = tabs(in: workroom).count
-    let row = workroom.descendants(matching: .any)
-      .matching(identifier: "sidebar.group.group:51C10A7E-0D4F-4E6A-9B2C-000000000001").firstMatch
-    XCTAssertTrue(row.waitForExistence(timeout: 10), "the Quick Terminal has a sidebar row")
-    let project = workroom.descendants(matching: .any)
-      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.project.")).firstMatch
-    if project.exists {
-      XCTAssertLessThan(row.frame.minY, project.frame.minY, "above the projects")
-    }
-    XCTAssertFalse(quickTerminal(app).exists, "no Quick Terminal yet")
-    let fold = workroom.descendants(matching: .any)
-      .matching(identifier: "sidebar.group.fold.group:51C10A7E-0D4F-4E6A-9B2C-000000000001")
-      .firstMatch
-    row.hover()
-    XCTAssertFalse(
-      fold.waitForExistence(timeout: 2), "with no terminals to list, hovering shows no chevron")
-
-    row.click()
-
-    let qt = quickTerminal(app)
-    XCTAssertTrue(qt.waitForExistence(timeout: 15), "its row slides the panel in")
-    assertCounts(in: qt, tabs: 1, panes: 1, "slid in from its row")
-    XCTAssertTrue(
-      waitForCount(tabs(in: workroom), workroomTabsBefore), "the window opened no terminal")
-    XCTAssertTrue(panes(in: workroom).firstMatch.exists, "and still shows its workroom")
-    // Listing its terminal under it, its row folds as the other groups' do: hovered, the chevron
-    // sits after its name and clear of the trailing "+".
-    row.hover()
-    XCTAssertTrue(fold.waitForExistence(timeout: 6), "a chevron once it lists a terminal")
-    let name = row.staticTexts["Quick Terminals"].firstMatch
-    XCTAssertTrue(name.exists, "the group's name on its row")
-    XCTAssertGreaterThanOrEqual(fold.frame.minX, name.frame.maxX, "after the name")
-    let plus = workroom.descendants(matching: .any)
-      .matching(identifier: "sidebar.group.new.group:51C10A7E-0D4F-4E6A-9B2C-000000000001")
-      .firstMatch
-    XCTAssertTrue(plus.exists, "New Terminal in Group on its row")
-    XCTAssertLessThan(fold.frame.maxX, plus.frame.minX, "clear of the trailing column")
-  }
-
-  /// The Quick Terminal's sidebar row, the built-in group's.
-  private func quickTerminalRow(in window: XCUIElement) -> XCUIElement {
-    window.descendants(matching: .any)
-      .matching(identifier: "sidebar.group.group:51C10A7E-0D4F-4E6A-9B2C-000000000001").firstMatch
-  }
-
-  /// #652 stories 29, 37: a workroom terminal's tab dragged onto the Quick Terminal's sidebar row
-  /// moves into its panel, which slides in holding it; the workroom's strip loses the tab.
-  func testATabDroppedOnItsSidebarRowMovesIntoThePanel() {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    let workroom = workroomWindow(app)
-    let chip = workroom.descendants(matching: .any).matching(identifier: "terminal.tab.Terminal 1")
-      .firstMatch
-    XCTAssertTrue(chip.waitForExistence(timeout: 15), "the fixture workroom's terminal tab")
-    let workroomTabsBefore = tabs(in: workroom).count
-    let row = quickTerminalRow(in: workroom)
-    XCTAssertTrue(row.waitForExistence(timeout: 10), "the Quick Terminal has a sidebar row")
-    XCTAssertFalse(quickTerminal(app).exists, "no Quick Terminal yet")
-
-    // `click(forDuration:thenDragTo:)`, the mouse drag: on macOS 27 `press` posts no mouse
-    // events from an element, so nothing drags (#269).
-    chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(
-      forDuration: 0.6,
-      thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
-
-    let qt = quickTerminal(app)
-    XCTAssertTrue(qt.waitForExistence(timeout: 15), "the drop slides the panel in")
-    assertCounts(in: qt, tabs: 1, panes: 1, "holding the moved terminal")
-    XCTAssertTrue(
-      waitForCount(tabs(in: workroom), workroomTabsBefore - 1), "the workroom's strip lost it")
-  }
-
   /// #652: a standalone terminal's sidebar row dragged from the window onto the showing panel's
   /// tab joins the Quick Terminal there. The press in the window takes focus from the panel, which
   /// would slide it away (it hides on losing focus, by default); it stays up through the drop.
@@ -259,7 +177,7 @@ final class QuickTerminalUITests: XCTestCase {
     app.activate()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     let row = app.descendants(matching: .any)
-      .matching(identifier: "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651")
+      .matching(identifier: "sidebar.open.workroom.standalone:00000000-0000-0000-0000-000000000651")
       .firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 15), "the fixture's standalone terminal's row")
     let qt = summon(app)
@@ -276,7 +194,7 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(
       waitForCount(
         app.descendants(matching: .any).matching(
-          identifier: "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651"), 0),
+          identifier: "sidebar.open.workroom.standalone:00000000-0000-0000-0000-000000000651"), 0),
       "its standalone row went")
     XCTAssertTrue(qt.isHittable, "the panel stayed up")
   }
