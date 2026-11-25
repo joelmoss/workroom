@@ -346,6 +346,27 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertEqual(store.expandedTerminalTargets, [.workroom(project: "/p", name: "one")])
   }
 
+  /// The Open section's hand-unfolded rows come back for the targets that do (#819).
+  func testOpenSectionFoldsAreRestoredForTargetsThatCameBack() {
+    let projects = [project("/p", workrooms: ["one", "two"])]
+    let session = WindowSession(
+      windowKey: UUID().uuidString, isKey: true, selectedTargetID: "wr|/p|two",
+      targets: [
+        TargetSession(targetID: "wr|/p|one", tabs: [terminal("a", title: "Terminal 1")]),
+        TargetSession(targetID: "wr|/p|two", tabs: [terminal("b", title: "Terminal 1")]),
+      ],
+      unfoldedOpenTargets: ["wr|/p|one", "wr|/p|since-deleted"])
+
+    let store = makeStore(projects: projects, session: session)
+    store.claimSessionIfNeeded()
+    store.restorePersistedSessionIfPending(in: projects)
+
+    XCTAssertEqual(store.unfoldedOpenTargets, [.workroom(project: "/p", name: "one")])
+    XCTAssertEqual(
+      store.openSectionRows().first { $0.sid == .workroom(project: "/p", name: "one") }?.isFolded,
+      false)
+  }
+
   /// A group whose second workroom was deleted is not a group any more.
   func testWorkroomSplitDissolvesWhenALeafIsGone() {
     let projects = [project("/p", workrooms: ["one"])]

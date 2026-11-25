@@ -438,6 +438,15 @@ final class RunCommandController: ObservableObject {
   /// The target's run terminal tab id (running or stopped-but-open), if any.
   func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? { runStates[targetID]?.tab }
 
+  /// The run state tab `tabID` shows (#7): only the target's run tab has one — running, stopping,
+  /// failed, or stopped once it exits. Process-based, unlike a terminal's OSC 9;4 busy line.
+  func runState(ofTab tabID: TerminalTab.ID, in targetID: TerminalTarget.ID) -> TabRunState? {
+    guard runTabID(for: targetID) == tabID else { return nil }
+    if runStates[targetID]?.isStopping == true { return .stopping }
+    if isRunCommandRunning(for: targetID) { return .running }
+    return runFailed(for: targetID) ? .failed : .stopped
+  }
+
   /// Forget what the window knew of a target's run once it has gone (exited, closed, reaped).
   func forgetRun(for targetID: TerminalTarget.ID) {
     lastRunStatus[targetID] = nil
@@ -683,3 +692,7 @@ final class RunCommandController: ObservableObject {
     if isAutoRunArmed(targetID) { runStates[targetID] = nil }
   }
 }
+
+/// A run tab's run state, drawn as its chip's leading icon (#7). `failed` (#79) has its own glyph
+/// as well as its own colour, so it stays legible for red/green colourblind users.
+enum TabRunState: Equatable { case running, stopping, stopped, failed }

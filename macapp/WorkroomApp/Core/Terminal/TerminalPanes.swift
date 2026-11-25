@@ -1159,6 +1159,13 @@ final class TerminalPanes {
   /// terminal-subtree expand flag when a close drops a target below the 2-tab disclosure threshold).
   func tabCount(forTargetID id: TerminalTarget.ID) -> Int { heldTabs(id).count }
 
+  /// Whether a target with `tabCount` tabs shows a tab strip. A standalone terminal is one terminal
+  /// (ADR 0077): its sidebar row and title-bar tab already name it, so a strip of one chip would
+  /// only repeat them.
+  nonisolated static func showsTabStrip(tabCount: Int, for targetID: TerminalTarget.ID) -> Bool {
+    tabCount > 0 && !(targetID.isStandaloneTerminal && tabCount == 1)
+  }
+
   /// The names of a target's terminals here, in tab order: what a standalone terminal is titled by.
   func terminalNames(forTargetID id: TerminalTarget.ID) -> [String] {
     terminalTitles(forTargetID: id).map(\.text)

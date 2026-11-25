@@ -157,13 +157,7 @@ struct TerminalTabStrip: View {
         // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
         // carries one — running, stopping, failed, or stopped/exited.
         // Process-based, distinct from the OSC-9;4 RunningUnderline below.
-        let runState: TerminalTabChip.RunState? =
-          runCommand.runTabID(for: target.id) == tab.id
-          ? (runCommand.runStates[target.id]?.isStopping == true
-            ? .stopping
-            : (runCommand.isRunCommandRunning(for: target.id)
-              ? .running : (runCommand.runFailed(for: target.id) ? .failed : .stopped)))
-          : nil
+        let runState = runCommand.runState(ofTab: tab.id, in: target.id)
         // Dragged chip tracks the cursor; the rest shift to open the gap.
         let offsetX =
           isDragging
@@ -456,7 +450,7 @@ private struct TerminalTabChip: View {
   /// The run-command state shown as a leading chip icon — only the dedicated run tab has one (#7).
   /// `failed` (issue #79) renders a distinct glyph + colour, not just a red tint, so it stays legible
   /// for red/green colourblind users (the running/stopped play glyph vs the failed octagon).
-  enum RunState { case running, stopping, stopped, failed }
+  typealias RunState = TabRunState
 
   let tab: TerminalTab
   let isActive: Bool

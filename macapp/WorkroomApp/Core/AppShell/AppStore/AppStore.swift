@@ -434,6 +434,11 @@ final class AppStore: ObservableObject {
   var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
+  /// Workroom targets whose Open section row (#819) was unfolded by hand. Every other row but the
+  /// selected one is folded. Persisted with the session, like `expandedTerminalTargets`.
+  var unfoldedOpenTargets: Set<TerminalTarget.ID> = [] {
+    didSet { markSessionDirty() }
+  }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   var prActionInFlight = false
 

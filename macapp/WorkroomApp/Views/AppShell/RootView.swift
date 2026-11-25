@@ -104,7 +104,7 @@ struct RootView: View {
     // run the bar is just those two buttons over the draggable title bar.
     WorkroomTabBar(
       tabs: store.displayedWorkroomTargets(), selectedID: store.selectedTargetID,
-      onSelect: { selectWorkroomTab($0) },
+      onSelect: { store.selectWorkroomTab($0) },
       chipPaneDrag: $workroomChipDrag,
       localize: { workroomChipLocal($0) },
       dropTarget: { workroomChipDropTarget(at: $0) }
@@ -600,21 +600,6 @@ struct RootView: View {
     return (sid: hit.tab, edge: hit.edge, rect: rect)
   }
 
-  /// Focus a workroom tab — mirrors `ProjectSidebar`'s selection setter (sets both the target and the
-  /// New-Workroom project context). The split is persistent (like a terminal split): selecting a member
-  /// shows the split, selecting a non-member shows that workroom solo *without* dissolving the split —
-  /// it reappears when a member is reselected (`visibleWorkroomLayout`). The split dissolves only by
-  /// removing members below two.
-  private func selectWorkroomTab(_ sid: SidebarID) {
-    // Re-selecting the current workroom is a no-op, not a republish. Since issue #139 every pane has a
-    // title bar, and a click anywhere on it falls through to the leaf's focus tap — so without this
-    // guard, clicking your own workroom's header rewrites unchanged `@Published` selection state and
-    // re-renders the whole tree.
-    guard store.selectedTargetID != sid else { return }
-    store.selectedTargetID = sid
-    store.selectedProjectID = AppStore.projectPath(of: sid)
-  }
-
   @ViewBuilder
   private var detailContent: some View {
     if store.selectedTarget != nil {
@@ -701,7 +686,7 @@ struct RootView: View {
         externalDrag: $workroomChipDrag,
         localize: { workroomChipLocal($0) },
         dropTarget: { workroomChipDropTarget(at: $0) },
-        onFocus: { selectWorkroomTab($0) },
+        onFocus: { store.selectWorkroomTab($0) },
         onSetRatio: { store.setWorkroomSplitRatio($0, forSplit: $1) },
         onClose: { store.removeWorkroomSplitMember($0) },
         onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2, destinationRect: $3) }
