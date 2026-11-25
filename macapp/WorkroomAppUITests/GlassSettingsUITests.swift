@@ -52,6 +52,22 @@ final class GlassSettingsUITests: XCTestCase {
     return value.isEmpty ? text.label : value
   }
 
+  /// Waits for the readout to say `expected`, and fails with what it said last. The readout follows
+  /// `GlassService.shared.opacity`, which updates a beat after the slider moves: on a slow runner a
+  /// single read still saw the previous value.
+  private func assertReadout(
+    _ app: XCUIApplication, reaches expected: String, _ message: String = "",
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    var last = readout(app)
+    let deadline = Date().addingTimeInterval(5)
+    while last != expected, Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+      last = readout(app)
+    }
+    XCTAssertEqual(last, expected, message, file: file, line: line)
+  }
+
   /// Drag the slider to `target` percent, nudging a 5% stop at a time with the arrow keys for any
   /// last step a normalized position misses.
   private func setGlass(_ slider: XCUIElement, to target: Int) {
@@ -87,11 +103,11 @@ final class GlassSettingsUITests: XCTestCase {
     var slider = glassSlider(app)
     // 100% is off, and says so.
     setGlass(slider, to: 100)
-    XCTAssertEqual(readout(app), "Off", "100% reads Off")
+    assertReadout(app, reaches: "Off", "100% reads Off")
     attachWindow(app, named: "Settings, Appearance, Glass off")
     // Not the default, so the relaunch proves the value was stored.
     setGlass(slider, to: 85)
-    XCTAssertEqual(readout(app), "85%")
+    assertReadout(app, reaches: "85%")
     attachWindow(app, named: "Settings, Appearance, Glass at 85%")
     recordScreenshot(app, named: "Glass at 85%")
     app.terminate()
@@ -101,7 +117,7 @@ final class GlassSettingsUITests: XCTestCase {
     XCTAssertEqual(percent(slider), 85, "Glass is still 85% after a relaunch")
     // Leave it off for whatever runs next.
     setGlass(slider, to: 100)
-    XCTAssertEqual(readout(app), "Off")
+    assertReadout(app, reaches: "Off")
     app.terminate()
   }
 

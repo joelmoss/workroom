@@ -1056,13 +1056,25 @@ import WorkroomVCS
     /// that bash's exit status reaches the app (#465). Any other value keeps zsh.
     static var hermeticBashRequested: Bool { text("WorkroomUITestShell") == "bash" }
 
-    /// The bash wrapper's path when this is a UI-test launch that asked for bash, else nil.
-    /// `applyHermeticShell` writes the file at launch; `GhosttyApp` makes it the config's `command`.
+    /// The shell a UI-test launch's terminals start, else nil: the bash wrapper when the launch
+    /// asked for bash, `hermeticShell` otherwise. `GhosttyApp` makes it the config's `command`.
+    ///
+    /// Set for zsh too: libghostty ignores `SHELL` and starts the login shell from the user record,
+    /// so leaving zsh to `applyHermeticShell`'s `SHELL` ran whatever shell the account has
+    /// (`/bin/bash` 3.2 on a hosted CI runner, which gets no Ghostty integration). `ZDOTDIR` and
+    /// the wrapper's file are still `applyHermeticShell`'s, at launch.
     static var hermeticShellCommand: String? {
-      guard AppEnvironment.isUILaunch, hermeticBashRequested,
-        let bundleID = Bundle.main.bundleIdentifier
-      else { return nil }
-      return hermeticBashWrapperURL(bundleID: bundleID, in: hermeticRoot).path
+      hermeticShellCommand(
+        active: AppEnvironment.isUILaunch, bundleID: Bundle.main.bundleIdentifier,
+        root: hermeticRoot, bash: hermeticBashRequested)
+    }
+
+    /// `hermeticShellCommand` with its inputs passed in, the ones `applyHermeticShell` takes.
+    static func hermeticShellCommand(active: Bool, bundleID: String?, root: URL, bash: Bool)
+      -> String?
+    {
+      guard active, let bundleID else { return nil }
+      return bash ? hermeticBashWrapperURL(bundleID: bundleID, in: root).path : hermeticShell
     }
 
     /// Where `-WorkroomUITestShell bash` expects Homebrew's bash.

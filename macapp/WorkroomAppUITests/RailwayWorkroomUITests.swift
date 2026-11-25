@@ -93,7 +93,7 @@ final class RailwayWorkroomUITests: XCTestCase {
     XCTAssertTrue(element(app, "railway.lostCreate.dismiss").exists)
 
     destroy.click()
-    let confirm = app.buttons["Destroy Sandbox"]
+    let confirm = app.sheets.buttons["Destroy Sandbox"]
     XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Destroy didn't ask first")
     confirm.click()
 

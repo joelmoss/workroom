@@ -60,6 +60,24 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     XCTAssertEqual(Set(result.environment.keys), ["SHELL", "ZDOTDIR"], "nothing else is touched")
   }
 
+  /// Ghostty's `command` is the hermetic shell for zsh as well as bash: libghostty ignores `SHELL`
+  /// and starts the account's login shell, which on a hosted runner is `/bin/bash` 3.2.
+  func testTheTerminalsCommandIsTheHermeticShellWhateverTheLoginShell() {
+    let bundleID = "com.example.test"
+    XCTAssertEqual(
+      UITestFixture.hermeticShellCommand(active: true, bundleID: bundleID, root: root, bash: false),
+      "/bin/zsh")
+    XCTAssertEqual(
+      UITestFixture.hermeticShellCommand(active: true, bundleID: bundleID, root: root, bash: true),
+      UITestFixture.hermeticBashWrapperURL(bundleID: bundleID, in: root).path)
+    XCTAssertNil(
+      UITestFixture.hermeticShellCommand(
+        active: false, bundleID: bundleID, root: root, bash: false),
+      "outside a UI-test launch the terminals keep the login shell")
+    XCTAssertNil(
+      UITestFixture.hermeticShellCommand(active: true, bundleID: nil, root: root, bash: false))
+  }
+
   /// A hosted unit run, a release build and a plain launch all take this path: the process
   /// environment must be left alone and no folder created.
   func testNotAUILaunchTouchesNothing() throws {
