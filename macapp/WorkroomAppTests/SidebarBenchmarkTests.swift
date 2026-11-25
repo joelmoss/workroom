@@ -42,7 +42,7 @@ final class SidebarBenchmarkTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     defer { window.close() }
     settle(hosting)
     hosting.displayIfNeeded()
@@ -107,7 +107,7 @@ final class SidebarBenchmarkTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     defer { window.close() }
     await draw(hosting)
     settle(hosting)
@@ -191,7 +191,7 @@ final class SidebarBenchmarkTests: XCTestCase {
       let start = DispatchTime.now().uptimeNanoseconds
       let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
       window.contentView = hosting
-      window.makeKeyAndOrderFront(nil)
+      showTestWindow(window, makeKey: true)
       await draw(hosting)
       let initialMS = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
       let initialCPU = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStart) / 1_000_000

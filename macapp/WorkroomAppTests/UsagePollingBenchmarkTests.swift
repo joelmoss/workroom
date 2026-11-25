@@ -74,7 +74,7 @@ final class UsagePollingBenchmarkTests: XCTestCase {
         styleMask: [.titled], backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = hosting
-      window.makeKeyAndOrderFront(nil)
+      showTestWindow(window, makeKey: true)
       defer { window.close() }
       hosting.layoutSubtreeIfNeeded()
       hosting.displayIfNeeded()

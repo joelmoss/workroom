@@ -93,7 +93,7 @@ final class ThemesSettingsPaneLayoutTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     defer { window.close() }
     // Long enough for the grid to settle, take focus, and fade in.
     settle(hosting, seconds: 1.2)

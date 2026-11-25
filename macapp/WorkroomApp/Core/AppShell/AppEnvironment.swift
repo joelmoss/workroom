@@ -100,6 +100,17 @@ struct AppEnvironment: Equatable {
     #endif
   }
 
+  /// Whether the app opens its windows (the main window, or the Welcome wizard) at launch. Not in a
+  /// hosted unit run: one launches per parallel `make app-test` worker, and each window would appear
+  /// over the developer's work. The tests make the windows they need, which the test bundle hides
+  /// from the developer; a launch window opens before that bundle loads. Never in Release, which
+  /// reads no test signal.
+  static func opensWindowsAtLaunch(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    !prohibitsActivation(environment: environment)
+  }
+
   /// Whether `WorkroomApp.init` starts the background `$SHELL -ilc` probe. Not in a hosted unit run
   /// (`ShellEnvironmentTests` needs the cache to hold only what it put there) and not in a UI-test
   /// launch (which has no use for the enrichment, and would otherwise execute the shell's startup

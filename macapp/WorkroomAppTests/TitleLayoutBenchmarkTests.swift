@@ -53,7 +53,7 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
     window.isReleasedWhenClosed = false
     window.title = "Title layout benchmark"
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return Fixture(store: store, surface: surface, target: target, hosting: hosting, window: window)
   }
 

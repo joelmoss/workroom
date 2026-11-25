@@ -135,7 +135,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     let activationRequested = NSRunningApplication.current.activate(
       options: [.activateAllWindows, .activateIgnoringOtherApps])
     NSApp.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     defer {
       window.close()
       Task { await store.terminals.reapAll() }

@@ -53,7 +53,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     // Released at the end of the test, not only closed: a closed window's picker stays alive and
     // keeps rebuilding its rows as the favourites change, which a later test's count would include.
     addTeardownBlock { @MainActor in window.contentView = nil }

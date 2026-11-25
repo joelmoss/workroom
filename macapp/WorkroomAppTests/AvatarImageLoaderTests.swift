@@ -261,7 +261,7 @@ final class AvatarImageLoaderTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return (window, hosting)
   }
 

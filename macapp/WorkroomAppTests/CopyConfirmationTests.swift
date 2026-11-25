@@ -31,7 +31,7 @@ final class CopyConfirmationTests: XCTestCase {
     defer { source.close() }
     let anchor = NSView(frame: NSRect(x: 100, y: 100, width: 20, height: 18))
     source.contentView?.addSubview(anchor)
-    source.orderFront(nil)
+    showTestWindow(source)
     let keyWindow = NSApp.keyWindow
     CopyConfirmation.copy("copy confirmation test", relativeTo: anchor)
     let panel = try XCTUnwrap(
@@ -46,10 +46,12 @@ final class CopyConfirmationTests: XCTestCase {
     XCTAssertGreaterThan(panel.frame.width, 40)
     XCTAssertGreaterThan(panel.frame.height, 20)
     let revealDeadline = ContinuousClock.now + .milliseconds(800)
-    while panel.alphaValue < 0.9, ContinuousClock.now < revealDeadline {
+    // What the toast's fade set: the run's cloak keeps the window itself transparent.
+    while TestWindowCloak.requested(panel).alpha < 0.9, ContinuousClock.now < revealDeadline {
       try await Task.sleep(for: .milliseconds(20))
     }
-    XCTAssertGreaterThan(panel.alphaValue, 0.9, "a visible window must not stay transparent")
+    XCTAssertGreaterThan(
+      TestWindowCloak.requested(panel).alpha, 0.9, "a visible window must not stay transparent")
     let anchorOnScreen = source.convertToScreen(anchor.convert(anchor.bounds, to: nil))
     XCTAssertEqual(panel.frame.midX, anchorOnScreen.midX, accuracy: 1)
     XCTAssertEqual(panel.frame.minY, anchorOnScreen.maxY + 4, accuracy: 1)

@@ -135,7 +135,7 @@ final class PaneInvalidationTests: XCTestCase {
       .frame(width: 900, height: 600))
     hosting.frame = frame
     windows[1].contentView = hosting
-    windows[1].orderFront(nil)
+    showTestWindow(windows[1])
     return TwoWindows(
       registry: registry, one: stores[0], two: stores[1], a: a, b: b, surfaceA: surfaceA,
       windows: windows)

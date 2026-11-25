@@ -127,7 +127,7 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       let mountStart = DispatchTime.now().uptimeNanoseconds
       view.frame = NSRect(x: 0, y: 0, width: 800, height: 480)
       window.contentView = view
-      window.makeKeyAndOrderFront(nil)
+      showTestWindow(window, makeKey: true)
       window.layoutIfNeeded()
       let mountMS = Double(DispatchTime.now().uptimeNanoseconds - mountStart) / 1e6
       XCTAssertNotNil(view.surface, "first mount must create the real engine")

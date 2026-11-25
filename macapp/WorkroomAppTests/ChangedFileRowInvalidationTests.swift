@@ -75,7 +75,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false  // ARC is the sole owner (see PaneRenderingTests.host)
     window.contentView = hosting
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     return (window, hosting)
   }
 

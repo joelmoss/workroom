@@ -67,7 +67,7 @@ final class WindowBlurTests: XCTestCase {
     XCTAssertTrue(window.isOpaque, "unnumbered: it stays opaque rather than turn without its blur")
     XCTAssertEqual(window.backgroundColor, ThemeFill.panel.nsColor())
 
-    window.orderFrontRegardless()
+    showTestWindow(window)
     XCTAssertGreaterThan(window.windowNumber, 0)
     WindowBackgroundThemer.apply(to: window, glass: .glass(opacity: 0.9))
     XCTAssertFalse(window.isOpaque, "numbered: the next apply turns it")

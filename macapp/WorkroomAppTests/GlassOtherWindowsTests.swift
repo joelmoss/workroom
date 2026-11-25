@@ -237,7 +237,7 @@ final class GlassOtherWindowsTests: XCTestCase {
     setVisible(false)
     XCTAssertTrue(waitRenders(terminal, false), "paused within 3 s of ordering out")
 
-    window.orderFrontRegardless()
+    showTestWindow(window)
     setVisible(true)
     XCTAssertTrue(waitRenders(terminal, true), "resumed within 3 s of showing again")
   }
@@ -293,7 +293,7 @@ final class GlassOtherWindowsTests: XCTestCase {
       window.contentView = NSHostingView(
         rootView: terminalBacking().modifier(GlassWindowRoot(titlebar: .standard))
           .themeTokensRoot())
-      window.orderFrontRegardless()
+      showTestWindow(window)
       // Mount the hosted tree now, rather than on a display cycle an inactive test host may skip.
       window.contentView?.layoutSubtreeIfNeeded()
       windows.append(window)

@@ -74,7 +74,7 @@ final class ThemeTokensEnvironmentTests: XCTestCase {
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = hosting
-    window.orderFront(nil)
+    showTestWindow(window)
     return window
   }
 

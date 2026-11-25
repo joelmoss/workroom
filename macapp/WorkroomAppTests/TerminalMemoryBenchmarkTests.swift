@@ -35,7 +35,7 @@ final class TerminalMemoryBenchmarkTests: XCTestCase {
     }
     let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
     window.contentView = container
-    window.makeKeyAndOrderFront(nil)
+    showTestWindow(window, makeKey: true)
     try await Task.sleep(for: .seconds(3))
     samples.append(try await snapshot("baseline", output: output, directory: directory, heap: true))
     for index in 0..<3 {
