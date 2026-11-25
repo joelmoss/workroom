@@ -603,8 +603,12 @@ final class GhosttySurfaceView: NSView {
     // switch the active tab gets a freshly-mounted container that often isn't in the window yet when the
     // host's `applyFocus` runs, so that one-shot async `makeFirstResponder` silently bailed and the
     // terminal never took focus (you had to switch away and back). This runs exactly when the window
-    // becomes available, so it can't race. Gated by `wantsFocus` so non-focused split panes don't grab.
-    if wantsFocus, window.firstResponder !== self {
+    // becomes available, so it can't race. Gated by `wantsFocus` so non-focused split panes don't grab,
+    // and, in a window with a store, by its live selection instead (`WindowRegistry.holdsKeyboard`):
+    // `wantsFocus` is what the last render said, and a render can be stale by now.
+    if WindowRegistry.shared.holdsKeyboard(self, in: window, rendered: wantsFocus),
+      window.firstResponder !== self
+    {
       window.makeFirstResponder(self)
     }
   }

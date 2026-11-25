@@ -301,6 +301,15 @@ final class WindowRegistry: ObservableObject {
     return entries.compactMap(\.store)
   }
 
+  /// Whether `surface` should hold `window`'s keyboard now, asked as a claim or a resign runs: the
+  /// window's store answers from its live selection (`AppStore.holdsKeyboard`), whatever the render
+  /// that queued it said. A window with no store (a popped-out pane's, the Quick Terminal's) shows
+  /// only its own panes, so `rendered`, what its host last rendered, stands.
+  func holdsKeyboard(_ surface: NSView, in window: NSWindow, rendered: Bool) -> Bool {
+    guard let store = store(for: window) else { return rendered }
+    return store.holdsKeyboard(surface)
+  }
+
   func store(for window: NSWindow?) -> AppStore? {
     guard let window else { return nil }
     return entries.first { $0.window === window }?.store

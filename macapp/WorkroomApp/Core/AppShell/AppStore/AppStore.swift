@@ -1422,6 +1422,18 @@ final class AppStore: ObservableObject {
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
 
+  /// Whether `surface` is the terminal this window's keyboard belongs to right now: the selection's
+  /// focused pane, while no New or Open Workroom picker is up. Read when a host's first-responder
+  /// claim runs, never trusted from a render: each column of the window's split view has its own
+  /// hosting view, so a pane can re-render from its own state (a busy Claude Code retitling its
+  /// terminal several times a second) with a selection its column hasn't applied yet. Such a claim,
+  /// landing just after ⌥⌘N moved the selection to a create's checklist, made the caller's pane
+  /// first responder, which made it the selection again, so the new workroom mounted dimmed.
+  func holdsKeyboard(_ surface: NSView) -> Bool {
+    guard modals.activePicker == nil, let target = selectedTarget else { return false }
+    return terminals.focusedSurface(for: target) === surface
+  }
+
   /// Whether this window's selection has an inspector (#803): a workroom or a project, or a
   /// terminal whose inspector follows its folder (`followsFolder`). False with no selection and for
   /// the Quick Terminal's row. The one gate for the inspector column, the activity bar's panes and
