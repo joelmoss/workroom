@@ -411,15 +411,17 @@ final class SplitPaneUITests: XCTestCase {
   /// chip must sit inside it, and the two brackets must not overlap. That is the property the centring
   /// fault breaks, and it needs no tolerance.
   func testEachTerminalSplitGroupBracketFramesItsOwnChips() throws {
-    // The long title is load-bearing, not decoration. It caps the first chip at the strip's 180pt
-    // maximum so group 1's bracket comes out WIDER than group 2's two "Terminal N" chips. With two
-    // equal-width brackets the centring fault is a no-op and this test passes straight through it
-    // (measured: flipping the ZStack back to `.center` left it green), which is exactly the vacuous
-    // shape this repo has shipped before. Unequal widths are what make the offset observable.
+    // The names are load-bearing, not decoration. The first chip is named long enough to reach the
+    // strip's widest chip and group 2's two are named one letter each, so group 1's bracket comes
+    // out WIDER than group 2's. With two equal-width brackets the centring fault is a no-op and this
+    // test passes straight through it (measured: flipping the ZStack back to `.center` left it
+    // green), which is exactly the vacuous shape this repo has shipped before. Unequal widths are
+    // what make the offset observable. They are names the user gives (Rename…), which nothing the
+    // shell does can change: since b5e44d4d an unnamed terminal shows its program and folder, as
+    // long as the fixture's seeded title, or the title its shell sets.
     let app = XCUIApplication()
     app.launchArguments += [
       "-WorkroomUITestFixture", "1",
-      "-WorkroomUITestLongTabTitle", "1",
       "-ApplePersistenceIgnoreState", "YES",
     ]
     app.launch()
@@ -435,6 +437,10 @@ final class SplitPaneUITests: XCTestCase {
     app.typeKey("d", modifierFlags: .command)
     assertCount(panes(app), reaches: 2)
     assertCount(tabs(app), reaches: 4)
+    rename(
+      app, "Terminal 1", to: "workroom detail panel title bar rendering fixture for a long name")
+    rename(app, "Terminal 3", to: "C")
+    rename(app, "Terminal 4", to: "D")
 
     let bracketA = app.descendants(matching: .any)["terminal.tab.splitBracket.0"]
     let bracketB = app.descendants(matching: .any)["terminal.tab.splitBracket.1"]
@@ -443,7 +449,7 @@ final class SplitPaneUITests: XCTestCase {
       bracketB.exists,
       "group 2's bracket too — splitting the second pair must not dissolve the first")
 
-    // By POSITION, not title: the fixture renames the first terminal, and `displayedTabIDs` already
+    // By POSITION, not title: the test renames three of them, and `displayedTabIDs` already
     // guarantees the order — group 1's two members, then group 2's — which is the property the
     // brackets are drawn from. Indexing here would be fragile only if that ordering broke, and this
     // test would then fail for exactly the right reason.
@@ -469,7 +475,7 @@ final class SplitPaneUITests: XCTestCase {
       XCTAssertLessThanOrEqual(
         chip.frame.maxX, bracketB.frame.maxX + 1, "\(name) ends inside group 2's bracket")
     }
-    // The whole point of the long title: without a width difference the centring fault cannot show.
+    // The whole point of the names: without a width difference the centring fault cannot show.
     XCTAssertGreaterThan(
       bracketA.frame.width, bracketB.frame.width + 20,
       "group 1's bracket must be clearly wider, or a mis-centred bracket lands in the same place")
@@ -477,6 +483,29 @@ final class SplitPaneUITests: XCTestCase {
     XCTAssertLessThanOrEqual(
       bracketA.frame.maxX, bracketB.frame.minX,
       "the two brackets don't overlap — neither is drawn over the other's chips")
+  }
+
+  /// Names the terminal whose chip is `id` (its default title, `terminal.tab.<id>`) through its
+  /// chip's Rename…, and waits for the chip to show it.
+  private func rename(_ app: XCUIApplication, _ id: String, to name: String) {
+    let chip = app.descendants(matching: .any).matching(identifier: "terminal.tab.\(id)").firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 6), "\(id)'s chip")
+    // By coordinate: a chip under its group's bracket isn't hittable to XCUITest.
+    chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).rightClick()
+    let item = app.waitForHittableMenuItem(titled: "Rename…")
+    XCTAssertNotNil(item, "\(id)'s menu offers Rename…")
+    item?.click()
+    let field = app.sheets.textFields.firstMatch
+    XCTAssertTrue(field.waitForExistence(timeout: 6), "the rename sheet")
+    field.typeKey("a", modifierFlags: .command)
+    field.typeText(name)
+    app.sheets.buttons["Rename"].click()
+    XCTAssertTrue(
+      XCTWaiter().wait(
+        for: [
+          XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH %@", name), object: chip)
+        ], timeout: 8) == .completed, "\(id) shows its name: \(chip.label)")
   }
 
   /// A split group title bar addressed by its member's name (labels are `"<project>, workroom <name>"`).
