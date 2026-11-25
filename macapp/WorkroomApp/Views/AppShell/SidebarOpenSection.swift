@@ -244,7 +244,11 @@ struct SidebarOpenList: View, Equatable {
   private func workroomDrag(
     _ row: OpenSectionRow, offset: Int, items: [OpenSectionItem]
   ) -> some Gesture {
-    let split = drag.splitGesture(row.sid, actions: .live(store: store))
+    // Its ghost follows the pointer anywhere in the window, as the chip's own drag does in the
+    // title bar: no List drag image draws it.
+    let split = drag.splitGesture(
+      row.sid, actions: .live(store: store),
+      ghostTitle: store.ghostTitle(of: .entry(row.sid)))
     return DragGesture(minimumDistance: 6, coordinateSpace: .global)
       .onChanged { [store] value in
         let overTerminalDrop = store.terminalDrag.moved(

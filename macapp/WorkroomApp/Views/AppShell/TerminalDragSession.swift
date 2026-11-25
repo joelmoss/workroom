@@ -89,12 +89,12 @@ final class TerminalDragSession {
   }
 
   /// Carries the shared ghost (`DragGhost`) over the window, except where the dragged thing shows
-  /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer, and
-  /// the sidebar, whose List draws its own drag image. Out of the window the window it would make
-  /// shows instead (`DetachedPaneDragPreview`).
+  /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer. A
+  /// sidebar row's drag draws no picture of its own (#819), so the ghost follows it in the sidebar
+  /// too. Out of the window the window it would make shows instead (`DetachedPaneDragPreview`).
   private func showGhost(at screenPoint: CGPoint, overOtherHost: Bool) {
     guard let store, let source, let window = store.hostWindow,
-      overOtherHost || window.frame.contains(screenPoint), surface != .sidebar,
+      overOtherHost || window.frame.contains(screenPoint),
       !ownRow.contains(where: { $0.contains(screenPoint) }),
       let title = store.ghostTitle(of: source)
     else { return DragGhost.shared.hide() }
