@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 import WorkroomDomain
 import XCTest
@@ -24,8 +25,14 @@ final class HoldsKeyboardTests: XCTestCase {
   private let workroom = SidebarID.workroom(project: "/p", name: "a")
   private var registered: [NSWindow] = []
 
+  /// The process's persisted selection as this test found it. A store with no active window
+  /// persists every selection it makes (`AppStore.persistsSidebarPrefs`), so selecting `/p` here
+  /// left `StandaloneTerminalTests`, in the same process, reloading into `/p`'s root.
+  private var savedSelection: String?
+
   override func setUp() async throws {
     try await super.setUp()
+    savedSelection = Defaults[.sidebarSelection]
     projects.projects = [
       Project(
         path: "/p", vcs: "git",
@@ -36,6 +43,7 @@ final class HoldsKeyboardTests: XCTestCase {
   override func tearDown() async throws {
     for window in registered { WindowRegistry.shared.unregister(window: window) }
     registered = []
+    Defaults[.sidebarSelection] = savedSelection
     try await super.tearDown()
   }
 
