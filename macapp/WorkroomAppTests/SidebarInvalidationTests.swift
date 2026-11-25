@@ -606,6 +606,51 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertTrue(title.hasSuffix(" \(folder)"), "the row shows the new folder, not \(title)")
   }
 
+  // MARK: Open section
+
+  /// A standalone terminal's agent stopping changes what its Open row shows (its spinner), and
+  /// nothing of any other Open row, the group's and the roots' beside it included (#819).
+  func testAnAgentInAStandaloneTerminalReRunsOnlyItsOpenRow() async throws {
+    let f = try fixture(section: true)
+    defer { close(f) }
+    let sid = try XCTUnwrap(f.standalone)
+    let surface = try surface(of: sid, f)
+    try await render(f)
+    try await agentStartsWorking(on: surface)
+    try await render(f)
+    let id = try XCTUnwrap(sid.targetID)
+    XCTAssertTrue(f.store.terminals.isRunning(forTargetID: id))
+
+    SidebarRowPasses.reset()
+    surface.handleProgressReport(false)
+    try await render(f)
+
+    XCTAssertFalse(f.store.terminals.isRunning(forTargetID: id), "the change landed")
+    XCTAssertEqual(
+      Set(SidebarRowPasses.openRows.keys), [.workroom(sid)], "only its row shows its agent")
+  }
+
+  /// A group's Open row is hovered as a workroom's is: the pointer over it re-runs that row
+  /// alone, which swaps its glyph for the fold chevron while it can fold.
+  func testHoveringAGroupsOpenRowReRunsOnlyThatRow() async throws {
+    // The rows first draw while the fixture hosts them, so the hook is set before it.
+    var hovers: [OpenSectionItem: Binding<Bool>] = [:]
+    ProjectSidebar.didRenderOpenHover = { item, binding in hovers[item] = binding }
+    defer { ProjectSidebar.didRenderOpenHover = nil }
+    let f = try fixture(section: true)
+    defer { close(f) }
+    let group = try XCTUnwrap(f.group)
+    try await render(f)
+    let binding = try XCTUnwrap(hovers[.workroom(group)], "the group's row must register its hover")
+
+    SidebarRowPasses.reset()
+    binding.wrappedValue = true
+    try await render(f)
+
+    XCTAssertEqual(
+      Set(SidebarRowPasses.openRows.keys), [.workroom(group)], "only the hovered row re-runs")
+  }
+
   // MARK: Terminals section
 
   /// Value: protects=the Projects heading's fold hides every project's rows and brings them back,
