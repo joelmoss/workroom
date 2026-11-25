@@ -28,7 +28,7 @@ tools-check: ## Compare this machine's tools with the versions the repo pins (re
 # container runtime (CONTRIBUTING.md). The VM UI tests and the full app-test are not in it, nor is
 # app-test-remote (Docker, Apple's `container` and the GUI test host): run that one by hand after a
 # daemon, bootstrap, CLI or remote-host change.
-PRE_PUSH_GATES := app-test-scripts docs-check vcs-lint vcs-lint-linux vcs-test notices-check \
+PRE_PUSH_GATES := app-test-scripts docs-check docs-site-check vcs-lint vcs-lint-linux vcs-test notices-check \
   app-lint app-package-test
 pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master)
 	@git fetch origin master --quiet 2>/dev/null || echo "pre-push: couldn't fetch origin/master"
