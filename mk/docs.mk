@@ -14,6 +14,13 @@ docs-check: ## Check docs-site/ (nav, front matter, links, anchors, Nightly mark
 	@$(DOCS_CARGO) --lib commands::docs::
 	@export WORKROOM_DOCS_NIGHTLY_CHECK=1; $(DOCS_CARGO) --test docs_site
 
+# CI's docs-site check (scripts/ci/docs_site_check.py) on this branch: what it changes since its
+# merge-base with origin/master, committed or not. NO_DOCS=1 stands in for the PR's 'no-docs' label,
+# for a change users can't see.
+docs-site-check: ## Fail when the branch changes a user-facing settings/defaults/shortcuts file without docs-site/ (NO_DOCS=1 waives)
+	@{ git diff --name-only --no-renames "$$(git merge-base origin/master HEAD)"; git ls-files --others --exclude-standard; } \
+	  | sort -u | PR_LABELS='$(if $(NO_DOCS),["no-docs"],[])' python3 scripts/ci/docs_site_check.py
+
 docs-cli: ## Regenerate docs-site/pages/cli and the generated Reference pages from the workroom binary
 	@export WORKROOM_DOCS_UPDATE=1; $(DOCS_CARGO) --lib commands::docs::
 

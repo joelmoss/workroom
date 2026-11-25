@@ -31,7 +31,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.99.1. For Linux-only code from a Mac, use `make vcs-lint-linux` (container prerequisites in `CONTRIBUTING.md`).
 - `make notices`, `make notices-check`: regenerate, or check, the third-party notices the binary embeds and the app bundles, after a change to `Cargo.lock`, a Swift package or a vendored dependency (`docs/contributing/releasing.md`). Needs cargo-about 0.9.3 (`cargo install --locked --features cli cargo-about@0.9.3`; no mise needed).
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
-- `make pre-push`: before every push, run CI's cheap gates (scripts, docs, Rust on macOS and Linux, the third-party notices, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.
+- `make pre-push`: before every push, run CI's cheap gates (scripts, docs and the docs-site rule, Rust on macOS and Linux, the third-party notices, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.
 
 Use `macapp/project.yml` for project configuration; do not edit generated `.xcodeproj` files.
 
