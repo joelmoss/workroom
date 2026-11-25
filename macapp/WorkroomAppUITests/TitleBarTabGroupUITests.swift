@@ -113,7 +113,7 @@ final class TitleBarTabGroupUITests: XCTestCase {
     let group = element(app, "workroom.tab.\(ops)")
     XCTAssertTrue(tab.waitForExistence(timeout: 15))
     XCTAssertTrue(group.waitForExistence(timeout: 5))
-    let terminals = elements(app, prefix: "sidebar.terminal.")
+    let terminals = elements(app, prefix: "sidebar.open.tab.")
     XCTAssertTrue(waitForCount(terminals, 2), "Ops starts with two")
 
     drag(tab, onto: group)
@@ -136,14 +136,15 @@ final class TitleBarTabGroupUITests: XCTestCase {
     let devTab = element(app, "workroom.tab.\(dev)")
     XCTAssertTrue(opsTab.waitForExistence(timeout: 15))
     XCTAssertTrue(devTab.waitForExistence(timeout: 5))
-    let terminals = elements(app, prefix: "sidebar.terminal.")
+    let terminals = elements(app, prefix: "sidebar.open.tab.")
     XCTAssertTrue(waitForCount(terminals, 3))
 
     drag(opsTab, onto: devTab)
 
     XCTAssertTrue(waitForCount(elements(app, prefix: "workroom.tab.group:"), 1), "only Dev")
     XCTAssertTrue(devTab.exists)
-    XCTAssertTrue(waitFor { !self.element(app, "sidebar.group.\(self.ops)").exists }, "Ops goes")
+    XCTAssertTrue(
+      waitFor { !self.element(app, "sidebar.open.workroom.\(self.ops)").exists }, "Ops goes")
     XCTAssertTrue(waitForCount(terminals, 3), "every terminal kept")
   }
 }

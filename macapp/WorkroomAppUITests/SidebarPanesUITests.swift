@@ -1,14 +1,18 @@
 import XCTest
 
-/// The sidebar's Terminals and Projects sections are the inspector's panes (#652): each a sticky
+/// The sidebar's Open and Projects sections are the inspector's panes (#652): each a sticky
 /// heading over its own scrolling list, so scrolling one list keeps both headings where they are,
 /// and collapsing one pane leaves the other's rows showing. Fixture only, never a real project or
 /// config.
 final class SidebarPanesUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  /// The Quick Terminal's group row, always first in the Terminals section.
-  private let quickTerminal = "sidebar.group.group:51C10A7E-0D4F-4E6A-9B2C-000000000001"
+  /// The Open section's first workroom row (the fixture's workroom tab).
+  private func openRow(_ app: XCUIApplication) -> XCUIElement {
+    app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.open.workroom.")
+    ).firstMatch
+  }
 
   /// Sixteen workrooms (the fixture's most) in a short window, so the Projects list runs several
   /// rows past its pane. The window fits a 1024×768 screen, so its size, not the screen's, sets that.
@@ -52,10 +56,10 @@ final class SidebarPanesUITests: XCTestCase {
   /// the accessibility tree, so its frame says nothing once it has gone.
   func testScrollingTheProjectsListKeepsBothHeadingsInPlace() {
     let app = launchedApp()
-    let terminals = element(app, "sidebar.terminals")
+    let terminals = element(app, "sidebar.open")
     let projects = element(app, "sidebar.projects")
     XCTAssertTrue(projects.waitForExistence(timeout: 15), "the Projects heading")
-    XCTAssertTrue(terminals.exists, "the Terminals heading")
+    XCTAssertTrue(terminals.exists, "the Open heading")
     let project = element(app, "sidebar.project.UITestProject")
     let lastRow = element(app, "sidebar.workroom.uitest-room-16")
     XCTAssertTrue(project.waitForExistence(timeout: 6), "the project's row")
@@ -72,30 +76,30 @@ final class SidebarPanesUITests: XCTestCase {
         lastRow.exists && lastRow.isHittable && !(project.exists && project.isHittable)
       },
       "the Projects list scrolled its rows up: the last row in, the project's row out")
-    XCTAssertEqual(terminals.frame, terminalsFrame, "the Terminals heading stays put")
+    XCTAssertEqual(terminals.frame, terminalsFrame, "the Open heading stays put")
     XCTAssertEqual(projects.frame, projectsFrame, "the Projects heading stays put")
-    XCTAssertTrue(terminals.isHittable, "the Terminals heading stays clickable")
+    XCTAssertTrue(terminals.isHittable, "the Open heading stays clickable")
     XCTAssertTrue(projects.isHittable, "the Projects heading stays clickable")
   }
 
-  /// Collapsing the Terminals pane leaves the projects' rows showing, and collapsing the Projects
-  /// pane leaves the Terminals rows showing.
+  /// Collapsing the Open pane leaves the projects' rows showing, and collapsing the Projects
+  /// pane leaves the Open rows showing.
   func testCollapsingOnePaneLeavesTheOthersRowsShowing() {
     let app = launchedApp()
-    let terminals = element(app, "sidebar.terminals")
+    let terminals = element(app, "sidebar.open")
     let projects = element(app, "sidebar.projects")
     XCTAssertTrue(projects.waitForExistence(timeout: 15), "the Projects heading")
     let project = element(app, "sidebar.project.UITestProject")
-    let quick = element(app, quickTerminal)
+    let quick = openRow(app)
     XCTAssertTrue(project.waitForExistence(timeout: 6), "the project's row")
-    XCTAssertTrue(quick.waitForExistence(timeout: 6), "the Quick Terminal's row")
+    XCTAssertTrue(quick.waitForExistence(timeout: 6), "the Open section's workroom row")
     let projectsTop = projects.frame.minY
 
     terminals.click()
-    XCTAssertTrue(waitGone(quick), "collapsed, the Terminals rows go")
+    XCTAssertTrue(waitGone(quick), "collapsed, the Open rows go")
     XCTAssertTrue(
       eventually { abs(projects.frame.minY - terminals.frame.maxY) < 2 },
-      "the Projects pane moves up under the Terminals heading")
+      "the Projects pane moves up under the Open heading")
     XCTAssertLessThan(projects.frame.minY, projectsTop)
     XCTAssertTrue(project.isHittable, "the projects' rows still show")
 
@@ -106,7 +110,7 @@ final class SidebarPanesUITests: XCTestCase {
 
     projects.click()
     XCTAssertTrue(waitGone(project), "collapsed, the projects' rows go")
-    XCTAssertTrue(quick.isHittable, "the Terminals rows still show")
+    XCTAssertTrue(quick.isHittable, "the Open rows still show")
     projects.click()
     XCTAssertTrue(project.waitForExistence(timeout: 6), "expanded, they come back")
   }

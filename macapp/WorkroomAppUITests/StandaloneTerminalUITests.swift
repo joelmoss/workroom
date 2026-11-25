@@ -42,26 +42,27 @@ final class StandaloneTerminalUITests: XCTestCase {
   func testStandaloneTerminalsHaveRowsAndTitleBarTabsAndOptionCommandTOpensAnother() {
     let app = launchedApp()
 
-    XCTAssertTrue(element(app, "sidebar.terminals").waitForExistence(timeout: 15))
+    XCTAssertTrue(element(app, "sidebar.open").waitForExistence(timeout: 15))
     for id in seeded {
-      XCTAssertTrue(element(app, "sidebar.standalone.\(id)").waitForExistence(timeout: 5), id)
+      XCTAssertTrue(element(app, "sidebar.open.workroom.\(id)").waitForExistence(timeout: 5), id)
       XCTAssertTrue(element(app, "workroom.tab.\(id)").exists, "\(id)'s title-bar tab")
     }
     // The section is above the projects.
-    let firstRow = element(app, "sidebar.standalone.\(seeded[0])")
+    let firstRow = element(app, "sidebar.open.workroom.\(seeded[0])")
     let project = elements(app, prefix: "sidebar.project.").firstMatch
     if project.exists { XCTAssertLessThan(firstRow.frame.minY, project.frame.minY) }
 
     app.typeKey("t", modifierFlags: [.command, .option])
 
     XCTAssertTrue(
-      waitForCount(elements(app, prefix: "sidebar.standalone."), 3), "⌥⌘T adds a third row")
+      waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 3),
+      "⌥⌘T adds a third row")
     XCTAssertTrue(
       waitForCount(elements(app, prefix: "workroom.tab.standalone:"), 3), "and its tab")
 
     // Folding the section hides its rows, not its tabs.
-    element(app, "sidebar.terminals").click()
-    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 0))
+    element(app, "sidebar.open").click()
+    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 0))
     XCTAssertEqual(elements(app, prefix: "workroom.tab.standalone:").count, 3)
   }
 
@@ -69,8 +70,8 @@ final class StandaloneTerminalUITests: XCTestCase {
   /// critique): its row and title-bar tab selected, its terminal taking the keys.
   func testClosingAStandaloneTerminalSelectsAndFocusesThePreviousOne() {
     let app = launchedApp()
-    let first = element(app, "sidebar.standalone.\(seeded[0])")
-    let second = element(app, "sidebar.standalone.\(seeded[1])")
+    let first = element(app, "sidebar.open.workroom.\(seeded[0])")
+    let second = element(app, "sidebar.open.workroom.\(seeded[1])")
     XCTAssertTrue(first.waitForExistence(timeout: 15))
     first.click()
     XCTAssertTrue(poll { self.element(app, "workroom.tab.\(self.seeded[0])").isSelected })
@@ -79,7 +80,8 @@ final class StandaloneTerminalUITests: XCTestCase {
 
     app.typeKey("w", modifierFlags: .command)
 
-    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1), "its row goes")
+    XCTAssertTrue(
+      waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1), "its row goes")
     XCTAssertTrue(
       poll { self.element(app, "workroom.tab.\(self.seeded[0])").isSelected },
       "the first terminal is selected (its row's selection isn't exposed; its tab's is)")
@@ -99,21 +101,22 @@ final class StandaloneTerminalUITests: XCTestCase {
   /// tab go, and the other terminal's stay.
   func testAStandaloneRowsCloseButtonClosesItsTerminal() {
     let app = launchedApp()
-    let row = element(app, "sidebar.standalone.\(seeded[0])")
+    let row = element(app, "sidebar.open.workroom.\(seeded[0])")
     XCTAssertTrue(row.waitForExistence(timeout: 15))
     row.hover()
-    let close = element(app, "sidebar.close.\(seeded[0])")
+    let close = element(app, "sidebar.open.close.\(seeded[0])")
     XCTAssertTrue(close.waitForExistence(timeout: 5), "the row's close button")
     XCTAssertEqual(
-      close.frame.midX, element(app, "sidebar.terminals.new").frame.midX, accuracy: 0.5,
+      close.frame.midX, element(app, "sidebar.open.add").frame.midX, accuracy: 0.5,
       "in the heading's \"+\" column")
 
     close.click()
 
-    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1), "its row goes")
+    XCTAssertTrue(
+      waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1), "its row goes")
     XCTAssertFalse(row.exists)
     XCTAssertTrue(waitForCount(elements(app, prefix: "workroom.tab.standalone:"), 1), "its tab")
-    XCTAssertTrue(element(app, "sidebar.standalone.\(seeded[1])").exists, "the other's stays")
+    XCTAssertTrue(element(app, "sidebar.open.workroom.\(seeded[1])").exists, "the other's stays")
   }
 
   private func poll(timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
@@ -133,9 +136,9 @@ final class StandaloneTerminalUITests: XCTestCase {
   func testRenameEditsAStandaloneTerminalsNameInItsRow() {
     let app = launchedApp()
     let id = seeded[0]
-    let row = element(app, "sidebar.standalone.\(id)")
+    let row = element(app, "sidebar.open.workroom.\(id)")
     XCTAssertTrue(row.waitForExistence(timeout: 15))
-    let field = element(app, "sidebar.standalone.rename.\(id)")
+    let field = element(app, "sidebar.open.rename.\(id)")
 
     row.rightClick()
     app.waitForHittableMenuItem(titled: "Rename…")?.click()
@@ -180,7 +183,8 @@ final class StandaloneTerminalUITests: XCTestCase {
     XCTAssertFalse(element(app, "toolbar.toggleSidebar").exists, "nothing to list yet")
     newTerminal.click()
 
-    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1), "its row")
+    XCTAssertTrue(
+      waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1), "its row")
     XCTAssertTrue(element(app, "toolbar.toggleSidebar").exists, "the sidebar toggle shows")
     XCTAssertFalse(newTerminal.exists, "the empty state gives way to the terminal")
   }
@@ -197,7 +201,7 @@ final class StandaloneTerminalUITests: XCTestCase {
     let newTerminal = element(app, "EmptyStateNewTerminal")
     XCTAssertTrue(newTerminal.waitForExistence(timeout: 15))
     newTerminal.click()
-    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1))
+    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1))
 
     app.typeKey("o", modifierFlags: .command)
 

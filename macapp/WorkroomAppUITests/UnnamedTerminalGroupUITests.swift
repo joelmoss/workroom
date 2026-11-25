@@ -54,8 +54,8 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
 
   func testCommandDTurnsAStandaloneRowIntoAGroupInPlaceAndClosingAHalfTurnsItBack() {
     let app = launchedApp()
-    let first = element(app, "sidebar.standalone.\(seeded[0])")
-    let second = element(app, "sidebar.standalone.\(seeded[1])")
+    let first = element(app, "sidebar.open.workroom.\(seeded[0])")
+    let second = element(app, "sidebar.open.workroom.\(seeded[1])")
     XCTAssertTrue(first.waitForExistence(timeout: 15))
     XCTAssertTrue(second.waitForExistence(timeout: 5))
     // Both start in the home folder: each is named by its shell and folder, "zsh ~", unnumbered.
@@ -68,16 +68,17 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
 
     app.typeKey("d", modifierFlags: .command)
 
-    let groups = elements(app, prefix: "sidebar.group.group:")
+    let groups = elements(app, prefix: "sidebar.open.workroom.group:")
     XCTAssertTrue(waitForRows(groups, 1), "the row becomes a group's")
-    XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.standalone."), 1), "one is left")
+    XCTAssertTrue(
+      waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1), "one is left")
     XCTAssertFalse(first.exists, "the split terminal's own row has gone")
     let group = groups.firstMatch
     XCTAssertLessThan(group.frame.minY, second.frame.minY, "in its place, above the other")
     XCTAssertTrue(
       waitForRows(elements(app, prefix: "workroom.tab.group:"), 1), "one title-bar tab for it")
     XCTAssertTrue(
-      waitForRows(elements(app, prefix: "sidebar.terminal."), 2), "its two terminals under it")
+      waitForRows(elements(app, prefix: "sidebar.open.tab."), 2), "its two terminals under it")
     let label = [group.label, group.value as? String ?? ""].joined(separator: " ")
     XCTAssertTrue(
       label.contains(" + 1 more"), "labelled by its first terminal and one more: \(label)")
@@ -86,7 +87,8 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
 
     XCTAssertTrue(waitForRows(groups, 0), "one terminal left: the group dissolves")
     XCTAssertTrue(
-      waitForRows(elements(app, prefix: "sidebar.standalone."), 2), "back to two standalone rows")
+      waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 2),
+      "back to two standalone rows")
     XCTAssertTrue(waitForRows(elements(app, prefix: "workroom.tab.standalone:"), 2))
   }
 
@@ -105,7 +107,7 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     let oneMore = NSPredicate(
       format: "label CONTAINS %@ OR value CONTAINS %@", " + 1 more", " + 1 more")
     let two = NSCompoundPredicate(orPredicateWithSubpredicates: [named, oneMore])
-    let row = elements(app, prefix: "sidebar.group.group:").firstMatch
+    let row = elements(app, prefix: "sidebar.open.workroom.group:").firstMatch
     return XCTWaiter().wait(
       for: [XCTNSPredicateExpectation(predicate: two, object: row)], timeout: 6) == .completed
   }
@@ -123,9 +125,9 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
   func testDroppingAStandaloneRowOnAnotherGroupsThemAndAtItsEdgeReorders() {
     let app = launchedApp(standalone: 3)
     let rows = seeded + ["standalone:00000000-0000-0000-0000-000000000653"]
-    let first = element(app, "sidebar.standalone.\(rows[0])")
-    let second = element(app, "sidebar.standalone.\(rows[1])")
-    let third = element(app, "sidebar.standalone.\(rows[2])")
+    let first = element(app, "sidebar.open.workroom.\(rows[0])")
+    let second = element(app, "sidebar.open.workroom.\(rows[1])")
+    let third = element(app, "sidebar.open.workroom.\(rows[2])")
     XCTAssertTrue(first.waitForExistence(timeout: 15))
     XCTAssertTrue(third.waitForExistence(timeout: 5))
 
@@ -134,14 +136,15 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     let reordered = XCTNSPredicateExpectation(
       predicate: NSPredicate { _, _ in third.frame.minY < first.frame.minY }, object: nil)
     XCTAssertEqual(XCTWaiter().wait(for: [reordered], timeout: 6), .completed, "it reorders")
-    let groups = elements(app, prefix: "sidebar.group.group:")
+    let groups = elements(app, prefix: "sidebar.open.workroom.group:")
     XCTAssertTrue(waitForRows(groups, 0, timeout: 1), "and groups nothing")
 
     // Over the middle of the first: the second joins it in a group.
     drag(second, to: first)
     XCTAssertTrue(waitForRows(groups, 1), "the two become a group")
     XCTAssertTrue(
-      waitForRows(elements(app, prefix: "sidebar.standalone."), 1), "the third is left alone")
+      waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1),
+      "the third is left alone")
     XCTAssertTrue(groupsTwoTerminals(app), "of the two terminals")
     XCTAssertLessThan(third.frame.minY, groups.firstMatch.frame.minY, "in the first's place")
   }
@@ -149,15 +152,15 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
   /// A workroom terminal's tab let go on a standalone terminal's row groups the two.
   func testATabDroppedOnAStandaloneRowGroupsThem() {
     let app = launchedApp(standalone: 1)
-    let row = element(app, "sidebar.standalone.\(seeded[0])")
+    let row = element(app, "sidebar.open.workroom.\(seeded[0])")
     let chip = element(app, "terminal.tab.Terminal 1")
     XCTAssertTrue(chip.waitForExistence(timeout: 15), "the fixture workroom's terminal tab")
     XCTAssertTrue(row.waitForExistence(timeout: 5))
 
     drag(chip, to: row)
 
-    XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.group.group:"), 1), "a group")
-    XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.standalone."), 0))
+    XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.open.workroom.group:"), 1), "a group")
+    XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 0))
     XCTAssertTrue(groupsTwoTerminals(app), "of the two terminals")
   }
 

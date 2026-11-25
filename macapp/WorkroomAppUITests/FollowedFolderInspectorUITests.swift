@@ -112,7 +112,7 @@ final class FollowedFolderInspectorUITests: XCTestCase {
   func testTheInspectorFollowsAStandaloneTerminalIntoARepositoryAndOutOfIt() {
     app = launchedApp()
 
-    let row = element("sidebar.standalone.\(standalone)")
+    let row = element("sidebar.open.workroom.\(standalone)")
     XCTAssertTrue(row.waitForExistence(timeout: 20), "the fixture's standalone terminal")
     row.click()
     XCTAssertTrue(poll { self.element("workroom.tab.\(self.standalone)").isSelected })
@@ -230,7 +230,7 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     let loader = element("inspector.pendingRepository")
     XCTAssertFalse(loader.exists, "a workroom has no followed folder to wait on")
 
-    let row = element("sidebar.standalone.\(standalone)")
+    let row = element("sidebar.open.workroom.\(standalone)")
     XCTAssertTrue(row.waitForExistence(timeout: 20), "the fixture's standalone terminal")
     row.click()
     let clicked = Date()
