@@ -81,6 +81,9 @@ jobs:
       - name: Test the nightly UI tests' skip gate
         run: python3 scripts/ci/test_xcresult_skips.py
 
+      - name: Test the UI-test evidence fetcher
+        run: python3 scripts/ci/test_uitest_evidence.py
+
       - name: Test the toolchain pins agree
         run: python3 scripts/ci/test_tool_pins.py
 

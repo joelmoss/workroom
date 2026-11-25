@@ -9,6 +9,9 @@ name: Nightly UI tests
 # Its own workflow, not a job in nightly.yml: that one holds the `appcast-feed` concurrency group
 # for its whole run, and a UI-test run must neither queue behind a release nor hold one up. An hour
 # before the nightly build, so a red run is on the summary by the time that night's build ships.
+#
+# A failed test's evidence (message, screenshots, the recording's last seconds as PNGs):
+# `scripts/ci/uitest_evidence.py <run-id>`.
 on:
   schedule:
     - cron: "0 4 * * *" # daily ~04:00 UTC
