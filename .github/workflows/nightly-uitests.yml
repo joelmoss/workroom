@@ -24,9 +24,10 @@ on:
 
 permissions: {}
 
-# One run at a time; a dispatch while the night's run is going waits for it.
+# One run at a time per branch; a dispatch while that branch's run is going waits for it. Keyed
+# by ref so dispatches on different branches (triage, fixes) don't replace each other in the queue.
 concurrency:
-  group: nightly-uitests
+  group: nightly-uitests-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
