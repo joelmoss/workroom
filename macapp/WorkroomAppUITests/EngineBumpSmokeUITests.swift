@@ -357,8 +357,14 @@ final class EngineBumpSmokeUITests: XCTestCase {
     let app = launchedApp()
     focusTerminal(app)
     run(app, "sleep 4")
+    // By its label: a terminal chip's identifier is its fixed default name ("Terminal 1") since
+    // b5e44d4d, while the label follows the title.
     let titled = app.descendants(matching: .any)
-      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.sleep")).firstMatch
+      .matching(
+        NSPredicate(
+          format: "identifier BEGINSWITH %@ AND label BEGINSWITH %@", "terminal.tab.", "sleep")
+      )
+      .firstMatch
     XCTAssertTrue(titled.waitForExistence(timeout: 20), "the tab took the running command's title")
     XCTAssertTrue(poll(timeout: 20) { !titled.exists }, "the title moved on when it finished")
 
