@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import WorkroomDomain
 import XCTest
 
@@ -186,5 +187,64 @@ final class HoldsKeyboardTests: XCTestCase {
     surface.wantsFocus = true
     window.contentView!.addSubview(surface)
     XCTAssertTrue(window.firstResponder === surface)
+  }
+
+  // MARK: A refused claim is made once the live state allows it
+
+  /// `caller`'s pane hosted as the pane tree hosts it, in a window registered with `store`: focused
+  /// while its workroom is selected and no picker is up (`PaneTreeView`'s fold), re-rendered when
+  /// either changes.
+  private func hostCallerPane(_ store: AppStore, _ caller: GhosttySurfaceView) -> NSWindow {
+    let (window, _) = hostInWindow(
+      CallerPane(store: store, modals: store.modals, surface: caller, sid: root),
+      size: NSSize(width: 400, height: 300))
+    WindowRegistry.shared.register(window: window, store: store)
+    registered.append(window)
+    return window
+  }
+
+  private func waitForKeyboard(_ surface: NSView, in window: NSWindow) -> Bool {
+    settle(3, until: { window.firstResponder === surface })
+    return window.firstResponder === surface
+  }
+
+  // Value: protects=the review's question, whether a pane refused the keyboard while a picker was
+  // up takes it once the picker goes; fails_when=nothing re-runs the claim after the refusal, so the
+  // terminal is left without first responder; no_claim=a real picker sheet
+  func testAPaneRefusedWhileAPickerIsUpTakesTheKeyboardWhenItCloses() throws {
+    let (store, caller, _) = try makeStore()
+    store.modals.activePicker = .new
+    let window = hostCallerPane(store, caller)
+    settle(0.5)
+    XCTAssertFalse(window.firstResponder === caller, "it claimed under the picker")
+    store.modals.activePicker = nil
+    XCTAssertTrue(waitForKeyboard(caller, in: window), "within 3 s of the picker closing")
+  }
+
+  // Value: protects=the review's question, whether a pane that mounts before its window's
+  // selection lands (a session restore) takes the keyboard once it does; fails_when=nothing re-runs
+  // the claim when the selection arrives; no_claim=the restore itself (`SavedLayout`)
+  func testAPaneMountedBeforeItsSelectionLandsTakesTheKeyboardWhenItDoes() throws {
+    let (store, caller, _) = try makeStore()
+    store.selectedTargetID = nil
+    let window = hostCallerPane(store, caller)
+    settle(0.5)
+    XCTAssertFalse(window.firstResponder === caller, "it claimed with nothing selected")
+    store.selectedTargetID = root
+    XCTAssertTrue(waitForKeyboard(caller, in: window), "within 3 s of the selection landing")
+  }
+}
+
+/// One pane of `PaneTreeView`, reduced to its focus: the terminal is the focused pane while its
+/// workroom is the selection and no New or Open Workroom picker is up.
+private struct CallerPane: View {
+  let store: AppStore
+  @ObservedObject var modals: ModalState
+  let surface: GhosttySurfaceView
+  let sid: SidebarID
+
+  var body: some View {
+    TerminalContainerView(
+      view: surface, isFocusedPane: store.selectedTargetID == sid && modals.activePicker == nil)
   }
 }
