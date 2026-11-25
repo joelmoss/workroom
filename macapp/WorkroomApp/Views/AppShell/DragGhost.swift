@@ -66,8 +66,7 @@ final class DragGhost {
   }
 }
 
-/// What the ghost draws: a grip and the title in a capsule, with a shadow. Also the sidebar List's
-/// drag image (`SidebarTableDragImage`), so the chip is opaque: a material draws nothing there.
+/// What the ghost draws: a grip and the title in a capsule, with a shadow.
 struct DragGhostChip: View {
   let title: String
   /// Sits at the bottom of the ghost's panel, filling it; else just the chip and its margin.

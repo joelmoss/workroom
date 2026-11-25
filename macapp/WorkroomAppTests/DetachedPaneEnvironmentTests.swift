@@ -269,8 +269,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     // The sidebar's row adapters, terminal subtrees and row menus.
     "SidebarProjectRowAdapter", "SidebarRootRowAdapter", "SidebarWorkroomRowAdapter",
     "SidebarTerminalRowAdapter", "SidebarTerminalSubtree", "SidebarProjectMenu", "SidebarRunMenu",
-    "SidebarTerminalMenu", "NewWorkroomPlacesMenu", "SidebarStandaloneRowAdapter",
-    "SidebarStandaloneRowMenu", "SidebarTerminalGroupRowAdapter",
+    "SidebarTerminalMenu", "NewWorkroomPlacesMenu",
     // The inspector and its panels.
     "RightInspector", "DetailsPanel", "InspectorWorkroomHeader", "ChangesPanelAdapter",
     "HistoryPanelAdapter", "FilesPanel", "PullRequestPanel", "ReadyForReviewButton", "MergeButton",

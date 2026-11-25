@@ -626,23 +626,6 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(try listRows(f), 5, "unfolded, every project's rows are back")
   }
 
-  /// A terminal opening in a project re-runs no row of the Terminals section, whose group row
-  /// lists this window's terminals beside it.
-  func testATerminalOpeningInAProjectReRunsNoTerminalsSectionRow() async throws {
-    let f = try fixture(section: true)
-    defer { close(f) }
-    try await render(f)
-    _ = f.store.terminals.addTab(for: f.b.rootTarget)
-    try await render(f)
-
-    SidebarRowPasses.reset()
-    _ = f.store.terminals.addTab(for: f.b.rootTarget)
-    try await render(f)
-
-    XCTAssertEqual(f.store.terminals.tabs(for: f.b.rootTarget).count, 3, "the change landed")
-    XCTAssertEqual(SidebarRowPasses.section, 0, "no Terminals-section row shows it")
-  }
-
   /// A group's row leaves out only the terminals listed under it, whose own rows show their
   /// marks: a terminal waiting in another window, listed nowhere here, still shows on it.
   func testAGroupsRowLeavesOutOnlyTheTerminalsListedUnderIt() throws {
@@ -662,22 +645,6 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(
       otherWindow.sectionActivity(of: target.id, excluding: otherWindow.terminals).waiting, 1,
       "in a window that lists none of the group's terminals, the row still shows it")
-  }
-
-  /// A group's menu and VoiceOver offer Collapse while its terminals show and Expand while folded,
-  /// and nothing when it can't fold (the Quick Terminal's, before its panel has terminals).
-  func testAGroupsRowOffersExpandOrCollapseWhenItCanFold() throws {
-    func item(canFold: Bool, folded: Bool) -> SidebarFoldItem? {
-      var group = TerminalGroup(id: UUID(), name: "Ops")
-      group.isFolded = folded
-      return SidebarTerminalGroupRowModel(
-        sid: .terminalGroup(group.id), group: group, title: "Ops",
-        activity: SidebarTargetActivity(), canFold: canFold
-      ).foldItem
-    }
-    XCTAssertEqual(item(canFold: true, folded: false)?.title, "Collapse")
-    XCTAssertEqual(item(canFold: true, folded: true)?.title, "Expand")
-    XCTAssertNil(item(canFold: false, folded: false), "an empty Quick Terminal offers neither")
   }
 
   /// A root's or workroom's menu and VoiceOver offer Collapse while its terminals show and Expand

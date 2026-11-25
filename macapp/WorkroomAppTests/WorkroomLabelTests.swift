@@ -129,16 +129,16 @@ final class WorkroomLabelTests: XCTestCase {
   /// Value: protects=a terminal group row's New Terminal names the group: "New Terminal in Quick
   /// Terminal" for the Quick Terminal's, its name for a named one, "Group" for an unnamed one;
   /// fails_when=every group says "New Terminal in Terminal Group" (the #652 critique);
-  /// why_new=#652; seam=SidebarTerminalGroupRowModel; no_claim=menu rendering.
+  /// why_new=#652; seam=TerminalGroup.newTerminalTitle; no_claim=menu rendering.
   func testAGroupRowsNewTerminalNamesTheGroup() {
     XCTAssertEqual(
-      SidebarTerminalGroupRowModel.newTerminalTitle(for: .quickTerminal),
+      TerminalGroup.newTerminalTitle(for: .quickTerminal),
       "New Terminal in Quick Terminals")
     XCTAssertEqual(
-      SidebarTerminalGroupRowModel.newTerminalTitle(for: TerminalGroup(id: UUID(), name: "Ops")),
+      TerminalGroup.newTerminalTitle(for: TerminalGroup(id: UUID(), name: "Ops")),
       "New Terminal in Ops")
     XCTAssertEqual(
-      SidebarTerminalGroupRowModel.newTerminalTitle(for: TerminalGroup(id: UUID(), name: nil)),
+      TerminalGroup.newTerminalTitle(for: TerminalGroup(id: UUID(), name: nil)),
       "New Terminal in Group")
   }
 
