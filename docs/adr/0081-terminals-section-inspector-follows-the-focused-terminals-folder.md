@@ -2,6 +2,8 @@
 
 Decided 2026-11-23 (owner, design grilling for #803). Status: accepted, being built (#804–#811). Amends ADR 0077: its rule that nothing project-shaped, the inspector included, applies to a standalone terminal or a terminal group.
 
+Amended 2026-11-25 (#819, ADR 0082): the sidebar's Terminals section is retired. Its standalone terminal and group rows now sit in the Open section, which lists every workroom tab open in the window, and the inspector rule below applies to them there, unchanged.
+
 ADR 0077 left the inspector empty for every target in the Terminals section, on the premise that a terminal with no project has nothing to inspect. But those terminals do most of their work inside git repositories, and the user had to leave the terminal and find a workroom for the repository, if there was one, to see its changes or history.
 
 When a window selects a standalone terminal or a terminal group, its inspector follows the folder of that target's focused terminal: the shell's live working directory (OSC 7), else the folder it started in. A content tab has no folder, so while one is focused the target's most recently focused terminal counts, else its first. Changes, History and Pull Request show the innermost git repository containing that folder, as `git rev-parse --show-toplevel` answers it, so a linked worktree and a submodule are each their own repository. Files shows the folder itself. Details shows where the terminal runs (this Mac) and the folder, and the header names the repository's folder with its branch and `~`-relative path beneath. Outside any repository, the version-control sections say "Not a git repository" with the folder, and the header and Details show the folder.

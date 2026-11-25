@@ -255,6 +255,10 @@ The strip along the bottom of a window about the whole app, such as every coding
 A chip in a window's title bar for one target that has terminals open in that window; choosing it selects that target.
 _Avoid_: Tab (alone), chip
 
+**Open section**:
+The sidebar's list of the workroom tabs open in this window, in the title bar's order, each unfolding to its tabs. It shows exactly what the title bar and the tab strip show, so a standalone terminal or terminal group is in it only while it has tabs.
+_Avoid_: Terminals section (retired)
+
 **Selection**:
 The target a window's sidebar has chosen.
 
