@@ -111,7 +111,7 @@ struct WorkroomMenuModel: Equatable {
   enum SectionTarget: Equatable {
     case standalone
     /// The Quick Terminal's group is `builtIn`: it has no rename or delete. `title` is its label,
-    /// `newTerminal` its New Terminal item's (`SidebarTerminalGroupRowModel.newTerminalTitle`).
+    /// `newTerminal` its New Terminal item's (`TerminalGroup.newTerminalTitle`).
     case group(builtIn: Bool, hasStartingFolder: Bool, title: String, newTerminal: String)
   }
 
@@ -387,7 +387,7 @@ extension WorkroomMenuModel {
       return .group(
         builtIn: group.isBuiltIn, hasStartingFolder: group.startingFolder != nil,
         title: store.target(for: sid)?.title ?? TerminalGroup.untitled,
-        newTerminal: SidebarTerminalGroupRowModel.newTerminalTitle(for: group))
+        newTerminal: TerminalGroup.newTerminalTitle(for: group))
     case .project, .root, .workroom, .creation: return nil
     }
   }
