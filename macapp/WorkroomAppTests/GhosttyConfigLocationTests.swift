@@ -76,9 +76,12 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertEqual(try theme(in: url), "Evilminimum-contrast = 0Name")
   }
 
-  /// A UI test's shell becomes a `direct:` command line; none is written otherwise, and a path with
-  /// a newline (which would start a directive of its own) is dropped.
-  func testAUITestShellIsWrittenAsADirectCommand() throws {
+  /// A UI test's shell becomes a shell-form command line, the form libghostty gives the login
+  /// shell: a `direct:` command has libghostty title the surface with its path ("/bin/zsh") before
+  /// the shell runs, which outranks the terminal's program-and-folder name and any title a test
+  /// seeded. None is written otherwise, and a path that shell form would split or expand (a space,
+  /// a quote) or that would start a directive of its own (a newline) is dropped.
+  func testAUITestShellIsWrittenAsAShellFormCommand() throws {
     let url = GhosttyApp.defaultThemeConfigURL(
       bundleID: "com.example.command", fileManager: fileManager)
     func commandLines() throws -> [String] {
@@ -89,10 +92,20 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", to: url))
     XCTAssertEqual(try commandLines(), [], "the login shell, as normal")
     XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", command: "/tmp/w/bash", to: url))
-    XCTAssertEqual(try commandLines(), ["command = direct:/tmp/w/bash"])
+    XCTAssertEqual(try commandLines(), ["command = /tmp/w/bash"])
+    XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", command: "/bin/zsh", to: url))
+    XCTAssertEqual(try commandLines(), ["command = /bin/zsh"])
+    XCTAssertTrue(
+      GhosttyApp.writeThemeConfig(
+        theme: "Nord", command: "/tmp/workroom-tests-bash-com.example_x/bash", to: url))
+    XCTAssertEqual(try commandLines(), ["command = /tmp/workroom-tests-bash-com.example_x/bash"])
     XCTAssertTrue(
       GhosttyApp.writeThemeConfig(theme: "Nord", command: "/tmp/w/bash\ntheme = x", to: url))
     XCTAssertEqual(try commandLines(), [], "a path with a newline is dropped")
+    for unsafe in ["/tmp/my dir/bash", "/tmp/w/bash;rm", "/tmp/'w'/bash", "/tmp/$w/bash", ""] {
+      XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", command: unsafe, to: url))
+      XCTAssertEqual(try commandLines(), [], "\(unsafe) would not reach the shell as one path")
+    }
   }
 
   /// New terminals set `TERM=xterm-256color` unless the user opts into `xterm-ghostty`.

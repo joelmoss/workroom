@@ -101,4 +101,30 @@ final class TerminalHermeticShellUITests: XCTestCase {
       \(result.screen)
       """)
   }
+
+  /// The hermetic shell's terminal is named as a login zsh's is, by its program and folder
+  /// ("zsh ~/…"), not by the shell's path: libghostty titles a surface with a `direct:` command's
+  /// path ("/bin/zsh") before the shell runs, so a fixture written that way named every chip
+  /// "/bin/zsh" and hid seeded titles.
+  func testTheShellsTerminalIsNamedByItsProgramAndFolder() {
+    let app = launchedApp()
+    let chip = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
+      .firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 20), "the fixture workroom has a terminal tab")
+    // Read once the shell has prompted: a direct command's title lands before the shell starts.
+    let surface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+      .firstMatch
+    XCTAssertTrue(surface.waitForExistence(timeout: 10))
+    let prompt = waitForScreen(surface, containing: "% ")
+    XCTAssertTrue(prompt.found, "the shell never prompted. Screen was:\n\(prompt.screen)")
+    var label = chip.label
+    let deadline = Date().addingTimeInterval(10)
+    while !label.hasPrefix("zsh "), Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+      label = chip.label
+    }
+    XCTAssertTrue(label.hasPrefix("zsh "), "named \(label), not by program and folder")
+    XCTAssertFalse(label.contains("/bin/zsh"), "named by the shell's path: \(label)")
+  }
 }
