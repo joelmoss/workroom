@@ -111,6 +111,10 @@ final class StandaloneTerminalUITests: XCTestCase {
       "in the heading's \"+\" column")
 
     close.click()
+    // An Open row's ✕ asks first, as the title bar's Close does.
+    let confirm = app.sheets.buttons["Close"].firstMatch
+    XCTAssertTrue(confirm.waitForExistence(timeout: 5), "closing asks first")
+    confirm.click()
 
     XCTAssertTrue(
       waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1), "its row goes")

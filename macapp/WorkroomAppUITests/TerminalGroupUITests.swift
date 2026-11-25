@@ -42,9 +42,8 @@ final class TerminalGroupUITests: XCTestCase {
     return false
   }
 
-  /// The group's Open row folds its terminals under it with its chevron, and it has one title-bar
-  /// tab. A row unfolds when it is selected and stays folded when another is.
-  func testAGroupHasARowThatFoldsItsTerminalsAndOneTitleBarTab() {
+  /// The group's Open row lists its terminals under it once selected, and it has one title-bar tab.
+  func testAGroupHasARowThatListsItsTerminalsAndOneTitleBarTab() {
     let app = launchedApp()
 
     let row = element(app, "sidebar.open.workroom.\(group)")
@@ -59,17 +58,9 @@ final class TerminalGroupUITests: XCTestCase {
     row.click()
     let terminals = elements(app, prefix: "sidebar.open.tab.")
     XCTAssertTrue(waitForRows(terminals, 2), "its terminals under it")
-    let fold = element(app, "sidebar.open.fold.\(group)")
-    XCTAssertTrue(fold.waitForExistence(timeout: 5), "its chevron")
-    let name = row.staticTexts["Ops"].firstMatch
-    XCTAssertTrue(name.exists, "the group's name on its row")
-    fold.click()
-    XCTAssertTrue(waitForRows(terminals, 0), "folding hides them")
-    XCTAssertTrue(row.exists, "and keeps the row")
-    row.hover()
-    XCTAssertTrue(fold.waitForExistence(timeout: 5))
-    fold.click()
-    XCTAssertTrue(waitForRows(terminals, 2), "unfolding shows them again")
+    // (Its hover-only chevron is not drivable: `.onHover` is not, in XCUITest; folding is the
+    // store's, `OpenSectionTests`.)
+    XCTAssertTrue(row.staticTexts["Ops"].firstMatch.exists, "the group's name on its row")
 
     // Clicking its title-bar tab shows the group: ⌘T then opens a third terminal in it.
     tab.click()
