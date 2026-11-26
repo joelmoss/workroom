@@ -109,7 +109,7 @@ optional standalone CLI).
 | --- | --- |
 | **App language** | Swift 6 + SwiftUI (macOS 15 Sequoia+, Apple silicon only) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (stock upstream built from source, Metal-rendered) |
-| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); daemon-routed reads and writes via the `workroom` daemon |
+| **VCS reading core** | git via [libgit2](https://libgit2.org)'s C API (vendored in `macapp/Packages/LibGit2`); daemon-routed reads and writes via the `workroom` daemon |
 | **Syntax highlighting** | [tree-sitter](https://github.com/tree-sitter/tree-sitter) C runtime (vendored in `macapp/Packages/TreeSitter`) + grammars (four vendored in `macapp/Packages/SyntaxHighlighting/Grammars`) |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.10 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |

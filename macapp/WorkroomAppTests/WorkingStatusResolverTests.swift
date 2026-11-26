@@ -8,7 +8,7 @@ final class WorkingStatusResolverTests: XCTestCase {
   /// An existing directory, so the `.missingPath` guard in `resolve(location:)` passes.
   private let existing = NSTemporaryDirectory()
 
-  // git status is now read structurally via GitProvider (SwiftGitX); the porcelain-v2 parser is
+  // git status is now read structurally via GitProvider (libgit2); the porcelain-v2 parser is
   // gone. See WorkroomStatusIntegrationTests.testGitProviderWorkingStatus* for real-repo coverage.
 
   // MARK: - resolveLocal
@@ -21,11 +21,11 @@ final class WorkingStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.failure, .missingPath)
   }
 
-  // A dirty git working tree is now read via GitProvider/SwiftGitX (not the mock runner + porcelain
+  // A dirty git working tree is now read via GitProvider/libgit2 (not the mock runner + porcelain
   // parser) — covered by WorkroomStatusIntegrationTests.testGitProviderWorkingStatus on a real repo.
 
   func testResolveLocalGitFailureIsUnknownNotClean() async {
-    // `existing` is a real directory but NOT a git repo, so the SwiftGitX read fails → notRepository.
+    // `existing` is a real directory but NOT a git repo, so the libgit2 read fails → notRepository.
     // The regression-critical property: a failed probe is UNKNOWN, never clean.
     let r = WorkingStatusResolver()
     let s = await r.resolveLocal(path: existing)
@@ -40,7 +40,7 @@ final class WorkingStatusResolverTests: XCTestCase {
   /// Every `VCSError` the backends can raise must land on a badge deliberately, since a probe failure
   /// is the one status the user can't verify by looking at the row. The two retryable states get
   /// their own badge; the rest keep `.notRepository`, which is what the git side needs — `GitProvider`
-  /// can't bind SwiftGitX's typed error, so a missing/broken repo arrives as `.io`.
+  /// reports every libgit2 failure as `.io`, so a missing/broken repo arrives as `.io`.
   func testFailureMappingPerVCSError() {
     XCTAssertEqual(WorkingStatusResolver.failure(for: .lockContention), .busy)
     XCTAssertEqual(WorkingStatusResolver.failure(for: .staleSnapshot), .staleWorkingCopy)

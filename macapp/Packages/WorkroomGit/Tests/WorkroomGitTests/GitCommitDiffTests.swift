@@ -197,8 +197,8 @@ final class GitCommitDiffTests: XCTestCase {
     XCTAssertNil(read.files.first?.oldPath)
   }
 
-  /// SwiftGitX's `diff(commit:)` diffs a root commit against ITSELF, so this used to come back empty —
-  /// the first commit of every repo showed no files at all.
+  /// The app's commit diff once compared a root commit against ITSELF, so this came back empty — the
+  /// first commit of every repo showed no files at all.
   func testRootCommitListsItsFilesAsAdded() throws {
     let root = try repoWithFile()
 

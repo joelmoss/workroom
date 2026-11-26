@@ -4,12 +4,8 @@ import libgit2
 
 /// A commit's diff **with rename detection**, straight on libgit2's C API (via `LibGit2`).
 ///
-/// Why not SwiftGitX (which the rest of `GitProvider` uses)? Rename pairing is
-/// `git_diff_find_similar` applied to a live `git_diff`, and a SwiftGitX `Diff` can't be
-/// post-processed: it materializes its deltas/patches eagerly in an `internal` initializer,
-/// `Repository+diff.swift` frees the underlying `git_diff` in a `defer` before returning, and the
-/// repository pointer is `internal` too — there is nothing left to run detection on. So the diff is
-/// built here instead.
+/// Rename pairing is `git_diff_find_similar` applied to a live `git_diff`, so this reader keeps the
+/// diff alive through detection and only then reads its deltas and line counts.
 ///
 /// Without this a committed rename reads as delete-old + add-new, while `git show` on that same
 /// commit shows ONE rename row (git's CLI defaults to `diff.renames=true`), which disagreed with our
@@ -221,7 +217,7 @@ enum GitCommitDiff {
       // `VCSChangeKind` has no type-change case, and `.other` renders
       // as a featureless "•" — a file that became a symlink would look like something the app failed
       // to classify. `.modified` is the honest approximation (one path, changed content) and it's
-      // already what the working-copy side does: `GitProvider.change` folds SwiftGitX's `.typeChange`
+      // already what the working-copy side does: `GitProvider.change` folds `GIT_DELTA_TYPECHANGE`
       // into `.modified` too, so both halves of the app agree. Give this its own case if the badges
       // ever grow git's `T`.
       case GIT_DELTA_TYPECHANGE: .modified

@@ -10,8 +10,8 @@ import XCTest
 /// - Every failure returns `nil`, never a partial answer. A caller turns `nil` into "no badge on any
 ///   row"; a partial set would badge a pushed commit as unpushed, which is the one outcome the feature
 ///   forbids.
-/// - It works when called FIRST in the process, with no `SwiftGitX.Repository` ever opened — proof that
-///   `LibGit2` owns a `git_libgit2_init` of its own rather than free-riding on SwiftGitX's.
+/// - It works when called FIRST in the process, before any other reader has run — proof that
+///   `LibGit2` owns the `git_libgit2_init` rather than relying on another reader having made it.
 ///
 /// Repos are created fresh under `NSTemporaryDirectory()` and removed in `tearDown`; these never touch
 /// a developer's own repository.
@@ -241,11 +241,10 @@ final class GitGraphTests: XCTestCase {
 
   // MARK: - libgit2 ownership
 
-  /// `GitGraph` must not depend on a `SwiftGitX.Repository` having been opened first: SwiftGitX
-  /// initializes libgit2 inside `Repository.open`, and this entry point can be reached before any
-  /// repository exists (this test, a future direct caller). The assertion is simply that a read
-  /// succeeds without touching SwiftGitX at all.
-  func testWorksWithoutSwiftGitXHavingInitializedLibgit2() throws {
+  /// `GitGraph` must not depend on another reader having initialized libgit2 first: this entry point
+  /// can be reached before any repository has been opened (this test, a future direct caller). The
+  /// assertion is simply that a read succeeds with no other libgit2 call before it.
+  func testWorksAsTheFirstLibgit2ReadInTheProcess() throws {
     let work = try repoWithOrigin(localCommits: 1)
     let read = GitGraph.unpushed(root: URL(fileURLWithPath: work), decide: Set(revList(work)))
     XCTAssertNotNil(read, "GitGraph initializes libgit2 itself")

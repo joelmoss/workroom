@@ -5,11 +5,11 @@ import WorkroomVCS
 
 /// `LocalVCSWriting` over the real `git` CLI.
 ///
-/// **Why the CLI and not the libraries.** SwiftGitX 0.4.0's `fetch`/`push` pass `NULL` for the options
-/// struct that would carry `git_remote_callbacks.credentials`, so they have no credential path at all —
-/// HTTPS authentication is impossible through them — and it has no `pull`. Shelling the real binaries
-/// means the user's own credential helpers, SSH agent and config just work, which is the same bet the
-/// status layer already makes with `gh`.
+/// **Why the CLI and not libgit2.** The vendored libgit2 is built with no network transport (no
+/// HTTPS, SSH or credential callbacks), and libgit2 implements no `credential.helper` protocol, runs
+/// no hooks and cannot sign (ADR 0003). Shelling the real binaries means the user's own credential
+/// helpers, SSH agent and config just work, which is the same bet the status layer already makes
+/// with `gh`.
 ///
 /// Pure `static` arg-builders, parsers and classifiers carry all the semantics, so they are unit-tested
 /// without spawning anything.

@@ -4,14 +4,11 @@ import libgit2
 /// `git diff HEAD --shortstat` for a working tree — the `+N −M` behind the sidebar/Changes badges —
 /// read straight on libgit2's C API.
 ///
-/// **Why not SwiftGitX**, which the rest of `GitProvider` uses? Its `Diff` is EAGER. `Diff.init` walks
-/// every delta, builds a `Patch` for each (`git_patch_from_diff`), and materializes every hunk line into
-/// a Swift `String` before the caller ever sees the value. Deriving two integers from that costs one
-/// `String` plus a `Hunk.Line` struct per changed line of the WHOLE worktree, on every status refresh
-/// (focus, appear, manual) — for a cosmetic count. libgit2's own `git_diff_get_stats` does the same
-/// count in C and allocates nothing on the Swift side. SwiftGitX surfaces no stats API and keeps its
-/// `git_repository` pointer `internal`, so we open our own handle (see `LibGit2`) — the third raw
-/// reader, alongside `GitGraph` (reachability) and `GitCommitDiff` (rename-detected commit diffs).
+/// **Why a reader of its own**, rather than summing a diff's hunk lines? That would build a patch per
+/// delta and a Swift `String` per changed line of the WHOLE worktree, on every status refresh (focus,
+/// appear, manual) — for a cosmetic count. libgit2's own `git_diff_get_stats` does the same count in
+/// C and allocates nothing on the Swift side. It opens its handle through `LibGit2`, alongside
+/// `GitGraph` (reachability) and `GitCommitDiff` (rename-detected commit diffs).
 ///
 /// The diff itself is irreducible — a line count cannot be answered without one, which is exactly what
 /// `git diff --shortstat` costs too. What this removes is the Swift-side materialization on top of it.
@@ -38,8 +35,8 @@ enum GitDiffStats {
   /// `(0, 0)` is the honest answer for a clean tree. An unborn HEAD (a repo with no commits yet) diffs
   /// against the empty tree — a NULL `git_tree *` is how libgit2 spells that — so a fresh repo's staged
   /// files count as insertions. git itself has no answer to compare against there (`git diff HEAD` is
-  /// fatal without a HEAD); counting from the empty tree is the same choice SwiftGitX made, kept so the
-  /// badge doesn't go blank on a just-initialized project.
+  /// fatal without a HEAD); counting from the empty tree keeps the badge from going blank on a
+  /// just-initialized project.
   static func workingTree(root: URL) -> (insertions: Int, deletions: Int)? {
     LibGit2.withRepository(root) { repo in
       // NULL tree on unborn HEAD (see above); libgit2's free functions tolerate NULL.
