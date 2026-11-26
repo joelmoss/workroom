@@ -121,6 +121,22 @@ struct SidebarOpenList: View, Equatable {
     }
   }
 
+  /// One List row: a workroom tab's own (`tab` nil), or one of its tabs.
+  struct Entry: Identifiable {
+    let id: OpenSectionItem
+    let row: OpenSectionRow
+    let tab: OpenSectionTabRow?
+  }
+
+  /// `items(of:)`'s rows with what each draws.
+  static func entries(of rows: [OpenSectionRow]) -> [Entry] {
+    rows.flatMap { row -> [Entry] in
+      [Entry(id: .workroom(row.sid), row: row, tab: nil)]
+        + (row.isFolded
+          ? [] : row.tabs.map { Entry(id: .tab($0.tab.id, in: row.sid), row: row, tab: $0) })
+    }
+  }
+
   /// The height the list's rows take, for the pane to size itself to them while no layout is
   /// saved; one row for the empty state.
   static func contentHeight(of rows: [OpenSectionRow]) -> CGFloat {
@@ -138,10 +154,13 @@ struct SidebarOpenList: View, Equatable {
           if rows.isEmpty {
             emptyState
           }
-          ForEach(rows) { row in
-            workroomRow(row, items: items)
-            if !row.isFolded {
-              ForEach(row.tabs) { tab in tabRow(tab, in: row, items: items) }
+          // One element per List row: a ForEach whose element yields a varying number of rows (a
+          // workroom's row and its tabs) can't be diffed, so the List reloads whole as one unfolds.
+          ForEach(Self.entries(of: rows)) { entry in
+            if let tab = entry.tab {
+              tabRow(tab, in: entry.row, items: items)
+            } else {
+              workroomRow(entry.row, items: items)
             }
           }
         }
