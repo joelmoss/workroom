@@ -107,16 +107,18 @@ final class OpenSectionUITests: XCTestCase {
     XCTAssertNotEqual(chips[0], chips[1], "each row selected its own tab in the strip")
   }
 
-  /// The switcher's "+" menu opens anything, in the Open view.
-  func testThePlusMenuOffersOpenWorkroomNewTerminalAndNewGroup() {
+  /// The switcher's "+" menu makes a terminal or a group, in the Open view; opening a workroom is
+  /// ⌘O's.
+  func testThePlusMenuOffersNewTerminalAndNewGroup() {
     let app = launchedApp()
     let plus = element(app, "sidebar.add")
     XCTAssertTrue(plus.waitForExistence(timeout: 15), "the switcher's \"+\"")
 
     plus.click()
-    for title in ["Open Workroom…", "New Terminal", "New Terminal Group…"] {
+    for title in ["New Terminal", "New Terminal Group…"] {
       XCTAssertNotNil(app.waitForHittableMenuItem(titled: title), "its menu offers \(title)")
     }
+    XCTAssertFalse(element(app, "sidebar.open.add.openWorkroom").exists, "not Open Workroom…")
     app.typeKey(.escape, modifierFlags: [])
   }
 }
