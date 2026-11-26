@@ -317,9 +317,10 @@ final class DetachedPaneWindows {
     // detach, so it never shows for a frame first.
     var milestones: [(fraction: Double, action: () -> Void)] = []
     if plan.moves {
-      source.setInFlight(true)
+      let setInFlight = source.setInFlight
+      setInFlight(true)
       milestones.append(
-        (PaneWindowMotion.Tuning.placeholderRevealFraction, { source.setInFlight(false) }))
+        (PaneWindowMotion.Tuning.placeholderRevealFraction, { setInFlight(false) }))
     }
     return PaneWindowTransition(
       kind: .popOut, plan: plan, surface: surface, animator: animator, milestones: milestones
