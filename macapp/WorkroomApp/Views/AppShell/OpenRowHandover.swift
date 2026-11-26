@@ -14,7 +14,7 @@ extension OpenRowLift {
     _ tab: TerminalTab.ID, of owner: SidebarID, rows: [OpenSectionRow], store: AppStore
   ) -> Set<SidebarID> {
     Set(
-      rows.filter { $0.sid != owner && !$0.tabs.isEmpty }.map(\.sid).filter {
+      rows.filter { $0.sid != owner && $0.canFold }.map(\.sid).filter {
         store.canDropTerminals(.terminal(tab, of: owner), on: .target($0))
       })
   }
@@ -80,7 +80,8 @@ extension OpenRowLift {
       // Cheap first, as this runs on every move of the drag: over the list at all.
       let (_, shown) = Self.listRow(.target(item.owner), in: store), shown.contains(screen)
     else { return }
-    let rows = store.openSectionRows()
+    // With the tab it lifts, under its workroom although that is folded.
+    let rows = store.openSectionRows(showing: item)
     guard let row = rows.first(where: { $0.sid == item.owner }) else { return }
     let measured = SidebarOpenList.items(of: rows)
     let items = SidebarOpenList.items(of: rows, showing: item)

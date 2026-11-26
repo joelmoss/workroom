@@ -9,12 +9,22 @@ import WorkroomDomain
 /// disagree. Fold state is the one thing it adds.
 extension AppStore {
 
-  /// The Open section's rows, in title-bar order, each holding its tabs in strip order.
-  func openSectionRows() -> [OpenSectionRow] {
+  /// The Open section's rows, in title-bar order, each holding its tabs in strip order. A folded
+  /// row holds only `showing`, when it is one of its tabs: its placeholder while a drag lifts it
+  /// (nil: the lifted row of this window's list, if any). Its other tabs draw nothing, so their
+  /// rows (unread counts, run state, diagnoses, what is on screen) are not built.
+  func openSectionRows(showing: OpenSectionItem? = nil) -> [OpenSectionRow] {
+    let showing = showing ?? OpenRowLift.shared.reflow(for: self)?.dragged
     let visibleSplit = resolvedSplitLeaves().map { Set($0.map(\.sid)) } ?? []
     return displayedWorkroomTargets().map { sid, target in
       let isSelected = sid == selectedTargetID
-      let tabs = openSectionTabRows(sid: sid, target: target, isSelected: isSelected)
+      let isFolded = isOpenRowFolded(sid)
+      let tabs = terminals.tabs(for: target)
+      let stripTabs =
+        TerminalPanes.showsTabStrip(tabCount: tabs.count, for: target.id) ? tabs : []
+      let built =
+        isFolded
+        ? stripTabs.filter { showing == .tab($0.id, in: sid) } : stripTabs
       return OpenSectionRow(
         model: OpenSectionWorkroomRowModel(
           sid: sid, target: target,
@@ -22,17 +32,16 @@ extension AppStore {
           marks: workroomTabMarks(sid: sid, target: target),
           isSelected: isSelected,
           isVisibleInSplit: !isSelected && visibleSplit.contains(sid),
-          isFolded: isOpenRowFolded(sid), tabCount: tabs.count),
-        tabs: tabs)
+          isFolded: isFolded, tabCount: stripTabs.count),
+        tabs: openSectionTabRows(built, sid: sid, target: target, isSelected: isSelected))
     }
   }
 
-  /// `target`'s tabs as its strip shows them, or none where it shows no strip.
+  /// The rows of `tabs`, `target`'s tabs as its strip shows them.
   private func openSectionTabRows(
-    sid: SidebarID, target: TerminalTarget, isSelected: Bool
+    _ tabs: [TerminalTab], sid: SidebarID, target: TerminalTarget, isSelected: Bool
   ) -> [OpenSectionTabRow] {
-    let tabs = terminals.tabs(for: target)
-    guard TerminalPanes.showsTabStrip(tabCount: tabs.count, for: target.id) else { return [] }
+    guard !tabs.isEmpty else { return [] }
     let activeID = terminals.activeTab(for: target)?.id
     // The tabs on screen in this target's panes, when the target itself is on screen.
     let shown: Set<TerminalTab.ID> =
@@ -100,8 +109,7 @@ extension AppStore {
   /// context together. Selecting the current one is a no-op, not a republish.
   func selectWorkroomTab(_ sid: SidebarID) {
     guard selectedTargetID != sid else { return }
-    selectedTargetID = sid
-    selectedProjectID = Self.projectPath(of: sid)
+    focusWorkroomMember(sid)
   }
 
   /// An Open row's "+": a new terminal in its group, root or workroom, selected as ⌘T's would be,
@@ -184,7 +192,8 @@ struct OpenSectionRow: Identifiable {
   /// What its own row draws, which that row's equality gate compares whole.
   let model: OpenSectionWorkroomRowModel
   /// The tabs its strip shows, in strip order. Empty for a standalone terminal's one terminal,
-  /// which shows no strip: the row itself is that terminal.
+  /// which shows no strip: the row itself is that terminal. Folded, only a lifted tab's
+  /// (`AppStore.openSectionRows(showing:)`); `model.tabCount` counts them all.
   let tabs: [OpenSectionTabRow]
 
   var id: SidebarID { sid }

@@ -130,6 +130,7 @@ final class OpenSectionDropTests: XCTestCase {
 
     XCTAssertTrue(dropped)
     XCTAssertEqual(openRows(store), [ops])
+    store.setOpenRow(ops, folded: false)
     let row = try XCTUnwrap(store.openSectionRows().first)
     XCTAssertEqual(row.tabs.last?.tab.id, aTab, "at the group's end")
   }
@@ -316,9 +317,11 @@ final class OpenSectionDropTests: XCTestCase {
     let opsTabs = tabs(store, ops)
     let rows = store.openSectionRows()
     XCTAssertEqual(SidebarOpenList.items(of: rows), [.workroom(ops)])
+    // Built with the lifted tab, as the lift builds them.
+    let lifted = OpenSectionItem.tab(opsTabs[1], in: ops)
     XCTAssertEqual(
-      SidebarOpenList.items(of: rows, showing: .tab(opsTabs[1], in: ops)),
-      [.workroom(ops), .tab(opsTabs[1], in: ops)])
+      SidebarOpenList.items(of: store.openSectionRows(showing: lifted), showing: lifted),
+      [.workroom(ops), lifted])
   }
 
   // MARK: The Quick Terminal

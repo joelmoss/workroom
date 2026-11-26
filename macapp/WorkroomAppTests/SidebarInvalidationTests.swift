@@ -742,6 +742,8 @@ final class SidebarInvalidationTests: XCTestCase {
     let f = try fixture(view: .open)
     defer { close(f) }
     _ = f.store.terminals.addTab(for: f.a.rootTarget)
+    // Unfolded, so its tab rows are built.
+    f.store.setOpenRow(f.rootA, folded: false)
     let row = try XCTUnwrap(f.store.openSectionRows().first { $0.sid == f.rootA })
     let tab = try XCTUnwrap(row.tabs.first)
     for ghost in [

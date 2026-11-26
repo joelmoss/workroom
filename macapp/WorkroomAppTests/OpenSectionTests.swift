@@ -197,9 +197,12 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertTrue(selected.isSelected)
     XCTAssertEqual(selected.tabs.filter(\.isFocused).map(\.id), [focused])
 
+    // Unfolded, so it lists its tab: a folded row lists none.
+    store.setOpenRow(one, folded: false)
     let other = try row(one, in: store)
     XCTAssertFalse(other.isSelected)
     XCTAssertFalse(other.isVisibleInSplit)
+    XCTAssertEqual(other.tabs.count, 1)
     XCTAssertTrue(other.tabs.allSatisfy { !$0.isFocused && !$0.isVisibleInSplit })
   }
 
@@ -218,6 +221,7 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertEqual(selected.tabs.filter(\.isFocused).map(\.id), [focused])
     XCTAssertEqual(selected.tabs.filter(\.isVisibleInSplit).count, 1, "the other pane")
 
+    store.setOpenRow(two, folded: false)
     let beside = try row(two, in: store)
     XCTAssertTrue(beside.isVisibleInSplit)
     XCTAssertEqual(beside.tabs.filter(\.isVisibleInSplit).count, 1, "its pane is on screen")
@@ -236,6 +240,28 @@ final class OpenSectionTests: XCTestCase {
     store.selectWorkroomTab(one)
     XCTAssertFalse(try row(one, in: store).isFolded, "selecting a folded row unfolds it")
     XCTAssertTrue(try row(two, in: store).isFolded)
+  }
+
+  /// Value: protects=a folded row builds no tab rows, which it would only throw away, and only a
+  /// lifted tab's placeholder is built under it; fails_when=every tab of every
+  /// row is built, folded or not; seam=AppStore.openSectionRows(showing:); no_claim=the list's
+  /// passes (SidebarInvalidationTests)
+  func testAFoldedRowBuildsOnlyALiftedTabsRow() throws {
+    let store = makeStore()
+    let first = try open(one, in: store)
+    store.terminals.addTab(for: first)
+    try open(two, in: store)
+    let tabs = store.terminals.tabs(for: first).map(\.id)
+
+    let folded = try row(one, in: store)
+    XCTAssertTrue(folded.isFolded)
+    XCTAssertEqual(folded.model.tabCount, 2, "it counts the tabs it folds")
+    XCTAssertTrue(folded.canFold)
+    XCTAssertTrue(folded.tabs.isEmpty, "it builds none of them")
+
+    let lifted = try XCTUnwrap(
+      store.openSectionRows(showing: .tab(tabs[1], in: one)).first { $0.sid == one })
+    XCTAssertEqual(lifted.tabs.map(\.id), [tabs[1]], "only the lifted tab's placeholder")
   }
 
   func testAFoldChoiceStays() throws {
