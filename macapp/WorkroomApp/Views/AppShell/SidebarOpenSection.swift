@@ -51,6 +51,7 @@ struct SidebarOpenList: View, Equatable {
   @EnvironmentObject private var runCommand: RunCommandController
   @EnvironmentObject private var vcsStatus: VCSStatusService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.store === rhs.store && lhs.drag == rhs.drag
@@ -169,18 +170,28 @@ struct SidebarOpenList: View, Equatable {
     return .workroom(row.sid)
   }
 
+  /// With nothing open, a link that opens a new terminal, as the "+" menu's New Terminal does.
   private var emptyState: some View {
-    Text("Nothing open")
+    Button {
+      store.newStandaloneTerminal()
+    } label: {
+      HStack(spacing: Spacing.xs) {
+        Text("New Terminal")
+        Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+      }
       .font(FontRole.body)
-      .foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.leading, SidebarRowMetrics.caretWidth + Spacing.s)
-      .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
-      .help("Open a workroom with ⌘O, or use the + above")
-      .accessibilityIdentifier("sidebar.open.empty")
-      .listRowInsets(EdgeInsets())
-      .listRowSeparator(.hidden)
-      .listRowBackground(Color.clear)
+      .foregroundStyle(tokens.accent)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.leading, SidebarRowMetrics.caretWidth + Spacing.s)
+    .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
+    .help("Open a new terminal (⌥⌘T)")
+    .accessibilityIdentifier("sidebar.open.empty")
+    .listRowInsets(EdgeInsets())
+    .listRowSeparator(.hidden)
+    .listRowBackground(Color.clear)
   }
 
   /// A workroom tab's row. `lifted`: a drag has lifted it, and its slot is the gap the ghost
@@ -203,9 +214,9 @@ struct SidebarOpenList: View, Equatable {
         .listRowBackground(
           SidebarOpenRowBackground(
             hovered: hovered,
-            emphasis: row.isSelected
-              ? (row.isFolded || row.tabs.isEmpty ? .selected : .selectedParent)
-              : row.isVisibleInSplit ? .visible : .none
+            // Only what has the keyboard is highlighted: the selected workroom's row while it
+            // shows no tab rows, else its focused tab's.
+            emphasis: row.isSelected && (row.isFolded || row.tabs.isEmpty) ? .selected : .none
           )
           .opacity(lifted ? 0 : 1))
     }
@@ -232,7 +243,7 @@ struct SidebarOpenList: View, Equatable {
         .listRowBackground(
           SidebarOpenRowBackground(
             hovered: hovered,
-            emphasis: tab.isFocused ? .selected : tab.isVisibleInSplit ? .visible : .none
+            emphasis: tab.isFocused ? .selected : .none
           )
           .opacity(lifted ? 0 : 1))
     }
@@ -422,28 +433,16 @@ struct SidebarOpenList: View, Equatable {
   }
 }
 
-/// An Open row's fill: the selection for the selected workroom (when its focused tab isn't shown
-/// under it) and the focused tab, a lighter one for the selected workroom over its tabs, and a
-/// faint accent for what is on screen in another pane of a split.
+/// An Open row's fill: the selection for the one row that has the keyboard (the selected
+/// workroom's when it shows no tab rows, else its focused tab's), else the hover.
 struct SidebarOpenRowBackground: View {
-  enum Emphasis { case none, visible, selectedParent, selected }
+  enum Emphasis { case none, selected }
   let hovered: Bool
   let emphasis: Emphasis
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     switch emphasis {
     case .selected: SidebarSelectedRowFill()
-    case .selectedParent:
-      RoundedRectangle(cornerRadius: Radius.s)
-        .fill(tokens.hover)
-        .padding(.horizontal, SidebarRowMetrics.listContentInset)
-        .padding(.vertical, 1)
-    case .visible:
-      RoundedRectangle(cornerRadius: Radius.s)
-        .fill(tokens.accent.opacity(hovered ? 0.14 : 0.08))
-        .padding(.horizontal, SidebarRowMetrics.listContentInset)
-        .padding(.vertical, 1)
     case .none:
       RowHighlight(
         selected: false, hovered: hovered, horizontalPadding: SidebarRowMetrics.listContentInset)
@@ -475,6 +474,11 @@ struct SidebarOpenWorkroomRow: View, Equatable {
   private var marks: WorkroomTabMarks { row.marks }
   private var id: String { row.target.id.encoded }
 
+  private var isGroup: Bool {
+    if case .terminalGroup = row.sid { return true }
+    return false
+  }
+
   var body: some View {
     #if DEBUG
       SidebarRowPasses.openRows[.workroom(row.sid), default: 0] += 1
@@ -491,6 +495,14 @@ struct SidebarOpenWorkroomRow: View, Equatable {
         statusMark
         runMark
       } buttons: {
+        if isGroup {
+          // A group's row offers a new terminal in it beside its ✕.
+          SidebarIconButton(
+            systemImage: "plus", help: "New Terminal in \(presentation.fullTitle)",
+            label: "New Terminal in \(presentation.fullTitle)", id: "sidebar.open.newTerminal.\(id)"
+          ) { store.newTerminalInGroup(row.sid) }
+        }
+        // Room for the ✕ the overlay draws.
         Color.clear.frame(width: SidebarRowMetrics.iconColumnWidth, height: 1)
       }
     }
