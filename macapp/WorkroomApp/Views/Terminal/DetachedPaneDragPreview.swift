@@ -8,10 +8,8 @@ import SwiftUI
 /// This is a borderless floating panel instead, so it can follow the pointer anywhere on screen, and
 /// it is drawn at the size and position the real window will take: what you see is where it lands.
 ///
-/// Modelled on `SwitcherPanel`, including the two properties that are load-bearing rather than
-/// stylistic: `isOpaque = false` (an opaque panel makes every terminal behind it believe it is
-/// occluded and stop rendering) and `hasShadow = false` (a borderless non-opaque panel casts no system
-/// shadow at all — measured — so the content draws its own).
+/// Its panel is `DragGhostPanel`'s, which says why it is not opaque and casts no shadow, so the
+/// content draws its own.
 @MainActor
 final class DetachedPaneDragPreview {
   static let shared = DetachedPaneDragPreview()
