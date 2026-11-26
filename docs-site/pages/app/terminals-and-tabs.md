@@ -91,7 +91,7 @@ The Quick Terminal's tabs take a drag from any window while its panel is showing
 
 While you drag, the place it will go is highlighted, with a line where the terminals will land. Anywhere it can't go shows no highlight, and letting go there does nothing. Every drag inside the window carries the same label with the dragged item's name next to the pointer.
 
-Edges and gaps keep their meaning. Let a row go between the **Open** view's own rows and it reorders them. Let a title-bar tab go near another's edge and it reorders the tabs. Dragging a tab along its own strip reorders it, and onto a pane's edge splits it, as before.
+Edges and gaps keep their meaning. Let a row go between the **Open** view's own rows and it reorders them: the rows slide apart to show the gap it will land in. Let a title-bar tab go near another's edge and it reorders the tabs. Dragging a tab along its own strip reorders it, and onto a pane's edge splits it, as before.
 
 Whichever way you drag, the terminal keeps running, with its scrollback. A group left with no terminals is deleted. A terminal that runs on a remote host can't become standalone or join a group, and nothing can move into a remote workroom, because the shell runs where it started.
 

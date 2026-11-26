@@ -1,8 +1,8 @@
 import XCTest
 
 /// The sidebar's Open view (#819, ADR 0082, ADR 0083), through the real window: a window opens on
-/// it, with no Terminals heading, its rows select the targets and tabs they stand for, and the
-/// switcher's "+" opens anything from it.
+/// it, with no Terminals heading, its rows select the targets and tabs they stand for and reorder
+/// by drag, and the switcher's "+" makes a terminal or a group from it.
 /// Wiring only; the rows' content, order, fold and drag rules are `OpenSectionTests`' and the
 /// store's. Fixture only, never a real project or config. Run in the VM: `make app-uitest-vm`.
 final class OpenSectionUITests: XCTestCase {
