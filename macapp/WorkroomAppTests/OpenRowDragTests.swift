@@ -68,4 +68,53 @@ final class OpenRowDragTests: XCTestCase {
     drag.ended(item)
     XCTAssertEqual(ends.count, 1)
   }
+
+  /// The gesture's first report as the press makes it: where the row was pressed.
+  private func press(_ drag: OpenRowDrag) {
+    drag.changed(
+      item, location: CGPoint(x: 100, y: 100), startLocation: CGPoint(x: 100, y: 100),
+      onMove: { self.moves.append($0) }, onEnd: { self.ends.append($0) })
+  }
+
+  /// Value: protects=a drag armed by the press alone follows the pointer once it travels the
+  /// threshold, though the row's gesture reports nothing after the press; fails_when=a drag the
+  /// table takes before the gesture's first move never starts (#819: a straight, quick drag of a
+  /// standalone row reordered nothing in the VM); why_new=#819 final; seam=OpenRowDrag;
+  /// no_claim=the table's tracking itself (VM UI tests)
+  func testAPressArmsTheDragAndItsMovesBeginPastTheThreshold() {
+    let drag = follower()
+    press(drag)
+    XCTAssertTrue(moves.isEmpty, "a press is no move yet")
+
+    location = CGPoint(x: 400, y: 897)
+    drag.poll()
+    XCTAssertTrue(moves.isEmpty, "3 points is a click's wobble, not a drag")
+
+    location = CGPoint(x: 400, y: 880)
+    drag.poll()
+    XCTAssertEqual(moves.map(\.translation), [CGSize(width: 0, height: 20)])
+
+    // Let go further on than the last read: the release's own place is the last move.
+    location = CGPoint(x: 400, y: 850)
+    isDown = false
+    drag.poll()
+    XCTAssertEqual(moves.last?.translation, CGSize(width: 0, height: 50))
+    XCTAssertEqual(ends.map(\.translation), [CGSize(width: 0, height: 50)])
+  }
+
+  /// Value: protects=a click on an Open row, now that every press arms a drag, makes no drag: no
+  /// move and no end, so no session, ghost or drop; fails_when=a click reorders, drops or shows a
+  /// ghost; why_new=#819 final; seam=OpenRowDrag; no_claim=the tap's own selection
+  func testAPressLetGoWithoutTravelMakesNoDrag() {
+    let drag = follower()
+    press(drag)
+    location = CGPoint(x: 402, y: 899)
+    drag.poll()
+    isDown = false
+    drag.poll()
+    drag.ended(item)
+    XCTAssertTrue(moves.isEmpty)
+    XCTAssertTrue(ends.isEmpty)
+    XCTAssertFalse(drag.isFollowing(item))
+  }
 }
