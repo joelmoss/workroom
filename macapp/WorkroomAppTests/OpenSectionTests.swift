@@ -67,6 +67,26 @@ final class OpenSectionTests: XCTestCase {
     try XCTUnwrap(store.openSectionRows().first { $0.sid == sid }, "\(sid) has a row")
   }
 
+  /// Value: protects=an Open row's "+" opening a terminal in that workroom, selected, and doing
+  /// nothing on a standalone terminal's row (owner, 2026-11-26); fails_when=it opens in the
+  /// selected workroom instead, or turns a standalone terminal into a group; seam=AppStore.
+  func testARowsPlusOpensATerminalInIt() throws {
+    let store = makeStore()
+    let first = try open(one, in: store)
+    try open(two, in: store)
+    store.newStandaloneTerminal()
+    let standalone = try XCTUnwrap(store.selectedTargetID)
+
+    store.newTerminalInOpenRow(one)
+    XCTAssertEqual(store.selectedTargetID, one, "the row's workroom is selected")
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: first.id), 2, "with a new terminal")
+
+    let rows = store.openSectionRows().count
+    store.newTerminalInOpenRow(standalone)
+    XCTAssertEqual(store.openSectionRows().count, rows, "a standalone terminal's row has no +")
+    XCTAssertEqual(store.selectedTargetID, one)
+  }
+
   // MARK: Workroom rows mirror the title bar
 
   func testTheRowsAreTheTitleBarsWorkroomTabsInItsOrder() throws {

@@ -185,7 +185,6 @@ struct SidebarOpenList: View, Equatable {
     }
     .buttonStyle(.plain)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.leading, SidebarRowMetrics.caretWidth + Spacing.s)
     .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
     .help("Open a new terminal (⌥⌘T)")
     .accessibilityIdentifier("sidebar.open.empty")
@@ -474,9 +473,11 @@ struct SidebarOpenWorkroomRow: View, Equatable {
   private var marks: WorkroomTabMarks { row.marks }
   private var id: String { row.target.id.encoded }
 
-  private var isGroup: Bool {
-    if case .terminalGroup = row.sid { return true }
-    return false
+  /// Every row but a standalone terminal's offers a new terminal in it: a standalone terminal is
+  /// one terminal.
+  private var offersNewTerminal: Bool {
+    if case .standalone = row.sid { return false }
+    return row.target.opensTerminals
   }
 
   var body: some View {
@@ -495,12 +496,12 @@ struct SidebarOpenWorkroomRow: View, Equatable {
         statusMark
         runMark
       } buttons: {
-        if isGroup {
-          // A group's row offers a new terminal in it beside its ✕.
+        if offersNewTerminal {
+          // A new terminal in the row's group, root or workroom, beside its ✕.
           SidebarIconButton(
             systemImage: "plus", help: "New Terminal in \(presentation.fullTitle)",
             label: "New Terminal in \(presentation.fullTitle)", id: "sidebar.open.newTerminal.\(id)"
-          ) { store.newTerminalInGroup(row.sid) }
+          ) { store.newTerminalInOpenRow(row.sid) }
         }
         // Room for the ✕ the overlay draws.
         Color.clear.frame(width: SidebarRowMetrics.iconColumnWidth, height: 1)
