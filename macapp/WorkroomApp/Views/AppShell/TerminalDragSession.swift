@@ -50,7 +50,9 @@ final class TerminalDragSession {
   private weak var otherHost: (any PaneDropZoneHost)?
   private let measure: @MainActor (AppStore) -> [Zone]
   /// Where the sidebar switcher's tabs are on screen (ADR 0083): tests give their own.
-  private let springTabs: @MainActor (AppStore) -> [(view: SidebarView, rect: CGRect)]
+  private let measureSpringTabs: @MainActor (AppStore) -> [(view: SidebarView, rect: CGRect)]
+  /// The switcher's tabs, measured with the zones.
+  private var springTabs: [(view: SidebarView, rect: CGRect)] = []
   /// The timer that shows the hidden view whose tab the drag rests on
   /// (`AppStore.sidebarSpringTarget`).
   private var springTimer: Timer?
@@ -77,7 +79,7 @@ final class TerminalDragSession {
   ) {
     self.store = store
     self.measure = measure
-    self.springTabs = springTabs
+    self.measureSpringTabs = springTabs
   }
 
   /// `source`'s drag from `surface` is at `screenPoint`: starts the session if it is a new drag,
@@ -195,7 +197,9 @@ final class TerminalDragSession {
     self.surface = surface
     self.zones = zones
     otherHost = zones.lazy.compactMap(\.host).first
-    if let store { OpenRowLift.shared.endHandover(in: store) }
+    guard let store else { return }
+    springTabs = measureSpringTabs(store)
+    OpenRowLift.shared.endHandover(in: store)
   }
 
   /// Ends the session with no drop.
@@ -207,6 +211,7 @@ final class TerminalDragSession {
     source = nil
     highlight(nil, on: nil)
     zones = []
+    springTabs = []
     otherHost = nil
   }
 
@@ -219,7 +224,7 @@ final class TerminalDragSession {
     guard let store, let source, !Self.isProjectsTreeRow(source, from: surface) else {
       return clearSpring()
     }
-    let over = springTabs(store).first {
+    let over = springTabs.first {
       $0.view != store.sidebarView && $0.rect.contains(screenPoint)
     }?.view
     guard over != store.sidebarSpringTarget else { return }
@@ -254,6 +259,7 @@ final class TerminalDragSession {
     // Measured with no row lifted: an outside drag lifts its row again as it next moves.
     OpenRowLift.shared.endHandover(in: store)
     zones = measure(store)
+    springTabs = measureSpringTabs(store)
     otherHost = zones.lazy.compactMap(\.host).first ?? otherHost
   }
 
