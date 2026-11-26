@@ -118,6 +118,14 @@ The libghostty view that renders a tab's terminal.
 **Reattach**:
 Reconnecting a pane to a session that is still running and repainting its screen.
 
+**Resume**:
+Starting a program again in a pane's new session, as the program last reported it should be, when the pane's session is gone after a reboot, a daemon crash or a host restart: a coding agent carries on its conversation. Any program that reports how to resume itself (OSC 7577, the Program Resume Protocol) resumes; Claude Code reports through a hook Workroom installs, and Codex will once it reports itself. A program that never reported comes back as a new shell, and a run command as a stopped tab.
+_Avoid_: Restore (the saved layout's), reattach (a live session's)
+
+**Resume record**:
+How a program in a session last said it should be started again, its command and folder, kept for that session until the program exits, clears it or the tab closes; a session that dies keeps it, so its pane can resume.
+_Avoid_: Snapshot, resume report (the message a record comes from)
+
 **Run command**:
 A command the user sets to run in a workroom, such as `npm start`, started in a tab. It runs where the workroom lives, this Mac or its host, and its tab survives quit like any terminal (ADR 0058). The daemon runs it as a **run session**, under the run supervisor.
 
@@ -223,6 +231,10 @@ Owns the Claude and Codex features: failure diagnosis, investigating a failed co
 **Coding agent**:
 Claude or Codex, the AI coding tool a user runs in a terminal and the app reads or calls.
 _Avoid_: Agent
+
+**Conversation**:
+A coding agent's own record of one chat, named by its id: what Claude and Codex each call a session. It outlives the program that had it, so a later program of the same coding agent can carry it on.
+_Avoid_: Session (the daemon's term), thread
 
 **Diagnosis**:
 A coding agent's summary of the cause, and a suggested fix command, for a command that just failed.
