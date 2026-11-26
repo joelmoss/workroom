@@ -677,6 +677,10 @@ struct WorkroomCommands: Commands {
       if let detached = detachedFocus.keyTabID {
         Button("Move back to main window") { AppStore.dockDetachedPane(detached) }
           .shortcut(.movePaneWindow)
+      } else if store?.focusedSlotIsPoppedOut == true {
+        // The main window shows a popped-out pane's placeholder: this pulls it back into that slot.
+        Button("Move back to main window") { store?.detachFocusedPane() }
+          .shortcut(.movePaneWindow)
       } else {
         Button("Move pane into new window") { store?.detachFocusedPane() }
           .shortcut(.movePaneWindow)
