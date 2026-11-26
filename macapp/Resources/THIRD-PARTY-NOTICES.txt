@@ -196,9 +196,9 @@ Copyright 2013-2023 The Cobra Authors
       of your accepting any such warranty or additional liability.
 
 ==============================================================================
-Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app) ea8b12a8a
+Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app) 573c4a21e
 Licence: MIT
-Source: https://github.com/ghostty-org/ghostty/tree/ea8b12a8a
+Source: https://github.com/ghostty-org/ghostty/tree/573c4a21e
 ------------------------------------------------------------------------------
 
 MIT License
@@ -6032,7 +6032,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 ==============================================================================
 Inconsolata and Kawkab Mono fonts (embedded in libghostty) as vendored by Ghostty
 Licence: OFL-1.1
-Source: https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/font/res
+Source: https://github.com/ghostty-org/ghostty/tree/573c4a21e/src/font/res
 README.md is Ghostty's list of the fonts in that directory and their copyright
 holders.
 ------------------------------------------------------------------------------
@@ -6173,9 +6173,9 @@ A full copy of the MIT license can be found at [MIT.txt](./MIT.txt).
 A full copy of the BSD 2-Clause license can be found at [BSD-2-Clause.txt](./BSD-2-Clause.txt).
 
 ==============================================================================
-Ghostty's bash and zsh shell integration (Contents/Resources/ghostty/shell-integration), based on Kitty's ea8b12a8a
+Ghostty's bash and zsh shell integration (Contents/Resources/ghostty/shell-integration), based on Kitty's 573c4a21e
 Licence: GPL-3.0-or-later
-Source: https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/shell-integration
+Source: https://github.com/ghostty-org/ghostty/tree/573c4a21e/src/shell-integration
 These scripts ship as source, unmodified, with their licence headers, in
 Contents/Resources/ghostty/shell-integration. A LICENSE with the licence's
 text sits beside them there and on every remote host they are pushed to (the
