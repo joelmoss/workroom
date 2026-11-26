@@ -10015,9 +10015,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-DOMPurify (Markdown preview) 3.4.11
+DOMPurify (Markdown preview) 3.5.0
 Licence: Apache-2.0 (offered under MPL-2.0 OR Apache-2.0)
-Source: https://github.com/cure53/DOMPurify/tree/3.4.11
+Source: https://github.com/cure53/DOMPurify/tree/3.5.0
 DOMPurify has no NOTICE file.
 ------------------------------------------------------------------------------
 
@@ -10226,9 +10226,9 @@ Copyright (c) Cure53 and other contributors
    limitations under the License.
 
 ==============================================================================
-marked (Markdown preview) 18.0.5
+marked (Markdown preview) 18.3.0
 Licence: MIT AND BSD-3-Clause
-Source: https://github.com/markedjs/marked/tree/v18.0.5
+Source: https://github.com/markedjs/marked/tree/v18.3.0
 ------------------------------------------------------------------------------
 
 # License information
@@ -10277,13 +10277,15 @@ Redistribution and use in source and binary forms, with or without modification,
 This software is provided by the copyright holders and contributors “as is” and any express or implied warranties, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed. In no event shall the copyright owner or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
 
 ==============================================================================
-Pele (Markdown preview diagrams), with Lucide's rotate-ccw icon 1.8.0, Lucide 1.14.0
+Pele (Markdown preview diagrams), with Lucide's rotate-ccw icon 1.13.0, Lucide 1.14.0
 Licence: MIT AND ISC
-Source: https://github.com/obsidianmd/pele/tree/1.8.0
+Source: https://github.com/obsidianmd/pele/tree/1.13.0
 pele.global.js carries Lucide's rotate-ccw icon (https://lucide.dev, ISC),
 whose notice is in Pele's licence file below. It bundles no other third-party
-code: Pele 1.8.0 has no runtime dependencies, and its devDependencies are
-build and test tools (checked against its package.json and sources at 1.8.0).
+code: Pele 1.13.0 has no runtime dependencies, its devDependencies are the
+same build and test tools as 1.8.0's (checked against its package.json and
+sources at 1.8.0), and its built pele.global.js carries none of their code or
+licence headers (checked at 1.13.0).
 ------------------------------------------------------------------------------
 
 MIT License
