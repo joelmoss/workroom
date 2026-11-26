@@ -471,12 +471,16 @@ public struct GitProvider: LocalVCSProviding {
     return out
   }
 
-  /// A patch line's prefix: `+` for an addition, `-` for a deletion (each with or without the
-  /// end-of-file-newline marker), a space for everything else.
+  /// A patch line's prefix: `+` for an addition, `-` for a deletion, a space for context, and none
+  /// for git's `\ No newline at end of file` marker (`GIT_DIFF_LINE_*_EOFNL`), whose text starts with
+  /// the newline that ends the line before it.
   private static func prefix(_ origin: CChar) -> String {
     switch UInt32(UInt8(bitPattern: origin)) {
-    case GIT_DIFF_LINE_ADDITION.rawValue, GIT_DIFF_LINE_ADD_EOFNL.rawValue: "+"
-    case GIT_DIFF_LINE_DELETION.rawValue, GIT_DIFF_LINE_DEL_EOFNL.rawValue: "-"
+    case GIT_DIFF_LINE_ADDITION.rawValue: "+"
+    case GIT_DIFF_LINE_DELETION.rawValue: "-"
+    case GIT_DIFF_LINE_CONTEXT_EOFNL.rawValue, GIT_DIFF_LINE_ADD_EOFNL.rawValue,
+      GIT_DIFF_LINE_DEL_EOFNL.rawValue:
+      ""
     default: " "
     }
   }
