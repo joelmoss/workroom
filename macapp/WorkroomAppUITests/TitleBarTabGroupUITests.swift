@@ -113,15 +113,14 @@ final class TitleBarTabGroupUITests: XCTestCase {
     let group = element(app, "workroom.tab.\(ops)")
     XCTAssertTrue(tab.waitForExistence(timeout: 15))
     XCTAssertTrue(group.waitForExistence(timeout: 5))
-    let terminals = elements(app, prefix: "sidebar.open.tab.")
-    XCTAssertTrue(waitForCount(terminals, 2), "Ops starts with two")
+    XCTAssertTrue(waitFor { app.openTabRows(of: self.ops) == 2 }, "Ops starts with two")
 
     drag(tab, onto: group)
 
     XCTAssertTrue(waitForCount(elements(app, prefix: "workroom.tab.standalone:"), 0))
     XCTAssertTrue(waitForCount(elements(app, prefix: "workroom.tab.group:"), 1), "only Ops")
     XCTAssertTrue(group.exists)
-    XCTAssertTrue(waitForCount(terminals, 3), "Ops has three")
+    XCTAssertTrue(waitFor { app.openTabRows(of: self.ops) == 3 }, "Ops has three")
   }
 
   /// Value: protects=case 3 in the real window: a group's tab let go on another group's moves
@@ -136,8 +135,8 @@ final class TitleBarTabGroupUITests: XCTestCase {
     let devTab = element(app, "workroom.tab.\(dev)")
     XCTAssertTrue(opsTab.waitForExistence(timeout: 15))
     XCTAssertTrue(devTab.waitForExistence(timeout: 5))
-    let terminals = elements(app, prefix: "sidebar.open.tab.")
-    XCTAssertTrue(waitForCount(terminals, 3))
+    XCTAssertTrue(waitFor { app.openTabRows(of: self.ops) == 2 }, "Ops has two")
+    XCTAssertTrue(waitFor { app.openTabRows(of: self.dev) == 1 }, "Dev has one")
 
     drag(opsTab, onto: devTab)
 
@@ -145,7 +144,7 @@ final class TitleBarTabGroupUITests: XCTestCase {
     XCTAssertTrue(devTab.exists)
     XCTAssertTrue(
       waitFor { !self.element(app, "sidebar.open.workroom.\(self.ops)").exists }, "Ops goes")
-    XCTAssertTrue(waitForCount(terminals, 3), "every terminal kept")
+    XCTAssertTrue(waitFor { app.openTabRows(of: self.dev) == 3 }, "every terminal kept")
   }
 }
 
