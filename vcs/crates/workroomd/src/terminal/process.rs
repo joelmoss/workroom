@@ -168,6 +168,27 @@ pub fn program(pid: i32) -> Option<String> {
     program_from_argv(&argv, &|path| names_a_file(pid, path)).map(str::to_string)
 }
 
+/// Who a live process is: its pid with its start time, which together name it even after the pid
+/// is reused, its parent, and the user it runs as. What the Program Resume Protocol's owner check
+/// walks (`crate::terminal::resume`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub pid: u32,
+    /// When it started, in the platform's own unit: comparable between processes, and fixed for
+    /// a process's life.
+    pub start: u64,
+    pub parent: u32,
+    pub uid: u32,
+}
+
+/// `pid`'s identity, `None` when it is gone, a zombie, or can't be read.
+pub fn identity(pid: u32) -> Option<Identity> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    platform::identity(pid)
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use super::name_from_argv;
@@ -301,6 +322,38 @@ mod platform {
         let end = path.iter().position(|b| *b == 0).unwrap_or(path.len());
         (end > 0).then(|| String::from_utf8_lossy(&path[..end]).into_owned())
     }
+
+    /// The BSD info's parent and user, and the start time from its resource usage
+    /// (`ri_proc_start_abstime`, mach absolute time). As herdr-core reads them
+    /// (`platform/unix_resume.rs`, Apache-2.0; see `crate::terminal::resume`).
+    pub(super) fn identity(pid: u32) -> Option<super::Identity> {
+        const SZOMB: u32 = 5;
+        let raw = pid as i32;
+        // SAFETY: `proc_bsdinfo` is plain C data, for which all zeroes is a valid value.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as libc::c_int;
+        // SAFETY: `info` is `size` bytes and that is the size passed, so the kernel cannot write
+        // past it.
+        let read = unsafe {
+            libc::proc_pidinfo(raw, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        if read != size || info.pbi_status == SZOMB {
+            return None;
+        }
+        // SAFETY: `rusage_info_v0` is plain C data, for which all zeroes is a valid value.
+        let mut usage: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
+        // SAFETY: `RUSAGE_INFO_V0` asks for exactly a `rusage_info_v0`, which `usage` is.
+        if unsafe { libc::proc_pid_rusage(raw, libc::RUSAGE_INFO_V0, (&raw mut usage).cast()) } != 0
+        {
+            return None;
+        }
+        Some(super::Identity {
+            pid,
+            start: usage.ri_proc_start_abstime,
+            parent: info.pbi_ppid,
+            uid: info.pbi_uid,
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -355,6 +408,40 @@ mod platform {
         fs::read_link(format!("/proc/{pid}/cwd"))
             .ok()
             .and_then(|p| p.to_str().map(str::to_string))
+    }
+
+    /// The parent and start time (clock ticks since boot) from `stat`, past the command name,
+    /// which can hold spaces and parentheses, and the real user from `status`, both read through
+    /// one open of `/proc/<pid>` so a reused pid can't mix two processes. The user is the effective
+    /// one, the second `Uid:` field, as macOS's `pbi_uid` is. As herdr-core reads them
+    /// (`platform/unix_resume.rs`, Apache-2.0; see `crate::terminal::resume`).
+    pub(super) fn identity(pid: u32) -> Option<super::Identity> {
+        use std::os::fd::AsRawFd;
+        let process = fs::File::open(format!("/proc/{pid}")).ok()?;
+        let dir = std::path::PathBuf::from(format!("/proc/self/fd/{}", process.as_raw_fd()));
+        let stat = fs::read(dir.join("stat")).ok()?;
+        let at = stat.iter().rposition(|b| *b == b')')?;
+        let fields = std::str::from_utf8(&stat[at + 1..]).ok()?;
+        let mut fields = fields.split_ascii_whitespace();
+        if matches!(fields.next(), Some("Z" | "X")) {
+            return None;
+        }
+        let parent = fields.next()?.parse().ok()?;
+        let start = fields.nth(17)?.parse().ok()?;
+        let status = fs::read(dir.join("status")).ok()?;
+        let uid = status
+            .split(|b| *b == b'\n')
+            .find_map(|line| line.strip_prefix(b"Uid:"))
+            .and_then(|s| std::str::from_utf8(s).ok())
+            .and_then(|s| s.split_ascii_whitespace().nth(1))?
+            .parse()
+            .ok()?;
+        Some(super::Identity {
+            pid,
+            start,
+            parent,
+            uid,
+        })
     }
 }
 

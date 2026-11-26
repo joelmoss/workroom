@@ -60,7 +60,7 @@ Branch on `kind`, never on `message`. For example:
 ```
 
 ```json
-{"kind":"TargetAmbiguous","matches":[{"coding_agent":{"app":"claude","message":"Allow `npm test`?","state":"blocked","waiting_on_user":true},"cwd":"/Users/you/workrooms/swift-meadow","id":"5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11","label":"tests","run":false,"scope":{"id":"4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e","kind":"workroom"},"title":"Fix the login test"},{"coding_agent":null,"cwd":"/Users/you/workrooms/swift-meadow","id":"c0ffee00-1111-4222-8333-44445555beef","label":"tests","run":true,"scope":{"id":"4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e","kind":"workroom"},"title":null}],"message":"\"tests\" matches 2 sessions; name one by its id"}
+{"kind":"TargetAmbiguous","matches":[{"coding_agent":{"app":"claude","message":"Allow `npm test`?","state":"blocked","waiting_on_user":true},"cwd":"/Users/you/workrooms/swift-meadow","id":"5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11","label":"tests","resume":{"cwd":"/Users/you/workrooms/swift-meadow","program":"claude","reported_at":1795543200000},"run":false,"scope":{"id":"4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e","kind":"workroom"},"title":"Fix the login test"},{"coding_agent":null,"cwd":"/Users/you/workrooms/swift-meadow","id":"c0ffee00-1111-4222-8333-44445555beef","label":"tests","resume":null,"run":true,"scope":{"id":"4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e","kind":"workroom"},"title":null}],"message":"\"tests\" matches 2 sessions; name one by its id"}
 ```
 
 ```json
@@ -198,6 +198,11 @@ Its `result`:
       "cwd": "/Users/you/workrooms/swift-meadow",
       "id": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
       "label": "claude",
+      "resume": {
+        "cwd": "/Users/you/workrooms/swift-meadow",
+        "program": "claude",
+        "reported_at": 1795543200000
+      },
       "run": false,
       "scope": {
         "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e",
@@ -211,6 +216,7 @@ Its `result`:
       "cwd": "/Users/you/workrooms/swift-meadow",
       "id": "c0ffee00-1111-4222-8333-44445555beef",
       "label": "dev server",
+      "resume": null,
       "run": true,
       "scope": {
         "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e",
@@ -264,6 +270,7 @@ Its `result`:
     "cwd": "/Users/you/workrooms/swift-meadow",
     "id": "c0ffee00-1111-4222-8333-44445555beef",
     "label": "dev server",
+    "resume": null,
     "run": true,
     "scope": {
       "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e",
@@ -613,6 +620,7 @@ Its `result`:
     "cwd": "/Users/you/workrooms/swift-meadow",
     "id": "c0ffee00-1111-4222-8333-44445555beef",
     "label": "dev server",
+    "resume": null,
     "run": true,
     "scope": {
       "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e",
@@ -745,6 +753,7 @@ Its `result`:
     "cwd": "/Users/you/workrooms/swift-meadow",
     "id": "c0ffee00-1111-4222-8333-44445555beef",
     "label": "web",
+    "resume": null,
     "run": true,
     "scope": {
       "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e",
@@ -990,6 +999,10 @@ How every reply that lists sessions gives one.
 | `cwd` | string or null | yes | The working directory of its foreground program. |
 | `id` | string | yes | The session's id, a hyphenated UUID. |
 | `label` | string or null | yes | The session's name, its tab's name in the app: the one the user gave its tab, `session.new`'s `title` or `session.label`'s, which are one name. Null when it has none. |
+| `resume` | object or null | yes | What its program last reported, over the Program Resume Protocol (OSC 7577), about how to start it again should the session be lost: its resume record. Never the command's arguments, which can hold secrets. Null when no program has reported one. |
+| `resume.cwd` | string or null | yes | Where it would start: the folder it reported, else its own when it reported. |
+| `resume.program` | string | yes | The program the record starts, such as `claude`. |
+| `resume.reported_at` | integer | yes | When it reported, in milliseconds since the Unix epoch. |
 | `run` | boolean | yes | Whether it is a run session. |
 | `scope` | object or null | yes | What the session belongs to; null for none. `kind` is `workroom` today, and others may be added. |
 | `scope.id` | string | yes | The workroom, as the app tags it. |

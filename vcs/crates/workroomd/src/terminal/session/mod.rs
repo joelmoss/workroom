@@ -307,6 +307,10 @@ pub struct FrozenSession {
     /// hand-off is built as it was; `None` for one the program had none for, and from a table
     /// before version 5.
     pub recipe: Option<Recipe>,
+    /// Its resume state (ADR 0082): the shell keeps its token across the hand-off, so the next
+    /// program checks reports with the same one. `None` for a session given no token, and from a
+    /// table before version 6.
+    pub resume: Option<crate::terminal::resume::Carried>,
 }
 
 /// What a client needs to know about a session it is not attached to, for the session list.
@@ -340,6 +344,9 @@ pub struct Described {
     /// `terminal-state`.
     pub title: Option<String>,
     pub coding_agent: Option<crate::terminal::program_status::CodingAgent>,
+    /// Its resume record (ADR 0082), without the command's arguments; `None` when no program has
+    /// reported one.
+    pub resume: Option<crate::terminal::resume::Recorded>,
     /// Every client attached to it, in the order they attached (#688).
     pub clients: Vec<ClientInfo>,
 }
@@ -380,6 +387,10 @@ pub struct Session {
     metadata: Vec<(String, String)>,
     /// `SessionSpec::interactive`.
     interactive: bool,
+    /// What its programs reported about resuming them (ADR 0082), `None` for a session given no
+    /// token: a run or one-off command, or one from a daemon running as root. Shared with the
+    /// reader, which feeds it every read under the attachment lock (`read_session`).
+    resume: crate::terminal::resume::SharedResume,
 }
 
 impl Session {
@@ -480,6 +491,8 @@ pub struct TakenScreen {
 ///       │  ├─ Hub.boot      a status event built under it (a read, `change_program_status`)
 ///       │  ├─ Waiter.state  a wait starting: the screen and the shadow's state it starts from
 ///       │  └─ Transfer      a client's image queues: `send_images` taking the next chunk
+///       ├─ resume           per session: a read feeding it reports, the freeze carrying it;
+///       │                   `described` takes it alone, with the map released
 ///       ├─ Transfer         a read stopping a client's transfer
 ///       ├─ Waiter.state     a wait starting on a session whose reader has just ended
 ///       ├─ encoders        the image encoders' sender: `attach` starting a transfer

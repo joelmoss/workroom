@@ -14,6 +14,18 @@
       "pin": {"file": "vcs/crates/workroomd/src/commands/completion.rs", "pattern": "cobra \\(v([0-9.]+)\\)", "value": "1.10.2"}
     },
     {
+      "id": "herdr-core-resume",
+      "name": "herdr-core's Program Resume Protocol (OSC 7577) parser and record rules",
+      "version": "0cb50d57832f3ebb69157ce7f023fbbc520181a8",
+      "license": "Apache-2.0",
+      "source": "https://github.com/herdrdev/herdr-core/tree/0cb50d57832f3ebb69157ce7f023fbbc520181a8/crates/herdr-core/src/resume",
+      "ships": "workroom",
+      "copyright": "The herdr-core authors (herdrdev/herdr-core); its LICENSE carries no copyright line",
+      "note": "Ported into the daemon's resume module (ADR 0082) from herdrdev/herdr-core#429, with changes marked in each file's header. herdr-core has no NOTICE file.",
+      "files": ["vcs/crates/workroomd/src/terminal/resume/LICENSE"],
+      "pin": {"file": "vcs/crates/workroomd/src/terminal/resume.rs", "pattern": "`crates/herdr-core/src/resume\\.rs` at\\s+//! `([0-9a-f]{40})`", "value": "0cb50d57832f3ebb69157ce7f023fbbc520181a8"}
+    },
+    {
       "id": "ghostty",
       "name": "Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app)",
       "version": "573c4a21e",

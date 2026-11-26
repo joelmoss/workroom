@@ -13,6 +13,7 @@ pub(crate) mod keys;
 pub(crate) mod process;
 pub(crate) mod program_status;
 pub(crate) mod pty;
+pub(crate) mod resume;
 pub(crate) mod run;
 pub(crate) mod screens;
 pub(crate) mod session;

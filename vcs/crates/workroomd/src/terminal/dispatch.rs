@@ -452,6 +452,9 @@ pub(crate) fn launch<T>(
         )?;
     }
     identify(&mut invocation.environment, id, sessions.socket());
+    // Its own resume token (ADR 0082), only for an interactive shell: a run or a one-off command
+    // never resumes, and keeps no token another pane forwarded.
+    crate::terminal::resume::give_token(&mut invocation.environment, invocation.interactive);
     // The daemon's bin folder first on its PATH (#695): its link and hooks made again first,
     // should something have taken them.
     crate::daemon::bin_dir::ensure();

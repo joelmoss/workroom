@@ -59,6 +59,7 @@ impl Hooks {
             info,
             title: None,
             coding_agent: None,
+            resume: None,
             clients: Vec::new(),
         });
         self.events.created(id, listing);

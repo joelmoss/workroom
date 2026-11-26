@@ -897,7 +897,7 @@ pub fn session_schema() -> Value {
         |description: &str| json!({"type": ["string", "null"], "description": description});
     json!({
         "type": "object",
-        "required": ["id", "label", "title", "scope", "run", "cwd", "coding_agent"],
+        "required": ["id", "label", "title", "scope", "run", "cwd", "coding_agent", "resume"],
         "properties": {
             "id": {"type": "string", "description": "The session's id, a hyphenated UUID."},
             "label": text_or_null(
@@ -934,6 +934,29 @@ pub fn session_schema() -> Value {
                     "waiting_on_user": {
                         "type": "boolean",
                         "description": "Whether a report is blocked on the user.",
+                    },
+                },
+            },
+            "resume": {
+                "type": ["object", "null"],
+                "description": "What its program last reported, over the Program Resume \
+                                Protocol (OSC 7577), about how to start it again should the \
+                                session be lost: its resume record. Never the command's \
+                                arguments, which can hold secrets. Null when no program has \
+                                reported one.",
+                "required": ["program", "cwd", "reported_at"],
+                "properties": {
+                    "program": {
+                        "type": "string",
+                        "description": "The program the record starts, such as `claude`.",
+                    },
+                    "cwd": text_or_null(
+                        "Where it would start: the folder it reported, else its own when it \
+                         reported."
+                    ),
+                    "reported_at": {
+                        "type": "integer",
+                        "description": "When it reported, in milliseconds since the Unix epoch.",
                     },
                 },
             },
@@ -1078,6 +1101,11 @@ fn agent_session_example() -> Value {
             "message": "Allow `npm test`?",
             "waiting_on_user": true,
         },
+        "resume": {
+            "program": "claude",
+            "cwd": "/Users/you/workrooms/swift-meadow",
+            "reported_at": 1_795_543_200_000u64,
+        },
     })
 }
 
@@ -1091,6 +1119,7 @@ fn run_session_example() -> Value {
         "run": true,
         "cwd": "/Users/you/workrooms/swift-meadow",
         "coding_agent": null,
+        "resume": null,
     })
 }
 
@@ -1269,6 +1298,11 @@ pub(crate) fn session_json(session: &Described) -> Value {
         "run": crate::terminal::run::is_run(&session.info.metadata),
         "cwd": session.info.cwd,
         "coding_agent": session.coding_agent,
+        "resume": session.resume.as_ref().map(|resume| json!({
+            "program": resume.program,
+            "cwd": resume.cwd,
+            "reported_at": resume.reported_at_ms,
+        })),
     })
 }
 
