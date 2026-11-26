@@ -269,19 +269,21 @@ struct SidebarOpenList: View, Equatable {
   /// Lifts `item`'s row, drop zone `zone`, as its drag starts: the ghost draws `row` as the row
   /// looks selected, and the row's slot becomes the gap (`OpenRowLift`). Once per drag.
   /// `leavesWorkroom`: a tab row can become a standalone terminal, so its gap opens between
-  /// workrooms too (`OpenRowReflow.leavesWorkroom`).
+  /// workrooms too (`OpenRowReflow.leavesWorkroom`). Returns whether it lifted the row here, its
+  /// ghost already at `report`; else the drag's ghost, if any, has still to follow it.
   private func lift(
     _ item: OpenSectionItem, zone: PaneDropZone, items: [OpenSectionItem],
     report: OpenRowDrag.Report, row: some View, leavesWorkroom: () -> Bool = { false },
     joinable: () -> Set<SidebarID> = { [] }
-  ) {
+  ) -> Bool {
     let lift = OpenRowLift.shared
     guard lift.reflow(for: store)?.dragged != item || lift.geometry == nil,
       let reflow = OpenRowReflow(
         items: items, dragged: item, leavesWorkroom: leavesWorkroom(), joinable: joinable())
-    else { return }
+    else { return false }
     lift.lift(
       reflow, in: store, zone: zone, report: report, content: Self.ghost(of: row, store: store))
+    return lift.reflow(for: store)?.dragged == item && lift.geometry != nil
   }
 
   /// The ghost of `row`, a row of `store`'s list, with the environment its own hosting view needs:
@@ -302,10 +304,10 @@ struct SidebarOpenList: View, Equatable {
     let item = OpenSectionItem.workroom(row.sid)
     let lift = OpenRowLift.shared
     return followedDrag(item) { [store, drag] report in
-      self.lift(
+      let lifted = self.lift(
         item, zone: .target(row.sid), items: items, report: report,
         row: SidebarOpenWorkroomRow(row: row.model, hovered: false, store: store))
-      lift.follow(report)
+      if !lifted { lift.follow(report) }
       let overTerminalDrop = store.terminalDrag.moved(
         .entry(row.sid), from: .sidebar, to: report.screen)
       drag.splitMoved(row.sid, to: report.location, drawsGhost: false)
@@ -357,7 +359,7 @@ struct SidebarOpenList: View, Equatable {
     let lift = OpenRowLift.shared
     let clearPreview = { panes.contentDrop(for: tab.target.id).preview = nil }
     return followedDrag(item) { [store] report in
-      self.lift(
+      let lifted = self.lift(
         item, zone: .terminalRow(tab.tab.id, in: row.sid), items: items, report: report,
         row: SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: false, store: store),
         leavesWorkroom: { store.canMoveOpenTabToStandalone(tab.tab.id, in: row.sid) },
@@ -365,7 +367,7 @@ struct SidebarOpenList: View, Equatable {
           OpenRowLift.joinable(
             tab.tab.id, of: row.sid, rows: store.openSectionRows(), store: store)
         })
-      lift.follow(report)
+      if !lifted { lift.follow(report) }
       if isDragOutsideWindow(report.location) {
         lift.move(to: report.screen, holds: false)
         clearPreview()
