@@ -293,7 +293,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
   // MARK: Dropping a tab on a standalone terminal
 
-  /// Whether `sid` is a group under the name the drop asked for (`TerminalGroupNaming`).
+  /// Whether `sid` is a group under the name the drop asked for (`AppStore.askGroupName`).
   private func isNamedGroup(_ sid: SidebarID) -> Bool {
     guard case .terminalGroup = sid, let id = sid.targetID, let group = section.group(id)
     else { return false }

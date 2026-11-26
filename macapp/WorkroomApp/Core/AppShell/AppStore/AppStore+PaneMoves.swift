@@ -220,7 +220,7 @@ extension AppStore {
   }
 
   /// This window's tab `tabID` in `target`, dropped on standalone terminal `destination`: once the
-  /// user names it (`TerminalGroupNaming`; Cancel drops nothing), a group of the two in
+  /// user names it (`askGroupName`; Cancel drops nothing), a group of the two in
   /// `destination`'s place, its terminal first (#659). A standalone
   /// terminal's own tab groups as dropping its row does; any other is moved into `destination`
   /// once that is a group, which goes back to the standalone terminal it was when the tab can't
@@ -229,7 +229,7 @@ extension AppStore {
     _ tabID: TerminalTab.ID, of target: TerminalTarget, from source: PaneDropSource,
     onto destination: TargetID
   ) async -> Bool {
-    guard let name = await TerminalGroupNaming.ask(terminalsSection.suggestedGroupName) else {
+    guard let name = await askGroupName(terminalsSection.suggestedGroupName) else {
       return false
     }
     let section = terminalsSection

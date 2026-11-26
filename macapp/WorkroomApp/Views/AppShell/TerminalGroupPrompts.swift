@@ -84,17 +84,6 @@ enum TerminalGroupNamePrompt {
   }
 }
 
-/// How a drop that makes a new terminal group gets its name: always asked, never taken unasked. A
-/// standalone terminal's row or tab let go on another standalone terminal asks first, offering the
-/// suggestion it is handed; Cancel or an empty name drops nothing. The unit tests answer it
-/// themselves (`HostedRunGuardObserver`).
-@MainActor
-enum TerminalGroupNaming {
-  static var ask: (_ suggested: String) async -> String? = {
-    await TerminalGroupNamePrompt.name(suggested: $0)
-  }
-}
-
 extension TerminalGroup {
   /// A group's New Terminal item, on its menus: in the group by name ("New Terminal in Quick
   /// Terminal", "New Terminal in Ops"); an unnamed group by its number ("New Terminal in Group 2").
