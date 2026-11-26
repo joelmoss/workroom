@@ -107,6 +107,48 @@ final class OpenSectionUITests: XCTestCase {
     XCTAssertNotEqual(chips[0], chips[1], "each row selected its own tab in the strip")
   }
 
+  /// The workroom rows' ids, top to bottom.
+  private func workroomRowOrder(_ app: XCUIApplication) -> [String] {
+    elements(app, prefix: "sidebar.open.workroom.").allElementsBoundByIndex
+      .filter { $0.exists && $0.frame.height > 0 }
+      .sorted { $0.frame.minY < $1.frame.minY }
+      .map(\.identifier)
+  }
+
+  /// A workroom row dragged below the last row lifts out of the list and, let go there, lands
+  /// last: the list and the title bar both show the new order (#819). The ghost and the gap are
+  /// what it looks like on the way, not asserted here (`OpenRowReflowTests`).
+  func testDraggingAWorkroomRowBelowTheOthersMovesItLast() {
+    let app = launchedApp()
+    let first = element(app, "sidebar.open.workroom.\(standalone[0])")
+    XCTAssertTrue(first.waitForExistence(timeout: 15), "the Open view's rows")
+    XCTAssertTrue(element(app, "sidebar.open.workroom.\(group)").waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      poll { self.workroomRowOrder(app).count == 3 }, "three rows: two terminals and a group")
+    let before = workroomRowOrder(app)
+    XCTAssertEqual(before.first, first.identifier, "the first standalone terminal leads")
+
+    // Below every row, in the list's empty space: between rows, never onto one.
+    let last = element(app, before[before.count - 1])
+    let below = last.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5))
+      .withOffset(CGVector(dx: 0, dy: 3 * last.frame.height))
+    first.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
+      forDuration: 0.6, thenDragTo: below, withVelocity: .slow, thenHoldForDuration: 0.4)
+
+    let expected = Array(before.dropFirst()) + [first.identifier]
+    XCTAssertTrue(
+      poll(timeout: 8) { self.workroomRowOrder(app) == expected },
+      "it lands last: \(workroomRowOrder(app))")
+    let chip = element(app, "workroom.tab.\(standalone[0])")
+    let others = before.dropFirst().map {
+      element(
+        app, "workroom.tab." + $0.replacingOccurrences(of: "sidebar.open.workroom.", with: ""))
+    }
+    XCTAssertTrue(
+      poll { others.allSatisfy { $0.frame.minX < chip.frame.minX } },
+      "and its title-bar tab is last too")
+  }
+
   /// The switcher's "+" menu makes a terminal or a group, in the Open view; opening a workroom is
   /// ⌘O's.
   func testThePlusMenuOffersNewTerminalAndNewGroup() {

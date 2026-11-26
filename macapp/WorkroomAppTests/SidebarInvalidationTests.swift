@@ -690,6 +690,74 @@ final class SidebarInvalidationTests: XCTestCase {
       Set(SidebarRowPasses.openRows.keys), [.workroom(group)], "only the hovered row re-runs")
   }
 
+  /// Value: protects=a lifted Open row's drag moves its ghost on every pointer move and re-runs
+  /// no row until the gap moves (#819); fails_when=the list's drag state is written each tick, so
+  /// every row's gate is asked on every move; seam=SidebarRowPasses.openRows, OpenRowLift.begin;
+  /// no_claim=the ghost's panel (VM UI tests)
+  func testAPointerMoveOfALiftedRowReRunsNoRowUntilTheGapMoves() async throws {
+    let f = try fixture(view: .open)
+    defer { close(f) }
+    let other = f.store.terminals.addTab(for: f.a.rootTarget)
+    f.store.selectedTargetID = f.rootA
+    f.store.selectionStatusTask?.cancel()
+    try await render(f)
+    let items = SidebarOpenList.items(of: f.store.openSectionRows())
+    let dragged = OpenSectionItem.tab(f.tabA, in: f.rootA)
+    let slot = try XCTUnwrap(items.firstIndex(of: dragged))
+    XCTAssertEqual(items[slot + 1], .tab(other.id, in: f.rootA), "A's two tabs are listed")
+    let pitch = SidebarOpenList.rowPitch
+    let lift = OpenRowLift.shared
+    defer { lift.cancel() }
+    lift.begin(
+      try XCTUnwrap(OpenRowReflow(items: items, dragged: dragged)), in: f.store,
+      geometry: .init(
+        row: .zero, list: CGRect(x: 0, y: 0, width: 300, height: 1000), start: .zero,
+        listTop: 1000, pitch: pitch))
+    // The point `by` into list row `row`, on screen (y up).
+    func point(_ row: Int, _ by: CGFloat) -> CGPoint {
+      CGPoint(x: 50, y: 1000 - (CGFloat(row) + by) * pitch)
+    }
+    lift.move(to: point(slot, 0.2), holds: false)
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    lift.move(to: point(slot, 0.7), holds: false)
+    try await render(f)
+    XCTAssertTrue(SidebarRowPasses.openRows.isEmpty, "a move within the gap re-runs no row")
+
+    lift.move(to: point(slot + 1, 0.8), holds: false)
+    try await render(f)
+    XCTAssertEqual(lift.reflow?.movedIndex, 1, "past the next tab's middle, the gap moves")
+
+    // Sprung to the Projects view mid-drag, the list is gone: no gap, no reorder there.
+    f.store.sidebarView = .projects
+    XCTAssertFalse(lift.isOverList(point(slot + 1, 0.8)))
+    XCTAssertEqual(lift.liftedPoint(point(slot, 0.5)), point(slot, 0.5), "its zones as measured")
+  }
+
+  /// Value: protects=the lifted row's ghost, in a hosting view of its own, has every object its
+  /// row reads, for a workroom's row and a tab's; fails_when=lifting a row traps on a missing
+  /// environment object; seam=SidebarOpenList.ghost; no_claim=how it looks (VM UI tests)
+  func testALiftedRowsGhostDrawsWithItsOwnEnvironment() async throws {
+    let f = try fixture(view: .open)
+    defer { close(f) }
+    _ = f.store.terminals.addTab(for: f.a.rootTarget)
+    let row = try XCTUnwrap(f.store.openSectionRows().first { $0.sid == f.rootA })
+    let tab = try XCTUnwrap(row.tabs.first)
+    for ghost in [
+      SidebarOpenList.ghost(
+        of: SidebarOpenWorkroomRow(row: row.model, hovered: false, store: f.store), store: f.store),
+      SidebarOpenList.ghost(
+        of: SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: false, store: f.store),
+        store: f.store),
+    ] {
+      let (window, view) = hostInWindow(ghost, size: NSSize(width: 300, height: 60))
+      try await render(view)
+      XCTAssertGreaterThan(view.fittingSize.height, 0)
+      window.close()
+    }
+  }
+
   // MARK: The view switcher
 
   /// Value: protects=the sidebar mounts only the view its switcher shows, so the hidden one's rows

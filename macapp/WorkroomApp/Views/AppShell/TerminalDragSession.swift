@@ -54,6 +54,10 @@ final class TerminalDragSession {
   /// The hidden view whose tab the drag rests on, and the timer that shows it.
   private(set) var springCandidate: SidebarView?
   private var springTimer: Timer?
+  /// Set while an Open row is lifted (`OpenRowLift`): where a point is in the list as the zones
+  /// were measured, the list's rows having slid since; nil where no zone is (the gap). The lifted
+  /// row carries its own ghost meanwhile, so the shared one stays hidden.
+  var hitMap: (@MainActor (CGPoint) -> CGPoint?)?
 
   /// How long a drag rests on a sidebar view's tab before the sidebar shows that view.
   static let springDelay: TimeInterval = 0.5
@@ -107,7 +111,7 @@ final class TerminalDragSession {
   /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer.
   /// Out of the window the window it would make shows instead (`DetachedPaneDragPreview`).
   private func showGhost(at screenPoint: CGPoint, overOtherHost: Bool) {
-    guard let store, let source, Self.drawsGhost(of: source, from: surface),
+    guard let store, let source, hitMap == nil, Self.drawsGhost(of: source, from: surface),
       let window = store.hostWindow, overOtherHost || window.frame.contains(screenPoint),
       !ownRow.contains(where: { $0.contains(screenPoint) }),
       let title = store.ghostTitle(of: source)
@@ -115,9 +119,9 @@ final class TerminalDragSession {
     DragGhost.shared.show(title: title, at: screenPoint)
   }
 
-  /// Whether `source`'s drag from `surface` carries the ghost at all. An Open row's (`.entry` from
-  /// the sidebar) draws no picture of its own, so it does (#819); a Projects-tree terminal row's
-  /// (`.terminal` from the sidebar) draws none, as before the Open section.
+  /// Whether `source`'s drag from `surface` carries the ghost at all. A Projects-tree terminal
+  /// row's (`.terminal` from the sidebar) draws none, as before the Open section. An Open row's
+  /// carries its own while it is lifted (`hitMap` set, #819).
   nonisolated static func drawsGhost(of source: TerminalDragSource, from surface: Surface) -> Bool {
     guard surface == .sidebar, case .terminal = source else { return true }
     return false
@@ -245,8 +249,13 @@ final class TerminalDragSession {
   private func hitZone(at screenPoint: CGPoint)
     -> (zone: PaneDropZone, isPaneTab: Bool, host: (any PaneDropZoneHost)?)?
   {
-    for zone in zones where !zone.covered.contains(screenPoint) {
-      if let hit = hit(zone, at: screenPoint) { return (hit, zone.isPaneTab, zone.host) }
+    var point = screenPoint
+    if let hitMap {
+      guard let mapped = hitMap(screenPoint) else { return nil }
+      point = mapped
+    }
+    for zone in zones where !zone.covered.contains(point) {
+      if let hit = hit(zone, at: point) { return (hit, zone.isPaneTab, zone.host) }
     }
     return nil
   }

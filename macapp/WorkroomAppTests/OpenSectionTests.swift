@@ -314,32 +314,6 @@ final class OpenSectionTests: XCTestCase {
 
   // MARK: The pane
 
-  /// A drag's travel counts rows, clamped to the list.
-  func testADragReachesTheRowItsTravelCounts() {
-    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: 26, pitch: 24, count: 5), 2)
-    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: -11, pitch: 24, count: 5), 1)
-    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: -100, pitch: 24, count: 5), 0)
-    XCTAssertEqual(OpenSectionReorder.row(from: 1, translation: 500, pitch: 24, count: 5), 4)
-  }
-
-  /// A workroom row dragged over another's tabs passes that workroom; over its row going down it
-  /// passes it too, going up it lands above it.
-  func testAWorkroomRowLandsAmongTheWorkroomTabs() {
-    let three = SidebarID.workroom(project: "/p", name: "three")
-    let items: [OpenSectionItem] = [
-      .workroom(one), .tab(UUID(), in: one), .tab(UUID(), in: one), .workroom(two),
-      .workroom(three),
-    ]
-    XCTAssertNil(OpenSectionReorder.workroomIndex(items, from: 0, to: 2), "over its own tabs")
-    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 0, to: 3), 1, "past two")
-    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 0, to: 4), 2, "to the end")
-    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 4, to: 3), 1, "above two")
-    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 4, to: 1), 1, "over one's tabs")
-    XCTAssertEqual(OpenSectionReorder.workroomIndex(items, from: 4, to: 0), 0, "above one")
-    XCTAssertNil(
-      OpenSectionReorder.workroomIndex(items, from: 1, to: 0), "a tab row is no workroom")
-  }
-
   /// The List lists each workroom tab's row and, unfolded, its tabs' rows: a folded row's tabs
   /// are left out, and nothing open lists no row (the view shows "Nothing open").
   func testTheListListsTheRowsItShows() throws {
