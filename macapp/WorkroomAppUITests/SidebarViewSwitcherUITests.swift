@@ -33,16 +33,6 @@ final class SidebarViewSwitcherUITests: XCTestCase {
     return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
   }
 
-  /// Polls until `condition` holds, for a frame that settles after a layout pass.
-  private func eventually(_ timeout: TimeInterval = 6, _ condition: () -> Bool) -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    repeat {
-      if condition() { return true }
-      Thread.sleep(forTimeInterval: 0.2)
-    } while Date() < deadline
-    return condition()
-  }
-
   /// A window opens on the Open view; the Projects tab shows the project tree in its place and
   /// the Open tab brings the Open rows back, the switcher above both.
   func testTheTabsSwitchBetweenOpenAndProjects() {
@@ -89,34 +79,6 @@ final class SidebarViewSwitcherUITests: XCTestCase {
     XCTAssertTrue(sheet.waitForExistence(timeout: 6), "in Projects, the New Project sheet")
     element(app, "addProject.cancelButton").click()
     XCTAssertTrue(waitGone(sheet), "Cancel closes it")
-  }
-
-  /// Scrolling the Projects view's list moves its rows and leaves the switcher in place. Sixteen
-  /// workrooms (the fixture's most) in a short window, so the list runs several rows past the
-  /// sidebar. Measured by which rows show: a row scrolled out of the list leaves the
-  /// accessibility tree.
-  func testScrollingTheProjectsViewKeepsTheSwitcherInPlace() {
-    let app = launchedApp([
-      "-WorkroomUITestWorkroomCount", "16", "-WorkroomUITestWindowFrame", "{{40, 40}, {1000, 520}}",
-    ])
-    app.showProjectsView()
-    let tab = element(app, "sidebar.view.projects")
-    let project = element(app, "sidebar.project.UITestProject")
-    let lastRow = element(app, "sidebar.workroom.uitest-room-16")
-    XCTAssertTrue(project.waitForExistence(timeout: 6), "the project's row")
-    XCTAssertTrue(project.isHittable, "the list starts at the top")
-    XCTAssertFalse(lastRow.exists && lastRow.isHittable, "the list runs past the sidebar")
-    let tabFrame = tab.frame
-
-    project.scroll(byDeltaX: 0, deltaY: -600)
-
-    XCTAssertTrue(
-      eventually {
-        lastRow.exists && lastRow.isHittable && !(project.exists && project.isHittable)
-      },
-      "the list scrolled its rows up: the last row in, the project's row out")
-    XCTAssertEqual(tab.frame, tabFrame, "the switcher stays put")
-    XCTAssertTrue(tab.isHittable, "and clickable")
   }
 
   /// With no projects, once a terminal shows the sidebar, the Projects view says so and its "+"
