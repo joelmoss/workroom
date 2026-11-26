@@ -344,11 +344,14 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertFalse(s.inFlightTabIDs.contains(tab.id), "a docked pane has no flight")
 
     s.detachPane(tab.id, for: target, at: .zero)
+    XCTAssertTrue(s.showsPlaceholder(tab.id))
     s.setInFlight(tab.id, true)
     XCTAssertTrue(s.inFlightTabIDs.contains(tab.id))
+    XCTAssertFalse(s.showsPlaceholder(tab.id), "a flight over the slot hides its placeholder")
 
     s.dockPane(tab.id, for: target)
     XCTAssertFalse(s.inFlightTabIDs.contains(tab.id), "docking lands it")
+    XCTAssertFalse(s.showsPlaceholder(tab.id))
   }
 
   /// A pane let go outside its window says it was dragged, so its window scales up from the
