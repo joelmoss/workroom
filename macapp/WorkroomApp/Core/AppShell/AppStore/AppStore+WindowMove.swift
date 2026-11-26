@@ -331,7 +331,9 @@ extension AppStore {
       }
     }
     let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }
-    terminals.adopt(handOff.panes)
+    terminals.adopt(handOff.panes) {
+      reopenDetachedPane($0, frame: $1, in: handOff.panes.target)
+    }
     if target.remoteHost == nil, !target.isRemoteWorkroom,
       handOff.panes.tabIDs.contains(where: {
         guard let view = terminals.surface(of: $0) else { return false }

@@ -72,8 +72,6 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
     self.runCommand = runCommand
     self.closeFlow = TabCloseFlow(terminals: terminals, runCommand: runCommand)
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
-    // A restored popped-out pane whose window didn't come back docks into its slot (issue #172).
-    terminals.detachedWindowExists = { [weak self] in self?.detachedPanes.window(for: $0) != nil }
     // `paneWillChange` fires before the change lands, so the coordinator schedules its capture.
     sessionObservation = terminals.paneWillChange.sink { _ in
       SavedLayoutCoordinator.shared.markDirty()
@@ -129,8 +127,6 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
       openDetachedPane(tabID, origin: screenPoint, frame: nil, popOut: source)
       // Its last docked pane left: the panel hides, as when its last terminal closes.
       if !hasDockedTab { onTargetEmptied?(target.id) }
-    case .paneRestoredDetached(_, let tabID, let frame):
-      openDetachedPane(tabID, origin: nil, frame: frame)
     case .paneDocked(let tabID):
       detachedPanes.close(tabID: tabID)
     case .paneRaiseRequested(let tabID):
@@ -200,6 +196,13 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
         self?.terminals.dockPane(tabID, for: target)
         self?.onReveal?(tabID)
       })
+  }
+
+  /// Rebuilds restored popped-out pane `tabID`'s window at its saved `frame`, and says whether it is
+  /// open, as a window's store does (`AppStore.reopenDetachedPane`).
+  func reopenDetachedPane(_ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget) -> Bool {
+    openDetachedPane(tabID, origin: nil, frame: frame)
+    return detachedPanes.window(for: tabID) != nil
   }
 
   /// Builds and shows a popped-out pane's window, as a window's store does.

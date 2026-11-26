@@ -380,11 +380,6 @@ final class DetachedPaneTests: XCTestCase {
   func testARestoredPaneComesBackDetachedAtItsSavedFrame() {
     let s = makeSessions()
     var restored: [(TerminalTab.ID, NSRect)] = []
-    s.onEvent = {
-      if case .paneRestoredDetached(_, let tabID, frame: let frame) = $0 {
-        restored.append((tabID, frame))
-      }
-    }
 
     let frame = NSRect(x: 120, y: 340, width: 800, height: 560)
     var detached = terminalTab("b", title: "Terminal 2")
@@ -392,7 +387,11 @@ final class DetachedPaneTests: XCTestCase {
     _ = s.restore(
       TargetSession(
         targetID: target.id.encoded, tabs: [terminalTab("a", title: "Terminal 1"), detached]),
-      for: target)
+      for: target
+    ) {
+      restored.append(($0, $1))
+      return true
+    }
 
     XCTAssertEqual(restored.count, 1, "the saved window must be rebuilt")
     XCTAssertEqual(restored.first?.1, frame, "at the frame it was left at")
@@ -408,11 +407,14 @@ final class DetachedPaneTests: XCTestCase {
   func testAnUnparseableDetachedFrameRestoresDocked() {
     let s = makeSessions()
     var restored = 0
-    s.onEvent = { if case .paneRestoredDetached = $0 { restored += 1 } }
 
     var detached = terminalTab("a", title: "Terminal 1")
     detached.detachedFrame = "not a rect"
-    _ = s.restore(TargetSession(targetID: target.id.encoded, tabs: [detached]), for: target)
+    _ = s.restore(TargetSession(targetID: target.id.encoded, tabs: [detached]), for: target) {
+      _, _ in
+      restored += 1
+      return true
+    }
 
     XCTAssertEqual(restored, 0, "a zero frame must not open a zero-size window")
     XCTAssertTrue(s.detachedTabIDs.isEmpty)
@@ -488,10 +490,10 @@ final class DetachedPaneTests: XCTestCase {
     handOff.detached[b.id] = NSRect(x: 0, y: 0, width: 400, height: 300)
     let destination = makeSessions()
     var reopened: [TerminalTab.ID] = []
-    destination.onEvent = {
-      if case .paneRestoredDetached(_, let id, frame: _) = $0 { reopened.append(id) }
+    destination.adopt(handOff) {
+      reopened.append($0)
+      return true
     }
-    destination.adopt(handOff)
 
     XCTAssertEqual(destination.split(for: target), split, "the split arrives whole")
     XCTAssertEqual(destination.detachedTabIDs, [b.id])
@@ -512,8 +514,7 @@ final class DetachedPaneTests: XCTestCase {
 
     let handOff = try XCTUnwrap(s.handOff(target))
     let destination = makeSessions()
-    destination.detachedWindowExists = { _ in false }
-    destination.adopt(handOff)
+    destination.adopt(handOff) { _, _ in false }
 
     XCTAssertTrue(destination.detachedTabIDs.isEmpty)
     XCTAssertEqual(destination.split(for: target), split, "docked in its pane of the split")

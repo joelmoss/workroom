@@ -115,7 +115,9 @@ extension AppStore {
     // close is taken for a move.
     if inPlace { isMovingTerminalsInPlace = true }
     let handOff = terminals.handOffTab(tabID, from: from, to: into)
-    if let handOff { terminals.adopt(handOff) }
+    if let handOff {
+      terminals.adopt(handOff) { reopenDetachedPane($0, frame: $1, in: into) }
+    }
     if inPlace { isMovingTerminalsInPlace = false }
     guard handOff != nil else {
       // A popped-out pane stays where it is, under its old tag.

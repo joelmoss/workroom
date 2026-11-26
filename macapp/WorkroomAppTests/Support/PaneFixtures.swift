@@ -12,6 +12,20 @@ func makeInert(_ store: AppStore) {
   }
 }
 
+/// A restore or hand-off with no host behind it: every popped-out pane's window counts as reopened,
+/// so the pane stays popped out. A test of the reopen itself passes its own `reopen`.
+@MainActor
+extension TerminalPanes {
+  @discardableResult
+  func restore(_ session: TargetSession, for target: TerminalTarget) -> RestoreResult {
+    restore(session, for: target) { _, _ in true }
+  }
+
+  func adopt(_ handOff: TargetHandOff) {
+    adopt(handOff) { _, _ in true }
+  }
+}
+
 /// Report what a working agent reports: OSC 9;4 progress, then a title naming a known agent. What
 /// an agent does many times a minute, so the change the invalidation suites measure.
 @MainActor
