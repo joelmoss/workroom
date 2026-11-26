@@ -83,7 +83,7 @@ extension AppStore {
     for tab in tabs {
       notifications.repoint(tab: tab, to: newID, in: paneMoveOrigin)
       guard let handOff = terminals.handOffTab(tab, from: from, to: into) else { continue }
-      terminals.adopt(handOff)
+      terminals.adopt(handOff) { reopenDetachedPane($0, frame: $1, in: into) }
     }
     isMovingTerminalsInPlace = false
     // The inspector held still through the move (#806); it follows the moved terminals from here.

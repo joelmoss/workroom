@@ -512,7 +512,6 @@ final class SessionRestoreTests: XCTestCase {
   /// pointing at no window would strand the terminal (issue #172).
   func testARestoredPoppedOutPaneWhoseWindowDidNotOpenDocksInItsSlot() throws {
     let s = makeSessions()
-    s.detachedWindowExists = { _ in false }
     var docked = 0
     s.onEvent = { if case .paneDocked = $0 { docked += 1 } }
     var detached = terminal("b", title: "Terminal 2")
@@ -521,7 +520,8 @@ final class SessionRestoreTests: XCTestCase {
       TargetSession(
         targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 1"), detached],
         splits: [split("a", "b")], focusedKey: "a"),
-      for: target)
+      for: target
+    ) { _, _ in false }
 
     let ids = s.tabs(for: target).map(\.id)
     XCTAssertTrue(s.detachedTabIDs.isEmpty, "no placeholder is left without its window")

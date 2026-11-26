@@ -16,6 +16,8 @@ protocol PaneMoveDestination: AnyObject {
   func paneMoveRetagFailed(into target: TerminalTarget, stayingIn place: String)
   /// `target` took the pane: select it, focus it and bring this holder forward.
   func paneDidMove(into target: TerminalTarget)
+  /// Rebuild a handed-off popped-out pane's window here (`TerminalPanes.adopt`'s `reopen`).
+  func reopenDetachedPane(_ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget) -> Bool
 }
 
 /// A pane moving live from any target to any other: retag its session, hand the tab off, adopt it.
@@ -217,7 +219,7 @@ enum PaneMove {
     // An Investigate pane stays one there (the mark is its tab's), so deleting its workroom asks
     // first (#146), and its exit, which the destination's sessions now raise, ends it there.
     guard let handOff = source.handOffTab(tabID, from: target, to: into) else { return false }
-    destination.terminals.adopt(handOff)
+    destination.terminals.adopt(handOff) { destination.reopenDetachedPane($0, frame: $1, in: into) }
     destination.paneDidMove(into: into)
     return true
   }

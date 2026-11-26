@@ -421,7 +421,9 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     let host = ensureHost()
     let target = host.target
     guard host.terminals.tabCount(forTargetID: target.id) == 0 else { return }
-    host.terminals.restore(saved, for: target)
+    host.terminals.restore(saved, for: target) {
+      host.reopenDetachedPane($0, frame: $1, in: target)
+    }
     await recoverSessions(host.terminals) { id in id == .quickTerminal && reattaches }
   }
 

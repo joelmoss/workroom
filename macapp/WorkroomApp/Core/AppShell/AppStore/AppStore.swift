@@ -988,8 +988,6 @@ final class AppStore: ObservableObject {
     // Everything `TerminalPanes` reports comes through one synchronous sink, handled in
     // `handleTerminalEvent` (eng review D8).
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
-    // A restored popped-out pane whose window didn't come back docks into its slot (issue #172).
-    terminals.detachedWindowExists = { [weak self] in self?.detachedPanes.window(for: $0) != nil }
     // Any terminal moves anywhere, from its right-click menu too (#660).
     terminals.moveToWorkroomChoices = { [weak self] tabID, target in
       self?.paneMoveChoices(tabID, of: target) ?? []
@@ -1168,11 +1166,6 @@ final class AppStore: ObservableObject {
         setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) })
       self.openDetachedPane(
         tab: tab, target: target, origin: screenPoint, frame: nil, popOut: source)
-    case .paneRestoredDetached(let targetID, let tabID, let frame):
-      guard let target = self.terminalTarget(forID: targetID),
-        let tab = self.terminals.tab(tabID, for: target)
-      else { return }
-      self.openDetachedPane(tab: tab, target: target, origin: nil, frame: frame)
     case .paneDocked(let tabID):
       detachedPanes.close(tabID: tabID)
     // A popped-out pane's placeholder asked for its window (Go to Window).
@@ -1604,6 +1597,16 @@ final class AppStore: ObservableObject {
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
     return true
+  }
+
+  /// Rebuild the window of `target`'s restored popped-out pane `tabID` (a relaunch or a window
+  /// hand-off) at its saved `frame`: `TerminalPanes.restore`'s and `adopt`'s `reopen`. Whether the
+  /// window is open now; one that is not docks the pane into its slot (issue #172).
+  func reopenDetachedPane(_ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget) -> Bool {
+    if let target = terminalTarget(forID: target.id), let tab = terminals.tab(tabID, for: target) {
+      openDetachedPane(tab: tab, target: target, origin: nil, frame: frame)
+    }
+    return detachedPanes.window(for: tabID) != nil
   }
 
   /// Build and show a detached pane's window. `frame` restores a saved one (session restore);

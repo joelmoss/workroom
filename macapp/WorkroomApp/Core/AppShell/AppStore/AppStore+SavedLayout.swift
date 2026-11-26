@@ -168,7 +168,9 @@ extension AppStore {
         fetchHostLayoutIfNeeded(for: target)
         continue
       }
-      let result = terminals.restore(saved, for: target)
+      let result = terminals.restore(saved, for: target) {
+        reopenDetachedPane($0, frame: $1, in: target)
+      }
       guard result.count > 0 else { continue }
       restoredTargetIDs.insert(target.id)
     }
@@ -332,7 +334,7 @@ extension AppStore {
     guard target.remoteHost != nil, terminals.tabCount(forTargetID: target.id) == 0,
       let saved = deferredTargetSessions.removeValue(forKey: target.id)
     else { return }
-    terminals.restore(saved, for: target)
+    terminals.restore(saved, for: target) { reopenDetachedPane($0, frame: $1, in: target) }
     // `restore` focuses without notifying, so nothing else tells the inspector there are tabs.
     refreshSelectionHasTabs()
     markSessionDirty()

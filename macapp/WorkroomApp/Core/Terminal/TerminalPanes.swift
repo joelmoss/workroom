@@ -879,10 +879,6 @@ final class TerminalPanes {
     /// The terminal's own right-click New Terminal, split or Close Terminal (#583), for this tab in
     /// this target: the host holding these panes carries it out, whichever window is key.
     case paneCommandRequested(TerminalTarget, TerminalTab.ID, PaneCommand)
-    /// A restored pane was detached when the session was saved, so its window must be rebuilt at the
-    /// saved frame. Separate from `.paneDetached` because restore is not a gesture: there is no cursor
-    /// to place the window at, and the frame is authoritative.
-    case paneRestoredDetached(TerminalTarget.ID, TerminalTab.ID, frame: NSRect)
     /// A closed remote pane's session could not be ended on its host, so it
     /// is still running there (#283). Given the target's id and title.
     case remoteCloseFailed(TerminalTarget.ID, title: String)
@@ -1451,9 +1447,11 @@ final class TerminalPanes {
   /// Terminals come back in their remembered directory and reattach to their session if it is
   /// still alive; otherwise they are a fresh login shell. Nothing spawns here:
   /// constructing a surface is inert until it enters a window.
+  ///
+  /// `reopen` rebuilds a restored popped-out pane's window at its frame (`reopenDetachedWindows`).
   @discardableResult
   func restore(
-    _ session: TargetSession, for target: TerminalTarget
+    _ session: TargetSession, for target: TerminalTarget, reopen: ReopenDetachedPane
   ) -> RestoreResult {
     guard heldTabs(target.id).isEmpty else {
       // Its saved panes, and the sessions they would reattach to, are dropped here.
@@ -1539,32 +1537,28 @@ final class TerminalPanes {
     // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
     // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
     targets[target.id]?.updateState { $0.raiseCounter(to: session.terminalCounter ?? 0) }
-    // Open the windows AFTER the tabs are set: `.paneRestoredDetached` builds a window whose content
-    // looks the tab up by id. Restoring is not a user gesture, so this skips `detachPane`.
-    reopenDetachedWindows(restoredDetached, for: target)
+    // Open the windows AFTER the tabs are set: `reopen` builds a window whose content looks the tab
+    // up by id. Restoring is not a user gesture, so this skips `detachPane`.
+    reopenDetachedWindows(restoredDetached, reopen: reopen)
     if let restoredRun { onEvent?(.runTabRestored(target.id, restoredRun)) }
     reconcileOcclusion(for: target)
     return RestoreResult(count: order.count)
   }
 
-  /// Whether a popped-out pane's window is open, asked of the host that opens them (`AppStore`,
-  /// `QuickTerminalHost`). Nil asks nothing, and every restored pane stays popped out.
-  @ObservationIgnored var detachedWindowExists: ((TerminalTab.ID) -> Bool)?
+  /// The host's (`AppStore`, `QuickTerminalHost`) rebuild of a restored popped-out pane's window at
+  /// its saved frame: whether the window is open now. A required argument of `restore` and `adopt`,
+  /// so no host can leave a restored pane without an answer.
+  typealias ReopenDetachedPane = (TerminalTab.ID, NSRect) -> Bool
 
   /// Ask the host to rebuild each restored popped-out pane's window (a relaunch or a window
   /// hand-off), then dock in its slot every one whose window did not come back: a placeholder
   /// pointing at a window that doesn't exist would strand the terminal. The dock is quiet: no focus
   /// move and no `.paneDocked`, since there is no window to close.
   private func reopenDetachedWindows(
-    _ detached: [(TerminalTab.ID, NSRect)], for target: TerminalTarget
+    _ detached: [(TerminalTab.ID, NSRect)], reopen: ReopenDetachedPane
   ) {
-    for (tabID, frame) in detached {
-      onEvent?(.paneRestoredDetached(target.id, tabID, frame: frame))
-    }
-    guard let detachedWindowExists else { return }
-    for (tabID, _) in detached where !detachedWindowExists(tabID) {
-      detachedTabIDs.remove(tabID)
-    }
+    let stranded = detached.filter { !reopen($0.0, $0.1) }
+    for (tabID, _) in stranded { detachedTabIDs.remove(tabID) }
   }
 
   /// The directory a restored terminal should open in: the remembered one while it is still a live
@@ -2435,7 +2429,8 @@ final class TerminalPanes {
   /// Take in the tabs another window handed off. Into a target this window shows no tabs for,
   /// everything comes as it was: order, splits, focus, numbering, detached panes. Into one it
   /// already shows, they join after its own tabs, its own layout stays, and the moved splits go.
-  func adopt(_ handOff: TargetHandOff) {
+  /// `reopen` rebuilds a popped-out pane's window here (`reopenDetachedWindows`).
+  func adopt(_ handOff: TargetHandOff, reopen: ReopenDetachedPane) {
     let target = handOff.target
     let ids = handOff.tabIDs
     // One layout at a time: the window that handed these off let them go, so nobody else may hold
@@ -2477,7 +2472,7 @@ final class TerminalPanes {
     }
     for id in ids { refreshProgramStatus(tab: id, target: target.id) }
     reopenDetachedWindows(
-      ids.compactMap { id in handOff.detached[id].map { (id, $0) } }, for: target)
+      ids.compactMap { id in handOff.detached[id].map { (id, $0) } }, reopen: reopen)
     reconcileOcclusion(for: target)
   }
 

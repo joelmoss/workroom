@@ -222,7 +222,7 @@ extension AppStore {
       // window must not write over it this launch.
       hostLayouts.readOnly.insert(targetID)
     } else if let session {
-      terminals.restore(session, for: target)
+      terminals.restore(session, for: target) { reopenDetachedPane($0, frame: $1, in: target) }
       refreshSelectionHasTabs()
       let encoded = targetID.encoded
       if hostHasIt,
