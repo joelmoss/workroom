@@ -21,7 +21,7 @@ The sidebar shows one of two views at a time. The bar at its top switches betwee
 
 A dot in the accent colour after the other view's tab means something there needs you: a workroom with unread notifications, or a terminal waiting for you.
 
-The **+** at the end of the bar works on the view you're on. In **Open** it opens a menu: **Open Workroom…** (<kbd>⌘O</kbd>), **New Terminal** (<kbd>⌥⌘T</kbd>) and **New Terminal Group…**. In **Projects** it adds a project.
+The **+** at the end of the bar works on the view you're on. In **Open** it opens a menu: **New Terminal** (<kbd>⌥⌘T</kbd>) and **New Terminal Group…**; to open a workroom, press <kbd>⌘O</kbd> (**File ▸ Open Workroom…**). In **Projects** it adds a project.
 
 While you drag a terminal or a tab, rest it on the other view's tab for a moment to switch to that view, then drop it on a row there. Let a terminal go on the **Open** tab to make it a standalone terminal.
 

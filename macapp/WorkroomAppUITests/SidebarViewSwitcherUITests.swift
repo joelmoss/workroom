@@ -59,15 +59,17 @@ final class SidebarViewSwitcherUITests: XCTestCase {
     XCTAssertTrue(waitGone(project))
   }
 
-  /// The "+" is the shown view's: in Open its menu opens anything, in Projects it adds a project.
+  /// The "+" is the shown view's: in Open its menu makes a terminal or group, in Projects it adds a
+  /// project.
   func testThePlusActsOnTheShownView() {
     let app = launchedApp()
     let add = element(app, "sidebar.add")
     XCTAssertTrue(add.waitForExistence(timeout: 15), "the switcher's +")
     add.click()
     let newTerminal = element(app, "sidebar.open.add.newTerminal")
-    XCTAssertTrue(newTerminal.waitForExistence(timeout: 5), "in Open, the open-anything menu")
-    XCTAssertTrue(element(app, "sidebar.open.add.openWorkroom").exists)
+    XCTAssertTrue(newTerminal.waitForExistence(timeout: 5), "in Open, the new-terminal menu")
+    XCTAssertFalse(
+      element(app, "sidebar.open.add.openWorkroom").exists, "opening a workroom is ⌘O's")
     XCTAssertTrue(element(app, "sidebar.open.add.newGroup").exists)
     app.typeKey(.escape, modifierFlags: [])
     XCTAssertTrue(waitGone(newTerminal), "Escape closes the menu")

@@ -34,21 +34,13 @@ enum OpenSectionReorder {
   }
 }
 
-/// The switcher's "+" in the Open view (ADR 0083): every way to open something, each item with its
-/// shortcut.
+/// The switcher's "+" in the Open view (ADR 0083): a new terminal or terminal group, each item with
+/// its shortcut. Opening a workroom is ⌘O's (File ▸ Open Workroom…).
 struct SidebarOpenAddMenu: View {
   let store: AppStore
 
   var body: some View {
-    CreateRowButton(help: "Open a workroom, a terminal or a terminal group") {
-      Button {
-        store.raiseWorkroomPicker(.open)
-      } label: {
-        Label("Open Workroom…", systemImage: "chevron.down.square")
-      }
-      .shortcut(.openWorkroom)
-      .help("Pick a workroom, root or terminal group to open")
-      .accessibilityIdentifier("sidebar.open.add.openWorkroom")
+    CreateRowButton(help: "New terminal or terminal group") {
       Button {
         store.newStandaloneTerminal()
       } label: {
