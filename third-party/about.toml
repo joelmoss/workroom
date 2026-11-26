@@ -14,6 +14,9 @@ accepted = [
   "CC0-1.0",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
+  # Boost: permissive, not copyleft; its notice is required in source copies only, and the binary's
+  # notices carry it anyway. notify 9 links xxhash-rust under it.
+  "BSL-1.0",
 ]
 
 # The targets the binary ships for: the app's Mac binary and its Linux builds for hosts, and the

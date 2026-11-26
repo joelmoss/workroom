@@ -34,10 +34,10 @@ jobs:
       # rustfmt's layout and clippy's lint set both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
       # when GitHub rolls its image rather than when someone's code is wrong. The same as
       # mk/vcs.mk's VCS_RUST, here and in the jobs below (scripts/ci/test_tool_pins.py).
-      - name: Install Rust 1.99.1
+      - name: Install Rust 1.100.0
         run: |
-          rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.99.1
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.100.0
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -101,8 +101,8 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install 1.99.1 --profile minimal --component clippy
-          rustup default 1.99.1
+          rustup toolchain install 1.100.0 --profile minimal --component clippy
+          rustup default 1.100.0
 
       # Pinned by version (install-zig's) AND checksum. An unpinned toolchain would silently change
       # the emulator this links, and the snapshot format it produces carries no compatibility
@@ -166,8 +166,8 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install 1.99.1 --profile minimal --target "$TARGET"
-          rustup default 1.99.1
+          rustup toolchain install 1.100.0 --profile minimal --target "$TARGET"
+          rustup default 1.100.0
 
       # Pinned by version AND checksum, as in `daemon-terminal-state`. cargo-zigbuild links with it
       # and libghostty-vt is built with it.
