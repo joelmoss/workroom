@@ -41,22 +41,17 @@ struct SidebarColumn: View {
       token: dragToken, drag: paneDrag, localize: localize, dropTarget: dropTarget)
   }
 
-  @Environment(\.themeTokens) private var tokens
-
   var body: some View {
     ProjectSidebar(drag: drag).equatable()
       .frame(width: width)
       .frame(maxHeight: .infinity)
       // A flat column (ADR 0083): flush to the window's leading edge, to the title bar above and to
-      // the window footer below, on the card's backing (`ChromeBackground.card`: the sidebar
-      // vibrancy under the panel wash, or the panel wash under Glass), with one hairline on its
-      // trailing edge between it and the detail. No corners, border box, shadow or margins; the
-      // edge-reveal panel keeps the floating card (`sidebarCard`). A view background, so not under
-      // the title bar, which would take the bar's drag region (`RootView.detail`'s fill says why).
-      .background { ChromeBackground(role: .card) }
-      .overlay(alignment: .trailing) {
-        tokens.border.frame(width: 0.5).allowsHitTesting(false).accessibilityHidden(true)
-      }
+      // the window footer below, on the window frame's own colour (`ChromeBackground.bar`, as the
+      // title bar, gutters, activity bar and footer), so it reads as part of the window, with no
+      // edge of its own. No corners, border, shadow or margins; the edge-reveal panel keeps the
+      // floating card (`sidebarCard`). A view background, so not under the title bar, which would
+      // take the bar's drag region (`RootView.detail`'s fill says why).
+      .background { ChromeBackground(role: .bar) }
       // AppKit drag handle over the trailing edge (a SwiftUI gesture doesn't get events over the
       // List reliably). 12pt hit area with a resize cursor.
       .overlay(alignment: .trailing) {

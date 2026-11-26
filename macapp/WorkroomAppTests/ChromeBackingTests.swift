@@ -11,7 +11,7 @@ import XCTest
 /// Liquid Glass: the window's own blur is the only frosting.
 @MainActor
 final class ChromeBackingTests: XCTestCase {
-  private let roles: [ChromeRole] = [.card, .floatingCard, .cardBand, .bar]
+  private let roles: [ChromeRole] = [.card, .floatingCard, .bar]
   private let glass = GlassAppearance.glass(opacity: 0.9)
 
   private func chrome(_ role: ChromeRole, glass: GlassAppearance) -> some View {
@@ -47,11 +47,9 @@ final class ChromeBackingTests: XCTestCase {
       .floatingCard, Rectangle().fill(tokens.panelWash).background(tokens.bg.opacity(0.9)))
   }
 
-  /// A band inside a card (the sidebar footer) draws nothing under glass: the card's wash is the
-  /// one under it, and a second would stack. The activity bar and the window footer draw nothing
-  /// either: they are the bare window base, the same colour as the title bar and gutters.
-  func testUnderGlassABandAndABarDrawNothing() throws {
-    try assertGlassDraws(.cardBand, Color.clear)
+  /// The docked sidebar, the activity bar and the window footer draw nothing under glass: they are
+  /// the bare window base, the same colour as the title bar and gutters.
+  func testUnderGlassABarDrawsNothing() throws {
     try assertGlassDraws(.bar, Color.clear)
   }
 
