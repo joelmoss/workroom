@@ -128,6 +128,25 @@ fi
 
 tag="${LIBGIT2:-$LIBGIT2_DEFAULT}"
 
+# libgit2/ is replaced wholesale below, so it must first be proven to be this script's own output,
+# unchanged: the tree VENDOR.md's hash records, made of regular files and directories only (the
+# hash reads regular files, so anything else, a symlink or a FIFO, is refused rather than judged).
+# Local edits (a modified xdiff for relinking, a debugging patch), a stray file or a tree with no
+# VENDOR.md stop the run here, before anything is downloaded or deleted. An absent libgit2/ has
+# nothing to lose.
+if [[ -e "$LIB" || -L "$LIB" ]]; then
+  refuse() {
+    echo "$LIB: $1. Not replacing it: commit, move or discard what is there, then re-run." >&2
+    exit 1
+  }
+  [[ -d "$LIB" && ! -L "$LIB" ]] || refuse "not a directory"
+  [[ -f "$MANIFEST" ]] || refuse "no VENDOR.md records what it should hold"
+  other="$(find "$LIB" ! -type f ! -type d -print -quit)"
+  [[ -z "$other" ]] || refuse "holds ${other#"$PKG"/}, which is neither a file nor a directory"
+  want="$(grep -E '^- Tree SHA-256:' "$MANIFEST" | awk -F'`' '{print $2}')"
+  [[ "$(tree_sha)" == "$want" ]] || refuse "differs from the tree VENDOR.md records (local edits?)"
+fi
+
 # Render one CMake template: every `#cmakedefine NAME [VALUE]` line by the ON and OFF lists.
 render() { # template output
   local name value line rendered=() decided=" ${OFF[*]} "

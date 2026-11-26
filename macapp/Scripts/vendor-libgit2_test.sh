@@ -51,4 +51,45 @@ else
   echo "ok   an unreachable repository fails"
 fi
 
+# Re-vendoring replaces libgit2/ only when it is exactly what the script last wrote. Each case runs
+# on a copy of the package with an unreachable upstream: a tree that passes the check gets as far
+# as the clone and fails there with nothing touched; a refused one stops before it, keeping what
+# is there.
+fresh_copy() {
+  rm -rf "$work/copy"
+  mkdir -p "$work/copy/macapp/Scripts" "$work/copy/macapp/Packages/LibGit2"
+  cp "$SCRIPT" "$work/copy/macapp/Scripts/"
+  cp -R "$ROOT/macapp/Packages/LibGit2/libgit2" "$ROOT/macapp/Packages/LibGit2/VENDOR.md" \
+    "$work/copy/macapp/Packages/LibGit2/"
+}
+revendor() { LIBGIT2_REPO="$work/nowhere" "$work/copy/macapp/Scripts/vendor-libgit2.sh" 2>&1; }
+lib="$work/copy/macapp/Packages/LibGit2/libgit2"
+
+fresh_copy
+out="$(revendor)"
+expect "an unchanged tree passes the ownership check" "$out" 'Not replacing' absent
+if [ -f "$lib/COPYING" ]; then echo "ok   a failed download deletes nothing"; else
+  echo "FAIL a failed download deleted the tree"; fails=$((fails + 1))
+fi
+
+fresh_copy
+printf '/* local relink patch */\n' >>"$lib/deps/xdiff/xdiff.h"
+out="$(revendor)"
+expect "a locally edited file is refused" "$out" 'differs from the tree VENDOR.md records' present
+if grep -q 'local relink patch' "$lib/deps/xdiff/xdiff.h"; then echo "ok   the edit survives"; else
+  echo "FAIL the edit was lost"; fails=$((fails + 1))
+fi
+
+fresh_copy
+printf 'mine\n' >"$lib/NOTES.txt"
+expect "a stray file is refused" "$(revendor)" 'Not replacing' present
+
+fresh_copy
+ln -s /etc/hosts "$lib/link"
+expect "a symlink is refused, not followed" "$(revendor)" 'neither a file nor a directory' present
+
+fresh_copy
+rm "$work/copy/macapp/Packages/LibGit2/VENDOR.md"
+expect "a tree with no VENDOR.md is refused" "$(revendor)" 'no VENDOR.md' present
+
 [ "$fails" -eq 0 ] || { echo "$fails failure(s)"; exit 1; }
