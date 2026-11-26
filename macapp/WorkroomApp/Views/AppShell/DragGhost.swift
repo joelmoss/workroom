@@ -46,13 +46,29 @@ final class DragGhost {
 
   private func existingPanel() -> NSPanel {
     if let panel { return panel }
+    let host = NSHostingView(rootView: DragGhostChip(title: ""))
+    let panel = DragGhostPanel.make(identifier: "dragGhost", size: Self.size, content: host)
+    self.host = host
+    self.panel = panel
+    return panel
+  }
+}
+
+/// The panel a drag's ghost floats in (`DragGhost`, `OpenRowGhost`, `DetachedPaneDragPreview`):
+/// borderless, non-activating and mouse-transparent, so it follows the pointer anywhere on screen
+/// and a drag in flight over it never meets it.
+enum DragGhostPanel {
+  /// A panel of `size` showing `content`, which fills it, marked `identifier` for accessibility.
+  @MainActor
+  static func make(identifier: String, size: NSSize = .zero, content: NSView) -> NSPanel {
     let panel = NSPanel(
-      contentRect: NSRect(origin: .zero, size: Self.size),
+      contentRect: NSRect(origin: .zero, size: size),
       styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
     panel.isFloatingPanel = true
     panel.level = .floating
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
-    // Not opaque, or every terminal behind it believes it is hidden (`DetachedPaneDragPreview`).
+    // Not opaque, or every terminal behind it believes it is occluded and stops rendering. No
+    // shadow: a borderless non-opaque panel casts none (measured), so its content draws its own.
     panel.isOpaque = false
     panel.backgroundColor = .clear
     panel.hasShadow = false
@@ -60,12 +76,9 @@ final class DragGhost {
     panel.isExcludedFromWindowsMenu = true
     panel.animationBehavior = .none
     panel.ignoresMouseEvents = true
-    panel.setAccessibilityIdentifier("dragGhost")
-    let host = NSHostingView(rootView: DragGhostChip(title: ""))
-    host.autoresizingMask = [.width, .height]
-    panel.contentView = host
-    self.host = host
-    self.panel = panel
+    panel.setAccessibilityIdentifier(identifier)
+    content.autoresizingMask = [.width, .height]
+    panel.contentView = content
     return panel
   }
 }

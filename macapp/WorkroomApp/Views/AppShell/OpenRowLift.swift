@@ -318,24 +318,8 @@ final class OpenRowGhost {
 
   private func existingPanel() -> NSPanel {
     if let panel { return panel }
-    let panel = NSPanel(
-      contentRect: .zero, styleMask: [.nonactivatingPanel, .borderless], backing: .buffered,
-      defer: false)
-    panel.isFloatingPanel = true
-    panel.level = .floating
-    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
-    // Not opaque, or every terminal behind it believes it is hidden (`DetachedPaneDragPreview`).
-    panel.isOpaque = false
-    panel.backgroundColor = .clear
-    panel.hasShadow = false
-    panel.isReleasedWhenClosed = false
-    panel.isExcludedFromWindowsMenu = true
-    panel.animationBehavior = .none
-    panel.ignoresMouseEvents = true
-    panel.setAccessibilityIdentifier("openRowGhost")
     let host = NSHostingView(rootView: AnyView(EmptyView()))
-    host.autoresizingMask = [.width, .height]
-    panel.contentView = host
+    let panel = DragGhostPanel.make(identifier: "openRowGhost", content: host)
     self.host = host
     self.panel = panel
     return panel
