@@ -102,6 +102,8 @@ pub(crate) fn run_exec(
         // `GIT_EXTERNAL_DIFF` and the `GIT_DIR` family) so both paths get it from one place.
         .env_clear()
         .envs(env.iter().copied());
+    // A resume token in the request's environment (an app started from a pane) is that pane's.
+    crate::terminal::resume::scrub(&mut command);
     // Set last so no request environment can widen it: git must not discover an ANCESTOR
     // repository from `dir` (see `ceiling_directories`).
     if let Some(ceiling) = wr_vcs_git::diff::ceiling_directories(dir) {

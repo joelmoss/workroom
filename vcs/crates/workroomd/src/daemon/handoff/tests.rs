@@ -54,6 +54,11 @@ fn a_table_survives_encoding() {
                     run_shell: Some("/bin/zsh".into()),
                     commands: None,
                 }),
+                // Its resume state (ADR 0082), token and stream offset included (version 6).
+                resume: Some(crate::terminal::resume::Carried::for_test(
+                    "token-of-7",
+                    4096,
+                )),
             },
             FrozenSession {
                 id: SessionId([8; 16]),
@@ -65,6 +70,7 @@ fn a_table_survives_encoding() {
                 metadata: Vec::new(),
                 program_status: Default::default(),
                 recipe: None,
+                resume: None,
             },
         ],
         events: Some(br#"{"boot":"x","revision":3}"#.to_vec()),
@@ -89,8 +95,8 @@ fn the_events_cross_the_table_after_the_sessions() {
     let bytes = table.encode();
     assert_eq!(
         bytes[4..6],
-        5u16.to_be_bytes(),
-        "version 5, the recipes' (#693)"
+        6u16.to_be_bytes(),
+        "version 6, the resume states' (ADR 0082)"
     );
     assert_eq!(bytes[bytes.len() - 4..], [0, 0, 0, 0], "no events");
     assert_eq!(Table::decode(&bytes).map_err(|e| e.to_string()), Ok(table));
@@ -118,6 +124,7 @@ fn a_shells_marks_cross_the_table() {
             metadata: Vec::new(),
             program_status: status,
             recipe: None,
+            resume: None,
         }],
         events: None,
     };
@@ -145,6 +152,7 @@ fn screens_are_refused_by_a_build_that_cannot_paint_them() {
             metadata: Vec::new(),
             program_status: Default::default(),
             recipe: None,
+            resume: None,
         }],
         events: None,
     };
@@ -391,6 +399,7 @@ fn a_damaged_table_is_refused() {
             metadata: Vec::new(),
             program_status: Default::default(),
             recipe: None,
+            resume: None,
         }],
         events: None,
     };
@@ -400,7 +409,7 @@ fn a_damaged_table_is_refused() {
     longer.push(0);
     assert!(Table::decode(&longer).is_err());
     let mut newer = bytes;
-    newer[5] = 6;
+    newer[5] = 7;
     assert!(Table::decode(&newer).is_err());
 }
 
@@ -440,6 +449,7 @@ fn a_version_1_table_from_an_older_daemon_is_adopted_without_metadata() {
                 metadata: Vec::new(),
                 program_status: Default::default(),
                 recipe: None,
+                resume: None,
             }],
             events: None,
         }

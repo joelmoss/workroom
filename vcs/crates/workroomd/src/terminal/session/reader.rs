@@ -110,6 +110,27 @@ fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hooks: &Hooks) {
     }
 }
 
+/// Logs what one resume report did (ADR 0082), naming the program and never its arguments, which
+/// can hold secrets.
+fn note_resume(id: SessionId, outcome: crate::terminal::resume::Outcome) {
+    use crate::terminal::resume::Outcome;
+    let id = id.to_hyphenated();
+    match outcome {
+        Outcome::Accepted { program } => {
+            crate::note!("session {id}: {program} reported how to resume it");
+        }
+        Outcome::Cleared => crate::note!("session {id}: a program cleared its resume record"),
+        Outcome::NotAccepted { reason, program } => match program {
+            Some(program) => {
+                crate::note!(
+                    "session {id}: a resume report for {program} was not accepted ({reason})"
+                )
+            }
+            None => crate::note!("session {id}: a resume report was not accepted ({reason})"),
+        },
+    }
+}
+
 pub(super) fn read_session(
     id: SessionId,
     number: u64,
@@ -130,6 +151,11 @@ pub(super) fn read_session(
     // reports the end as soon as the supervisor exits, so its ordinary pty wait is sufficient.
     // Linux waits on a pidfd alongside the pty. If one cannot be opened, the timed fallback still
     // checks under chatty output so a leftover cannot hide its supervisor's end.
+    // The session's resume state (ADR 0082), fed every read; `None` for one given no token.
+    let resume = lock_or_recover(&store)
+        .get(&id)
+        .filter(|session| session.number == number)
+        .map(|session| Arc::clone(&session.resume));
     #[cfg(target_os = "linux")]
     let run = lock_or_recover(&store).get(&id).is_some_and(|session| {
         session.number == number && crate::terminal::run::is_run(&session.metadata)
@@ -185,14 +211,23 @@ pub(super) fn read_session(
         // The program status answer and event are taken under the same locks, as one step with
         // the bytes that produced them, and sent once they are released.
         // A wait (#690) is told of the read with the locks released, the shadow's state taken here.
-        let (read, clients, answer, published, waiting) = {
+        // Resume reports are read under the attachment lock too, so a hand-off's freeze carries a
+        // stream offset that matches the bytes it carries (`frozen`); what each did is logged once
+        // the locks are released.
+        let (read, clients, answer, published, waiting, resumed) = {
             let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
             let mut answer = Vec::new();
             let mut published = None;
             let mut waiting = None;
+            let mut resumed = Vec::new();
             let clients = match read {
                 Ok(n) if n > 0 => {
+                    if let Some(resume) = &resume
+                        && let Some(state) = lock_or_recover(resume).as_mut()
+                    {
+                        resumed = state.feed(&buffer[..n]);
+                    }
                     let disturbed = {
                         let mut shadow = lock_or_recover(&shadow);
                         shadow
@@ -236,8 +271,11 @@ pub(super) fn read_session(
                 }
                 _ => Vec::new(),
             };
-            (read, clients, answer, published, waiting)
+            (read, clients, answer, published, waiting, resumed)
         };
+        for outcome in resumed {
+            note_resume(id, outcome);
+        }
         if let (Some((waiters, seen)), Ok(n)) = (waiting, &read) {
             for waiter in waiters {
                 waiter.output(&buffer[..*n]);

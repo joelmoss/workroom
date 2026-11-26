@@ -56,7 +56,8 @@ impl SessionStore {
         // Within the deadline too: `list` and the end of `attach` hold the store lock while they
         // wait on a session's attachment lock, so a repaint holds the store lock as well.
         let store = until(deadline, || try_recover(self.sessions.try_lock()))?;
-        let parts: Vec<(SessionId, SessionParts, Metadata)> = store
+        use crate::terminal::resume::SharedResume;
+        let parts: Vec<(SessionId, SessionParts, Metadata, SharedResume)> = store
             .values()
             .map(|session| {
                 (
@@ -67,11 +68,12 @@ impl SessionStore {
                         Arc::clone(&session.attached),
                     ),
                     session.metadata.clone(),
+                    Arc::clone(&session.resume),
                 )
             })
             .collect();
         let mut held = Vec::with_capacity(parts.len());
-        for (_, (_, _, attached), _) in &parts {
+        for (_, (_, _, attached), _, _) in &parts {
             held.push(until(deadline, || try_recover(attached.try_lock()))?);
         }
         let share =
@@ -81,7 +83,7 @@ impl SessionStore {
         let mut late = 0;
         let mut sessions: Vec<FrozenSession> = parts
             .iter()
-            .map(|(id, (pty, shadow, _), metadata)| {
+            .map(|(id, (pty, shadow, _), metadata, resume)| {
                 // The kernel's size, which is what the shell was last told.
                 let (columns, rows) = pty.size().unwrap_or((
                     crate::terminal::pty::DEFAULT_COLUMNS,
@@ -124,6 +126,11 @@ impl SessionStore {
                     recipe: lock_or_recover(&self.recipes)
                         .get(id)
                         .map(|recipe| (**recipe).clone()),
+                    // Under the attachment lock its reader feeds it under, so its stream offset
+                    // matches the bytes read.
+                    resume: lock_or_recover(resume)
+                        .as_ref()
+                        .map(crate::terminal::resume::Resume::carried),
                 }
             })
             .collect();
@@ -135,7 +142,10 @@ impl SessionStore {
                 sessions.len()
             );
         }
-        let shadows: Vec<_> = parts.iter().map(|(_, (_, shadow, _), _)| shadow).collect();
+        let shadows: Vec<_> = parts
+            .iter()
+            .map(|(_, (_, shadow, _), _, _)| shadow)
+            .collect();
         carry_images(
             &shadows,
             &mut sessions,
@@ -207,6 +217,7 @@ impl SessionStore {
             metadata,
             program_status,
             recipe,
+            resume,
             ..
         } = frozen;
         let mut shadow = Shadow::new(columns, rows);
@@ -227,6 +238,9 @@ impl SessionStore {
             *status = program_status;
         }
         let session = Session {
+            resume: Arc::new(Mutex::new(
+                resume.map(crate::terminal::resume::Resume::adopted),
+            )),
             id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(shadow)),

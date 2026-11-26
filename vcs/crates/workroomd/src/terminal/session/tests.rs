@@ -289,6 +289,7 @@ fn frozen_with(session: SessionId, screen: &[u8]) -> FrozenSession {
         metadata: Vec::new(),
         program_status: Store::default(),
         recipe: None,
+        resume: None,
     }
 }
 
@@ -3024,4 +3025,49 @@ fn a_freeze_never_finds_the_events_holding_a_session_the_store_has_ended() {
     let told = events_after(&store, 1, |seen| !seen.is_empty());
     assert_eq!(told[0]["event"], "session.ended", "{told:?}");
     assert_eq!(told[0]["exit_code"], 6, "{told:?}");
+}
+
+/// A shell given a resume token that reports how to resume it, from its own pid with a `mac` made
+/// with that token, has that report as its resume record, without its arguments (ADR 0082). The
+/// same report from a session given no token, a run or one-off command, is no record.
+#[test]
+fn a_report_from_a_sessions_shell_is_its_resume_record() {
+    // `vim -S /state/s.vim`, its pid the shell's own, timed now, signed with the session's token:
+    // `sha256sum` on Linux, `shasum` on macOS.
+    let script = "body=\"pid=$$:time=$(date +%s):argv=dmlt,LVM=,L3N0YXRlL3Mudmlt\"; \
+                  mac=$({ printf '%s:%s' \"$body\" \"$OSC7577_TOKEN\" | sha256sum 2>/dev/null \
+                  || printf '%s:%s' \"$body\" \"$OSC7577_TOKEN\" | shasum -a 256; } | cut -d' ' -f1); \
+                  printf '\\033]7577;%s:mac=%s\\007' \"$body\" \"$mac\"; sleep 5";
+    let args = [OsString::from("-c"), OsString::from(script)];
+    let mut e = env();
+    e.push((
+        OsString::from(crate::terminal::resume::TOKEN_VARIABLE),
+        OsString::from("a-test-token-0123456789"),
+    ));
+    let store = SessionStore::new();
+    store
+        .create(SessionSpec {
+            interactive: true,
+            ..spec(id(70), &args, &e)
+        })
+        .expect("create");
+    store.create(spec(id(71), &args, &e)).expect("create");
+    let resume_of = |n: u8| {
+        store
+            .described()
+            .into_iter()
+            .find(|session| session.info.id == id(n))
+            .and_then(|session| session.resume)
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while resume_of(70).is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let recorded = resume_of(70);
+    let other = resume_of(71);
+    store.kill_all();
+    let recorded = recorded.expect("the shell's report became its record");
+    assert_eq!(recorded.program, "vim");
+    assert!(recorded.cwd.is_some(), "the shell's own folder");
+    assert!(other.is_none(), "a session given no token keeps no record");
 }

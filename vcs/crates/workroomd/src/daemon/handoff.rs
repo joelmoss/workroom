@@ -147,7 +147,11 @@ const MAGIC: [u8; 4] = *b"WRHO";
 /// Version 5 adds each session's recipe (#693) after its program status, as length-prefixed JSON,
 /// empty for none; a table before it carries none, and `session.new` from such a session builds
 /// from the daemon's own environment.
-const TABLE_VERSION: u16 = 5;
+/// Version 6 adds each session's resume state (ADR 0082) after its recipe, as length-prefixed
+/// JSON, empty for none: its token, which its shell keeps, its records and its stream offset. A
+/// table before it carries none, and those sessions accept no reports, since their shells' tokens
+/// are lost with the program that made them. The table is written `0600` and removed once read.
+const TABLE_VERSION: u16 = 6;
 /// The oldest table this program still reads.
 const OLDEST_TABLE_VERSION: u16 = 1;
 /// How long the new binary gets to check the table. Every session's output is stopped meanwhile
@@ -277,6 +281,13 @@ impl Table {
                 .unwrap_or_default();
             out.extend_from_slice(&(recipe.len() as u32).to_be_bytes());
             out.extend_from_slice(&recipe);
+            let resume = session
+                .resume
+                .as_ref()
+                .map(|resume| serde_json::to_vec(resume).expect("resume state serializes"))
+                .unwrap_or_default();
+            out.extend_from_slice(&(resume.len() as u32).to_be_bytes());
+            out.extend_from_slice(&resume);
         }
         let events = self.events.as_deref().unwrap_or_default();
         out.extend_from_slice(&(events.len() as u32).to_be_bytes());
@@ -341,8 +352,19 @@ impl Table {
                     .flatten()
                     .and_then(|json| crate::terminal::session::Recipe::from_json(&json));
             }
+            let mut resume = None;
+            if version >= 6 {
+                let length = u32::from_be_bytes(reader.array()?) as usize;
+                let bytes = reader.take(length)?;
+                // State that can't be read is none: the session is still adopted, and accepts no
+                // reports.
+                resume = (!bytes.is_empty())
+                    .then(|| serde_json::from_slice(bytes).ok())
+                    .flatten();
+            }
             sessions.push(FrozenSession {
                 recipe,
+                resume,
                 id,
                 pid,
                 master,

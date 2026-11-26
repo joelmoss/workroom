@@ -146,6 +146,8 @@ fn fall_back_to_shell(request: &AttachRequest, reason: &str) -> ExitCode {
     }
     command.env_clear();
     command.envs(invocation.environment.iter().map(|(k, v)| (k, v)));
+    // No daemon holds this shell, so nothing would read its reports: it gets no resume token.
+    crate::terminal::resume::scrub(&mut command);
     // `chdir` happens INSIDE the exec, so a directory it cannot enter aborts the whole thing —
     // producing the dead pane this function exists to prevent, and blaming the shell for it. A
     // workroom's directory being deleted while a tab is open is a supported operation (`reap`), so

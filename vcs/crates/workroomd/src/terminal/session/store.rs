@@ -239,7 +239,17 @@ impl SessionStore {
         let mut metadata = spec.metadata.to_vec();
         metadata.push((CREATED_KEY.to_string(), wall_now().as_millis().to_string()));
         let is_run = crate::terminal::run::is_run(&metadata);
+        // Its resume state, for the token `dispatch` gave its shell (ADR 0082).
+        let resume = spec
+            .interactive
+            .then(|| crate::terminal::resume::Resume::for_session(spec.env))
+            .flatten()
+            .map(|mut resume| {
+                resume.set_root(pty.child_pid());
+                resume
+            });
         let session = Session {
+            resume: Arc::new(Mutex::new(resume)),
             id: spec.id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
@@ -607,23 +617,38 @@ impl SessionStore {
     /// then its live title and coding agent, each read under its own shadow lock once the store's
     /// is released.
     pub fn described(&self) -> Vec<Described> {
-        let sessions: Vec<(SessionInfo, Vec<ClientInfo>, Arc<Mutex<Shadow>>)> = {
+        type Parts = (
+            SessionInfo,
+            Vec<ClientInfo>,
+            Arc<Mutex<Shadow>>,
+            crate::terminal::resume::SharedResume,
+        );
+        let sessions: Vec<Parts> = {
             let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
                 .map(|session| {
                     let clients = lock_or_recover(&session.attached).listed();
-                    (session.info(), clients, Arc::clone(&session.shadow))
+                    (
+                        session.info(),
+                        clients,
+                        Arc::clone(&session.shadow),
+                        Arc::clone(&session.resume),
+                    )
                 })
                 .collect()
         };
         let mut described: Vec<Described> = sessions
             .into_iter()
-            .map(|(info, clients, shadow)| {
+            .map(|(info, clients, shadow, resume)| {
+                let resume = lock_or_recover(&resume)
+                    .as_ref()
+                    .and_then(|resume| resume.recorded());
                 let mut shadow = lock_or_recover(&shadow);
                 Described {
                     title: shadow.title(),
                     coding_agent: shadow.status().and_then(|status| status.coding_agent()),
+                    resume,
                     info,
                     clients,
                 }

@@ -777,6 +777,9 @@ pub fn spawn_daemon_with(
     if let Some(environment) = environment {
         command.env_clear().envs(environment.iter().cloned());
     }
+    // A daemon started from inside a pane must not carry that pane's resume token: every session
+    // it makes gets its own.
+    crate::terminal::resume::scrub(&mut command);
     command
         .arg("serve")
         .arg("--socket")

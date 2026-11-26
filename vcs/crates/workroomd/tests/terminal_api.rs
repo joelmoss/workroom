@@ -235,6 +235,7 @@ fn sessions_json_lists_every_field_of_every_session() {
     assert_eq!(shell["run"], false);
     assert_eq!(shell["cwd"], cwd.to_str().unwrap());
     assert_eq!(shell["coding_agent"], Value::Null);
+    assert_eq!(shell["resume"], Value::Null);
     // Every field, null or not: a caller never has to ask whether a key is there.
     for key in [
         "id",
@@ -244,6 +245,7 @@ fn sessions_json_lists_every_field_of_every_session() {
         "run",
         "cwd",
         "coding_agent",
+        "resume",
     ] {
         assert!(shell.get(key).is_some(), "{key} missing from {shell}");
     }
@@ -1202,6 +1204,37 @@ fn a_sessions_live_title_follows_osc_0_and_2() {
     assert_eq!(agent["state"], "working", "{agent}");
     assert_eq!(agent["app"], "claude", "{agent}");
     assert_eq!(agent["waiting_on_user"], false, "{agent}");
+}
+
+/// A shell the daemon made has its own resume token, and a report it signs with it, from its own
+/// pid, is the session's resume record in the listing (ADR 0082): the program and its folder,
+/// never the command's arguments.
+#[test]
+fn a_shells_resume_report_is_its_record_in_the_listing() {
+    let workspace = Workspace::new("api-resume");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    // `nvim -S /secret/session.vim`, signed with `sha256sum` on Linux, `shasum` on macOS.
+    type_line(
+        &mut shell,
+        r#"body="pid=$$:time=$(date +%s):argv=bnZpbQ==,LVM=,L3NlY3JldC9zZXNzaW9uLnZpbQ=="; mac=$({ printf '%s:%s' "$body" "$OSC7577_TOKEN" | sha256sum 2>/dev/null || printf '%s:%s' "$body" "$OSC7577_TOKEN" | shasum -a 256; } | cut -d' ' -f1); printf '\033]7577;%s:mac=%s\007' "$body" "$mac""#,
+    );
+    let listing = listing_until(&socket, |listing| !listing[0]["resume"].is_null());
+    let resume = &listing[0]["resume"];
+    assert_eq!(resume["program"], "nvim", "{resume}");
+    let folder = workspace.dir.canonicalize().unwrap();
+    assert_eq!(resume["cwd"], folder.to_str().unwrap(), "{resume}");
+    assert!(
+        resume["reported_at"].as_u64().unwrap() > 1_700_000_000_000,
+        "{resume}"
+    );
+    let listed = Value::Array(listing.clone()).to_string();
+    assert!(
+        !listed.contains("session.vim"),
+        "the arguments stay out of the listing: {listed}"
+    );
 }
 
 /// libghostty's screen format has no title, so a hand-off carries it apart; without that, the
