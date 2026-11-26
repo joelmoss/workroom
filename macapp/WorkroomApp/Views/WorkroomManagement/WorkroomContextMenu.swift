@@ -70,8 +70,9 @@ struct WorkroomMenuModel: Equatable {
     /// The inspector header's actions, in Apple's order: no run, Close or split items, and the
     /// destructive one last, apart.
     case inspectorHeader
-    /// The sidebar Open section's workroom row (#819): the chip's items, and for a standalone
-    /// terminal its old Terminals row's Move to… and Pop Out too.
+    /// The sidebar Open section's workroom row (#819): the chip's items, a group's led by its old
+    /// Terminals row's Expand or Collapse, and a standalone terminal's with that row's Move to… and
+    /// Pop Out in place of Move to New Window.
     case openRow
   }
 
@@ -104,6 +105,8 @@ struct WorkroomMenuModel: Equatable {
     /// A standalone terminal's Open row: "Pop Out", off while its terminal is in a window of its
     /// own.
     case popOut(enabled: Bool)
+    /// A group's Open row: its Expand or Collapse, which folds the row.
+    case fold(SidebarFoldItem)
   }
 
   /// A target in the Terminals section (ADR 0077), which has no run command: its tab's menu offers
@@ -150,6 +153,8 @@ struct WorkroomMenuModel: Equatable {
   var section: SectionTarget? = nil
   /// A standalone terminal's terminal is popped out into a window of its own.
   var isPoppedOut = false
+  /// A group's Open row's Expand or Collapse; nil while it has nothing to fold.
+  var openRowFold: SidebarFoldItem? = nil
 
   func entries(for style: Style) -> [Entry] {
     // A workroom whose host is gone has nothing left to run, open, label or move.
@@ -187,6 +192,7 @@ struct WorkroomMenuModel: Equatable {
       own.append(
         style == .openRow ? [.rename, .moveTo, .popOut(enabled: !isPoppedOut)] : [.rename])
     case .group(let builtIn, let hasStartingFolder, _, let newTerminal):
+      if style == .openRow, let openRowFold { own.append([.fold(openRowFold)]) }
       let new = Entry.newTerminalInGroup(title: newTerminal)
       own.append(builtIn ? [new] : [new, .rename])
       own.append(
@@ -198,7 +204,10 @@ struct WorkroomMenuModel: Equatable {
       if canOpenInSplit { top.append(.openInSplit) }
       if removableFromSplit { top.append(.removeFromSplit) }
     }
-    if showsMoveToNewWindow { top.append(.moveToNewWindow(enabled: canMoveWorkroom)) }
+    // A standalone terminal's Open row pops its terminal out instead.
+    if showsMoveToNewWindow, !(style == .openRow && section == .standalone) {
+      top.append(.moveToNewWindow(enabled: canMoveWorkroom))
+    }
     var sections = own + [top]
     if case .group(builtIn: false, _, let title, _) = section {
       sections.append([.deleteGroup(title: title)])
@@ -234,6 +243,8 @@ struct WorkroomMenuActions {
   /// A standalone terminal's Move to… choices, read as its menu opens.
   var moveChoices: () -> [PaneWorkroomGroup] = { [] }
   var popOut: () -> Void = {}
+  /// A group's Open row's Expand or Collapse.
+  var fold: () -> Void = {}
 
   /// Does nothing, for previews.
   static var inert: WorkroomMenuActions {
@@ -344,6 +355,8 @@ struct WorkroomMenuItems: View {
       }
       .disabled(!enabled)
       .help("Show this terminal in a window of its own")
+    case .fold(let item):
+      Button(item.title, action: actions.fold).help(item.help)
     }
   }
 }
@@ -374,7 +387,8 @@ extension WorkroomMenuModel {
       section: Self.section(of: sid, in: store),
       isPoppedOut: store.standaloneTerminal(sid).map {
         $0.holder.terminals.detachedTabIDs.contains($0.tab.id)
-      } ?? false)
+      } ?? false,
+      openRowFold: store.openRowFoldItem(sid))
   }
 
   /// What `sid` is in the Terminals section, or nil when it is a project's.
@@ -470,7 +484,8 @@ struct WorkroomMenuAdapter: View {
       popOut: { [store, sid] in
         guard let (holder, target, tab) = store.standaloneTerminal(sid) else { return }
         holder.togglePaneWindow(tab.id, targetID: target.id)
-      })
+      },
+      fold: { [store, sid] in store.toggleOpenRowFold(sid) })
   }
 
   /// Rename… on a Terminals-section target's tab: its sidebar row edits the name in place when the

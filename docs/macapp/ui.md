@@ -165,7 +165,10 @@ a value read model and an `Actions` struct, built by a small `<Name>Adapter` vie
 reads the store, so Observation stays where the view's reads were.
 The sidebar's rows go further: each is an Equatable view of a value model behind a gated adapter, so a
 change elsewhere in the store re-runs no row, and the selection, drag and run state are leaves that
-read their own. A `.contextMenu` closure is lazy (a re-rendering row does not build its menu), so the
+read their own. The Open section's list is its rows' adapter: it rebuilds `openSectionRows()` on
+any change, and each workroom and tab row compares its whole value model
+(`OpenSectionWorkroomRowModel`, `OpenSectionTabRowModel`), so only the rows whose model changed
+re-run; a tab row's menu is a modifier of its own, so its reads stay out of the row. A `.contextMenu` closure is lazy (a re-rendering row does not build its menu), so the
 workroom menu's adapter and store reads need no gate.
 
 Shared components:

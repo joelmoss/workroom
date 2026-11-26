@@ -132,7 +132,7 @@ final class OpenSectionTests: XCTestCase {
 
     let creation = SidebarID.creation(project: "/p", id: run.id)
     XCTAssertEqual(store.openSectionRows().map(\.sid), [creation])
-    XCTAssertNil(try row(creation, in: store).presentation.closeName)
+    XCTAssertNil(try row(creation, in: store).model.presentation.closeName)
   }
 
   // MARK: Tab rows mirror the strip
@@ -168,7 +168,7 @@ final class OpenSectionTests: XCTestCase {
 
   func testTheSelectedRowAndTheFocusedTab() throws {
     let store = makeStore()
-    let first = try open(one, in: store)
+    try open(one, in: store)
     let second = try open(two, in: store)
     store.terminals.addTab(for: second)
     let focused = try XCTUnwrap(store.terminals.activeTab(for: second)?.id)
@@ -176,13 +176,10 @@ final class OpenSectionTests: XCTestCase {
     let selected = try row(two, in: store)
     XCTAssertTrue(selected.isSelected)
     XCTAssertEqual(selected.tabs.filter(\.isFocused).map(\.id), [focused])
-    XCTAssertEqual(selected.tabs.filter(\.isActive).map(\.id), [focused])
 
     let other = try row(one, in: store)
     XCTAssertFalse(other.isSelected)
     XCTAssertFalse(other.isVisibleInSplit)
-    XCTAssertEqual(
-      other.tabs.filter(\.isActive).map(\.id), [store.terminals.activeTab(for: first)?.id])
     XCTAssertTrue(other.tabs.allSatisfy { !$0.isFocused && !$0.isVisibleInSplit })
   }
 
@@ -267,6 +264,52 @@ final class OpenSectionTests: XCTestCase {
     store.toggleOpenRowFold(one)
 
     XCTAssertEqual(store.captureWindowSession().unfoldedOpenTargets, [one.targetID!.encoded])
+  }
+
+  /// Value: protects=the selected row folded by hand is saved with the window, so a relaunch
+  /// brings it back folded (#819 story 70); fails_when=the capture leaves it out, or keeps it once
+  /// the selection moves on (selecting unfolds); seam=AppStore.captureWindowSession
+  func testTheSelectedRowsFoldIsSavedWithTheWindow() throws {
+    let store = makeStore()
+    try open(one, in: store)
+    try open(two, in: store)
+    XCTAssertNil(store.captureWindowSession().foldedSelectedTarget, "nothing folded yet")
+
+    store.setOpenRow(two, folded: true)
+    XCTAssertEqual(store.captureWindowSession().foldedSelectedTarget, two.targetID?.encoded)
+
+    store.selectWorkroomTab(one)
+    XCTAssertNil(store.captureWindowSession().foldedSelectedTarget, "selecting another unfolds")
+  }
+
+  // MARK: The rows' menus
+
+  /// Value: protects=a group's Open row menu offers Expand or Collapse as its row stands, and
+  /// a workroom's or a standalone terminal's offers none (#819 review, owner's call);
+  /// fails_when=the item is missing, worded against the row's fold, or on another kind of row;
+  /// seam=WorkroomMenuModel(store:) + AppStore.toggleOpenRowFold
+  func testAGroupsOpenRowMenuFoldsItsRow() throws {
+    let store = makeStore()
+    try open(one, in: store)
+    let group = try XCTUnwrap(store.newTerminalGroup(named: "Ops"))
+    func menu(_ sid: SidebarID) -> [WorkroomMenuModel.Entry] {
+      WorkroomMenuModel(
+        store: store, lifecycle: store.lifecycle, sid: sid, target: store.target(for: sid),
+        closeName: "x", removableFromSplit: false
+      ).entries(for: .openRow)
+    }
+
+    XCTAssertEqual(menu(group).first, .fold(SidebarFoldItem(expanded: true)), "selected: unfolded")
+    store.toggleOpenRowFold(group)
+    XCTAssertTrue(try row(group, in: store).isFolded)
+    XCTAssertEqual(menu(group).first, .fold(SidebarFoldItem(expanded: false)))
+
+    store.newStandaloneTerminal()
+    let standalone = try XCTUnwrap(store.selectedTargetID)
+    for sid in [one, standalone] {
+      XCTAssertFalse(
+        menu(sid).contains { if case .fold = $0 { true } else { false } }, "\(sid) has none")
+    }
   }
 
   // MARK: The pane

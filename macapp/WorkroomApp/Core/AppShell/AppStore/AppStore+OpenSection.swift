@@ -14,14 +14,16 @@ extension AppStore {
     let visibleSplit = resolvedSplitLeaves().map { Set($0.map(\.sid)) } ?? []
     return displayedWorkroomTargets().map { sid, target in
       let isSelected = sid == selectedTargetID
+      let tabs = openSectionTabRows(sid: sid, target: target, isSelected: isSelected)
       return OpenSectionRow(
-        sid: sid, target: target,
-        presentation: workroomTabPresentation(sid: sid, target: target),
-        marks: workroomTabMarks(sid: sid, target: target),
-        isSelected: isSelected,
-        isVisibleInSplit: !isSelected && visibleSplit.contains(sid),
-        isFolded: isOpenRowFolded(sid),
-        tabs: openSectionTabRows(sid: sid, target: target, isSelected: isSelected))
+        model: OpenSectionWorkroomRowModel(
+          sid: sid, target: target,
+          presentation: workroomTabPresentation(sid: sid, target: target),
+          marks: workroomTabMarks(sid: sid, target: target),
+          isSelected: isSelected,
+          isVisibleInSplit: !isSelected && visibleSplit.contains(sid),
+          isFolded: isOpenRowFolded(sid), tabCount: tabs.count),
+        tabs: tabs)
     }
   }
 
@@ -37,15 +39,25 @@ extension AppStore {
       onScreenTarget(forID: target.id) == nil
       ? [] : Set(terminals.split(for: target)?.tabIDs ?? activeID.map { [$0] } ?? [])
     return tabs.map { tab in
-      let isActive = tab.id == activeID
-      let isFocused = isActive && isSelected
+      let isFocused = tab.id == activeID && isSelected
+      let title: SidebarTerminalRowModel.TitleSource =
+        if case .terminal(let state) = tab.content {
+          .live(
+            ObjectIdentifier(state.titleCell), userTitle: state.userTitle,
+            defaultName: state.defaultName)
+        } else {
+          .fixed(tab.title)
+        }
       return OpenSectionTabRow(
-        sid: sid, target: target, tab: tab,
-        hasUnread: notifications.count(tab: tab.id) > 0,
-        runState: runCommand.runState(ofTab: tab.id, in: target.id),
-        hasDiagnosis: terminals.codingAgentManager.banners[tab.id] != nil,
-        isActive: isActive, isFocused: isFocused,
-        isVisibleInSplit: !isFocused && shown.contains(tab.id))
+        model: OpenSectionTabRowModel(
+          sid: sid, target: target, tabID: tab.id, title: title,
+          glyph: tab.content.glyph ?? "terminal", tool: tab.recognizedTool,
+          isPreview: tab.isPreview, indicator: tab.indicator, programStatus: tab.programStatus,
+          hasUnread: notifications.count(tab: tab.id) > 0,
+          runState: runCommand.runState(ofTab: tab.id, in: target.id),
+          hasDiagnosis: terminals.codingAgentManager.banners[tab.id] != nil,
+          isFocused: isFocused, isVisibleInSplit: !isFocused && shown.contains(tab.id)),
+        tab: tab)
     }
   }
 
@@ -65,6 +77,15 @@ extension AppStore {
     guard let id = sid.targetID else { return }
     if sid == selectedTargetID { foldedSelectedOpenTarget = folded ? id : nil }
     if folded { unfoldedOpenTargets.remove(id) } else { unfoldedOpenTargets.insert(id) }
+  }
+
+  /// A terminal group's Open row's Expand or Collapse, as its old Terminals row offered: nil for
+  /// any other row, or one with no tabs to fold.
+  func openRowFoldItem(_ sid: SidebarID) -> SidebarFoldItem? {
+    guard case .terminalGroup = sid, let target = target(for: sid),
+      TerminalPanes.showsTabStrip(tabCount: terminals.tabs(for: target).count, for: target.id)
+    else { return nil }
+    return SidebarFoldItem(expanded: !isOpenRowFolded(sid))
   }
 
   /// The row's disclosure chevron.
@@ -114,6 +135,24 @@ extension AppStore {
 
 /// A workroom tab's row in the Open section: what its title-bar chip shows, and its tabs.
 struct OpenSectionRow: Identifiable {
+  /// What its own row draws, which that row's equality gate compares whole.
+  let model: OpenSectionWorkroomRowModel
+  /// The tabs its strip shows, in strip order. Empty for a standalone terminal's one terminal,
+  /// which shows no strip: the row itself is that terminal.
+  let tabs: [OpenSectionTabRow]
+
+  var id: SidebarID { sid }
+  var sid: SidebarID { model.sid }
+  var target: TerminalTarget { model.target }
+  var isSelected: Bool { model.isSelected }
+  var isVisibleInSplit: Bool { model.isVisibleInSplit }
+  var isFolded: Bool { model.isFolded }
+  var canFold: Bool { model.canFold }
+}
+
+/// What a workroom tab's Open row draws: its chip's presentation and marks, its place in the window
+/// and how many tabs it folds, never the tabs themselves, whose rows are their own.
+struct OpenSectionWorkroomRowModel: Equatable {
   let sid: SidebarID
   let target: TerminalTarget
   let presentation: WorkroomTabPresentation
@@ -123,34 +162,49 @@ struct OpenSectionRow: Identifiable {
   /// On screen beside the selection, in the visible workroom split.
   let isVisibleInSplit: Bool
   let isFolded: Bool
-  /// The tabs its strip shows, in strip order. Empty for a standalone terminal's one terminal,
-  /// which shows no strip: the row itself is that terminal.
-  let tabs: [OpenSectionTabRow]
+  /// How many tab rows it has under it.
+  let tabCount: Int
 
-  var id: SidebarID { sid }
   /// Whether the disclosure chevron can fold it: not with nothing in it.
-  var canFold: Bool { !tabs.isEmpty }
+  var canFold: Bool { tabCount > 0 }
 }
 
 /// One tab's row under its workroom: what its strip chip shows.
 struct OpenSectionTabRow: Identifiable {
+  /// What the row draws, which its equality gate compares whole.
+  let model: OpenSectionTabRowModel
+  /// The tab's record, outside the model: its title is read through `TabTitleReader` from
+  /// `tab.content`, as the strip's chip reads it, since a terminal's changes many times a second.
+  let tab: TerminalTab
+
+  var id: TerminalTab.ID { model.tabID }
+  var sid: SidebarID { model.sid }
+  var target: TerminalTarget { model.target }
+  var isFocused: Bool { model.isFocused }
+  var isVisibleInSplit: Bool { model.isVisibleInSplit }
+}
+
+/// What a tab's Open row draws of it and of the window, comparable without reading its live title.
+struct OpenSectionTabRowModel: Equatable {
   let sid: SidebarID
   let target: TerminalTarget
-  /// The tab's record. Its title is read through `TabTitleReader` from `tab.content`, as the
-  /// strip's chip reads it, since a terminal's changes many times a second.
-  let tab: TerminalTab
+  let tabID: TerminalTab.ID
+  /// Where its title is read from (`SidebarTerminalRowModel.TitleSource`).
+  let title: SidebarTerminalRowModel.TitleSource
+  /// Its content's glyph, or a terminal's.
+  let glyph: String
+  /// The program its chip shows the logo of (#141).
+  let tool: RecognizedTool?
+  let isPreview: Bool
+  let indicator: PaneIndicator
+  let programStatus: ProgramStatusRollup?
   let hasUnread: Bool
   /// Only the run tab has one.
   let runState: TabRunState?
   /// A coding-agent diagnosis is available (the ✦ badge).
   let hasDiagnosis: Bool
-  /// The strip's active tab for its target.
-  let isActive: Bool
   /// The active tab of the selected target: the one with focus.
   let isFocused: Bool
   /// On screen in another pane of a split, not focused.
   let isVisibleInSplit: Bool
-
-  var id: TerminalTab.ID { tab.id }
-  var title: String { tab.title }
 }

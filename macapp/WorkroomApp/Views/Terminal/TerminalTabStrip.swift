@@ -200,7 +200,9 @@ struct TerminalTabStrip: View {
           // for every chip and never delays the select.
           let now = Date()
           panes.select(tab.id, for: target)
-          if let last = lastChipClick, last.id == tab.id, now.timeIntervalSince(last.at) < 0.35 {
+          if let last = lastChipClick, last.id == tab.id,
+            now.timeIntervalSince(last.at) < NSEvent.doubleClickInterval
+          {
             panes.persist(tab.id, for: target)
             lastChipClick = nil
           } else {
