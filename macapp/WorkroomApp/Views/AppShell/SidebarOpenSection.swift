@@ -123,10 +123,12 @@ struct SidebarOpenList: View, Equatable {
 
   var body: some View {
     let rows = store.openSectionRows()
-    let items = Self.items(of: rows)
     // Read here, so the list re-runs only when the gap moves, never as the pointer moves alone.
     let reflow = OpenRowLift.shared.reflow(for: store)
     let entries = Self.shown(Self.entries(of: rows, showing: reflow?.dragged), in: reflow)
+    let shownIDs = entries.map(\.id)
+    // The model's order, which a lift starts from: what the list shows while nothing is lifted.
+    let items = reflow == nil ? shownIDs : Self.items(of: rows)
     return ScrollViewReader { proxy in
       List {
         if rows.isEmpty {
@@ -145,7 +147,7 @@ struct SidebarOpenList: View, Equatable {
       }
       .sidebarListStyle()
       .background(SidebarOverlayScrollers())
-      .animation(rowAnimation, value: entries.map(\.id))
+      .animation(rowAnimation, value: shownIDs)
       .onChange(of: Self.scrollTarget(of: rows)) { _, target in
         guard let target else { return }
         withAnimation(rowAnimation) { proxy.scrollTo(target) }
@@ -297,7 +299,6 @@ struct SidebarOpenList: View, Equatable {
   /// (`WorkroomWindowDrag`), else a reorder of the workroom tabs, its gap opening under the
   /// pointer as it moves (`OpenRowLift`).
   private func workroomDrag(_ row: OpenSectionRow, items: [OpenSectionItem]) -> some Gesture {
-    let actions = SidebarActions.live(store: store)
     let item = OpenSectionItem.workroom(row.sid)
     let lift = OpenRowLift.shared
     return followedDrag(item) { [store, drag] report in
@@ -329,7 +330,9 @@ struct SidebarOpenList: View, Equatable {
         lift.drop()
         return WorkroomWindowDrag.end(store: store, sid: row.sid)
       }
-      if drag.splitEnded(row.sid, at: report.location, actions: actions) { return lift.drop() }
+      if drag.splitEnded(row.sid, at: report.location, actions: .live(store: store)) {
+        return lift.drop()
+      }
       // The list already shows the new order: the store takes it, and the ghost settles into it.
       if !lift.landInGap(at: report.screen, in: store) { lift.cancel() }
     } onCancel: { [store, drag] in
