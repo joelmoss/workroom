@@ -10,11 +10,10 @@ import WorkroomDomain
 extension AppStore {
 
   /// The Open section's rows, in title-bar order, each holding its tabs in strip order. A folded
-  /// row holds only `showing`, when it is one of its tabs: its placeholder while a drag lifts it
-  /// (nil: the lifted row of this window's list, if any). Its other tabs draw nothing, so their
-  /// rows (unread counts, run state, diagnoses, what is on screen) are not built.
+  /// row holds only `showing`, when it is one of its tabs: its placeholder while a drag lifts it,
+  /// which the list passes in. Its other tabs draw nothing, so their rows (unread counts, run
+  /// state, diagnoses, what is on screen) are not built.
   func openSectionRows(showing: OpenSectionItem? = nil) -> [OpenSectionRow] {
-    let showing = showing ?? OpenRowLift.shared.reflow(for: self)?.dragged
     let visibleSplit = resolvedSplitLeaves().map { Set($0.map(\.sid)) } ?? []
     return displayedWorkroomTargets().map { sid, target in
       let isSelected = sid == selectedTargetID
