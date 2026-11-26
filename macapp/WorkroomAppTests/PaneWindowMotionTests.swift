@@ -230,9 +230,12 @@ final class PaneWindowMotionTests: XCTestCase {
       background: .black, level: .normal, byDrag: false, pointer: nil)
     windows.open(
       tabID: tabID, title: "pane", project: "p", workroom: nil, origin: nil, popOut: source,
-      onCloseTab: {}, onDock: {}, content: { Color.clear.frame(width: 200, height: 120) })
+      onCloseTab: {}, onDock: {}, content: { Color.clear })
     defer { windows.close(tabID: tabID) }
     let window = try XCTUnwrap(windows.window(for: tabID))
+    // Its content laying out and its glass applying must not count as the user moving it, which
+    // would cut every pop out short.
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     XCTAssertEqual(TestWindowCloak.requested(window).alpha, 0, "hidden while it grows")
     let opened = window.frame
     var docks = 0
