@@ -367,6 +367,36 @@ final class AppStoreSessionRestoreTests: XCTestCase {
       false)
   }
 
+  /// Value: protects=the selected row, folded by hand, comes back folded (#819 story 70);
+  /// fails_when=the restore drops it, or folds a row the restored selection isn't;
+  /// seam=AppStore.restorePersistedSessionIfPending
+  func testTheSelectedOpenRowsFoldIsRestoredWithItsSelection() {
+    let projects = [project("/p", workrooms: ["one", "two"])]
+    let two = SidebarID.workroom(project: "/p", name: "two")
+    func restored(folded: String) -> AppStore {
+      let session = WindowSession(
+        windowKey: UUID().uuidString, isKey: true, selectedTargetID: "wr|/p|two",
+        targets: [
+          TargetSession(targetID: "wr|/p|one", tabs: [terminal("a", title: "Terminal 1")]),
+          TargetSession(
+            targetID: "wr|/p|two",
+            tabs: [terminal("b", title: "Terminal 1"), terminal("c", title: "Terminal 2")]),
+        ],
+        foldedSelectedTarget: folded)
+      let store = makeStore(projects: projects, session: session)
+      store.claimSessionIfNeeded()
+      // As `reconcileWindow` does: the selection first, then the session.
+      store.selectedTargetID = two
+      store.restorePersistedSessionIfPending(in: projects)
+      return store
+    }
+
+    XCTAssertEqual(
+      restored(folded: "wr|/p|two").openSectionRows().first { $0.sid == two }?.isFolded, true)
+    XCTAssertNil(
+      restored(folded: "wr|/p|one").foldedSelectedOpenTarget, "not the selection, so not folded")
+  }
+
   /// A group whose second workroom was deleted is not a group any more.
   func testWorkroomSplitDissolvesWhenALeafIsGone() {
     let projects = [project("/p", workrooms: ["one"])]

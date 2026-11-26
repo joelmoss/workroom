@@ -509,12 +509,15 @@ struct WindowSession: Codable, Hashable, Sendable {
   var expandedTargets: [String]?
   /// `AppStore.unfoldedOpenTargets` — which Open section rows were unfolded by hand (#819).
   var unfoldedOpenTargets: [String]?
+  /// `AppStore.foldedSelectedOpenTarget` — the selected target, when its Open row was folded by
+  /// hand (#819 story 70).
+  var foldedSelectedTarget: String?
 
   init(
     windowKey: String, frame: String? = nil, isKey: Bool = false,
     selectedTargetID: String? = nil, targets: [TargetSession] = [],
     workroomSplits: [LayoutNode<String>] = [], expandedTargets: [String]? = nil,
-    unfoldedOpenTargets: [String]? = nil
+    unfoldedOpenTargets: [String]? = nil, foldedSelectedTarget: String? = nil
   ) {
     self.windowKey = windowKey
     self.frame = frame
@@ -524,6 +527,7 @@ struct WindowSession: Codable, Hashable, Sendable {
     self.workroomSplits = workroomSplits
     self.expandedTargets = expandedTargets
     self.unfoldedOpenTargets = unfoldedOpenTargets
+    self.foldedSelectedTarget = foldedSelectedTarget
   }
 }
 
@@ -683,6 +687,9 @@ extension WindowSession {
     }
     window.unfoldedOpenTargets = unfoldedOpenTargets.map { unfolded in
       Array(Set(unfolded)).sorted().map { String($0.prefix(SessionLimits.maxStringLength)) }
+    }
+    window.foldedSelectedTarget = foldedSelectedTarget.map {
+      String($0.prefix(SessionLimits.maxStringLength))
     }
     return window
   }
