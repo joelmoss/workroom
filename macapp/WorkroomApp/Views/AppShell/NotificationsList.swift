@@ -185,10 +185,10 @@ struct SidebarNotificationStrip: View {
   var body: some View {
     VStack(spacing: 0) {
       if let oldest = notifications.items.first {
-        // The row, at the foot of the sidebar. The enclosing sidebar footer supplies the solid
-        // background and the top hairline (issue #118), so this band adds none of its own — it just
-        // slides in/out. The `+N` badge rides as the row's
-        // trailing accessory so hovering anywhere on the row highlights the whole thing.
+        // The row, at the foot of the sidebar, as a card of its own (the chrome's `sidebarCard`:
+        // rounded, bordered, a soft shadow), inset from the sidebar's edges, sliding in and out
+        // whole. The `+N` badge rides as the row's trailing accessory so hovering anywhere on the
+        // row highlights the whole thing; the card clips that highlight to its corners.
         VStack(spacing: 0) {
           NotificationRow(
             item: oldest,
@@ -199,6 +199,7 @@ struct SidebarNotificationStrip: View {
               ? AnyView(plusBadge(extra: notifications.items.count - 1)) : nil
           )
         }
+        .sidebarCard(cornerRadius: 8, margin: Spacing.m, topMargin: Spacing.xs)
         .transition(.move(edge: .bottom).combined(with: .opacity))
       }
     }
