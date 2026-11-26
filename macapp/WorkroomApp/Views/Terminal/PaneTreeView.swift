@@ -422,10 +422,12 @@ struct PaneLeafView: View {
             isBlocked: { modals.activePicker != nil })
         )
         .overlay {
-          // Fades in behind the window growing out of the slot, and out as the pane lands back in
-          // it (`PaneWindowMotion.placeholderFade`).
+          // Not while a transition is in flight over the slot: it fades in once a pop out has
+          // lifted the pane out, and out fast as a pull back starts, so the pane lands on a calm
+          // slot (`PaneWindowMotion.placeholderFade`).
+          let showsPlaceholder = poppedOut && !panes.inFlightTabIDs.contains(tabID)
           ZStack {
-            if poppedOut {
+            if showsPlaceholder {
               PoppedOutPlaceholder(
                 tabID: tabID, content: content, focused: focused,
                 onGoToWindow: { panes.raiseDetachedPane(tabID, for: target) },
@@ -438,8 +440,8 @@ struct PaneLeafView: View {
           .animation(
             .easeOut(
               duration: PaneWindowMotion.placeholderFade(
-                appearing: poppedOut, reduceMotion: reduceMotion)),
-            value: poppedOut)
+                appearing: showsPlaceholder, reduceMotion: reduceMotion)),
+            value: showsPlaceholder)
         }
     }
     // Where this slot is on screen, for a pop out to grow from and a pull back to land in. Only the

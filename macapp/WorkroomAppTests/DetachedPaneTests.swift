@@ -336,6 +336,21 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(reported.first?.3, false, "a button, menu or shortcut is not a drag")
   }
 
+  /// Only a popped-out pane can be in flight over its slot, and docking lands it.
+  func testOnlyAPoppedOutPaneIsInFlightAndDockingLandsIt() {
+    let s = makeSessions()
+    let tab = s.addTab(for: target)
+    s.setInFlight(tab.id, true)
+    XCTAssertFalse(s.inFlightTabIDs.contains(tab.id), "a docked pane has no flight")
+
+    s.detachPane(tab.id, for: target, at: .zero)
+    s.setInFlight(tab.id, true)
+    XCTAssertTrue(s.inFlightTabIDs.contains(tab.id))
+
+    s.dockPane(tab.id, for: target)
+    XCTAssertFalse(s.inFlightTabIDs.contains(tab.id), "docking lands it")
+  }
+
   /// A pane let go outside its window says it was dragged, so its window scales up from the
   /// pointer rather than growing out of its slot.
   func testADropOutsideTheWindowDetachesByDrag() {

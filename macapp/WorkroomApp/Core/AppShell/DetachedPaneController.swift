@@ -129,6 +129,9 @@ final class DetachedPaneWindows {
     /// Dragged out of its window, and let go at `pointer`.
     var byDrag: Bool
     var pointer: CGPoint?
+    /// Tells the slot the pane is in flight over it (true), so it shows no placeholder, or has
+    /// lifted clear of it (false) (`TerminalPanes.setInFlight`).
+    var setInFlight: @MainActor (Bool) -> Void = { _ in }
 
     /// The slot of `tabID` as it is now, with `surface` in it; none when it isn't on screen.
     /// `onScreen`: whether its holder shows the pane's workroom at all, which a slot's view alone
@@ -136,11 +139,11 @@ final class DetachedPaneWindows {
     @MainActor
     static func slot(
       of tabID: TerminalTab.ID, surface: NSView?, onScreen: Bool = true, byDrag: Bool,
-      pointer: CGPoint?
+      pointer: CGPoint?, setInFlight: @escaping @MainActor (Bool) -> Void = { _ in }
     ) -> PopOutSource {
       PopOutSource(
         slot: onScreen ? PaneSlot.current(of: tabID, surface: surface) : nil, byDrag: byDrag,
-        pointer: pointer)
+        pointer: pointer, setInFlight: setInFlight)
     }
   }
 
@@ -310,8 +313,16 @@ final class DetachedPaneWindows {
     } else {
       surface = PaneWindowFadeIn(window)
     }
+    // The slot shows no placeholder until the pane has lifted out of it: in this same turn as the
+    // detach, so it never shows for a frame first.
+    var milestones: [(fraction: Double, action: () -> Void)] = []
+    if plan.moves {
+      source.setInFlight(true)
+      milestones.append(
+        (PaneWindowMotion.Tuning.placeholderRevealFraction, { source.setInFlight(false) }))
+    }
     return PaneWindowTransition(
-      kind: .popOut, plan: plan, surface: surface, animator: animator
+      kind: .popOut, plan: plan, surface: surface, animator: animator, milestones: milestones
     ) { [weak self, weak window] _ in
       window?.alphaValue = 1
       self?.forgetEnded(tabID)
@@ -319,14 +330,19 @@ final class DetachedPaneWindows {
   }
 
   /// Dock `tabID` with its pull back (issue #172): its window shrinks into `slot` (none when it
-  /// isn't on screen) and fades, and `dock` runs when it lands, so the pane is never in its window
-  /// and its slot at once. With Reduce Motion, or no slot, the pane docks at once under a snapshot
-  /// of its window that fades where it was. Nothing to animate (no window, or one that is
-  /// minimised or full screen) docks at once.
+  /// isn't on screen), fully opaque, and `dock` runs when it lands, so the pane is never in its
+  /// window and its slot at once; the card then fades off the docked pane. The slot's placeholder
+  /// goes as it starts (`setInFlight(true)`; docking clears it), so it lands on a calm slot. With
+  /// Reduce Motion, or no slot, the pane docks at once under a snapshot of its window that fades
+  /// where it was. Nothing to animate (no window, or one that is minimised or full screen) docks
+  /// at once.
   ///
   /// The snapshot starts as the window, title bar and all, and lands as the slot will draw the
   /// pane: the slot's own title bar over the window's body.
-  func dock(_ tabID: TerminalTab.ID, into slot: PaneSlot?, then dock: @escaping () -> Void) {
+  func dock(
+    _ tabID: TerminalTab.ID, into slot: PaneSlot?,
+    setInFlight: @escaping @MainActor (Bool) -> Void = { _ in }, then dock: @escaping () -> Void
+  ) {
     if let running = transitions.removeValue(forKey: tabID) {
       // A pull back already running docks as it finishes; a pop out finishes into its window,
       // which then pulls back.
@@ -371,6 +387,8 @@ final class DetachedPaneWindows {
       self?.forgetEnded(tabID)
       if !docksFirst { dock() }
     }
+    // The slot's placeholder starts its fast fade now, while the card is still far off.
+    if !docksFirst { setInFlight(true) }
     // The snapshot covers the window before the window goes, so the pane never blinks out.
     transition.start()
     window.animationBehavior = .none

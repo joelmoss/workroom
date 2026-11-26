@@ -28,8 +28,8 @@ final class PaneWindowMotionTests: XCTestCase {
     XCTAssertEqual(plan.end, final)
     XCTAssertEqual(plan.startAlpha, 1, "the snapshot covers the slot exactly as it leaves")
     XCTAssertEqual(plan.endAlpha, 1)
-    XCTAssertEqual(plan.duration, 0.25)
-    XCTAssertEqual(plan.timing, .easeOut)
+    XCTAssertEqual(plan.curve, .spring(PaneWindowMotion.Tuning.popOutSpring))
+    XCTAssertEqual(plan.duration, 0.38)
   }
 
   func testASlotOnASecondaryScreenIsWhereItIs() {
@@ -85,17 +85,63 @@ final class PaneWindowMotionTests: XCTestCase {
     XCTAssertEqual(plan.startAlpha, 0, "it fades in where the drag's ghost was")
   }
 
-  func testAPullBackShrinksIntoTheSlotAndFades() {
+  func testAPullBackShrinksIntoTheSlotFullyOpaque() {
     let slot = NSRect(x: 40, y: 60, width: 400, height: 300)
     let plan = PaneWindowMotion.pullBack(
       window: final, slot: slot, reduceMotion: false, screens: [primary])
 
     XCTAssertEqual(plan.start, final)
     XCTAssertEqual(plan.end, slot)
-    XCTAssertLessThan(plan.endAlpha, plan.startAlpha)
-    XCTAssertGreaterThan(plan.endAlpha, 0, "still there to hand over to the slot")
-    XCTAssertEqual(plan.duration, 0.22)
-    XCTAssertEqual(plan.timing, .easeIn)
+    XCTAssertEqual(plan.curve, .spring(PaneWindowMotion.Tuning.pullBackSpring))
+    XCTAssertEqual(plan.duration, 0.32)
+    for t in stride(from: 0.0, through: plan.duration, by: 0.01) {
+      XCTAssertEqual(plan.pose(at: t).alpha, 1, "no dip in opacity at \(t)s: it fades once landed")
+    }
+  }
+
+  // MARK: Springs
+
+  /// The pull back's spring is critically damped: it closes in on the slot without ever passing
+  /// it, and is exactly there once it settles.
+  func testThePullBackSpringNeverOvershootsAndSettles() {
+    let spring = PaneWindowMotion.Tuning.pullBackSpring
+    var last = 0.0
+    for t in stride(from: 0.0, through: spring.settle, by: 0.002) {
+      let value = spring.value(at: t)
+      XCTAssertLessThanOrEqual(value, 1, "never past the slot, at \(t)s")
+      XCTAssertGreaterThanOrEqual(value, last - 1e-12, "always closing in, at \(t)s")
+      last = value
+    }
+    XCTAssertGreaterThan(spring.value(at: spring.settle - 0.001), 0.998, "settled by 0.32s")
+    XCTAssertEqual(spring.value(at: spring.settle), 1)
+  }
+
+  /// The pop out's spring overshoots its frame by 2 to 3% of the way it travels, once, then
+  /// settles exactly on it.
+  func testThePopOutSpringOvershootsSlightlyThenSettles() {
+    let spring = PaneWindowMotion.Tuning.popOutSpring
+    var peak = 0.0
+    for t in stride(from: 0.0, through: spring.settle, by: 0.001) {
+      peak = max(peak, spring.value(at: t))
+    }
+    XCTAssertGreaterThanOrEqual(peak, 1.02)
+    XCTAssertLessThanOrEqual(peak, 1.03)
+    XCTAssertEqual(spring.value(at: spring.settle - 0.001), 1, accuracy: 0.003, "settled by 0.38s")
+    XCTAssertEqual(spring.value(at: spring.settle), 1)
+
+    // On a plan the frame follows it past the window, but opacity and crossfade stop at theirs.
+    let plan = PaneWindowMotion.popOut(
+      slot: NSRect(x: 40, y: 60, width: 400, height: 300), final: final, pointer: nil,
+      byDrag: false, reduceMotion: false, screens: [primary])
+    var widest: CGFloat = 0
+    for t in stride(from: 0.0, through: plan.duration, by: 0.001) {
+      let pose = plan.pose(at: t)
+      widest = max(widest, pose.frame.width)
+      XCTAssertLessThanOrEqual(pose.progress, 1)
+    }
+    XCTAssertGreaterThan(widest, final.width, "it grows a little past the window")
+    XCTAssertLessThan(widest, final.width + (final.width - 400) * 0.031)
+    XCTAssertEqual(plan.pose(at: plan.duration), plan.endPose, "and lands exactly on it")
   }
 
   // MARK: Reduce Motion
@@ -120,9 +166,10 @@ final class PaneWindowMotionTests: XCTestCase {
   }
 
   func testThePlaceholderFadesWithTheTransition() {
-    XCTAssertEqual(PaneWindowMotion.placeholderFade(appearing: true, reduceMotion: false), 0.25)
-    XCTAssertEqual(PaneWindowMotion.placeholderFade(appearing: false, reduceMotion: false), 0.15)
+    XCTAssertEqual(PaneWindowMotion.placeholderFade(appearing: true, reduceMotion: false), 0.2)
+    XCTAssertEqual(PaneWindowMotion.placeholderFade(appearing: false, reduceMotion: false), 0.08)
     XCTAssertEqual(PaneWindowMotion.placeholderFade(appearing: true, reduceMotion: true), 0.15)
+    XCTAssertEqual(PaneWindowMotion.placeholderFade(appearing: false, reduceMotion: true), 0.15)
   }
 
   // MARK: Transitions
@@ -138,15 +185,39 @@ final class PaneWindowMotionTests: XCTestCase {
 
     transition.start()
     XCTAssertEqual(surface.frame, plan.start)
-    XCTAssertEqual(surface.animatedTo, plan.endPose)
     XCTAssertEqual(surface.pose?.progress, 0, "it starts as what it leaves")
-    XCTAssertEqual(ends, [], "nothing ends until the animation does")
+    animator.advance(to: 0.1)
+    XCTAssertEqual(surface.pose, plan.pose(at: 0.1), "each frame draws the plan's pose")
+    XCTAssertEqual(ends, [], "nothing ends until the clock runs out")
 
     animator.complete()
 
     XCTAssertEqual(ends, [false])
     XCTAssertEqual(surface.frame, plan.end)
-    XCTAssertEqual(surface.tearDowns, [PaneWindowMotion.tailFadeDuration])
+    XCTAssertEqual(surface.tearDowns, [PaneWindowMotion.Tuning.cardFadeOut])
+  }
+
+  /// A milestone runs once, when the clock passes its fraction, and one never reached runs as the
+  /// transition is cut short.
+  func testMilestonesRunOnceAtTheirFraction() {
+    let animator = ManualAnimator()
+    let plan = movingPlan()
+    var reached: [String] = []
+    let transition = PaneWindowTransition(
+      kind: .popOut, plan: plan, surface: FakeSurface(), animator: animator,
+      milestones: [(0.4, { reached.append("lifted") }), (0.9, { reached.append("late") })]
+    ) { _ in reached.append("end") }
+    transition.start()
+
+    animator.advance(to: plan.duration * 0.39)
+    XCTAssertEqual(reached, [])
+    animator.advance(to: plan.duration * 0.41)
+    XCTAssertEqual(reached, ["lifted"])
+    animator.advance(to: plan.duration * 0.5)
+    transition.finish()
+    animator.complete()
+
+    XCTAssertEqual(reached, ["lifted", "late", "end"])
   }
 
   func testAnInterruptedTransitionEndsAtItsEndOnce() {
@@ -195,9 +266,14 @@ final class PaneWindowMotionTests: XCTestCase {
     defer { windows.close(tabID: tabID) }
     let slot = testSlot()
     var docks = 0
+    var inFlight: [Bool] = []
 
-    windows.dock(tabID, into: slot) { docks += 1 }
+    windows.dock(
+      tabID, into: slot, setInFlight: { inFlight.append($0) }, then: { docks += 1 })
+    XCTAssertEqual(inFlight, [true], "the slot's placeholder goes as the pull back starts")
+    animator.advance(to: 0.2)
     XCTAssertEqual(docks, 0, "the pane docks when it lands, not as it leaves")
+    XCTAssertEqual(inFlight, [true], "and stays gone the whole flight; docking clears it")
     XCTAssertFalse(try XCTUnwrap(windows.window(for: tabID)).isVisible, "its window is gone")
 
     windows.dock(tabID, into: slot) { docks += 1 }
@@ -216,6 +292,54 @@ final class PaneWindowMotionTests: XCTestCase {
 
     XCTAssertEqual(docks, 0)
     XCTAssertNil(windows.window(for: tabID))
+  }
+
+  /// A pop out keeps its slot's placeholder hidden until the pane has lifted out, 40% into the
+  /// flight, and shows its window once the spring settles.
+  func testAPopOutRevealsThePlaceholderOnceLiftedAndTheWindowOnceSettled() throws {
+    let windows = DetachedPaneWindows()
+    let animator = ManualAnimator()
+    windows.animates = true
+    windows.animator = animator
+    windows.reduceMotion = { false }
+    let tabID = UUID()
+    var inFlight: [Bool] = []
+    let source = DetachedPaneWindows.PopOutSource(
+      slot: testSlot(), byDrag: false, pointer: nil, setInFlight: { inFlight.append($0) })
+    windows.open(
+      tabID: tabID, title: "pane", project: "p", workroom: nil, origin: nil, popOut: source,
+      onCloseTab: {}, onDock: {}, content: { Color.clear })
+    defer { windows.close(tabID: tabID) }
+    let window = try XCTUnwrap(windows.window(for: tabID))
+    let duration = PaneWindowMotion.Tuning.popOutSpring.settle
+    XCTAssertEqual(inFlight, [true], "no placeholder as it leaves")
+
+    animator.advance(to: duration * 0.39)
+    XCTAssertEqual(inFlight, [true])
+    animator.advance(to: duration * 0.41)
+    XCTAssertEqual(inFlight, [true, false], "the placeholder shows once the pane has lifted out")
+    XCTAssertEqual(TestWindowCloak.requested(window).alpha, 0, "the window waits for the spring")
+
+    animator.complete()
+    XCTAssertEqual(TestWindowCloak.requested(window).alpha, 1, "and swaps in once it settles")
+  }
+
+  /// With Reduce Motion a pop out fades the window in and never hides the placeholder.
+  func testAReduceMotionPopOutLeavesThePlaceholderAlone() throws {
+    let windows = DetachedPaneWindows()
+    windows.animates = true
+    windows.animator = ManualAnimator()
+    windows.reduceMotion = { true }
+    let tabID = UUID()
+    var inFlight: [Bool] = []
+    let source = DetachedPaneWindows.PopOutSource(
+      slot: testSlot(), byDrag: false, pointer: nil, setInFlight: { inFlight.append($0) })
+    windows.open(
+      tabID: tabID, title: "pane", project: "p", workroom: nil, origin: nil, popOut: source,
+      onCloseTab: {}, onDock: {}, content: { Color.clear })
+    defer { windows.close(tabID: tabID) }
+
+    XCTAssertEqual(inFlight, [])
   }
 
   /// A pop out shows its window when it lands; a pull back started before then lands it first, so
@@ -419,7 +543,7 @@ final class PaneWindowMotionTests: XCTestCase {
   private func movingPlan() -> PaneWindowMotion.Plan {
     PaneWindowMotion.Plan(
       start: NSRect(x: 0, y: 0, width: 100, height: 100), end: final, startAlpha: 1,
-      endAlpha: 0.6, duration: 0.22, timing: .easeIn)
+      endAlpha: 1, curve: .spring(PaneWindowMotion.Tuning.pullBackSpring))
   }
 
   private func openAnimatedWindow() -> (DetachedPaneWindows, ManualAnimator, TerminalTab.ID) {
@@ -440,40 +564,45 @@ final class PaneWindowMotionTests: XCTestCase {
 @MainActor
 private final class FakeSurface: PaneWindowTransitionSurface {
   var pose: PaneWindowMotion.Pose?
-  var animatedTo: PaneWindowMotion.Pose?
   var tearDowns: [TimeInterval] = []
   var frame: NSRect? { pose?.frame }
   var alpha: CGFloat? { pose?.alpha }
 
   func set(_ pose: PaneWindowMotion.Pose) { self.pose = pose }
 
-  func animate(
-    to pose: PaneWindowMotion.Pose, duration: TimeInterval, timing: PaneWindowMotion.Timing
-  ) {
-    animatedTo = pose
-  }
-
   func tearDown(fade: TimeInterval) { tearDowns.append(fade) }
 }
 
-/// Runs each animation's changes at once and holds its completion until told.
+/// A clock moved by hand: `advance` steps every run to a time, `complete` runs them out.
 @MainActor
 private final class ManualAnimator: PaneWindowAnimating {
-  private var completions: [() -> Void] = []
+  private struct Run {
+    let duration: TimeInterval
+    let step: @MainActor (TimeInterval) -> Void
+    let completion: @MainActor () -> Void
+  }
 
-  func animate(
-    duration: TimeInterval, timing: PaneWindowMotion.Timing, changes: @escaping () -> Void,
+  private var runs: [Run] = []
+
+  func run(
+    duration: TimeInterval, step: @escaping @MainActor (TimeInterval) -> Void,
     completion: @escaping @MainActor () -> Void
   ) {
-    changes()
-    completions.append(completion)
+    runs.append(Run(duration: duration, step: step, completion: completion))
+  }
+
+  func advance(to t: TimeInterval) {
+    for run in runs { run.step(min(t, run.duration)) }
   }
 
   func complete() { completeAll() }
 
   func completeAll() {
-    let pending = completions
-    completions = []
-    for completion in pending { completion() }
+    let pending = runs
+    runs = []
+    for run in pending {
+      run.step(run.duration)
+      run.completion()
+    }
   }
 }

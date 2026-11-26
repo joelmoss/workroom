@@ -56,31 +56,17 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
     self.to = to
   }
 
-  /// Ordered in by its first `set`, so it never shows before it is in place.
+  /// Called once per frame: everything set outright, nothing left to Core Animation to tween.
+  /// Ordered in by its first call, so it never shows before it is in place.
   func set(_ pose: PaneWindowMotion.Pose) {
     defer { if !panel.isVisible { panel.orderFrontRegardless() } }
-    // A zero-length group replaces an animation still running on any of these, so it cannot carry
-    // on past the end it was cut short at.
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0
-      panel.animator().setFrame(padded(pose.frame), display: true)
-      panel.animator().alphaValue = pose.alpha
-      card.toImage.animator().alphaValue = pose.progress
-    }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
     panel.setFrame(padded(pose.frame), display: true)
     panel.alphaValue = pose.alpha
     card.toImage.alphaValue = pose.progress
-    card.setCorners(radius(pose.progress), shadow: shadow(pose.progress), animation: nil)
-  }
-
-  func animate(
-    to pose: PaneWindowMotion.Pose, duration: TimeInterval, timing: PaneWindowMotion.Timing
-  ) {
-    panel.animator().setFrame(padded(pose.frame), display: true)
-    panel.animator().alphaValue = pose.alpha
-    card.toImage.animator().alphaValue = pose.progress
-    card.setCorners(
-      radius(pose.progress), shadow: shadow(pose.progress), animation: (duration, timing))
+    card.setCorners(radius(pose.progress), shadow: shadow(pose.progress))
+    CATransaction.commit()
   }
 
   func tearDown(fade: TimeInterval) {
@@ -146,25 +132,10 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
       clip.addSubview(toImage)
     }
 
-    func setCorners(
-      _ radius: CGFloat, shadow: Float, animation: (TimeInterval, PaneWindowMotion.Timing)?
-    ) {
-      for (layer, key, value) in [
-        (card.layer, "cornerRadius", radius as Any), (clip.layer, "cornerRadius", radius as Any),
-        (card.layer, "shadowOpacity", shadow as Any),
-      ] {
-        guard let layer else { continue }
-        layer.removeAnimation(forKey: key)
-        if let (duration, timing) = animation {
-          let move = CABasicAnimation(keyPath: key)
-          move.fromValue = layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKey: key)
-          move.toValue = value
-          move.duration = duration
-          move.timingFunction = timing.function
-          layer.add(move, forKey: key)
-        }
-        layer.setValue(value, forKey: key)
-      }
+    func setCorners(_ radius: CGFloat, shadow: Float) {
+      card.layer?.cornerRadius = radius
+      clip.layer?.cornerRadius = radius
+      card.layer?.shadowOpacity = shadow
     }
 
     private static func imageView(_ image: CGImage?, frame: NSRect) -> NSView {
@@ -191,20 +162,7 @@ final class PaneWindowFadeIn: PaneWindowTransitionSurface {
   private weak var window: NSWindow?
   init(_ window: NSWindow) { self.window = window }
 
-  func set(_ pose: PaneWindowMotion.Pose) {
-    guard let window else { return }
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0
-      window.animator().alphaValue = pose.alpha
-    }
-    window.alphaValue = pose.alpha
-  }
-
-  func animate(
-    to pose: PaneWindowMotion.Pose, duration: TimeInterval, timing: PaneWindowMotion.Timing
-  ) {
-    window?.animator().alphaValue = pose.alpha
-  }
+  func set(_ pose: PaneWindowMotion.Pose) { window?.alphaValue = pose.alpha }
 
   func tearDown(fade: TimeInterval) {}
 }
