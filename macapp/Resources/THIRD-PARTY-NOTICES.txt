@@ -11839,7 +11839,7 @@ Rust crates under ISC: untrusted 0.9.0
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: adler2 2.0.1, allocator-api2 0.2.21, fastrand 2.5.0, itoa 1.0.19, linux-raw-sys 0.12.1, once_cell 1.21.4, rustix 1.1.6, serde 1.0.229, serde_core 1.0.229, serde_json 1.0.154, thiserror 2.0.21, utf8-zero 0.8.1, zmij 1.0.23
+Rust crates under MIT: adler2 2.0.1, allocator-api2 0.2.22, fastrand 2.5.0, itoa 1.0.19, linux-raw-sys 0.12.1, once_cell 1.21.4, rustix 1.1.6, serde 1.0.229, serde_core 1.0.229, serde_json 1.0.154, thiserror 2.0.21, utf8-zero 0.8.1, zmij 1.0.23
 ------------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any
@@ -11867,7 +11867,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: aho-corasick 1.1.5, byteorder 1.5.0, jiff 0.2.42, jiff-core 0.1.4, memchr 2.8.3, walkdir 2.5.0
+Rust crates under MIT: aho-corasick 1.1.5, byteorder 1.5.0, jiff 0.2.46, jiff-core 0.1.8, memchr 2.8.3, walkdir 2.5.1
 ------------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -11949,7 +11949,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: bitflags 2.13.2, log 0.4.35, regex-automata 0.4.18, regex-syntax 0.8.11
+Rust crates under MIT: bitflags 2.13.2, log 0.4.35, regex-automata 0.4.19, regex-syntax 0.8.12
 ------------------------------------------------------------------------------
 
 Copyright (c) 2014 The Rust Project Developers
@@ -11979,7 +11979,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: bstr 1.13.1
+Rust crates under MIT: bstr 1.14.0
 ------------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -12005,7 +12005,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: bytes 1.12.1
+Rust crates under MIT: bytes 1.12.2
 ------------------------------------------------------------------------------
 
 Copyright (c) 2018 Carl Lerche
@@ -12035,7 +12035,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: cfg-if 1.0.5, filetime 0.2.29, openssl-probe 0.2.2
+Rust crates under MIT: cfg-if 1.0.5, filetime 0.2.30, openssl-probe 0.2.2
 ------------------------------------------------------------------------------
 
 Copyright (c) 2014 Alex Crichton
@@ -12119,7 +12119,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: crc32fast 1.5.5
+Rust crates under MIT: crc32fast 1.5.6
 ------------------------------------------------------------------------------
 
 MIT License
@@ -12175,7 +12175,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: errno 0.3.14
+Rust crates under MIT: errno 0.3.15
 ------------------------------------------------------------------------------
 
 Copyright (c) 2014 Chris Wong
@@ -12229,6 +12229,54 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+==============================================================================
+Rust crates under MIT: faster-hex 2.0.0
+------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2018 Nervos Foundation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party notices
+-------------------
+
+This distribution includes code derived from the following MIT-licensed projects.
+Their copyright and permission notices are included with this distribution:
+
+* stdsimd (SIMD encoding), The Rust Project Developers:
+  https://github.com/rust-lang/stdsimd
+  See LICENSE-THIRD-PARTY/Rust Project Developers.
+  stdsimd offers MIT or Apache-2.0; the included work is used under MIT.
+* fast-hex (SIMD decoding), Zach Bjornson:
+  https://github.com/zbjornson/fast-hex
+  See LICENSE-THIRD-PARTY/fast-hex.
+
+* const-hex (saturating nibble mapping):
+  https://github.com/DaniPopes/const-hex
+  See LICENSE-THIRD-PARTY/const-hex.
+
+* vsimd (ALSW hex decoding), Nugine:
+  https://github.com/Nugine/simd
+  See LICENSE-THIRD-PARTY/vsimd.
 
 ==============================================================================
 Rust crates under MIT: fdeflate 0.3.7
@@ -12383,7 +12431,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: gix 0.90.0, gix-actor 0.44.1, gix-bitmap 0.6.1, gix-chunk 0.10.1, gix-command 0.12.1, gix-commitgraph 0.42.0, gix-config 0.62.2, gix-config-value 0.21.1, gix-date 0.18.1, gix-diff 0.70.0, gix-discover 0.57.1, gix-error 0.5.2, gix-fs 0.24.1, gix-glob 0.29.1, gix-hash 0.28.1, gix-hashtable 0.18.1, gix-index 0.58.0, gix-lock 26.0.1, gix-object 0.66.1, gix-odb 0.87.0, gix-pack 0.77.0, gix-packetline 0.24.1, gix-parallel 0.50.1, gix-path 0.14.1, gix-protocol 0.68.0, gix-quote 0.10.1, gix-ref 0.69.1, gix-refspec 0.47.1, gix-revision 0.52.0, gix-revwalk 0.38.0, gix-sec 0.16.1, gix-shallow 0.15.1, gix-tempfile 26.0.1, gix-trace 0.3.1, gix-transport 0.62.0, gix-traverse 0.64.0, gix-url 0.40.1, gix-utils 0.5.2, gix-validate 0.13.1, gix-zlib 0.4.0
+Rust crates under MIT: gix 0.90.0, gix-actor 0.44.1, gix-bitmap 0.6.2, gix-chunk 0.10.2, gix-command 0.12.2, gix-commitgraph 0.42.0, gix-config 0.62.2, gix-config-value 0.21.2, gix-date 0.18.1, gix-diff 0.70.0, gix-discover 0.57.1, gix-error 0.5.3, gix-fs 0.24.1, gix-glob 0.29.1, gix-hash 0.28.1, gix-hashtable 0.18.1, gix-index 0.58.0, gix-lock 26.0.1, gix-object 0.66.1, gix-odb 0.87.0, gix-pack 0.77.0, gix-packetline 0.24.2, gix-parallel 0.50.2, gix-path 0.14.2, gix-protocol 0.68.0, gix-quote 0.10.2, gix-ref 0.69.1, gix-refspec 0.47.1, gix-revision 0.52.0, gix-revwalk 0.38.0, gix-sec 0.16.1, gix-shallow 0.15.1, gix-tempfile 26.0.1, gix-trace 0.3.2, gix-transport 0.62.0, gix-traverse 0.64.0, gix-url 0.40.1, gix-utils 0.5.3, gix-validate 0.13.2, gix-zlib 0.4.1
 ------------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -12405,7 +12453,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: gix-trace 0.3.1
+Rust crates under MIT: gix-trace 0.3.2
 ------------------------------------------------------------------------------
 
 The `gix-trace::forest` module is derived from tracing-forest 0.2.0
@@ -12463,7 +12511,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: hashbrown 0.16.1, hashbrown 0.17.1
+Rust crates under MIT: hashbrown 0.16.1, hashbrown 0.17.2
 ------------------------------------------------------------------------------
 
 Copyright (c) 2016 Amanieu d'Antras
@@ -12727,7 +12775,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: mio 1.2.4
+Rust crates under MIT: mio 1.2.5
 ------------------------------------------------------------------------------
 
 Copyright (c) 2014 Carl Lerche and other MIO contributors
@@ -12775,7 +12823,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: notify-types 2.3.0
+Rust crates under MIT: notify-types 2.3.1
 ------------------------------------------------------------------------------
 
 Copyright (c) 2023 Notify Contributors
@@ -13121,7 +13169,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: smallvec 1.16.5
+Rust crates under MIT: smallvec 1.16.6
 ------------------------------------------------------------------------------
 
 Copyright (c) 2018 The Servo Project Developers
@@ -13417,7 +13465,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 ==============================================================================
-Rust crates under Zlib: zlib-rs 0.6.8
+Rust crates under Zlib: zlib-rs 0.6.9
 ------------------------------------------------------------------------------
 
 (C) 2024 Trifecta Tech Foundation
