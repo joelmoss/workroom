@@ -41,17 +41,19 @@ struct WorkroomTabTitle: View {
 
 /// A workroom tab's run-command mark (#7), as its chip and its Open section row show it: green
 /// play while running, a red octagon once the last run failed (#79: a distinct glyph, not just a
-/// red tint). Nothing once a run stops cleanly.
+/// red tint). Nothing once a run stops cleanly. Its glyph and colour are the run tab's
+/// (`RunStateIcon`).
 struct WorkroomRunMark: View {
   let run: WorkroomTabMarks.Run
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    let running = run == .running
-    Image(systemName: running ? "play.circle.fill" : "xmark.octagon.fill")
-      .font(.system(size: 10))
-      .foregroundStyle(running ? tokens.success : tokens.failure)
-      .help(running ? "Run command running" : "Run command failed")
-      .accessibilityLabel(running ? "run running" : "run failed")
+    let state: TabRunState = run == .running ? .running : .failed
+    let label = RunStateIcon.label(state)
+    Image(systemName: RunStateIcon.glyph(state))
+      .font(RunStateIcon.glyphFont)
+      .foregroundStyle(RunStateIcon.color(state, in: tokens))
+      .help("Run command \(label)")
+      .accessibilityLabel("run \(label)")
   }
 }

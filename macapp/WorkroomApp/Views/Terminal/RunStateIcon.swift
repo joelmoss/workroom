@@ -20,7 +20,8 @@ struct RunStateIcon: View {
     }
   }
 
-  private var glyph: String {
+  /// `state`'s glyph, which a workroom tab's run mark (`WorkroomRunMark`) draws too.
+  nonisolated static func glyph(_ state: TabRunState) -> String {
     switch state {
     case .running, .stopped: "play.circle.fill"
     case .stopping: "stop.circle.fill"
@@ -28,7 +29,8 @@ struct RunStateIcon: View {
     }
   }
 
-  private var color: Color {
+  /// `state`'s colour in `tokens`.
+  static func color(_ state: TabRunState, in tokens: ThemeTokens) -> Color {
     switch state {
     case .running: tokens.success
     case .stopping: tokens.warning
@@ -37,13 +39,17 @@ struct RunStateIcon: View {
     }
   }
 
+  /// The glyph's size.
+  static let glyphFont = Font.system(size: 10)
+
   var body: some View {
+    let color = Self.color(state, in: tokens)
     Group {
       if state == .stopping {
         ProgressView().controlSize(.mini).tint(color)
       } else {
-        Image(systemName: glyph)
-          .font(.system(size: 10))
+        Image(systemName: Self.glyph(state))
+          .font(Self.glyphFont)
           .foregroundStyle(color)
       }
     }
