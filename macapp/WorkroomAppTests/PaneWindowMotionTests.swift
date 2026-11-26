@@ -464,6 +464,30 @@ final class PaneWindowMotionTests: XCTestCase {
     XCTAssertTrue(try pixels(band) == pixels(expected), "pixel for pixel")
   }
 
+  /// A slot's title bar alone (`PaneSlotAnchors.titleBarSnapshot`, what a pull back lands with) is
+  /// the same pixels as the top of a picture of the whole slot, in a view either way up.
+  func testATitleBarBandIsTheTopOfTheWholePicture() throws {
+    for flipped in [false, true] {
+      let frame = NSRect(x: 0, y: 0, width: 200, height: 160)
+      let window = NSWindow(
+        contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      let root = StripedView(frame: frame, flipped: flipped)
+      window.contentView = root
+      let slot = NSRect(x: 12, y: 9, width: 120, height: 101)
+      let whole = try XCTUnwrap(PaneSnapshot.capture(slot, of: root, surfaces: []))
+      let expected = try XCTUnwrap(
+        PaneSnapshot.split(whole, height: slot.height, top: PaneTitleBarMetrics.height).top)
+      let region = try XCTUnwrap(
+        PaneSnapshot.topBand(
+          of: slot, in: root, top: PaneTitleBarMetrics.height, scale: window.backingScaleFactor))
+      let band = try XCTUnwrap(PaneSnapshot.capture(region, of: root, surfaces: []))
+      XCTAssertEqual([band.width, band.height], [expected.width, expected.height])
+      XCTAssertGreaterThan(distinctColors(band), 2, "the band is not a flat fill")
+      XCTAssertTrue(try pixels(band) == pixels(expected), "pixel for pixel, flipped: \(flipped)")
+    }
+  }
+
   /// A split cuts on a whole pixel row from the top, and the halves go back together the right
   /// way up.
   func testASplitAndComposeKeepTheTopAtTheTop() throws {
@@ -618,6 +642,29 @@ private final class FakeSurface: PaneWindowTransitionSurface {
   func set(_ pose: PaneWindowMotion.Pose) { self.pose = pose }
 
   func tearDown(fade: TimeInterval) { tearDowns.append(fade) }
+}
+
+/// A view of horizontal stripes, one colour per 3 points down from its top, either way up.
+private final class StripedView: NSView {
+  private let flippedCoordinates: Bool
+  override var isFlipped: Bool { flippedCoordinates }
+
+  init(frame: NSRect, flipped: Bool) {
+    flippedCoordinates = flipped
+    super.init(frame: frame)
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override func draw(_ dirtyRect: NSRect) {
+    let colors: [NSColor] = [.systemRed, .systemGreen, .systemBlue, .systemYellow, .black]
+    var index = 0
+    for y in stride(from: 0, to: bounds.height, by: 3) {
+      colors[index % colors.count].setFill()
+      NSRect(x: 0, y: y, width: bounds.width, height: 3).fill()
+      index += 1
+    }
+  }
 }
 
 /// A clock moved by hand: `advance` steps every run to a time, `complete` runs them out.

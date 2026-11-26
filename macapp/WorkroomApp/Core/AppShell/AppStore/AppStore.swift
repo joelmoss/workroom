@@ -58,12 +58,10 @@ final class AppStore: ObservableObject {
   /// How a drop that makes a new terminal group gets its name: always asked, never taken unasked.
   /// A standalone terminal's row or tab let go on another standalone terminal asks first, offering
   /// the suggestion it is handed, and gets the name, or nil for Cancel or an empty one, which drops
-  /// nothing. A seam: a hosted unit run (Debug only) takes the suggestion, as Return would, so no
-  /// prompt shows over the developer's work; a test that answers the ask sets its own.
+  /// nothing. A seam: a hosted unit run takes the suggestion unasked
+  /// (`AppEnvironment.takesSuggestedGroupNames`); a test that answers the ask sets its own.
   @ObservationIgnored var askGroupName: @MainActor (_ suggested: String) async -> String? = {
-    #if DEBUG
-      if AppEnvironment.isHostedUnitRun() { return { $0 } }
-    #endif
+    if AppEnvironment.takesSuggestedGroupNames() { return { $0 } }
     return { await TerminalGroupNamePrompt.name(suggested: $0) }
   }()
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
@@ -1613,7 +1611,9 @@ final class AppStore: ObservableObject {
   /// Rebuild the window of `target`'s restored popped-out pane `tabID` (a relaunch or a window
   /// hand-off) at its saved `frame`: `TerminalPanes.restore`'s and `adopt`'s `reopen`. Whether the
   /// window is open now; one that is not docks the pane into its slot (issue #172).
-  func reopenDetachedPane(_ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget) -> Bool {
+  func reopenDetachedPane(
+    _ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget
+  ) -> Bool {
     if let target = terminalTarget(forID: target.id), let tab = terminals.tab(tabID, for: target) {
       openDetachedPane(tab: tab, target: target, origin: nil, frame: frame)
     }
@@ -1690,7 +1690,7 @@ final class AppStore: ObservableObject {
       hostWindow?.makeKeyAndOrderFront(nil)
     }
     // A workroom not on screen has no slot to land in, so its pane docks in place.
-    let slot = onScreen ? PaneSlot.current(of: tabID, surface: nil) : nil
+    let slot = onScreen ? PaneSlot.titleBar(of: tabID) : nil
     detachedPanes.dock(
       tabID, into: slot,
       setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) },
