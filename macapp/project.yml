@@ -82,7 +82,7 @@ packages:
     # SPM product (the recommended static framework — it also re-exports the SwiftUI APIs since
     # 9.4.1). SDK init + the macOS-trimmed option set live in WorkroomApp.init() (SentrySDK.start).
     url: https://github.com/getsentry/sentry-cocoa
-    from: "9.33.0"
+    from: "9.35.0"
   Defaults:
     # Type-safe UserDefaults: the single source of truth for every persisted preference's key +
     # default value. Keys live in WorkroomApp/Core/AppShell/DefaultsKeys.swift; read via `@Default` in views

@@ -403,11 +403,11 @@
     {
       "id": "sentry-cocoa",
       "name": "Sentry Cocoa SDK",
-      "version": "9.33.0",
+      "version": "9.35.0",
       "license": "MIT",
-      "source": "https://github.com/getsentry/sentry-cocoa/tree/9.33.0",
+      "source": "https://github.com/getsentry/sentry-cocoa/tree/9.35.0",
       "ships": "app",
-      "swiftpm": {"identity": "sentry-cocoa", "revision": "8cdf0fe8124d9daae8524f15c169c558a84ddacd"},
+      "swiftpm": {"identity": "sentry-cocoa", "revision": "485e0622e00d60d71eb6b519822188e2eb7c29e3"},
       "files": ["third-party/licenses/sentry-cocoa/LICENSE.md", "third-party/licenses/sentry-cocoa/THIRD_PARTY_NOTICES.md"]
     },
     {
