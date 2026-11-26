@@ -296,12 +296,9 @@ final class DetachedPaneWindows {
           $0, height: source.slot?.rect.height ?? 0, top: PaneTitleBarMetrics.height
         ).body
       }
-      let windowTop = PaneSnapshot.window(window).flatMap {
-        PaneSnapshot.split($0, height: window.frame.height, top: titlebar).top
-      }
       let landed = PaneSnapshot.compose(
         size: window.frame.size, scale: window.backingScaleFactor, background: background,
-        top: windowTop, topHeight: titlebar, body: slotBody)
+        top: PaneSnapshot.titlebar(of: window), topHeight: titlebar, body: slotBody)
       surface = PaneTransitionPanel(
         from: .init(
           image: source.slot?.snapshot, cornerRadius: TerminalPanelMetrics.cornerRadius,
