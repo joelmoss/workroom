@@ -258,6 +258,14 @@ struct WorkroomCommands: Commands {
       .disabled(!workroomCommandEnabled(hasRunTerminal))
   }
 
+  /// View ▸ Sidebar's Terminals or Projects: checked while the sidebar shows `view`. Choosing it,
+  /// checked or not, shows that view and a hidden sidebar: it is a pick, never an un-pick.
+  private func sidebarViewBinding(_ view: SidebarView, shown: SidebarView?) -> Binding<Bool> {
+    Binding(
+      get: { shown == view },
+      set: { _ in store?.showSidebarView(view) })
+  }
+
   private func storeFlag(_ keyPath: ReferenceWritableKeyPath<AppStore, Bool>) -> Binding<Bool> {
     Binding(
       get: { store?[keyPath: keyPath] ?? false },
@@ -437,19 +445,21 @@ struct WorkroomCommands: Commands {
     // a plain `toggleSidebar` Button) so it shows a checkmark while the sidebar is visible; it binds
     // `store.sidebarVisible`, which drives the column, and keeps the conventional ⌃⌘S. Terminals
     // and Projects pick the sidebar's two views (ADR 0083), as its switcher's tabs do, showing the
-    // sidebar if it is hidden: buttons, not checkmarked toggles, since this body doesn't re-run when
-    // the store changes and a checkmark would go stale. No default keys for them: ⌘1 and ⌘2 switch
-    // workroom tabs.
+    // sidebar if it is hidden, and the one it shows is checked. Its view is read here, in the body,
+    // so Observation re-runs the body when it changes (a binding's getter alone runs too late to be
+    // tracked, and its checkmark went stale). No default keys for them: ⌘1 and ⌘2 switch workroom
+    // tabs.
     CommandGroup(replacing: .sidebar) {
+      let shown = store?.sidebarView
       Menu("Sidebar") {
         Toggle("Show Sidebar", isOn: storeFlag(\.sidebarVisible))
           .shortcut(.projects)
           .disabled(modalBlocked || noSidebarContent)
         Divider()
-        Button("Terminals") { store?.showSidebarView(.open) }
+        Toggle("Terminals", isOn: sidebarViewBinding(.open, shown: shown))
           .shortcut(.showOpenView)
           .disabled(modalBlocked || noSidebarContent)
-        Button("Projects") { store?.showSidebarView(.projects) }
+        Toggle("Projects", isOn: sidebarViewBinding(.projects, shown: shown))
           .shortcut(.showProjectsView)
           .disabled(modalBlocked || noSidebarContent)
       }
@@ -457,7 +467,13 @@ struct WorkroomCommands: Commands {
 
     CommandGroup(after: .sidebar) {
       // View ▸ Inspector: Show Inspector toggles the right-hand panel as a whole (⌘B), whichever
-      // section was last active; the section toggles under it select a section AND open it.
+      // section was last active; the section toggles under it select a section AND open it. What
+      // their checkmarks read is read here too, in the body, so Observation re-runs it when the
+      // pane changes (their bindings' getters alone run too late to be tracked).
+      let _ = (
+        store?.activeInspectorSection, store?.changesSectionCollapsed,
+        store?.historySectionCollapsed, store?.prSectionCollapsed
+      )
       Menu("Inspector") {
         Toggle("Show Inspector", isOn: $showInspector)
           .shortcut(.inspector)
