@@ -64,30 +64,45 @@ struct SidebarDragPlumbing: Equatable, Sendable {
   @MainActor func splitGesture(
     _ id: SidebarID, actions: SidebarActions, ghostTitle: String? = nil
   ) -> some Gesture {
-    let handlers = handlers
-    return DragGesture(minimumDistance: 6, coordinateSpace: .global)
-      .onChanged { value in
-        handlers.drag.wrappedValue = handlers.localize(value.location).map {
-          WorkroomPaneDrag(sid: id, location: $0)
-        }
-        if let ghostTitle {
-          if !isDragOutsideWindow(value.location) {
-            DragGhost.shared.show(title: ghostTitle, at: NSEvent.mouseLocation)
-          }
-        } else if handlers.drag.wrappedValue != nil {
-          // Over the panes, the shared ghost carries its name (#652).
-          DragGhost.shared.show(title: id.ghostTitle, at: NSEvent.mouseLocation)
-        } else {
-          DragGhost.shared.hide()
-        }
+    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      .onChanged { value in splitMoved(id, to: value.location, ghostTitle: ghostTitle) }
+      .onEnded { value in splitEnded(id, at: value.location, actions: actions) }
+  }
+
+  /// Row `id`'s split drag is at `location` (`.global`): previews the drop edge while over the
+  /// detail content, and carries the ghost (`splitGesture`).
+  @MainActor func splitMoved(_ id: SidebarID, to location: CGPoint, ghostTitle: String? = nil) {
+    handlers.drag.wrappedValue = handlers.localize(location).map {
+      WorkroomPaneDrag(sid: id, location: $0)
+    }
+    if let ghostTitle {
+      if !isDragOutsideWindow(location) {
+        DragGhost.shared.show(title: ghostTitle, at: NSEvent.mouseLocation)
       }
-      .onEnded { value in
-        DragGhost.shared.hide()
-        if let drop = handlers.dropTarget(value.location) {
-          actions.insertSplit(id, drop.sid, drop.edge, drop.rect)
-        }
-        handlers.drag.wrappedValue = nil
-      }
+    } else if handlers.drag.wrappedValue != nil {
+      // Over the panes, the shared ghost carries its name (#652).
+      DragGhost.shared.show(title: id.ghostTitle, at: NSEvent.mouseLocation)
+    } else {
+      DragGhost.shared.hide()
+    }
+  }
+
+  /// Row `id`'s split drag let go at `location` (`.global`): over a pane it forms or extends the
+  /// workroom split. Whether it was over the detail content, where nothing else takes the drop.
+  @MainActor @discardableResult
+  func splitEnded(_ id: SidebarID, at location: CGPoint, actions: SidebarActions) -> Bool {
+    DragGhost.shared.hide()
+    let inContent = handlers.drag.wrappedValue != nil
+    if let drop = handlers.dropTarget(location) {
+      actions.insertSplit(id, drop.sid, drop.edge, drop.rect)
+    }
+    handlers.drag.wrappedValue = nil
+    return inContent
+  }
+
+  /// Row `id`'s split drag ends with no drop: something else took it.
+  @MainActor func splitCancelled() {
+    handlers.drag.wrappedValue = nil
   }
 }
 
