@@ -5,13 +5,16 @@ import WorkroomDomain
 /// terminals are each window's own tabs in `TargetID.terminalGroup(id)`, as a workroom's are.
 struct TerminalGroup: Hashable, Sendable {
   let id: UUID
-  /// The name the user gave it. Nil is an unnamed group, labelled by its terminals' names, which
-  /// goes when one terminal is left in it (`TerminalsSection.settleGroup`).
+  /// The name the user gave it. Nil is an unnamed group, labelled "Group <number>", which goes
+  /// when one terminal is left in it (`TerminalsSection.settleGroup`).
   var name: String?
   /// The folder its new terminals start in; nil follows "New terminals open in".
   var startingFolder: String?
   /// Whether its row is folded, hiding its terminals' rows. Kept in the section's file.
   var isFolded = false
+  /// An unnamed group's number, its label's ("Group 2"): the lowest no other unnamed group had
+  /// when it was made, and kept, so a label never changes while the group lasts. Nil while named.
+  var number: Int?
 
   /// A group's symbol on its row and title-bar tab: terminals stacked together. Its "new" form,
   /// `newGlyph`, adds a plus badge.
@@ -23,7 +26,8 @@ struct TerminalGroup: Hashable, Sendable {
   /// A standalone terminal's symbol on its row, title-bar tab, picker row and move menu.
   static let standaloneGlyph = "terminal"
 
-  /// What a group is called when it has no name and no terminals to be labelled by.
+  /// What an unnamed group with no number yet is called. An unnamed group is never labelled by
+  /// its terminals' titles, which change as their programs run.
   static let untitled = "Terminal Group"
 
   /// The Quick Terminal's group, built in (ADR 0077): a fixed id and name, and nothing else set.
@@ -33,17 +37,8 @@ struct TerminalGroup: Hashable, Sendable {
   /// Whether this is the Quick Terminal's group, which can't be deleted, moved or renamed.
   var isBuiltIn: Bool { id == TargetID.quickTerminalGroupID }
 
-  /// Its row's and title-bar tab's label: its name, else its terminals' names — both of two
-  /// ("zsh + htop"), or the first and how many more ("zsh + 2 more") of three or more, or of two
-  /// that read the same — else `untitled`.
-  func title(terminalNames: [String]) -> String {
-    if let name { return name }
-    guard let first = terminalNames.first else { return Self.untitled }
-    let more = terminalNames.count - 1
-    if more == 0 { return first }
-    if more == 1, terminalNames[1] != first { return "\(first) + \(terminalNames[1])" }
-    return "\(first) + \(more) more"
-  }
+  /// Its row's and title-bar tab's label: its name, else "Group <number>", else `untitled`.
+  var title: String { name ?? number.map { "Group \($0)" } ?? Self.untitled }
 
   /// Where its new terminals start: its starting folder while that is still a folder, else "New
   /// terminals open in". A folder that has gone, or sits on a stalled volume, never leaves the
@@ -101,14 +96,34 @@ extension TerminalsSection {
   /// by the UI-test fixture.
   @discardableResult
   func addGroup(named name: String?, after anchor: TargetID? = nil, id: UUID = UUID()) -> TargetID {
-    insert(.group(TerminalGroup(id: id, name: TerminalPanes.cleanedName(name))), after: anchor)
+    insert(.group(newGroup(id: id, named: name)), after: anchor)
   }
 
-  /// Names group `id`. The name is trimmed; an empty one clears it, which makes the group unnamed.
-  /// The Quick Terminal's group keeps its name.
+  /// A new group named `name`, or, unnamed, numbered (`nextGroupNumber`).
+  func newGroup(id: UUID = UUID(), named name: String?) -> TerminalGroup {
+    let name = TerminalPanes.cleanedName(name)
+    return TerminalGroup(id: id, name: name, number: name == nil ? nextGroupNumber() : nil)
+  }
+
+  /// The lowest number from 1 that no unnamed group has.
+  func nextGroupNumber() -> Int {
+    let taken = Set(
+      entries.compactMap { entry -> Int? in
+        guard case .group(let group) = entry, group.name == nil else { return nil }
+        return group.number
+      })
+    return (1...).first { !taken.contains($0) } ?? 1
+  }
+
+  /// Names group `id`. The name is trimmed; an empty one clears it, which makes the group unnamed
+  /// and numbers it; a name frees its number. The Quick Terminal's group keeps its name.
   func renameGroup(_ id: TargetID, to name: String) {
     guard id != .quickTerminal else { return }
-    updateGroup(id) { $0.name = TerminalPanes.cleanedName(name) }
+    let number = nextGroupNumber()
+    updateGroup(id) {
+      $0.name = TerminalPanes.cleanedName(name)
+      $0.number = $0.name == nil ? ($0.number ?? number) : nil
+    }
   }
 
   /// Sets the folder group `id`'s new terminals start in; nil (or empty) follows "New terminals
@@ -218,7 +233,7 @@ extension TerminalsSection {
   /// it was.
   func convertToGroup(_ id: TargetID, named name: String? = nil) async -> TargetID? {
     guard case .standalone = id, contains(id) else { return nil }
-    let group = TerminalGroup(id: UUID(), name: name)
+    let group = newGroup(named: name)
     let groupID = TargetID.terminalGroup(group.id)
     let moved = await rehome([(id, groupID)]) {
       guard contains(id) else { return false }
@@ -236,7 +251,7 @@ extension TerminalsSection {
     guard case .standalone = dropped, case .standalone = destination, dropped != destination,
       contains(dropped), contains(destination)
     else { return nil }
-    let group = TerminalGroup(id: UUID(), name: name)
+    let group = newGroup(named: name)
     let groupID = TargetID.terminalGroup(group.id)
     let moved = await rehome([(destination, groupID), (dropped, groupID)]) {
       guard contains(destination), contains(dropped) else { return false }

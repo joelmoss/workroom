@@ -80,8 +80,7 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     XCTAssertTrue(
       waitForRows(elements(app, prefix: "sidebar.open.tab."), 2), "its two terminals under it")
     let label = [group.label, group.value as? String ?? ""].joined(separator: " ")
-    XCTAssertTrue(
-      label.contains(" + 1 more"), "labelled by its first terminal and one more: \(label)")
+    XCTAssertTrue(label.contains("Group 1"), "numbered, not labelled by its terminals: \(label)")
 
     app.typeKey("w", modifierFlags: .command)
 

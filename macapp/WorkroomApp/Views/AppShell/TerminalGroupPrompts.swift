@@ -35,11 +35,11 @@ enum TerminalGroupPrompts {
   }
 
   /// Rename… for a group whose row isn't in view: a sheet, prefilled with its own name. An empty
-  /// name labels it by its terminals' names, as the row's field does.
+  /// name numbers it ("Group 1"), as the row's field does.
   static func rename(_ group: TerminalGroup, onRename: @escaping @MainActor (String) -> Void) {
     TextFieldPrompt.present(
       title: "Rename Terminal Group",
-      message: "Leave the name empty to label the group by its terminals' names.",
+      message: "Leave the name empty to number the group, as Group 1.",
       value: group.name ?? "", placeholder: "Terminal group name",
       fieldID: "terminalGroup.rename.field",
       fieldHelp: "The name shown on the group's row and title-bar tab",
@@ -89,9 +89,8 @@ enum TerminalGroupNaming {
 
 extension TerminalGroup {
   /// A group's New Terminal item, on its menus: in the group by name ("New Terminal in Quick
-  /// Terminal", "New Terminal in Ops"); an unnamed group, whose label is its terminals' names, is
-  /// just "Group".
+  /// Terminal", "New Terminal in Ops"); an unnamed group by its number ("New Terminal in Group 2").
   static func newTerminalTitle(for group: TerminalGroup) -> String {
-    "New Terminal in \(group.name ?? "Group")"
+    "New Terminal in \(group.title)"
   }
 }

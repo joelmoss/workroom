@@ -233,11 +233,7 @@ final class TerminalGroupTests: XCTestCase {
     first.newTerminalInSelectedTarget()
     first.renameTerminalGroup(sid, to: "")
     XCTAssertNil(first.terminalGroup(sid)?.name, "an empty name clears it")
-    let folder = TerminalState.programAndFolder(
-      program: TerminalState.shellName, folder: try XCTUnwrap(first.target(for: sid)).path
-    ).text
-    XCTAssertEqual(
-      first.target(for: sid)?.title, "\(folder) + 1 more", "labelled by its first terminal")
+    XCTAssertEqual(first.target(for: sid)?.title, "Group 1", "numbered, never by its terminals")
   }
 
   /// Value: protects=a group's terminal row selects the group and focuses that terminal;
@@ -427,14 +423,31 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertTrue(pruned.contains(try XCTUnwrap(empty.targetID)))
   }
 
-  func testAnUnnamedGroupIsLabelledByBothOfTwoNamesElseTheFirstAndHowManyMore() {
-    let group = TerminalGroup(id: UUID())
-    XCTAssertEqual(group.title(terminalNames: []), TerminalGroup.untitled)
-    XCTAssertEqual(group.title(terminalNames: ["zsh"]), "zsh")
-    XCTAssertEqual(group.title(terminalNames: ["zsh", "htop"]), "zsh + htop")
-    XCTAssertEqual(group.title(terminalNames: ["zsh", "zsh"]), "zsh + 1 more", "two the same")
-    XCTAssertEqual(group.title(terminalNames: ["zsh", "htop", "vim"]), "zsh + 2 more")
-    XCTAssertEqual(
-      TerminalGroup(id: UUID(), name: "Servers").title(terminalNames: ["zsh"]), "Servers")
+  /// Value: protects=an unnamed group's label stays put while its terminals' titles change
+  /// (owner, 2026-11-26); fails_when=it is made up from its terminals' titles; seam=TerminalGroup.
+  func testAnUnnamedGroupHasAFixedLabelAndANamedOneItsName() {
+    XCTAssertEqual(TerminalGroup(id: UUID(), number: 3).title, "Group 3")
+    XCTAssertEqual(TerminalGroup(id: UUID()).title, "Terminal Group")
+    XCTAssertEqual(TerminalGroup(id: UUID(), name: "Servers").title, "Servers")
+  }
+
+  /// Value: protects=each unnamed group keeps the lowest number free when it was made, so labels
+  /// never shift when another goes; naming one frees its number, and clearing a name numbers it;
+  /// fails_when=numbers repeat or shift; seam=TerminalsSection.
+  func testUnnamedGroupsAreNumberedFromOneAndKeepTheirNumbers() throws {
+    let first = section.addGroup(named: nil)
+    let second = section.addGroup(named: nil)
+    let named = section.addGroup(named: "Ops")
+    XCTAssertEqual(section.group(first)?.title, "Group 1")
+    XCTAssertEqual(section.group(second)?.title, "Group 2")
+    XCTAssertEqual(section.group(named)?.title, "Ops")
+
+    section.renameGroup(first, to: "Build")
+    let third = section.addGroup(named: nil)
+    XCTAssertEqual(section.group(second)?.title, "Group 2", "unchanged when another is named")
+    XCTAssertEqual(section.group(third)?.title, "Group 1", "a freed number is taken again")
+
+    section.renameGroup(named, to: "")
+    XCTAssertEqual(section.group(named)?.title, "Group 3", "cleared: the lowest number free")
   }
 }

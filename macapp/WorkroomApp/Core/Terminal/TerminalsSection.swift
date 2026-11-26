@@ -74,6 +74,12 @@ final class TerminalsSection {
     let document = file?.read()
     let stored = document?.entries.compactMap(\.entry) ?? []
     self.entries = stored.filter { $0.targetID != .quickTerminal }
+    // An unnamed group saved before groups were numbered takes the lowest number free, in order.
+    for (index, entry) in entries.enumerated() {
+      guard case .group(var group) = entry, group.name == nil, group.number == nil else { continue }
+      group.number = nextGroupNumber()
+      entries[index] = .group(group)
+    }
     // Only what can change of it is read back: its id, name and place are fixed.
     for case .group(let group) in stored where group.isBuiltIn {
       quickTerminal.startingFolder = group.startingFolder
@@ -248,7 +254,7 @@ final class TerminalsSection {
         path: Self.newTerminalDirectory(), unavailability: nil)
     case .group(let group):
       return TerminalTarget(
-        id: id, title: group.title(terminalNames: terminalNames(of: id)),
+        id: id, title: group.title,
         path: group.workingDirectory(presence: folderPresence), unavailability: nil)
     }
   }
@@ -370,6 +376,7 @@ final class TerminalsSectionFile: @unchecked Sendable {
     var name: String?
     var folder: String?
     var folded: Bool?
+    var number: Int?
 
     init(_ entry: TerminalsSection.Entry) {
       switch entry {
@@ -382,6 +389,7 @@ final class TerminalsSectionFile: @unchecked Sendable {
         name = group.name
         folder = group.startingFolder
         folded = group.isFolded ? true : nil
+        number = group.number
       }
     }
 
@@ -393,6 +401,7 @@ final class TerminalsSectionFile: @unchecked Sendable {
       name = try? container.decodeIfPresent(String.self, forKey: .name)
       folder = try? container.decodeIfPresent(String.self, forKey: .folder)
       folded = try? container.decodeIfPresent(Bool.self, forKey: .folded)
+      number = try? container.decodeIfPresent(Int.self, forKey: .number)
       // A kind no build of this one's knows is dropped by `@Lossy`, not kept as something else.
       guard entry != nil else {
         throw DecodingError.dataCorruptedError(
@@ -407,7 +416,7 @@ final class TerminalsSectionFile: @unchecked Sendable {
         return .group(
           TerminalGroup(
             id: id, name: TerminalPanes.cleanedName(name), startingFolder: folder,
-            isFolded: folded ?? false))
+            isFolded: folded ?? false, number: number.flatMap { $0 > 0 ? $0 : nil }))
       default: return nil
       }
     }
