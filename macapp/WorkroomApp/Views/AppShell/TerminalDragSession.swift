@@ -89,16 +89,23 @@ final class TerminalDragSession {
   }
 
   /// Carries the shared ghost (`DragGhost`) over the window, except where the dragged thing shows
-  /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer. A
-  /// sidebar row's drag draws no picture of its own (#819), so the ghost follows it in the sidebar
-  /// too. Out of the window the window it would make shows instead (`DetachedPaneDragPreview`).
+  /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer.
+  /// Out of the window the window it would make shows instead (`DetachedPaneDragPreview`).
   private func showGhost(at screenPoint: CGPoint, overOtherHost: Bool) {
-    guard let store, let source, let window = store.hostWindow,
-      overOtherHost || window.frame.contains(screenPoint),
+    guard let store, let source, Self.drawsGhost(of: source, from: surface),
+      let window = store.hostWindow, overOtherHost || window.frame.contains(screenPoint),
       !ownRow.contains(where: { $0.contains(screenPoint) }),
       let title = store.ghostTitle(of: source)
     else { return DragGhost.shared.hide() }
     DragGhost.shared.show(title: title, at: screenPoint)
+  }
+
+  /// Whether `source`'s drag from `surface` carries the ghost at all. An Open row's (`.entry` from
+  /// the sidebar) draws no picture of its own, so it does (#819); a Projects-tree terminal row's
+  /// (`.terminal` from the sidebar) draws none, as before the Open section.
+  nonisolated static func drawsGhost(of source: TerminalDragSource, from surface: Surface) -> Bool {
+    guard surface == .sidebar, case .terminal = source else { return true }
+    return false
   }
 
   /// Where the dragged thing's own chip shows it: its tab strip, or the title bar's tab row.
@@ -227,8 +234,11 @@ final class TerminalDragSession {
       return Self.titleBarBand(of: zone.rect).contains(point) ? zone.zone : nil
     }
     if !zone.isTitleBarTab, surface == .sidebar, zone.zone != .standalone {
-      // Between rows is the List's: a reorder, or a group's terminal made standalone there.
-      let band = AppStore.groupBand(of: zone.rect, folded: zone.isFoldedGroup)
+      // Between rows is the List's: a reorder, or a group's terminal made standalone there. An
+      // Open row's drag reorders at every row's edges, a folded group's too (#819).
+      let folded: Bool
+      if case .entry = source { folded = false } else { folded = zone.isFoldedGroup }
+      let band = AppStore.groupBand(of: zone.rect, folded: folded)
       return band.contains(point) ? zone.zone : nil
     }
     return zone.rect.contains(point) ? zone.zone : nil
@@ -341,7 +351,7 @@ extension AppStore {
   }
 
   /// Whether `zone` is a group's row folded in the Open section: no tab rows under it take its
-  /// lower edge's drops (#819).
+  /// lower edge's drops (#819). A terminal's drag takes them on the row; an Open row's reorders.
   func isFoldedGroup(_ zone: PaneDropZone) -> Bool {
     guard case .target(let sid) = zone, case .terminalGroup = sid else { return false }
     return isOpenRowFolded(sid)
