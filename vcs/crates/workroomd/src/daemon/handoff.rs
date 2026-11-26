@@ -149,8 +149,9 @@ const MAGIC: [u8; 4] = *b"WRHO";
 /// from the daemon's own environment.
 /// Version 6 adds each session's resume state (ADR 0082) after its recipe, as length-prefixed
 /// JSON, empty for none: its token, which its shell keeps, its records and its stream offset. A
-/// table before it carries none, and those sessions accept no reports, since their shells' tokens
-/// are lost with the program that made them. The table is written `0600` and removed once read.
+/// table before it comes from a program that gave no session a token, so its sessions have none
+/// and accept no reports. The table is written `0600`, and removed once read (`take_table`) or
+/// once a hand-off fails (`replace`).
 const TABLE_VERSION: u16 = 6;
 /// The oldest table this program still reads.
 const OLDEST_TABLE_VERSION: u16 = 1;
