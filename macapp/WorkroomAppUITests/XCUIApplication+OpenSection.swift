@@ -40,6 +40,21 @@ extension XCUIApplication {
     showSidebarView("open", file: file, line: line)
   }
 
+  /// Answers the name prompt a drop that makes a terminal group shows (`TerminalGroupNaming`):
+  /// types `name` and chooses Create, or Cancel when `name` is nil.
+  func answerNewGroupName(_ name: String?, file: StaticString = #filePath, line: UInt = #line) {
+    let field = textFields["terminalGroup.name.field"]
+    XCTAssertTrue(
+      field.waitForExistence(timeout: 10), "the drop asks for the group's name", file: file,
+      line: line)
+    guard let name else {
+      buttons["Cancel"].firstMatch.click()
+      return
+    }
+    field.typeText(name)
+    buttons["Create"].firstMatch.click()
+  }
+
   private func showSidebarView(_ view: String, file: StaticString, line: UInt) {
     let tab = descendants(matching: .any).matching(identifier: "sidebar.view.\(view)").firstMatch
     XCTAssertTrue(

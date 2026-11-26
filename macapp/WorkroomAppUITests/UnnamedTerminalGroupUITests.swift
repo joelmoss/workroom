@@ -1,10 +1,10 @@
 import XCTest
 
-/// Unnamed terminal groups in the real window (#659, ADR 0077): ⌘D on a standalone terminal turns
-/// its row into a group's in the same place, and closing the new half turns it back; a standalone
-/// terminal's row, or a workroom terminal's tab, dropped on a standalone terminal's row or
-/// title-bar tab groups the two. Seeded by the fixture's `-WorkroomUITestStandaloneTerminals`,
-/// never a real project or config.
+/// Terminal groups made in the real window (#659, ADR 0077): ⌘D on a standalone terminal turns
+/// its row into an unnamed group's in the same place, and closing the new half turns it back; a
+/// standalone terminal's row, or a workroom terminal's tab, dropped on a standalone terminal's row
+/// or title-bar tab asks for a name and groups the two under it. Seeded by the fixture's
+/// `-WorkroomUITestStandaloneTerminals`, never a real project or config.
 final class UnnamedTerminalGroupUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
@@ -97,19 +97,15 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     [row.label, row.value as? String ?? ""].joined(separator: " ")
   }
 
-  /// Whether the one group's row is labelled by two terminals: both names ("zsh ~ + Terminal 1"),
-  /// or the first and "+ 1 more" when they read the same, never "+ 2 more". Their own rows can't
-  /// be counted: each is identified by its title.
-  private func groupsTwoTerminals(_ app: XCUIApplication) -> Bool {
-    let named = NSPredicate(
-      format: "(label CONTAINS %@ OR value CONTAINS %@) AND NOT (label CONTAINS %@)", " + ", " + ",
-      " more")
-    let oneMore = NSPredicate(
-      format: "label CONTAINS %@ OR value CONTAINS %@", " + 1 more", " + 1 more")
-    let two = NSCompoundPredicate(orPredicateWithSubpredicates: [named, oneMore])
-    let row = elements(app, prefix: "sidebar.open.workroom.group:").firstMatch
+  /// Whether the one group's row (or title-bar tab, under `prefix`) shows `name`, the name the
+  /// drop asked for, not its terminals' names.
+  private func groupIsNamed(
+    _ app: XCUIApplication, _ name: String, prefix: String = "sidebar.open.workroom.group:"
+  ) -> Bool {
+    let named = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", name, name)
+    let row = elements(app, prefix: prefix).firstMatch
     return XCTWaiter().wait(
-      for: [XCTNSPredicateExpectation(predicate: two, object: row)], timeout: 6) == .completed
+      for: [XCTNSPredicateExpectation(predicate: named, object: row)], timeout: 6) == .completed
   }
 
   /// `click(forDuration:thenDragTo:)`, the mouse drag: on macOS 27 `press` posts no mouse events
@@ -120,8 +116,9 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
       thenDragTo: to.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: dy)))
   }
 
-  /// A standalone terminal's row let go over the middle of another's makes a group of the two in
-  /// the destination's place; let go at another's edge, it only reorders.
+  /// A standalone terminal's row let go over the middle of another's asks for a name: Cancel
+  /// leaves both as they were; a name makes a group of the two under it, in the destination's
+  /// place. Let go at another's edge, it only reorders, and asks nothing.
   func testDroppingAStandaloneRowOnAnotherGroupsThemAndAtItsEdgeReorders() {
     let app = launchedApp(standalone: 3)
     let rows = seeded + ["standalone:00000000-0000-0000-0000-000000000653"]
@@ -139,13 +136,24 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     let groups = elements(app, prefix: "sidebar.open.workroom.group:")
     XCTAssertTrue(waitForRows(groups, 0, timeout: 1), "and groups nothing")
 
-    // Over the middle of the first: the second joins it in a group.
+    XCTAssertFalse(
+      app.textFields["terminalGroup.name.field"].exists, "a reorder asks for no name")
+
+    // Over the middle of the first, cancelled: nothing groups.
     drag(second, to: first)
+    app.answerNewGroupName(nil)
+    XCTAssertTrue(waitForRows(groups, 0, timeout: 2), "Cancel groups nothing")
+    XCTAssertTrue(
+      waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 3), "all three stay")
+
+    // Again, named: the second joins it in a group under that name.
+    drag(second, to: first)
+    app.answerNewGroupName("Build")
     XCTAssertTrue(waitForRows(groups, 1), "the two become a group")
     XCTAssertTrue(
       waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 1),
       "the third is left alone")
-    XCTAssertTrue(groupsTwoTerminals(app), "of the two terminals")
+    XCTAssertTrue(groupIsNamed(app, "Build"), "under the name given")
     XCTAssertLessThan(third.frame.minY, groups.firstMatch.frame.minY, "in the first's place")
   }
 
@@ -158,10 +166,11 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     XCTAssertTrue(row.waitForExistence(timeout: 5))
 
     drag(chip, to: row)
+    app.answerNewGroupName("Ops")
 
     XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.open.workroom.group:"), 1), "a group")
     XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.open.workroom.standalone:"), 0))
-    XCTAssertTrue(groupsTwoTerminals(app), "of the two terminals")
+    XCTAssertTrue(groupIsNamed(app, "Ops"), "under the name given")
   }
 
   /// A workroom terminal's tab let go on a standalone terminal's title-bar tab groups the two.
@@ -173,9 +182,10 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     XCTAssertTrue(tab.waitForExistence(timeout: 5))
 
     drag(chip, to: tab)
+    app.answerNewGroupName("Ops")
 
     XCTAssertTrue(waitForRows(elements(app, prefix: "workroom.tab.group:"), 1), "a group's tab")
     XCTAssertTrue(waitForRows(elements(app, prefix: "workroom.tab.standalone:"), 0))
-    XCTAssertTrue(groupsTwoTerminals(app), "of the two terminals")
+    XCTAssertTrue(groupIsNamed(app, "Ops", prefix: "workroom.tab.group:"), "under the name given")
   }
 }

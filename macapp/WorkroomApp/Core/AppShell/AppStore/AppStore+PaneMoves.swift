@@ -205,8 +205,9 @@ extension AppStore {
     }
   }
 
-  /// This window's tab `tabID` in `target`, dropped on standalone terminal `destination`: an
-  /// unnamed group of the two in `destination`'s place, its terminal first (#659). A standalone
+  /// This window's tab `tabID` in `target`, dropped on standalone terminal `destination`: once the
+  /// user names it (`TerminalGroupNaming`; Cancel drops nothing), a group of the two in
+  /// `destination`'s place, its terminal first (#659). A standalone
   /// terminal's own tab groups as dropping its row does; any other is moved into `destination`
   /// once that is a group, which goes back to the standalone terminal it was when the tab can't
   /// follow. Queued with the section's other regroups.
@@ -214,15 +215,16 @@ extension AppStore {
     _ tabID: TerminalTab.ID, of target: TerminalTarget, from source: PaneDropSource,
     onto destination: TargetID
   ) async -> Bool {
+    guard let name = await TerminalGroupNaming.ask() else { return false }
     let section = terminalsSection
     if case .standalone = target.id, section.contains(target.id) {
       return await section.enqueueRegroup {
-        await section.groupStandalone(target.id, onto: destination) != nil
+        await section.groupStandalone(target.id, onto: destination, named: name) != nil
       }.value
     }
     return await section.enqueueRegroup { [weak self] in
       guard case .standalone(let standalone) = destination,
-        let group = await section.convertToGroup(destination)
+        let group = await section.convertToGroup(destination, named: name)
       else { return false }
       guard let self else { return false }
       let moved = await PaneMove.move(
@@ -354,10 +356,7 @@ extension AppStore {
     guard canDropRow(dragged, onto: destination) else { return false }
     switch dragged {
     case .standalone(let sid):
-      if case .standalone = destination {
-        dropStandalone(sid, onto: destination)
-        return true
-      }
+      if case .standalone = destination { return await dropStandalone(sid, onto: destination) }
       guard let (holder, target, tab) = standaloneTerminal(sid) else { return false }
       return await holder.dropPane(tab.id, of: target, on: .target(destination))
     case .terminal(let tabID, let group):

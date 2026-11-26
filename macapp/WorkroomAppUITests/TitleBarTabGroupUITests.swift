@@ -1,7 +1,8 @@
 import XCTest
 
 /// Grouping title-bar tabs by dropping one on another (#652): a standalone terminal's tab let go
-/// over the middle of another's makes an unnamed group, and at its edge only reorders; on a
+/// over the middle of another's asks for a name and makes a group under it, and at its edge only
+/// reorders; on a
 /// group's tab it joins that group; a group's tab on another group's moves its terminals there.
 /// Seeded by the fixture's standalone terminals and groups, never a real project or config.
 final class TitleBarTabGroupUITests: XCTestCase {
@@ -89,6 +90,7 @@ final class TitleBarTabGroupUITests: XCTestCase {
       hovering.set(XCUIScreen.main.screenshot())
     }
     drag(second, onto: first)
+    app.answerNewGroupName("Build")
     if let hovering = hovering.get() {
       let shot = XCTAttachment(screenshot: hovering)
       shot.name = "title-bar group drop highlight"

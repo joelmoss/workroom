@@ -23,6 +23,9 @@ final class HostedRunGuardObserver: NSObject, XCTestObservation, @unchecked Send
 
   func testCaseWillStart(_ testCase: XCTestCase) {
     lock.withLock { current = testCase }
+    // A drop that makes a group asks its name (`TerminalGroupNaming`): every test gets one without
+    // a prompt on screen, unless it answers the ask itself.
+    MainActor.assumeIsolated { TerminalGroupNaming.ask = { "Group" } }
   }
 
   private func fail(_ message: String) {

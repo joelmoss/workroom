@@ -293,14 +293,15 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
   // MARK: Dropping a tab on a standalone terminal
 
-  private func isUnnamedGroup(_ sid: SidebarID) -> Bool {
+  /// Whether `sid` is a group under the name the drop asked for (`TerminalGroupNaming`).
+  private func isNamedGroup(_ sid: SidebarID) -> Bool {
     guard case .terminalGroup = sid, let id = sid.targetID, let group = section.group(id)
     else { return false }
-    return group.name == nil
+    return group.name == "Group"
   }
 
   /// Value: protects=a workroom's terminal tab dropped on a standalone terminal's row or title-bar
-  /// tab makes an unnamed group of the two in the standalone terminal's place, its terminal first
+  /// tab makes a group of the two, under the name asked for, in the standalone terminal's place, its terminal first
   /// (#652 story 21); fails_when=the drop is refused, the standalone terminal gets a second tab,
   /// or the group lands elsewhere; why_new=#659 had not landed when #660 refused it;
   /// seam=AppStore; no_claim=hit-testing the pointer.
@@ -317,7 +318,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
     XCTAssertTrue(dropped)
     let group = try XCTUnwrap(rows.first)
-    XCTAssertTrue(isUnnamedGroup(group), "\(rows)")
+    XCTAssertTrue(isNamedGroup(group), "\(rows)")
     XCTAssertEqual(rows, [group, other], "in the standalone terminal's place")
     XCTAssertEqual(
       window.terminals.tabs(for: try target(window, group)).map(\.id), [heldTab.id, pane.id])
@@ -341,7 +342,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
     XCTAssertTrue(dropped)
     let group = try XCTUnwrap(rows.first)
-    XCTAssertTrue(isUnnamedGroup(group), "\(rows)")
+    XCTAssertTrue(isNamedGroup(group), "\(rows)")
     XCTAssertEqual(rows, [group], "the dropped terminal's row goes")
     XCTAssertEqual(
       window.terminals.tabs(for: try target(window, group)).map(\.id), [ontoTab.id, pane.id])
