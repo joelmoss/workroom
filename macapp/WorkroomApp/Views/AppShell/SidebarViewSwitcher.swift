@@ -86,32 +86,37 @@ private struct SidebarViewTab: View {
     let button = Button {
       store.selectSidebarView(view)
     } label: {
-      HStack(spacing: Spacing.xs) {
-        label
-          .foregroundStyle(selected || hovering || springing ? Color.primary : Color.secondary)
-          .frame(maxHeight: .infinity)
-          .overlay(alignment: .bottom) {
-            if selected {
-              Rectangle()
-                .fill(tokens.accent)
-                .frame(height: 2)
-                .matchedGeometryEffect(id: "underline", in: underline)
-            }
+      // The label alone sets the tab's size: the dot rides beside it in an overlay, so neither a
+      // dot coming and going nor a selection moves either tab.
+      label
+        .foregroundStyle(selected || hovering || springing ? Color.primary : Color.secondary)
+        .frame(maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+          if selected {
+            Rectangle()
+              .fill(tokens.accent)
+              .frame(height: 2)
+              .matchedGeometryEffect(id: "underline", in: underline)
           }
-          .background {
-            // The drag's wait, as a hovered control's well.
-            RoundedRectangle(cornerRadius: Radius.xs)
-              .fill(tokens.hover.opacity(springing ? 1 : 0))
-              .padding(.horizontal, -Spacing.xs)
-              .padding(.vertical, Spacing.s)
+        }
+        .background {
+          // The drag's wait, as a hovered control's well.
+          RoundedRectangle(cornerRadius: Radius.xs)
+            .fill(tokens.hover.opacity(springing ? 1 : 0))
+            .padding(.horizontal, -Spacing.xs)
+            .padding(.vertical, Spacing.s)
+        }
+        .overlay(alignment: .trailing) {
+          if !selected {
+            SidebarViewAttentionDot(view: view, store: store)
+              .alignmentGuide(.trailing) { $0[.leading] - Spacing.xs }
           }
-        if !selected { SidebarViewAttentionDot(view: view, store: store) }
-      }
-      .padding(.horizontal, SidebarViewSwitcher.tabPadding)
-      .frame(maxHeight: .infinity)
-      .contentShape(Rectangle())
-      // The tab's place, for a drag's wait on it.
-      .background(SidebarViewTabMarker(store: store, view: view))
+        }
+        .padding(.horizontal, SidebarViewSwitcher.tabPadding)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        // The tab's place, for a drag's wait on it.
+        .background(SidebarViewTabMarker(store: store, view: view))
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
@@ -130,7 +135,9 @@ private struct SidebarViewTab: View {
   }
 
   @ViewBuilder private var label: some View {
-    let weight: Font.Weight = selected ? .semibold : .medium
+    // One weight whether selected or not: a heavier glyph draws wider and re-rounds, so it would
+    // shift by a fraction as the selection moves. The colour and the underline say which is shown.
+    let weight: Font.Weight = .medium
     // Glyphs alone, each as wide as the rows' glyph column (the Open tab's sits over it).
     Image(systemName: view == .open ? "terminal" : "square.grid.2x2")
       .font(.system(size: 12, weight: weight))
