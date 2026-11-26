@@ -84,8 +84,6 @@ extension OpenRowLift {
     guard let row = rows.first(where: { $0.sid == item.owner }) else { return }
     let measured = SidebarOpenList.items(of: rows)
     let items = SidebarOpenList.items(of: rows, showing: item)
-    // The row whose place on screen measures the list: its own, or its folded workroom's.
-    let anchor = measured.contains(item) ? item : .workroom(item.owner)
     let zone: PaneDropZone
     let content: AnyView
     let leaves: Bool
@@ -98,7 +96,8 @@ extension OpenRowLift {
       (leaves, joinable) = (false, [])
     case .tab(let tab, let owner):
       guard let tabRow = row.tabs.first(where: { $0.tab.id == tab }) else { return }
-      if case .tab = anchor { zone = .terminalRow(tab, in: owner) } else { zone = .target(owner) }
+      // Measured on its own row, or its folded workroom's (`OpenRowReflow.anchor`).
+      zone = measured.contains(item) ? .terminalRow(tab, in: owner) : .target(owner)
       content = SidebarOpenList.ghost(
         of: SidebarOpenTabRow(row: tabRow.model, tab: tabRow.tab, hovered: false, store: store),
         store: store)
@@ -110,15 +109,10 @@ extension OpenRowLift {
         items: items, dragged: item, leavesWorkroom: leaves, joinable: joinable,
         measured: measured)
     else { return }
-    let pitch = SidebarOpenList.rowPitch
-    let offset = CGFloat(measured.firstIndex(of: anchor) ?? 0)
-    ghost.show(content, row: rowRect, appearance: window.effectiveAppearance)
     // Held by its middle, where the pointer came onto the list.
-    begin(
-      reflow, in: store,
-      geometry: Geometry(
-        row: rowRect, list: list, start: CGPoint(x: screen.x, y: rowRect.midY),
-        listTop: rowRect.midY + pitch / 2 + offset * pitch, pitch: pitch))
+    start(
+      reflow, in: store, window: window, content: content, row: rowRect, list: list,
+      held: CGPoint(x: screen.x, y: rowRect.midY))
     isHandover = true
     follow(screen: screen)
   }

@@ -51,17 +51,25 @@ final class OpenRowLift {
   ) {
     guard let window = store.hostWindow, let (row, list) = Self.listRow(zone, in: store)
     else { return }
-    let pitch = SidebarOpenList.rowPitch
-    let offset = CGFloat(reflow.items.firstIndex(of: reflow.dragged) ?? 0)
-    let start = CGPoint(
+    let held = CGPoint(
       x: report.screen.x - report.translation.width, y: report.screen.y + report.translation.height)
+    start(reflow, in: store, window: window, content: content, row: row, list: list, held: held)
+    follow(report)
+  }
+
+  /// Shows the ghost, drawing `content` over `row` (the screen rect of `reflow.anchor` in `list`),
+  /// and takes the lift on, held at `start`.
+  func start(
+    _ reflow: OpenRowReflow, in store: AppStore, window: NSWindow, content: AnyView, row: CGRect,
+    list: CGRect, held start: CGPoint
+  ) {
     ghost.show(content, row: row, appearance: window.effectiveAppearance)
     begin(
       reflow, in: store,
       geometry: Geometry(
-        row: row, list: list, start: start, listTop: row.midY + pitch / 2 + offset * pitch,
-        pitch: pitch))
-    follow(report)
+        row: row, list: list, start: start,
+        offset: reflow.measured.firstIndex(of: reflow.anchor) ?? 0,
+        pitch: SidebarOpenList.rowPitch))
   }
 
   /// Where the Open list's row marked `zone` is on screen, and the list (screen, y up): the row's
@@ -230,6 +238,15 @@ final class OpenRowLift {
     store = nil
     geometry = nil
     if reflow != nil { reflow = nil }
+  }
+}
+
+extension OpenRowLift.Geometry {
+  /// Measured on `row`, the list's row `offset` rows down from its first, `pitch` apart.
+  init(row: CGRect, list: CGRect, start: CGPoint, offset: Int, pitch: CGFloat) {
+    self.init(
+      row: row, list: list, start: start, listTop: row.midY + pitch / 2 + CGFloat(offset) * pitch,
+      pitch: pitch)
   }
 }
 
