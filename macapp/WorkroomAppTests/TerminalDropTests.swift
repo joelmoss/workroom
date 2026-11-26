@@ -348,7 +348,8 @@ final class TerminalDropTests: XCTestCase {
 
   /// Value: protects=the drag session's zones: a pane tab's halves are before and after it, a
   /// pane tab's own strip keeps its reorder, a sidebar row's edges are the List's gaps (a folded
-  /// group's lower edge is its), judged against the zones as they were when the drag started;
+  /// group's lower edge is its for a terminal's row, not for an Open row, whose edges reorder,
+  /// #819), judged against the zones as they were when the drag started;
   /// fails_when=a pane tab drop always lands before, the own strip is a destination, or an edge
   /// of a row takes the drop; why_new=#652; seam=TerminalDragSession.zone(at:);
   /// no_claim=measuring the views (UI tests)
@@ -374,8 +375,13 @@ final class TerminalDropTests: XCTestCase {
       session.zone(at: CGPoint(x: 180, y: 515)), .tab(opsTabs[0], in: ops, after: true))
     XCTAssertEqual(session.zone(at: CGPoint(x: 50, y: 320)), .target(dev), "a row's middle")
     XCTAssertNil(session.zone(at: CGPoint(x: 50, y: 302)), "its lower edge is the List's gap")
+    XCTAssertNil(
+      session.zone(at: CGPoint(x: 50, y: 202)),
+      "an Open row's drag reorders at a folded group's too")
+
+    session.begin(.terminal(opsTabs[1], of: ops), from: .sidebar, zones: [row, folded])
     XCTAssertEqual(
-      session.zone(at: CGPoint(x: 50, y: 202)), .target(ops), "a folded group's is not")
+      session.zone(at: CGPoint(x: 50, y: 202)), .target(ops), "a terminal row's takes it")
     XCTAssertNil(session.zone(at: CGPoint(x: 50, y: 238)), "its top quarter reorders")
 
     session.begin(.terminal(opsTabs[1], of: ops), from: .paneTabs, zones: [tab, row])
@@ -386,6 +392,18 @@ final class TerminalDropTests: XCTestCase {
   /// Value: protects=a terminal let go among its own container's tabs reorders them in place;
   /// fails_when=it moves out or nothing changes; why_new=#652; seam=AppStore.dropTerminals;
   /// no_claim=the pane strip's own reorder
+  /// Value: protects=the shared ghost follows an Open row's drag and a pane tab's, and stays off a
+  /// Projects-tree terminal row's, as before #819; fails_when=the sidebar surface draws it for
+  /// every source or none; why_new=#819 review A4; seam=TerminalDragSession.drawsGhost;
+  /// no_claim=the floating panel itself
+  func testTheGhostFollowsAnOpenRowsDragNotAProjectsTerminalRows() {
+    let tab = TerminalTab.ID()
+    let group = SidebarID.terminalGroup(UUID())
+    XCTAssertTrue(TerminalDragSession.drawsGhost(of: .entry(group), from: .sidebar))
+    XCTAssertFalse(TerminalDragSession.drawsGhost(of: .terminal(tab, of: group), from: .sidebar))
+    XCTAssertTrue(TerminalDragSession.drawsGhost(of: .terminal(tab, of: group), from: .paneTabs))
+  }
+
   func testATerminalAmongItsOwnReorders() async throws {
     let store = makeStore()
     let ops = try group(store, "Ops", count: 3)
