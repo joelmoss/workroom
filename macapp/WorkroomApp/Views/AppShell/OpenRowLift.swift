@@ -31,6 +31,9 @@ final class OpenRowLift {
   @ObservationIgnored let ghost = OpenRowGhost()
   /// Counts lifts, so a flight that ends after another lift leaves that one be.
   @ObservationIgnored private var generation = 0
+  /// The lift is one a drag from outside the list made as it came over it (`handOver`), and it
+  /// hasn't been let go: its drag's session ends it.
+  @ObservationIgnored var isHandover = false
 
   /// The lifted row's order, when `store`'s list holds it.
   func reflow(for store: AppStore) -> OpenRowReflow? {
@@ -46,17 +49,8 @@ final class OpenRowLift {
     _ reflow: OpenRowReflow, in store: AppStore, zone: PaneDropZone, report: OpenRowDrag.Report,
     content: AnyView
   ) {
-    guard let window = store.hostWindow,
-      // The row's, in the List's table: a group's title bar in a split marks the same zone.
-      let view = store.paneDropZoneViews[zone]?.lazy.compactMap(\.view).first(where: {
-        $0.window === window && !$0.isHiddenOrHasHiddenAncestor
-          && $0.enclosingScrollView?.documentView is NSTableView
-      })
+    guard let window = store.hostWindow, let (row, list) = Self.listRow(zone, in: store)
     else { return }
-    let row = window.convertToScreen(view.convert(view.bounds, to: nil))
-    let list =
-      view.enclosingScrollView.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
-      ?? row
     let pitch = SidebarOpenList.rowPitch
     let offset = CGFloat(reflow.items.firstIndex(of: reflow.dragged) ?? 0)
     let start = CGPoint(
@@ -70,6 +64,22 @@ final class OpenRowLift {
     follow(report)
   }
 
+  /// Where the Open list's row marked `zone` is on screen, and the list (screen, y up): the row's
+  /// in the List's table, as a group's title bar in a split marks the same zone.
+  static func listRow(_ zone: PaneDropZone, in store: AppStore) -> (row: CGRect, list: CGRect)? {
+    guard let window = store.hostWindow,
+      let view = store.paneDropZoneViews[zone]?.lazy.compactMap(\.view).first(where: {
+        $0.window === window && !$0.isHiddenOrHasHiddenAncestor
+          && $0.enclosingScrollView?.documentView is NSTableView
+      })
+    else { return nil }
+    let row = window.convertToScreen(view.convert(view.bounds, to: nil))
+    let list =
+      view.enclosingScrollView.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
+      ?? row
+    return (row, list)
+  }
+
   /// Takes the lift on, measured at `geometry`: tests begin here, with no row on screen.
   func begin(_ reflow: OpenRowReflow, in store: AppStore, geometry: Geometry) {
     generation += 1
@@ -79,7 +89,17 @@ final class OpenRowLift {
       guard let self else { return point }
       return self.liftedPoint(point)
     }
+    store.terminalDrag.ownGhost = { [weak self] point in
+      guard let self else { return false }
+      return self.showsGhost(at: point)
+    }
     self.reflow = reflow
+  }
+
+  /// Whether the ghost stands in for the drag's own image at `screen`: anywhere for a row the drag
+  /// started on, over the list only for one a drag from outside it lifted (`handOver`).
+  func showsGhost(at screen: CGPoint) -> Bool {
+    !isHandover || isOverList(screen)
   }
 
   /// The pointer's place in the list's content (y down from its first row's top), nil outside
@@ -105,12 +125,19 @@ final class OpenRowLift {
   /// The ghost follows the pointer, at the place on the row it was grabbed by; out of the window
   /// the window the drag would make shows instead.
   func follow(_ report: OpenRowDrag.Report) {
-    guard let geometry else { return }
     if isDragOutsideWindow(report.location) { return ghost.hide() }
+    follow(screen: report.screen)
+  }
+
+  /// The ghost follows the pointer at `screen`; a lift a drag from outside the list made shows it
+  /// only over the list, where it stands in for the drag's own image.
+  func follow(screen: CGPoint) {
+    guard let geometry else { return }
+    if !showsGhost(at: screen) { return ghost.hide() }
     ghost.move(
       to: CGPoint(
-        x: geometry.row.minX + report.screen.x - geometry.start.x,
-        y: geometry.row.minY + report.screen.y - geometry.start.y))
+        x: geometry.row.minX + screen.x - geometry.start.x,
+        y: geometry.row.minY + screen.y - geometry.start.y))
   }
 
   /// The gap follows the pointer at `screen`. `holds`: it is onto a row that takes the drop or
@@ -136,6 +163,7 @@ final class OpenRowLift {
   }
 
   private func fly(restoring: Bool) {
+    isHandover = false
     guard var reflow, let geometry else { return end() }
     if restoring {
       reflow.restore()
@@ -158,6 +186,7 @@ final class OpenRowLift {
   /// the gap holds until `move` is done, when the list shows the store's order, the new row where
   /// the gap was. When `move` fails the ghost flies back and the list goes back to its order.
   func land(_ move: @escaping @MainActor () async -> Bool) {
+    isHandover = false
     let lift = generation
     let landing = Landing()
     if let reflow, let geometry, ghost.isVisible, let slot = reflow.slot {
@@ -195,7 +224,9 @@ final class OpenRowLift {
   }
 
   private func end() {
+    isHandover = false
     store?.terminalDrag.hitMap = nil
+    store?.terminalDrag.ownGhost = nil
     store = nil
     geometry = nil
     if reflow != nil { reflow = nil }

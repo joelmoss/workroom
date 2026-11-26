@@ -258,6 +258,69 @@ final class OpenSectionDropTests: XCTestCase {
     XCTAssertFalse(after.contains(ops))
   }
 
+  /// Value: protects=a group's terminal row lifted over another group's terminals and let go in
+  /// the gap there joins that group at the gap's place in its tab order, between two of its
+  /// terminals or after its last, keeping its shell; the group takes it, which the lift learns
+  /// from the store's own drop rule; fails_when=it lands at the group's end, a terminal off, or
+  /// restarts; why_new=#819 owner report; seam=OpenRowReflow (from openSectionRows) +
+  /// AppStore.moveOpenTab(_:of:into:before:); no_claim=the pointer (OpenSectionUITests)
+  func testATerminalLetGoAmongAnotherGroupsTerminalsLandsThere() async throws {
+    let store = makeStore()
+    let ops = try group(store, "Ops", count: 2)
+    let dev = try group(store, "Dev", count: 3)
+    store.workroomTabOrder = [ops, dev].compactMap(\.targetID)
+    store.setOpenRow(ops, folded: false)
+    store.setOpenRow(dev, folded: false)
+    let opsTabs = tabs(store, ops)
+    let devTabs = tabs(store, dev)
+    let moving = opsTabs[0]
+    let shell = session(store, moving, in: ops)
+    let rows = store.openSectionRows()
+    let items = SidebarOpenList.items(of: rows)
+    let joinable = OpenRowLift.joinable(moving, of: ops, rows: rows, store: store)
+    XCTAssertEqual(joinable, [dev])
+    var reflow = try XCTUnwrap(
+      OpenRowReflow(
+        items: items, dragged: .tab(moving, in: ops),
+        leavesWorkroom: store.canMoveOpenTabToStandalone(moving, in: ops), joinable: joinable))
+    // Over Dev's second terminal's upper half: between its first and second.
+    let pitch: CGFloat = 30
+    let second = try XCTUnwrap(items.firstIndex(of: .tab(devTabs[1], in: dev)))
+    reflow.pointer(at: (CGFloat(second) + 0.3) * pitch, pitch: pitch)
+    let place = try XCTUnwrap(reflow.joinPlace)
+    XCTAssertEqual(place.into, dev)
+    XCTAssertEqual(place.before, devTabs[1])
+
+    let moved = await store.moveOpenTab(moving, of: ops, into: place.into, before: place.before)
+    await settle()
+    XCTAssertTrue(moved)
+    XCTAssertEqual(tabs(store, dev), [devTabs[0], moving, devTabs[1], devTabs[2]])
+    XCTAssertEqual(session(store, moving, in: dev), shell, "the same shell")
+
+    // Ops's other terminal, let go after Dev's last.
+    let last = opsTabs[1]
+    let movedLast = await store.moveOpenTab(last, of: ops, into: dev, before: nil)
+    await settle()
+    XCTAssertTrue(movedLast)
+    XCTAssertEqual(tabs(store, dev).last, last)
+  }
+
+  /// Value: protects=a tab lifted from outside the Open list (a strip tab) whose workroom row is
+  /// folded is listed under it as its placeholder, and only while it is lifted; fails_when=a
+  /// strip drag into the Open view has no row to lift, or a folded row shows its tabs;
+  /// why_new=#819 owner report; seam=SidebarOpenList.items(of:showing:)
+  func testAFoldedWorkroomsLiftedTabIsListedUnderIt() throws {
+    let store = makeStore()
+    let ops = try group(store, "Ops", count: 2)
+    store.setOpenRow(ops, folded: true)
+    let opsTabs = tabs(store, ops)
+    let rows = store.openSectionRows()
+    XCTAssertEqual(SidebarOpenList.items(of: rows), [.workroom(ops)])
+    XCTAssertEqual(
+      SidebarOpenList.items(of: rows, showing: .tab(opsTabs[1], in: ops)),
+      [.workroom(ops), .tab(opsTabs[1], in: ops)])
+  }
+
   // MARK: The Quick Terminal
 
   /// Value: protects=the Quick Terminal's group has no pinned-first place in the Open section: it

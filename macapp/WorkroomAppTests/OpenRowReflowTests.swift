@@ -287,4 +287,141 @@ final class OpenRowReflowTests: XCTestCase {
     XCTAssertEqual(reflow.movedIndex, 2, "at its tabs' end")
     XCTAssertNotNil(reflow.liftedY(for: y(0, 0.1), pitch: pitch))
   }
+
+  // MARK: A tab among another workroom's tabs
+
+  private let d = UUID()
+  private let e = UUID()
+
+  /// one with tabs d and e, two with tabs a, b and c, three (no tabs).
+  private var twoBlocks: [OpenSectionItem] {
+    [
+      .workroom(one), .tab(d, in: one), .tab(e, in: one), .workroom(two), .tab(a, in: two),
+      .tab(b, in: two), .tab(c, in: two), .workroom(three),
+    ]
+  }
+
+  /// Value: protects=a lifted tab over another workroom's tabs that takes it opens its gap among
+  /// them, passing each at its middle, and says where it joins, their end included; that
+  /// workroom's row's lower quarter starts its tabs and its upper quarter is above it; the slot
+  /// under its last tab is its end while the pointer came from its tabs and between workrooms once
+  /// past the block; a cancel puts it back; fails_when=a blue line shows instead of a gap, the gap
+  /// flickers at the block's edges, or the drop lands a tab off; why_new=#819 owner report;
+  /// seam=OpenRowReflow
+  func testATabsGapOpensAmongAnotherWorkroomsTabsAndSaysWhere() throws {
+    var reflow = try XCTUnwrap(
+      OpenRowReflow(
+        items: twoBlocks, dragged: .tab(d, in: one), leavesWorkroom: true,
+        joinable: [two, three]))
+    XCTAssertEqual(reflow.joinable, [two], "three shows no tabs: joined over its row's middle")
+
+    // b's upper half: just before b.
+    reflow.pointer(at: y(5, 0.3), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.into, two)
+    XCTAssertEqual(reflow.joinPlace?.before, b)
+    XCTAssertNil(reflow.standalonePlace)
+    XCTAssertNil(reflow.movedIndex)
+    XCTAssertEqual(
+      reflow.order,
+      [
+        .workroom(one), .tab(e, in: one), .workroom(two), .tab(a, in: two), .tab(d, in: one),
+        .tab(b, in: two), .tab(c, in: two), .workroom(three),
+      ])
+    // Still there, it stays; past b's middle, b slides up and the gap is under the pointer.
+    reflow.pointer(at: y(5, 0.3), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.before, b)
+    reflow.pointer(at: y(5, 0.7), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.before, c)
+    reflow.pointer(at: y(5, 0.7), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.before, c, "in the gap, nothing moves")
+
+    // c's lower half: after its last tab.
+    reflow.pointer(at: y(6, 0.7), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.into, two)
+    XCTAssertEqual(reflow.joinPlace?.before, .some(nil))
+    let end = reflow.order
+    XCTAssertEqual(end.suffix(2), [.tab(d, in: one), .workroom(three)])
+
+    // Past the block's end, three's upper quarter: between two and three, the same slot.
+    reflow.pointer(at: y(7, 0.1), pitch: pitch)
+    XCTAssertNil(reflow.joinPlace)
+    XCTAssertEqual(reflow.standalonePlace?.after, two)
+    XCTAssertEqual(reflow.standalonePlace?.before, three)
+    XCTAssertEqual(reflow.order, end, "nothing slides")
+    // Back over the gap it stays between; over c's lower half it is two's end again.
+    reflow.pointer(at: y(6, 0.5), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.before, three)
+    reflow.pointer(at: y(5, 0.7), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.into, two)
+    XCTAssertEqual(reflow.joinPlace?.before, .some(nil))
+
+    // two's row: its lower quarter starts its tabs, its upper quarter is above it.
+    reflow.pointer(at: y(2, 0.9), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.before, a)
+    XCTAssertEqual(
+      reflow.order.prefix(4), [.workroom(one), .tab(e, in: one), .workroom(two), .tab(d, in: one)])
+    reflow.pointer(at: y(2, 0.1), pitch: pitch)
+    XCTAssertNil(reflow.joinPlace)
+    XCTAssertEqual(reflow.standalonePlace?.after, one)
+    XCTAssertEqual(reflow.standalonePlace?.before, two)
+    XCTAssertEqual(
+      reflow.order.prefix(4), [.workroom(one), .tab(e, in: one), .tab(d, in: one), .workroom(two)])
+
+    reflow.restore()
+    XCTAssertNil(reflow.joinPlace)
+    XCTAssertEqual(reflow.order, twoBlocks)
+  }
+
+  /// Value: protects=over the tabs of a workroom it can join no row takes the drag (no insertion
+  /// line, no hold); that workroom's row's middle half is still onto it, a join at its end; a
+  /// workroom that refuses it keeps its rows as zones, so the refusal shows and no gap opens;
+  /// fails_when=the blue line comes back, or a refused workroom opens a gap; why_new=#819 owner
+  /// report; seam=OpenRowReflow.liftedY
+  func testAmongAWorkroomsTabsNoRowTakesTheDragButItsRowsMiddleJoins() throws {
+    var reflow = try XCTUnwrap(
+      OpenRowReflow(items: twoBlocks, dragged: .tab(d, in: one), joinable: [two]))
+    XCTAssertNil(reflow.liftedY(for: y(4), pitch: pitch), "a: the gap's")
+    XCTAssertNil(reflow.liftedY(for: y(6), pitch: pitch), "c: the gap's")
+    XCTAssertEqual(reflow.liftedY(for: y(3, 0.5), pitch: pitch), y(3, 0.5), "two's middle")
+    XCTAssertNil(reflow.liftedY(for: y(3, 0.9), pitch: pitch), "two's lower quarter")
+    XCTAssertEqual(
+      reflow.liftedY(for: y(3, 0.1), pitch: pitch), y(3, 0.1),
+      "can't leave its workroom: no gap above two, its row takes it")
+    // Held onto two's middle, the gap stays; it can't leave, so it joins only among two's tabs.
+    reflow.pointer(at: y(3, 0.5), pitch: pitch, holds: true)
+    XCTAssertNil(reflow.joinPlace)
+    reflow.pointer(at: y(4, 0.3), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.before, a)
+
+    // A workroom that refuses it: its tab rows stay zones, which show the refusal and hold.
+    var refused = try XCTUnwrap(
+      OpenRowReflow(items: twoBlocks, dragged: .tab(d, in: one), leavesWorkroom: true))
+    XCTAssertEqual(refused.liftedY(for: y(4), pitch: pitch), y(4))
+    refused.pointer(at: y(4), pitch: pitch, holds: true)
+    XCTAssertNil(refused.joinPlace)
+    XCTAssertNil(refused.movedIndex, "the gap stays in its own slot")
+  }
+
+  /// Value: protects=a tab lifted from outside the list whose workroom is folded has a placeholder
+  /// slot under that row, and the drop zones, measured with no placeholder, are hit on the rows as
+  /// they show; fails_when=a join below the placeholder lands a row off; why_new=#819 owner
+  /// report (a strip tab dragged into the Open view); seam=OpenRowReflow.measured
+  func testAPlaceholderTabIsHitAsTheListWasMeasured() throws {
+    let measured: [OpenSectionItem] = [
+      .workroom(one), .workroom(two), .tab(a, in: two), .tab(b, in: two), .tab(c, in: two),
+      .workroom(three),
+    ]
+    var placeholder = measured
+    placeholder.insert(.tab(d, in: one), at: 1)
+    var reflow = try XCTUnwrap(
+      OpenRowReflow(
+        items: placeholder, dragged: .tab(d, in: one), leavesWorkroom: true, joinable: [two],
+        measured: measured))
+    XCTAssertEqual(reflow.order, placeholder, "its slot under its folded workroom")
+    XCTAssertEqual(
+      reflow.liftedY(for: y(2, 0.5), pitch: pitch), y(1, 0.5), "two, measured a row up")
+    XCTAssertEqual(reflow.liftedY(for: y(6, 0.5), pitch: pitch), y(5, 0.5), "three")
+    reflow.pointer(at: y(4, 0.7), pitch: pitch)
+    XCTAssertEqual(reflow.joinPlace?.before, c)
+  }
 }
