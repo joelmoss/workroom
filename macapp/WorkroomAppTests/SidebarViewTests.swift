@@ -125,14 +125,12 @@ final class SidebarViewTests: XCTestCase {
     let over = CGPoint(x: Self.projectsTab.midX, y: Self.projectsTab.midY)
 
     drag.moved(.entry(sid), from: .titleBar, to: CGPoint(x: 70, y: 510))
-    XCTAssertNil(drag.springCandidate, "over the shown view's tab, nothing to show")
+    XCTAssertNil(store.sidebarSpringTarget, "over the shown view's tab, nothing to show")
 
     drag.moved(.entry(sid), from: .titleBar, to: over)
-    XCTAssertEqual(drag.springCandidate, .projects)
     XCTAssertEqual(store.sidebarSpringTarget, .projects, "the tab shows the wait")
     drag.moved(.entry(sid), from: .titleBar, to: CGPoint(x: 400, y: 100))
-    XCTAssertNil(drag.springCandidate, "moving off drops the wait")
-    XCTAssertNil(store.sidebarSpringTarget)
+    XCTAssertNil(store.sidebarSpringTarget, "moving off drops the wait")
 
     drag.moved(.entry(sid), from: .titleBar, to: over)
     drag.springFired()
@@ -142,7 +140,7 @@ final class SidebarViewTests: XCTestCase {
     store.selectSidebarView(.open)
     drag.moved(.entry(sid), from: .titleBar, to: over)
     drag.cancel()
-    XCTAssertNil(drag.springCandidate, "the drag's end drops the wait")
+    XCTAssertNil(store.sidebarSpringTarget, "the drag's end drops the wait")
     drag.springFired()
     XCTAssertEqual(store.sidebarView, .open, "and nothing springs after it")
   }
@@ -159,7 +157,7 @@ final class SidebarViewTests: XCTestCase {
       springTabs: { _ in [(.open, CGRect(x: 60, y: 500, width: 20, height: 30))] })
 
     drag.moved(.terminal(UUID(), of: root), from: .sidebar, to: CGPoint(x: 70, y: 510))
-    XCTAssertNil(drag.springCandidate)
+    XCTAssertNil(store.sidebarSpringTarget)
     XCTAssertFalse(
       TerminalDragSession.isProjectsTreeRow(.terminal(UUID(), of: root), from: .paneTabs))
     XCTAssertFalse(
