@@ -73,12 +73,14 @@ final class OpenRowReflowTests: XCTestCase {
     reflow.pointer(at: y(0, 0.2), pitch: pitch)
     XCTAssertEqual(reflow.movedIndex, 0, "above one")
 
-    // Lifting one, over two's tabs: two and its tabs are one workroom, passed at their middle.
+    // Lifting one, over two: two and its tabs are one workroom, passed at its row's middle.
     var first = try XCTUnwrap(OpenRowReflow(items: items, dragged: .workroom(one)))
-    first.pointer(at: y(2, 0.5), pitch: pitch)
-    XCTAssertNil(first.movedIndex, "in two's upper half")
-    first.pointer(at: y(3, 0.5), pitch: pitch)
+    first.pointer(at: y(1, 0.3), pitch: pitch)
+    XCTAssertNil(first.movedIndex, "in the upper half of two's row")
+    first.pointer(at: y(1, 0.8), pitch: pitch)
     XCTAssertEqual(first.movedIndex, 1, "in its lower half: after two and its tabs")
+    first.pointer(at: y(2, 0.5), pitch: pitch)
+    XCTAssertEqual(first.movedIndex, 1, "over two's tabs, still after two")
     XCTAssertEqual(
       first.order,
       [
@@ -111,6 +113,16 @@ final class OpenRowReflowTests: XCTestCase {
   /// stays, so that row is shown, not a gap; fails_when=a join's row slides away under the
   /// pointer; seam=OpenRowReflow
   func testOntoARowTheGapStays() throws {
+    // Lifting three, up into two's block from below: over two's tabs and its row's lower half the
+    // gap stays under the block, so two's row stays put for the pointer to reach its middle.
+    var up = try XCTUnwrap(OpenRowReflow(items: items, dragged: .workroom(three)))
+    for at in [y(4, 0.5), y(2, 0.5), y(1, 0.8)] {
+      up.pointer(at: at, pitch: pitch)
+      XCTAssertNil(up.movedIndex, "still under two at \(at)")
+    }
+    up.pointer(at: y(1, 0.2), pitch: pitch)
+    XCTAssertEqual(up.movedIndex, 1, "its row's upper half: above two")
+
     var reflow = try XCTUnwrap(OpenRowReflow(items: items, dragged: .workroom(one)))
     reflow.pointer(at: y(5, 0.9), pitch: pitch, holds: true)
     XCTAssertNil(reflow.movedIndex, "held where it was")
