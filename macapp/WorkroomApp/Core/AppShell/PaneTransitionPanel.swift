@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 import IOSurface
+import SwiftUI
 
 /// The borderless window a pop out or pull back flies a snapshot of the pane in (issue #172). It
 /// never takes the mouse, the keyboard or a place in the window cycle, and it goes the moment its
@@ -132,10 +133,23 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
       clip.addSubview(toImage)
     }
 
+    /// Its corners and shadow for this frame, once the card has its size. The shadow is cast from
+    /// a path of the card's shape, so Core Animation never cuts it from the card's pixels as the
+    /// card resizes; corners and opacity are written only when they change.
     func setCorners(_ radius: CGFloat, shadow: Float) {
-      card.layer?.cornerRadius = radius
-      clip.layer?.cornerRadius = radius
-      card.layer?.shadowOpacity = shadow
+      guard let layer = card.layer else { return }
+      if layer.cornerRadius != radius {
+        layer.cornerRadius = radius
+        clip.layer?.cornerRadius = radius
+      }
+      if layer.shadowOpacity != shadow { layer.shadowOpacity = shadow }
+      let bounds = card.bounds
+      let corner = min(radius, bounds.width / 2, bounds.height / 2)
+      layer.shadowPath =
+        shadow > 0
+        ? RoundedRectangle(cornerRadius: max(corner, 0), style: .continuous).path(in: bounds)
+          .cgPath
+        : nil
     }
 
     private static func imageView(_ image: CGImage?, frame: NSRect) -> NSView {
