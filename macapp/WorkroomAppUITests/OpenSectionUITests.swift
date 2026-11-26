@@ -152,6 +152,49 @@ final class OpenSectionUITests: XCTestCase {
       poll { passed.frame.minX < moved.frame.minX }, "and its title-bar tab follows the other's")
   }
 
+  /// A group's terminal row, dragged out of the group to the upper quarter of another top-level
+  /// row (between rows, never onto it) and let go, becomes a standalone terminal with a row of its
+  /// own there, just above that row, and the named group stays (#819 owner report). Where the gap
+  /// goes on the way is `OpenRowReflowTests`'; the store's move is `OpenSectionDropTests`'.
+  func testDraggingAGroupsTerminalRowBetweenRowsMakesAStandaloneThere() {
+    let app = launchedApp()
+    let groupRowID = "sidebar.open.workroom.\(group)"
+    let groupRow = element(app, groupRowID)
+    XCTAssertTrue(groupRow.waitForExistence(timeout: 15), "the group's row")
+    XCTAssertTrue(
+      poll { self.workroomRowOrder(app).count >= 3 }, "the fixture's terminals, group and more")
+    groupRow.click()  // selecting a row unfolds it
+    let tabs = elements(app, prefix: "sidebar.open.tab.")
+    XCTAssertTrue(
+      poll { Set(tabs.allElementsBoundByIndex.map(\.identifier)).count == 2 },
+      "the group's two tabs under it")
+    let before = workroomRowOrder(app)
+    let groupIndex = before.firstIndex(of: groupRowID) ?? 0
+    // Up to just above the row above the group, or down to just above the row below it.
+    let landsAt = groupIndex > 0 ? groupIndex - 1 : 1
+    let target = element(app, before[landsAt])
+    let dragged = tabs.allElementsBoundByIndex.filter(\.exists).max {
+      $0.frame.minY < $1.frame.minY
+    }
+    guard let dragged else { return XCTFail("no tab row") }
+
+    dragged.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: target.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.15)),
+      withVelocity: .slow, thenHoldForDuration: 0.4)
+
+    XCTAssertTrue(
+      poll(timeout: 8) { self.workroomRowOrder(app).count == before.count + 1 },
+      "a new row: \(workroomRowOrder(app))")
+    let after = workroomRowOrder(app)
+    let made = after.first { !before.contains($0) } ?? ""
+    XCTAssertTrue(
+      made.hasPrefix("sidebar.open.workroom.standalone:"), "a standalone terminal's: \(made)")
+    var expected = before
+    expected.insert(made, at: landsAt)
+    XCTAssertEqual(after, expected, "just above the row it was let go on, the group still there")
+  }
+
   /// The switcher's "+" menu makes a terminal or a group, in the Open view; opening a workroom is
   /// ⌘O's.
   func testThePlusMenuOffersNewTerminalAndNewGroup() {

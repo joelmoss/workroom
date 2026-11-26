@@ -234,13 +234,15 @@ struct SidebarOpenList: View, Equatable {
 
   /// Lifts `item`'s row, drop zone `zone`, as its drag starts: the ghost draws `row` as the row
   /// looks selected, and the row's slot becomes the gap (`OpenRowLift`). Once per drag.
+  /// `leavesWorkroom`: a tab row can become a standalone terminal, so its gap opens between
+  /// workrooms too (`OpenRowReflow.leavesWorkroom`).
   private func lift(
     _ item: OpenSectionItem, zone: PaneDropZone, items: [OpenSectionItem],
-    report: OpenRowDrag.Report, row: some View
+    report: OpenRowDrag.Report, row: some View, leavesWorkroom: () -> Bool = { false }
   ) {
     let lift = OpenRowLift.shared
     guard lift.reflow(for: store)?.dragged != item || lift.geometry == nil,
-      let reflow = OpenRowReflow(items: items, dragged: item)
+      let reflow = OpenRowReflow(items: items, dragged: item, leavesWorkroom: leavesWorkroom())
     else { return }
     lift.lift(
       reflow, in: store, zone: zone, report: report, content: Self.ghost(of: row, store: store))
@@ -318,7 +320,8 @@ struct SidebarOpenList: View, Equatable {
   /// A tab row's drag, as its strip chip's: onto a sidebar row, a title-bar tab, a pane tab or the
   /// Open tab (`AppStore.paneDragMoved`); out of the window it tears off; into its workroom's
   /// panes while they are on screen it splits them (`TabContentDrop`); else a reorder among its
-  /// workroom's tabs, its gap opening under the pointer as it moves (`OpenRowLift`).
+  /// workroom's tabs or, when it can become a standalone terminal, a standalone terminal between
+  /// workrooms, its gap opening under the pointer as it moves (`OpenRowLift`, `OpenRowReflow`).
   private func tabDrag(
     _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
   ) -> some Gesture {
@@ -329,7 +332,8 @@ struct SidebarOpenList: View, Equatable {
     return followedDrag(item) { [store] report in
       self.lift(
         item, zone: .terminalRow(tab.tab.id, in: row.sid), items: items, report: report,
-        row: SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: false, store: store))
+        row: SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: false, store: store),
+        leavesWorkroom: { store.canMoveOpenTabToStandalone(tab.tab.id, in: row.sid) })
       lift.follow(report)
       if isDragOutsideWindow(report.location) {
         lift.move(to: report.screen, holds: false)
@@ -367,9 +371,15 @@ struct SidebarOpenList: View, Equatable {
         return lift.drop()
       }
       clearPreview()
-      guard lift.isOverList(report.screen), let to = lift.reflow?.movedIndex else {
-        return lift.cancel()
+      guard lift.isOverList(report.screen) else { return lift.cancel() }
+      // Between workrooms: a standalone terminal there, which the gap holds for until it is made.
+      if let place = lift.reflow?.standalonePlace {
+        return lift.land {
+          await store.moveOpenTabToStandalone(
+            tab.tab.id, in: row.sid, after: place.after, before: place.before)
+        }
       }
+      guard let to = lift.reflow?.movedIndex else { return lift.cancel() }
       store.moveOpenTab(tab.tab.id, toIndex: to, in: row.sid)
       lift.settle()
     } onCancel: { [store] in

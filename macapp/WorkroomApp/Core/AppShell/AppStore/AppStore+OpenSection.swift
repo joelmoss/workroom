@@ -131,6 +131,28 @@ extension AppStore {
     guard let target = target(for: sid) else { return }
     terminals.moveTab(tabID, toIndex: index, for: target)
   }
+
+  /// Whether tab `tabID`'s row under `sid`'s can be let go between the workroom tabs' rows, where
+  /// it becomes a standalone terminal, as Move to → Standalone Terminal makes it.
+  func canMoveOpenTabToStandalone(_ tabID: TerminalTab.ID, in sid: SidebarID) -> Bool {
+    !sid.isStandaloneTerminal && canDropTerminals(.terminal(tabID, of: sid), on: .standalone)
+  }
+
+  /// Tab `tabID`'s row under `sid`'s let go between workroom tabs `after` and `before` (nil: at
+  /// the start, at the end): a standalone terminal there, still running, its tab in that place in
+  /// the title bar's order, which the section's is. When the move takes `before` away (the tab's
+  /// own group, emptied or dissolved), it goes just after `after`.
+  @discardableResult
+  func moveOpenTabToStandalone(
+    _ tabID: TerminalTab.ID, in sid: SidebarID, after: SidebarID?, before: SidebarID?
+  ) async -> Bool {
+    guard canMoveOpenTabToStandalone(tabID, in: sid), let (target, source) = terminalHome(of: sid)
+    else { return false }
+    let from = source ?? PaneDropSource(terminals: terminals, notifications: notifications)
+    return await movePaneToStandalone(
+      tabID, of: target, source: from.terminals, notifications: from.notifications,
+      titleBarBefore: .some(before), titleBarAfter: .some(after))
+  }
 }
 
 /// A workroom tab's row in the Open section: what its title-bar chip shows, and its tabs.

@@ -155,6 +155,109 @@ final class OpenSectionDropTests: XCTestCase {
     XCTAssertFalse(store.isFoldedGroup(.target(ops)), "unfolded in the Open section")
   }
 
+  // MARK: A tab row let go between workroom rows
+
+  /// An unnamed group with two terminals, each with a session.
+  private func unnamedGroup(_ store: AppStore) throws -> SidebarID {
+    let sid = try XCTUnwrap(section.addGroup(named: nil).sidebarID)
+    let target = try XCTUnwrap(store.target(for: sid))
+    for _ in 0..<2 {
+      let tab = store.terminals.addTab(for: target)
+      store.terminals.giveSession(UUID(), toTab: tab.id, in: target)
+    }
+    return sid
+  }
+
+  private func session(_ store: AppStore, _ tab: TerminalTab.ID, in sid: SidebarID) -> UUID? {
+    sid.targetID.flatMap { store.terminals.sessionID(forTab: tab, inTarget: $0) }
+  }
+
+  /// Value: protects=a group's terminal row let go between two other workroom rows becomes a
+  /// standalone terminal there, in the window's workroom tab order the Open view and title bar
+  /// share, with its shell kept and selected, and its named group keeps the rest; a workroom's
+  /// terminal goes the same way, and a standalone terminal's own never does; fails_when=it lands
+  /// at the end or in the Terminals section's order only, restarts, or the group goes;
+  /// why_new=#819 owner report; seam=AppStore.moveOpenTabToStandalone + openSectionRows;
+  /// no_claim=the pointer (OpenRowReflowTests, OpenSectionUITests)
+  func testATerminalRowLetGoBetweenWorkroomRowsBecomesAStandaloneThere() async throws {
+    let store = makeStore()
+    let ops = try group(store, "Ops")
+    let (a, aTab) = try standalone(store)
+    let (b, _) = try standalone(store)
+    store.workroomTabOrder = [ops, a, b].compactMap(\.targetID)
+    XCTAssertEqual(openRows(store), [ops, a, b])
+    let opsTabs = tabs(store, ops)
+    let moving = try XCTUnwrap(opsTabs.last)
+    let shell = session(store, moving, in: ops)
+
+    XCTAssertTrue(store.canMoveOpenTabToStandalone(moving, in: ops))
+    XCTAssertFalse(store.canMoveOpenTabToStandalone(aTab, in: a), "already standalone")
+    let moved = await store.moveOpenTabToStandalone(moving, in: ops, after: a, before: b)
+    await settle()
+
+    XCTAssertTrue(moved)
+    let rows = openRows(store)
+    XCTAssertEqual(rows.count, 4)
+    XCTAssertEqual(Array(rows.prefix(2)), [ops, a])
+    XCTAssertEqual(rows.last, b)
+    let made = rows[2]
+    guard case .standalone = made else { return XCTFail("\(made) is not a standalone terminal") }
+    XCTAssertEqual(tabs(store, made), [moving])
+    XCTAssertEqual(session(store, moving, in: made), shell, "the same shell")
+    XCTAssertEqual(store.titleBarOrder, rows, "the title bar agrees")
+    XCTAssertEqual(store.selectedTargetID, made, "selected, as a drop selects")
+    XCTAssertEqual(tabs(store, ops), [opsTabs[0]], "the named group keeps its other terminal")
+
+    // A workroom's terminal goes the same way.
+    store.openExisting(wr)
+    let target = try XCTUnwrap(store.target(for: wr))
+    _ = store.terminals.addTab(for: target)
+    let wrTab = store.terminals.addTab(for: target).id
+    XCTAssertTrue(store.canMoveOpenTabToStandalone(wrTab, in: wr))
+  }
+
+  /// Value: protects=let go just above its own unnamed group, a terminal lands there although the
+  /// move dissolves that group into the standalone terminal it leaves behind; a named group's last
+  /// terminal let go between rows takes the emptied group's place; fails_when=either lands at the
+  /// end, or a group outlives its rules; why_new=#819 owner report;
+  /// seam=AppStore.moveOpenTabToStandalone + openSectionRows; no_claim=the pointer
+  func testATerminalLetGoBesideItsOwnGroupLandsThereAsTheGroupFollowsItsRules() async throws {
+    let store = makeStore()
+    let (a, _) = try standalone(store)
+    let pair = try unnamedGroup(store)
+    let pairID = try XCTUnwrap(pair.targetID)
+    let (b, _) = try standalone(store)
+    store.workroomTabOrder = [a, pair, b].compactMap(\.targetID)
+    let pairTabs = tabs(store, pair)
+
+    let moved = await store.moveOpenTabToStandalone(pairTabs[1], in: pair, after: a, before: pair)
+    await settle { section.group(pairID) == nil }
+
+    XCTAssertTrue(moved)
+    XCTAssertNil(section.group(pairID), "down to one, it dissolves")
+    let rows = openRows(store)
+    XCTAssertEqual(rows.count, 4, "\(rows)")
+    XCTAssertEqual(rows.first, a)
+    XCTAssertEqual(rows.last, b)
+    XCTAssertEqual(tabs(store, rows[1]), [pairTabs[1]], "the moved terminal, above the group's")
+    XCTAssertEqual(tabs(store, rows[2]), [pairTabs[0]], "the one the group left")
+
+    // A named group's last terminal, let go between the rows: the group goes, it stays there.
+    let ops = try group(store, "Ops", count: 1)
+    let opsID = try XCTUnwrap(ops.targetID)
+    store.workroomTabOrder = [a, ops, b].compactMap(\.targetID)
+    let last = try XCTUnwrap(tabs(store, ops).first)
+    let movedLast = await store.moveOpenTabToStandalone(last, in: ops, after: a, before: ops)
+    await settle { section.group(opsID) == nil }
+
+    XCTAssertTrue(movedLast)
+    XCTAssertNil(section.group(opsID), "with its last terminal, it goes")
+    let after = openRows(store)
+    XCTAssertEqual(after.first, a)
+    XCTAssertEqual(tabs(store, after[1]), [last])
+    XCTAssertFalse(after.contains(ops))
+  }
+
   // MARK: The Quick Terminal
 
   /// Value: protects=the Quick Terminal's group has no pinned-first place in the Open section: it

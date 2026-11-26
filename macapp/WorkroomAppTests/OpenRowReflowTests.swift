@@ -145,5 +145,146 @@ final class OpenRowReflowTests: XCTestCase {
     XCTAssertNil(tab.liftedY(for: y(2), pitch: pitch), "a sibling: this reorder's")
     XCTAssertNil(tab.liftedY(for: y(1), pitch: pitch), "its own workroom's row")
     XCTAssertEqual(tab.liftedY(for: y(5), pitch: pitch), y(5), "another workroom's")
+
+    // A tab that can leave its workroom: another workroom row's quarters are between workrooms.
+    let leaving = try XCTUnwrap(
+      OpenRowReflow(items: items, dragged: .tab(b, in: two), leavesWorkroom: true))
+    XCTAssertNil(leaving.liftedY(for: y(5, 0.1), pitch: pitch), "three's upper quarter")
+    XCTAssertEqual(leaving.liftedY(for: y(5, 0.5), pitch: pitch), y(5, 0.5), "its middle: onto it")
+    XCTAssertNil(leaving.liftedY(for: y(5, 0.9), pitch: pitch), "its lower quarter")
+    XCTAssertNil(leaving.liftedY(for: y(1, 0.5), pitch: pitch), "its own workroom's row")
+  }
+
+  // MARK: A tab between workrooms
+
+  /// Value: protects=a lifted tab that can become a standalone terminal opens its gap between
+  /// whole workrooms elsewhere in the list, the start and the end included, each workroom judged
+  /// on its own row's halves, and says where between them it lands; a cancel puts it back;
+  /// fails_when=the gap splits another workroom from its tabs, flickers, names the wrong
+  /// neighbours, or a cancel leaves it out; why_new=#819 owner report; seam=OpenRowReflow
+  func testATabsGapOpensBetweenWorkroomsAndSaysWhere() throws {
+    var reflow = try XCTUnwrap(
+      OpenRowReflow(items: items, dragged: .tab(b, in: two), leavesWorkroom: true))
+
+    // one's upper half: above one, at the start.
+    reflow.pointer(at: y(0, 0.2), pitch: pitch)
+    XCTAssertNil(reflow.movedIndex)
+    XCTAssertEqual(reflow.standalonePlace?.after, .some(nil))
+    XCTAssertEqual(reflow.standalonePlace?.before, one)
+    XCTAssertEqual(
+      reflow.order,
+      [
+        .tab(b, in: two), .workroom(one), .workroom(two), .tab(a, in: two), .tab(c, in: two),
+        .workroom(three),
+      ])
+    // The pointer, still there, is in the gap now: it stays.
+    reflow.pointer(at: y(0, 0.2), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.before, one)
+
+    // one, slid down a row, by its lower half: after it, before two.
+    reflow.pointer(at: y(1, 0.8), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.after, one)
+    XCTAssertEqual(reflow.standalonePlace?.before, two)
+    XCTAssertEqual(
+      reflow.order,
+      [
+        .workroom(one), .tab(b, in: two), .workroom(two), .tab(a, in: two), .tab(c, in: two),
+        .workroom(three),
+      ])
+
+    // three by its upper half: past two and its tabs, before three.
+    reflow.pointer(at: y(5, 0.2), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.after, two)
+    XCTAssertEqual(reflow.standalonePlace?.before, three)
+    XCTAssertEqual(
+      reflow.order,
+      [
+        .workroom(one), .workroom(two), .tab(a, in: two), .tab(c, in: two), .tab(b, in: two),
+        .workroom(three),
+      ])
+
+    // three by its lower half, then below the last row: at the end.
+    reflow.pointer(at: y(5, 0.8), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.after, three)
+    XCTAssertEqual(reflow.standalonePlace?.before, .some(nil))
+    XCTAssertEqual(reflow.order.last, .tab(b, in: two))
+    reflow.pointer(at: y(9), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.after, three)
+
+    // Above the first row: the start.
+    reflow.pointer(at: -4, pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.before, one)
+
+    reflow.restore()
+    XCTAssertNil(reflow.standalonePlace)
+    XCTAssertNil(reflow.movedIndex)
+    XCTAssertEqual(reflow.order, items)
+  }
+
+  /// Value: protects=at its own workroom's edges the gap has one rule: the workroom's row from its
+  /// middle down and its tabs reorder, its row's upper half and anything outside the workroom are
+  /// between workrooms; let go in its own slot without leaving it, a tab never becomes standalone;
+  /// fails_when=the gap flickers between a reorder and a standalone at the block's edges, or a
+  /// lifted last tab let go in place is made standalone; why_new=#819 owner report;
+  /// seam=OpenRowReflow
+  func testAtItsOwnWorkroomsEdgesTheGapHasOneRule() throws {
+    var reflow = try XCTUnwrap(
+      OpenRowReflow(items: items, dragged: .tab(c, in: two), leavesWorkroom: true))
+
+    // c is two's last tab: over its own slot, grabbed by either half, it stays.
+    for at in [y(4, 0.2), y(4, 0.9)] {
+      reflow.pointer(at: at, pitch: pitch)
+      XCTAssertNil(reflow.movedIndex)
+      XCTAssertNil(reflow.standalonePlace, "in place at \(at)")
+    }
+    // Past the block's end (three's upper half): between two and three, the same slot.
+    reflow.pointer(at: y(5, 0.2), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.before, three)
+    XCTAssertEqual(reflow.order, items, "the same place in the list")
+    // Back over its gap it stays standalone; over b's lower half it is the tabs' end again.
+    reflow.pointer(at: y(4, 0.5), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.before, three)
+    reflow.pointer(at: y(3, 0.7), pitch: pitch)
+    XCTAssertNil(reflow.standalonePlace)
+    XCTAssertNil(reflow.movedIndex, "back where it was")
+
+    // Its own workroom's row: the upper half is above the workroom, which slides down.
+    reflow.pointer(at: y(1, 0.3), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.after, one)
+    XCTAssertEqual(reflow.standalonePlace?.before, two)
+    XCTAssertEqual(
+      reflow.order,
+      [
+        .workroom(one), .tab(c, in: two), .workroom(two), .tab(a, in: two), .tab(b, in: two),
+        .workroom(three),
+      ])
+    // Down onto two's row, now a row lower, by its upper half: still above it, nothing moves.
+    reflow.pointer(at: y(2, 0.3), pitch: pitch)
+    XCTAssertEqual(reflow.standalonePlace?.before, two)
+    // Its lower half: the start of its tabs, and two slides back up.
+    reflow.pointer(at: y(2, 0.7), pitch: pitch)
+    XCTAssertNil(reflow.standalonePlace)
+    XCTAssertEqual(reflow.movedIndex, 0)
+    XCTAssertEqual(
+      reflow.order,
+      [
+        .workroom(one), .workroom(two), .tab(c, in: two), .tab(a, in: two), .tab(b, in: two),
+        .workroom(three),
+      ])
+  }
+
+  /// Value: protects=a tab that can't become a standalone terminal (refused) keeps today's gap,
+  /// among its own workroom's tabs only, and another workroom row's whole height is onto it;
+  /// fails_when=a refused terminal opens a gap it can't drop in; why_new=#819 owner report;
+  /// seam=OpenRowReflow
+  func testATabThatCantLeaveItsWorkroomStaysAmongItsTabs() throws {
+    var reflow = try XCTUnwrap(OpenRowReflow(items: items, dragged: .tab(b, in: two)))
+    reflow.pointer(at: y(0, 0.2), pitch: pitch)
+    XCTAssertNil(reflow.standalonePlace)
+    XCTAssertEqual(reflow.movedIndex, 0, "at its tabs' start")
+    reflow.pointer(at: y(5, 0.2), pitch: pitch)
+    XCTAssertNil(reflow.standalonePlace)
+    XCTAssertEqual(reflow.movedIndex, 2, "at its tabs' end")
+    XCTAssertNotNil(reflow.liftedY(for: y(0, 0.1), pitch: pitch))
   }
 }
