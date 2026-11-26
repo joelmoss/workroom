@@ -215,7 +215,7 @@ struct SidebarOpenList: View, Equatable {
             hovered: hovered,
             // Only what has the keyboard is highlighted: the selected workroom's row while it
             // shows no tab rows, else its focused tab's.
-            emphasis: row.isSelected && (row.isFolded || row.tabs.isEmpty) ? .selected : .none
+            selected: row.isSelected && (row.isFolded || row.tabs.isEmpty)
           )
           .opacity(lifted ? 0 : 1))
     }
@@ -240,10 +240,7 @@ struct SidebarOpenList: View, Equatable {
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         .listRowBackground(
-          SidebarOpenRowBackground(
-            hovered: hovered,
-            emphasis: tab.isFocused ? .selected : .none
-          )
+          SidebarOpenRowBackground(hovered: hovered, selected: tab.isFocused)
           .opacity(lifted ? 0 : 1))
     }
     .id(item)
@@ -435,14 +432,13 @@ struct SidebarOpenList: View, Equatable {
 /// An Open row's fill: the selection for the one row that has the keyboard (the selected
 /// workroom's when it shows no tab rows, else its focused tab's), else the hover.
 struct SidebarOpenRowBackground: View {
-  enum Emphasis { case none, selected }
   let hovered: Bool
-  let emphasis: Emphasis
+  let selected: Bool
 
   var body: some View {
-    switch emphasis {
-    case .selected: SidebarSelectedRowFill()
-    case .none:
+    if selected {
+      SidebarSelectedRowFill()
+    } else {
       RowHighlight(
         selected: false, hovered: hovered, horizontalPadding: SidebarRowMetrics.listContentInset)
     }
