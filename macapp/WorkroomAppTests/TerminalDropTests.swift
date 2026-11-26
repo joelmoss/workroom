@@ -394,14 +394,15 @@ final class TerminalDropTests: XCTestCase {
   /// no_claim=the pane strip's own reorder
   /// Value: protects=the shared ghost follows an Open row's drag and a pane tab's, and stays off a
   /// Projects-tree terminal row's, as before #819; fails_when=the sidebar surface draws it for
-  /// every source or none; why_new=#819 review A4; seam=TerminalDragSession.drawsGhost;
+  /// every source or none; why_new=#819 review A4; seam=TerminalDragSession.isProjectsTreeRow;
   /// no_claim=the floating panel itself
   func testTheGhostFollowsAnOpenRowsDragNotAProjectsTerminalRows() {
     let tab = TerminalTab.ID()
     let group = SidebarID.terminalGroup(UUID())
-    XCTAssertTrue(TerminalDragSession.drawsGhost(of: .entry(group), from: .sidebar))
-    XCTAssertFalse(TerminalDragSession.drawsGhost(of: .terminal(tab, of: group), from: .sidebar))
-    XCTAssertTrue(TerminalDragSession.drawsGhost(of: .terminal(tab, of: group), from: .paneTabs))
+    XCTAssertFalse(TerminalDragSession.isProjectsTreeRow(.entry(group), from: .sidebar))
+    XCTAssertTrue(TerminalDragSession.isProjectsTreeRow(.terminal(tab, of: group), from: .sidebar))
+    XCTAssertFalse(
+      TerminalDragSession.isProjectsTreeRow(.terminal(tab, of: group), from: .paneTabs))
   }
 
   func testATerminalAmongItsOwnReorders() async throws {

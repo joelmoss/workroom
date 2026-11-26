@@ -149,7 +149,7 @@ final class SidebarViewTests: XCTestCase {
 
   /// Value: protects=a Projects-tree terminal row's drag never springs: its gesture lives on the
   /// row, and showing the Open view would end it mid-drag; fails_when=its drag springs;
-  /// seam=TerminalDragSession.springLoads
+  /// seam=TerminalDragSession.isProjectsTreeRow
   func testAProjectsTreeTerminalsDragDoesNotSpring() throws {
     let store = makeStore()
     store.selectSidebarView(.projects)
@@ -160,7 +160,9 @@ final class SidebarViewTests: XCTestCase {
 
     drag.moved(.terminal(UUID(), of: root), from: .sidebar, to: CGPoint(x: 70, y: 510))
     XCTAssertNil(drag.springCandidate)
-    XCTAssertTrue(TerminalDragSession.springLoads(.terminal(UUID(), of: root), from: .paneTabs))
-    XCTAssertTrue(TerminalDragSession.springLoads(.entry(root), from: .sidebar), "an Open row's")
+    XCTAssertFalse(
+      TerminalDragSession.isProjectsTreeRow(.terminal(UUID(), of: root), from: .paneTabs))
+    XCTAssertFalse(
+      TerminalDragSession.isProjectsTreeRow(.entry(root), from: .sidebar), "an Open row's")
   }
 }

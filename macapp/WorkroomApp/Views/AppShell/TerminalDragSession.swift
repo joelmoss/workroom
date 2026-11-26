@@ -95,15 +95,17 @@ final class TerminalDragSession {
     lift.handOver(source, from: surface, at: screenPoint, in: store)
     let hit = accepting(at: screenPoint)
     highlight(hit?.zone, on: hit?.host)
-    if case .terminal = source {
-      lift.handedOver(
-        to: screenPoint, in: store, holds: hit != nil || refuses(at: screenPoint))
-    } else {
-      lift.handedOver(to: screenPoint, in: store, holds: hit != nil)
-    }
+    lift.handedOver(to: screenPoint, in: store, holds: hit != nil || stops(source, at: screenPoint))
     springLoad(at: screenPoint)
     showGhost(at: screenPoint, overOtherHost: hit?.host != nil)
     return hit != nil
+  }
+
+  /// Whether `source`'s drag stops at `screenPoint` on no zone that takes it: a terminal's does
+  /// over one that refuses it (`refuses`), as over one that takes it.
+  private func stops(_ source: TerminalDragSource, at screenPoint: CGPoint) -> Bool {
+    guard case .terminal = source else { return false }
+    return refuses(at: screenPoint)
   }
 
   /// Shows `zone` as where the drop would land on `host` (nil: the dragging window), and nowhere
@@ -124,7 +126,7 @@ final class TerminalDragSession {
   /// Out of the window the window it would make shows instead (`DetachedPaneDragPreview`).
   private func showGhost(at screenPoint: CGPoint, overOtherHost: Bool) {
     guard let store, let source, ownGhost?(screenPoint) != true,
-      Self.drawsGhost(of: source, from: surface),
+      !Self.isProjectsTreeRow(source, from: surface),
       let window = store.hostWindow, overOtherHost || window.frame.contains(screenPoint),
       !ownRow.contains(where: { $0.contains(screenPoint) }),
       let title = store.ghostTitle(of: source)
@@ -132,12 +134,16 @@ final class TerminalDragSession {
     DragGhost.shared.show(title: title, at: screenPoint)
   }
 
-  /// Whether `source`'s drag from `surface` carries the ghost at all. A Projects-tree terminal
-  /// row's (`.terminal` from the sidebar) draws none, as before the Open section. An Open row's
-  /// carries its own while it is lifted (`hitMap` set, #819).
-  nonisolated static func drawsGhost(of source: TerminalDragSource, from surface: Surface) -> Bool {
-    guard surface == .sidebar, case .terminal = source else { return true }
-    return false
+  /// Whether `source`'s drag from `surface` is a Projects-tree terminal row's (`.terminal` from the
+  /// sidebar), whose drag is the row's own gesture. It draws no ghost, as before the Open section
+  /// (an Open row's carries its own while it is lifted, `hitMap` set, #819), and never springs
+  /// the sidebar's other view (ADR 0083): its gesture would end with the row's List as the view
+  /// switches. An Open row's survives that (`OpenRowDrag` follows it).
+  nonisolated static func isProjectsTreeRow(_ source: TerminalDragSource, from surface: Surface)
+    -> Bool
+  {
+    guard surface == .sidebar, case .terminal = source else { return false }
+    return true
   }
 
   /// Where the dragged thing's own chip shows it: its tab strip, or the title bar's tab row.
@@ -206,18 +212,11 @@ final class TerminalDragSession {
 
   // MARK: Spring-loading
 
-  /// Whether `source`'s drag from `surface` can show the sidebar's other view mid-drag (ADR 0083).
-  /// Not a Projects-tree terminal row's: its drag is the row's own gesture, which ends with the
-  /// row's List as the view switches. An Open row's survives it (`OpenRowDrag` follows it).
-  nonisolated static func springLoads(_ source: TerminalDragSource, from surface: Surface) -> Bool {
-    guard surface == .sidebar, case .terminal = source else { return true }
-    return false
-  }
-
   /// Rests the drag on the hidden view's tab under `screenPoint`, if any: after `springDelay` the
-  /// sidebar shows that view, so a drop can land in it. Moving off the tab drops the wait.
+  /// sidebar shows that view, so a drop can land in it. Moving off the tab drops the wait. A
+  /// Projects-tree terminal row's drag never springs (`isProjectsTreeRow`).
   private func springLoad(at screenPoint: CGPoint) {
-    guard let store, let source, Self.springLoads(source, from: surface) else {
+    guard let store, let source, !Self.isProjectsTreeRow(source, from: surface) else {
       return clearSpring()
     }
     let over = springTabs(store).first {
