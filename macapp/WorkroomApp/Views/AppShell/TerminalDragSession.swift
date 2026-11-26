@@ -51,8 +51,8 @@ final class TerminalDragSession {
   private let measure: @MainActor (AppStore) -> [Zone]
   /// Where the sidebar switcher's tabs are on screen (ADR 0083): tests give their own.
   private let springTabs: @MainActor (AppStore) -> [(view: SidebarView, rect: CGRect)]
-  /// The hidden view whose tab the drag rests on, and the timer that shows it.
-  private(set) var springCandidate: SidebarView?
+  /// The timer that shows the hidden view whose tab the drag rests on
+  /// (`AppStore.sidebarSpringTarget`).
   private var springTimer: Timer?
   /// Set while an Open row is lifted (`OpenRowLift`): where a point is in the list as the zones
   /// were measured, the list's rows having slid since; nil where no zone is (the gap). The lifted
@@ -222,10 +222,9 @@ final class TerminalDragSession {
     let over = springTabs(store).first {
       $0.view != store.sidebarView && $0.rect.contains(screenPoint)
     }?.view
-    guard over != springCandidate else { return }
+    guard over != store.sidebarSpringTarget else { return }
     clearSpring()
     guard let over else { return }
-    springCandidate = over
     store.sidebarSpringTarget = over
     // In the common modes: an Open row's drag runs in the List's event-tracking mode.
     let timer = Timer(timeInterval: Self.springDelay, repeats: false) { [weak self] _ in
@@ -238,7 +237,9 @@ final class TerminalDragSession {
   /// The drag has rested on a tab for `springDelay`: shows its view, then measures the zones again
   /// once its rows are laid out, since those measured at the start are the other view's.
   func springFired() {
-    guard let store, source != nil, let view = springCandidate else { return clearSpring() }
+    guard let store, source != nil, let view = store.sidebarSpringTarget else {
+      return clearSpring()
+    }
     clearSpring()
     store.selectSidebarView(view)
     let timer = Timer(timeInterval: Self.remeasureDelay, repeats: false) { [weak self] _ in
@@ -259,7 +260,6 @@ final class TerminalDragSession {
   private func clearSpring() {
     springTimer?.invalidate()
     springTimer = nil
-    springCandidate = nil
     if let store, store.sidebarSpringTarget != nil { store.sidebarSpringTarget = nil }
   }
 
