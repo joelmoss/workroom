@@ -48,12 +48,13 @@ final class UnifiedTerminalDragUITests: XCTestCase {
     Set(paneTabs(app).map { "\(Int($0.frame.minX))" }).count
   }
 
-  /// Drags `from` onto `to` at normalized `(dx, dy)`, holding `hold` seconds before letting go.
+  /// Drags `from`, pressed at normalized height `fromDY`, onto `to` at normalized `(dx, dy)`,
+  /// holding `hold` seconds before letting go.
   private func drag(
-    _ from: XCUIElement, onto to: XCUIElement, dx: CGFloat = 0.5, dy: CGFloat = 0.5,
-    hold: TimeInterval = 0
+    _ from: XCUIElement, fromDY: CGFloat = 0.5, onto to: XCUIElement, dx: CGFloat = 0.5,
+    dy: CGFloat = 0.5, hold: TimeInterval = 0
   ) {
-    let start = from.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5))
+    let start = from.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: fromDY))
     let end = to.coordinate(withNormalizedOffset: CGVector(dx: dx, dy: dy))
     if hold > 0 {
       start.click(
@@ -201,13 +202,26 @@ final class UnifiedTerminalDragUITests: XCTestCase {
     XCTAssertTrue(opsRow.waitForExistence(timeout: 15))
     select(app, dev, tabs: 1)
 
-    // Over the Open list the tab lifts its row (#819): coming down from the strip, past the row
-    // above Ops, its gap opens above Ops, which slides down a row. Ops's middle is then a row
-    // lower than where it was as the drag started.
-    drag(paneTabs(app)[0], onto: opsRow, dy: 1.5, hold: 0.8)
+    // Over the Open list the tab lifts its row (#819), and the list opens the gaps an Open row's
+    // drag does: over a row's top or bottom edge the gap opens there and the row slides away from
+    // the pointer. Ops is the first row, level with the strip, so the drag comes onto it from the
+    // side: kept level with Ops's middle all the way, it is onto Ops from the moment it is over
+    // the list, and no gap opens. (From the tab's own middle it comes on over Ops's top edge,
+    // where the gap opens above Ops and the drop makes a standalone terminal there.)
+    let tab = paneTabs(app)[0]
+    drag(tab, fromDY: level(of: tab, with: opsRow), onto: opsRow, hold: 0.8)
 
     XCTAssertTrue(waitFor { self.groupRows(app) == 1 }, "Dev, emptied, goes")
     XCTAssertTrue(waitFor { self.opsTerminals(app) == 3 }, "Ops has its terminal")
+  }
+
+  /// The normalized height in `tab` level with `row`'s middle, from which a drag to the row stays
+  /// on its middle: the strip must be level with the row.
+  private func level(of tab: XCUIElement, with row: XCUIElement) -> CGFloat {
+    let (from, to) = (tab.frame, row.frame)
+    XCTAssertTrue(
+      from.minY < to.midY && to.midY < from.maxY, "the strip is level with the row: \(from) \(to)")
+    return (to.midY - from.minY) / from.height
   }
 
   /// Value: protects=a group's pane tab dropped on another group's title-bar tab joins it;
@@ -398,7 +412,15 @@ final class UnifiedTerminalDragUITests: XCTestCase {
     let (opsTabs, devTabs) = showBothGroupsTerminals(app)
     guard opsTabs.count == 2, let moving = devTabs.first else { return XCTFail("rows") }
 
-    drag(paneTabs(app)[0], onto: element(app, opsTabs[1]), dy: 0.3, hold: 0.5)
+    // Into the list level with Ops's row, which lifts Dev's terminal's row (#819): past Ops's
+    // lower edge the gap opens under Ops, Ops's terminals sliding down a row, and from there it
+    // follows the pointer as an Open row's does. Ops's second terminal then shows a row lower
+    // than it is now: let go on its upper half there, the gap is between Ops's two.
+    let tab = paneTabs(app)[0]
+    let opsRow = element(app, "sidebar.open.workroom.\(ops)")
+    drag(
+      tab, fromDY: level(of: tab, with: opsRow), onto: element(app, opsTabs[1]), dy: 1.2,
+      hold: 0.5)
 
     XCTAssertTrue(
       waitFor { self.tabRowIDs(app, of: self.ops) == [opsTabs[0], moving, opsTabs[1]] },
