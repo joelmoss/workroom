@@ -194,9 +194,9 @@ Copyright 2013-2023 The Cobra Authors
       of your accepting any such warranty or additional liability.
 
 ==============================================================================
-Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app) ea8b12a8a
+Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app) 573c4a21e
 Licence: MIT
-Source: https://github.com/ghostty-org/ghostty/tree/ea8b12a8a
+Source: https://github.com/ghostty-org/ghostty/tree/573c4a21e
 ------------------------------------------------------------------------------
 
 MIT License

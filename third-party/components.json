@@ -16,12 +16,12 @@
     {
       "id": "ghostty",
       "name": "Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app)",
-      "version": "ea8b12a8a",
+      "version": "573c4a21e",
       "license": "MIT",
-      "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a",
+      "source": "https://github.com/ghostty-org/ghostty/tree/573c4a21e",
       "ships": "workroom",
       "files": ["third-party/licenses/ghostty/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "highway",
@@ -32,7 +32,7 @@
       "source": "https://github.com/google/highway/tree/66486a10623fa0d72fe91260f96c892e41aceb06",
       "ships": "workroom",
       "files": ["third-party/licenses/highway/LICENSE-BSD3"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "simdutf",
@@ -43,7 +43,7 @@
       "source": "https://github.com/simdutf/simdutf",
       "ships": "workroom",
       "files": ["third-party/licenses/simdutf/LICENSE-MIT"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "uucode",
@@ -53,7 +53,7 @@
       "source": "https://github.com/jacobsandlund/uucode/tree/1fb73433bba5d93366c57f23ff2e9d7939746500",
       "ships": "workroom",
       "files": ["third-party/licenses/uucode/LICENSE.md"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "wuffs",
@@ -64,7 +64,7 @@
       "source": "https://github.com/google/wuffs/tree/7411f488fe2e2c205c3d3b3d28638b7356522930",
       "ships": "workroom",
       "files": ["third-party/licenses/wuffs/LICENSE-MIT"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "translate-c",
@@ -74,7 +74,7 @@
       "source": "https://github.com/ziglang/translate-c/tree/02ff0c523fb92a38939b04d0145c4a9602a74d56",
       "ships": "workroom",
       "files": ["third-party/licenses/translate-c/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "zig",
@@ -131,7 +131,7 @@
       "ships": "app",
       "copyright": "Portions of this software are copyright (c) 2023 The FreeType Project (www.freetype.org). All rights reserved.",
       "files": ["third-party/licenses/freetype/LICENSE.TXT", "third-party/licenses/freetype/FTL.TXT"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "libpng",
@@ -141,7 +141,7 @@
       "source": "http://www.libpng.org/pub/png/libpng.html",
       "ships": "app",
       "files": ["third-party/licenses/libpng/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "zlib",
@@ -151,7 +151,7 @@
       "source": "https://zlib.net",
       "ships": "app",
       "files": ["third-party/licenses/zlib/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "oniguruma",
@@ -161,7 +161,7 @@
       "source": "https://github.com/kkos/oniguruma",
       "ships": "app",
       "files": ["third-party/licenses/oniguruma/COPYING"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "glslang",
@@ -171,7 +171,7 @@
       "source": "https://github.com/KhronosGroup/glslang",
       "ships": "app",
       "files": ["third-party/licenses/glslang/LICENSE.txt"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "spirv-cross",
@@ -182,7 +182,7 @@
       "ships": "app",
       "note": "SPIRV-Cross has no NOTICE file.",
       "files": ["third-party/licenses/spirv-cross/LICENSE", "third-party/licenses/spirv-cross/LicenseRef-KhronosFreeUse.txt"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "sentry-native",
@@ -193,7 +193,7 @@
       "ships": "app",
       "note": "With the code it vendors and Workroom links: MPack 1.0 (vendor/mpack.c, MIT) and jsmn (vendor/jsmn.h, MIT), whose notices are their files' headers, copied here.",
       "files": ["third-party/licenses/sentry-native/LICENSE", "third-party/licenses/mpack/LICENSE", "third-party/licenses/jsmn/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "breakpad",
@@ -204,7 +204,7 @@
       "ships": "app",
       "note": "Breakpad's licence file also covers build scripts that are not compiled into Workroom.",
       "files": ["third-party/licenses/breakpad/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "imgui",
@@ -214,7 +214,7 @@
       "source": "https://github.com/ocornut/imgui and https://github.com/dearimgui/dear_bindings/tree/v0.17",
       "ships": "app",
       "files": ["third-party/licenses/imgui/LICENSE.txt", "third-party/licenses/dear-bindings/LICENSE.txt"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "stb",
@@ -225,7 +225,7 @@
       "source": "https://github.com/nothings/stb",
       "ships": "app",
       "files": ["third-party/licenses/stb/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "libxev",
@@ -235,7 +235,7 @@
       "source": "https://github.com/mitchellh/libxev/tree/819ffa180ca20e31c7eded74e2e1aceb1eab557f",
       "ships": "app",
       "files": ["third-party/licenses/libxev/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "zig-objc",
@@ -245,7 +245,7 @@
       "source": "https://github.com/mitchellh/zig-objc/tree/3352c12a868f8787ab71bf2ca6eab9fcfb635c52",
       "ships": "app",
       "files": ["third-party/licenses/zig-objc/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "vaxis",
@@ -255,7 +255,7 @@
       "source": "https://github.com/rockorager/libvaxis/tree/0620b34e091deaa6f64608922be3814147128dfb",
       "ships": "app",
       "files": ["third-party/licenses/vaxis/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "zigimg",
@@ -265,7 +265,7 @@
       "source": "https://github.com/zigimg/zigimg/tree/734fa919fb15b7917d4eb124f53600348f4ffa30",
       "ships": "app",
       "files": ["third-party/licenses/zigimg/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "zf",
@@ -275,7 +275,7 @@
       "source": "https://github.com/natecraddock/zf/tree/87153bb86b75d21fbac897b738f316d449f5d0c9",
       "ships": "app",
       "files": ["third-party/licenses/zf/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "z2d",
@@ -287,7 +287,7 @@
       "note": "Its Source Code Form, unmodified, is available at the source above (MPL-2.0 section 3.2).",
       "review": "MPL-2.0 is file-level copyleft: Workroom ships z2d unmodified, in libghostty, and names where its source is.",
       "files": ["third-party/licenses/z2d/LICENSE", "third-party/licenses/z2d/COPYING"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "jetbrains-mono",
@@ -298,7 +298,7 @@
       "ships": "app",
       "copyright": "Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)",
       "files": ["third-party/licenses/jetbrains-mono/OFL.txt", "third-party/licenses/jetbrains-mono/AUTHORS.txt"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "nerd-fonts-symbols",
@@ -320,31 +320,31 @@
         "third-party/licenses/nerd-fonts-symbols/glyphs/powerline-symbols-LICENSE.txt",
         "third-party/licenses/nerd-fonts-symbols/glyphs/weather-icons-OFL.txt"
       ],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "ghostty-fonts",
       "name": "Inconsolata and Kawkab Mono fonts (embedded in libghostty)",
       "version": "as vendored by Ghostty",
       "license": "OFL-1.1",
-      "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/font/res",
+      "source": "https://github.com/ghostty-org/ghostty/tree/573c4a21e/src/font/res",
       "ships": "app",
       "copyright": "Inconsolata: Copyright 2006 The Inconsolata Project Authors (https://github.com/cyrealtype/Inconsolata)\nKawkab Mono: Copyright (c) 2015, Abdullah Arif (abdullah.a@gmail.com). Copyright 2010, 2012, 2014 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'.",
       "note": "README.md is Ghostty's list of the fonts in that directory and their copyright holders.",
       "files": ["third-party/licenses/ghostty-fonts/OFL.txt", "third-party/licenses/ghostty-fonts/README.md"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "ghostty-shell-integration-kitty",
       "name": "Ghostty's bash and zsh shell integration (Contents/Resources/ghostty/shell-integration), based on Kitty's",
-      "version": "ea8b12a8a",
+      "version": "573c4a21e",
       "license": "GPL-3.0-or-later",
-      "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/shell-integration",
+      "source": "https://github.com/ghostty-org/ghostty/tree/573c4a21e/src/shell-integration",
       "ships": "app",
       "note": "These scripts ship as source, unmodified, with their licence headers, in Contents/Resources/ghostty/shell-integration. A LICENSE with the licence's text sits beside them there and on every remote host they are pushed to (the files below).",
       "review": "GPL-3.0-or-later scripts in the bundle, also pushed to remote hosts. Owner, 2026-11-21: ship the licence text beside them.",
       "files": ["macapp/Resources/ghostty/shell-integration/bash/LICENSE", "macapp/Resources/ghostty/shell-integration/zsh/LICENSE"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "bash-preexec",
@@ -354,7 +354,7 @@
       "source": "https://github.com/rcaloras/bash-preexec/tree/0.7.0",
       "ships": "app",
       "files": ["third-party/licenses/bash-preexec/LICENSE.md"],
-      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "573c4a21e"}
     },
     {
       "id": "iterm2-color-schemes",
