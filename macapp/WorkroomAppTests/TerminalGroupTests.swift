@@ -449,5 +449,10 @@ final class TerminalGroupTests: XCTestCase {
 
     section.renameGroup(named, to: "")
     XCTAssertEqual(section.group(named)?.title, "Group 3", "cleared: the lowest number free")
+    XCTAssertEqual(section.suggestedGroupName, "Group 4", "a new group's prompt offers the next")
+
+    section.renameGroup(second, to: "Group 4")
+    XCTAssertEqual(
+      section.suggestedGroupName, "Group 2", "a group named Group 4 takes that number too")
   }
 }

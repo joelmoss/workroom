@@ -297,7 +297,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
   private func isNamedGroup(_ sid: SidebarID) -> Bool {
     guard case .terminalGroup = sid, let id = sid.targetID, let group = section.group(id)
     else { return false }
-    return group.name == "Group"
+    return group.name == "Group 1"
   }
 
   /// Value: protects=a workroom's terminal tab dropped on a standalone terminal's row or title-bar

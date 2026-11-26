@@ -354,7 +354,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     let cTab = try XCTUnwrap(tabs(store, c).first)
     store.selectedTargetID = c
 
-    TerminalGroupNaming.ask = { "Ops" }
+    TerminalGroupNaming.ask = { _ in "Ops" }
     await store.dropStandalone(c, onto: a)
     await settle()
 
@@ -378,7 +378,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
 
     let group = try XCTUnwrap(rows.first)
     XCTAssertEqual(rows.count, 1)
-    XCTAssertEqual(groupName(group), "Group")
+    XCTAssertEqual(groupName(group), "Group 1", "the suggested name, taken")
     XCTAssertEqual(tabs(first, group).count, 1)
     XCTAssertEqual(tabs(second, group).count, 1)
     XCTAssertEqual(first.selectedTargetID, group)
@@ -396,16 +396,18 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertEqual(rows, [a])
   }
 
-  /// Value: protects=a drop that would make a group asks its name, and Cancel (or an empty name)
-  /// drops nothing; fails_when=a group is made unasked or under a made-up name; why_new=owner,
-  /// 2026-11-26; seam=TerminalGroupNaming; no_claim=the alert itself.
+  /// Value: protects=a drop that would make a group asks its name, offering the next "Group N"
+  /// free, and Cancel (or an empty name) drops nothing; fails_when=a group is made unasked, or the
+  /// suggestion repeats a name in use; why_new=owner, 2026-11-26; seam=TerminalGroupNaming;
+  /// no_claim=the alert itself.
   func testCancellingTheNameDropsNothing() async throws {
     let store = makeStore()
+    _ = store.newTerminalGroup(named: "Group 1")
     let a = try standalone(store)
     let b = try standalone(store)
-    var asked = 0
+    var suggested: [String] = []
     TerminalGroupNaming.ask = {
-      asked += 1
+      suggested.append($0)
       return nil
     }
 
@@ -413,8 +415,9 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     await settle()
 
     XCTAssertFalse(dropped)
-    XCTAssertEqual(asked, 1)
-    XCTAssertEqual(rows, [a, b], "both stay standalone terminals where they were")
+    XCTAssertEqual(suggested, ["Group 2"], "asked once, past the group already called Group 1")
+    XCTAssertEqual(rows.filter { $0 == a || $0 == b }, [a, b], "both stay where they were")
+    XCTAssertEqual(rows.count, 3, "no group made")
   }
 
   /// Value: protects=a standalone terminal's row dropped on another's groups them, the drag
@@ -435,7 +438,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertTrue(dropped)
     await settle()
 
-    XCTAssertEqual(groupName(rows.first), "Group")
+    XCTAssertEqual(groupName(rows.first), "Group 1")
     XCTAssertEqual(rows.count, 2)
   }
 

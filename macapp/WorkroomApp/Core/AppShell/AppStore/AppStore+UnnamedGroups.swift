@@ -28,7 +28,7 @@ extension AppStore {
   @discardableResult
   func dropStandalone(_ dropped: SidebarID, onto destination: SidebarID) async -> Bool {
     guard let dropped = dropped.targetID, let destination = destination.targetID,
-      let name = await TerminalGroupNaming.ask()
+      let name = await TerminalGroupNaming.ask(terminalsSection.suggestedGroupName)
     else { return false }
     let section = terminalsSection
     section.enqueueRegroup {

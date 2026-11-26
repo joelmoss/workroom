@@ -72,7 +72,7 @@ final class TitleBarTabGroupDropTests: XCTestCase {
   /// is lost or restarted, or the name is made up; why_new=#652 title-bar grouping;
   /// seam=AppStore.dropTab; no_claim=the pointer
   func testAStandaloneTabOnAnotherMakesANamedGroup() async throws {
-    TerminalGroupNaming.ask = { "Build" }
+    TerminalGroupNaming.ask = { _ in "Build" }
     let store = makeStore()
     let aSession = UUID()
     let a = try standalone(store, session: aSession)

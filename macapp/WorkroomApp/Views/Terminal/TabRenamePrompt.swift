@@ -47,6 +47,8 @@ enum TextFieldPrompt {
       }
       if let window = NSApp.keyWindow ?? NSApp.mainWindow {
         alert.beginSheetModal(for: window, completionHandler: resolve)
+        // A filled-in value starts selected: Return takes it, typing replaces it.
+        field.selectText(nil)
       } else {
         resolve(alert.runModal())
       }

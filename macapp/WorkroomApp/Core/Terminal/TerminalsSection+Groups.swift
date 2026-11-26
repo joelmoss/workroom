@@ -105,15 +105,20 @@ extension TerminalsSection {
     return TerminalGroup(id: id, name: name, number: name == nil ? nextGroupNumber() : nil)
   }
 
-  /// The lowest number from 1 that no unnamed group has.
+  /// The lowest number from 1 that no group goes by: neither an unnamed group's number nor a
+  /// named group called "Group <number>" (as a suggested name taken as it was leaves it).
   func nextGroupNumber() -> Int {
     let taken = Set(
       entries.compactMap { entry -> Int? in
-        guard case .group(let group) = entry, group.name == nil else { return nil }
-        return group.number
+        guard case .group(let group) = entry else { return nil }
+        guard let name = group.name else { return group.number }
+        return name.hasPrefix("Group ") ? Int(name.dropFirst("Group ".count)) : nil
       })
     return (1...).first { !taken.contains($0) } ?? 1
   }
+
+  /// The name a new group's prompt starts with: the next "Group <number>" free.
+  var suggestedGroupName: String { "Group \(nextGroupNumber())" }
 
   /// Names group `id`. The name is trimmed; an empty one clears it, which makes the group unnamed
   /// and numbers it; a name frees its number. The Quick Terminal's group keeps its name.
