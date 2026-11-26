@@ -193,7 +193,10 @@ final class DetachedPaneUITests: XCTestCase {
     XCTAssertTrue(
       element(app, idPrefix: "pane.poppedOut.title.").exists, "under a line saying where it went")
 
-    // Pull Back Here: the window goes, the pane is back in its slot, the placeholder gone.
+    // The pane's window opens over the main window, under the pointer, so bring the main window
+    // forward before using its slot. Pull Back Here: the window goes, the pane is back in its
+    // slot, the placeholder gone.
+    bringMainWindowForward(app)
     pullBack.click()
     XCTAssertTrue(waitForWindowCount(app, windowsBefore), "its window goes")
     XCTAssertTrue(detachedWindow(app).waitForNonExistence(timeout: 5))
@@ -205,11 +208,7 @@ final class DetachedPaneUITests: XCTestCase {
     XCTAssertTrue(waitForWindowCount(app, windowsBefore + 1))
     let slot = element(app, idPrefix: "pane.poppedOut.goToWindow.")
     XCTAssertTrue(slot.waitForExistence(timeout: 5))
-    // A click on the placeholder away from its buttons makes the main window key.
-    element(app, idPrefix: "pane.poppedOut.title.")
-      .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: -2)).click()
-    XCTAssertTrue(
-      waitForFrontWindow(app, isDetached: false), "precondition: the main window is in front")
+    bringMainWindowForward(app)
 
     slot.click()
 
@@ -217,6 +216,13 @@ final class DetachedPaneUITests: XCTestCase {
       waitForFrontWindow(app, isDetached: true),
       "Go to Window brings the pane's window to the front")
     XCTAssertTrue(placeholder(app).exists, "and leaves the pane popped out")
+  }
+
+  /// Window ▸ Next Window, with the pane's window in front: the main window comes forward.
+  private func bringMainWindowForward(_ app: XCUIApplication) {
+    app.menuBars.menuBarItems["Window"].menuItems["Next Window"].click()
+    XCTAssertTrue(
+      waitForFrontWindow(app, isDetached: false), "precondition: the main window is in front")
   }
 
   /// Whether the frontmost window is (or isn't) the detached pane's, once it settles. XCUITest
