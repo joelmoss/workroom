@@ -565,7 +565,6 @@ private struct WorkroomTabChip: View {
 
   private var glyph: String { presentation.glyph }
   private var primaryLabel: String { presentation.primaryLabel }
-  private var standaloneTitle: TerminalTitle? { presentation.standaloneTitle }
   private var workroomName: String? { presentation.workroomName }
   /// The full, untruncated rendered title, for the tooltip (as `TerminalTabChip.help(tab.title)`).
   private var fullTitle: String { presentation.fullTitle }
@@ -641,27 +640,11 @@ private struct WorkroomTabChip: View {
           ProgramStatusPresentation.waitingTooltip(
             count: terminals.blockedTerminalCount(forTargetID: target.id)))
       }
-      HStack(alignment: .firstTextBaseline, spacing: 4) {
-        if let standaloneTitle {
-          // Its folder a size smaller than its program, as on a pane's tabs.
-          TerminalTitleLabel(title: standaloneTitle, folderFont: .caption)
-            .foregroundStyle(
-              hasActivity ? tokens.accent : Color.primary,
-              hasActivity ? tokens.accent.opacity(0.7) : tokens.fgMuted
-            )
-            .truncationMode(.middle)
-        } else {
-          Text(primaryLabel)
-            .foregroundStyle(hasActivity ? tokens.accent : Color.primary)
-        }
-        if let workroomName {
-          Text("/").foregroundStyle(.tertiary)
-          Text(workroomName).foregroundStyle(isActive ? Color.primary : .secondary)
-        }
-      }
+      WorkroomTabTitle(
+        presentation: presentation, hasUnread: hasActivity, folderFont: .caption,
+        emphasizesWorkroom: isActive
+      )
       .font(.subheadline)
-      .lineLimit(1)
-      .truncationMode(.tail)
       // Cap the title group as a whole rather than each `Text`, so the pair shares one budget
       // instead of each name getting its own. Note this does NOT make them truncate as a single
       // unit: an `HStack` satisfies its least-flexible children first, so the longer of the two
@@ -678,21 +661,7 @@ private struct WorkroomTabChip: View {
       // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the
       // last run FAILED (#79 — distinct glyph, not just a red tint, for colourblind safety); hidden
       // once it has a run tab but is cleanly stopped.
-      if let run = marks.run {
-        if run == .running {
-          Image(systemName: "play.circle.fill")
-            .font(.system(size: 10))
-            .foregroundStyle(tokens.success)
-            .help("Run command running")
-            .accessibilityLabel("run running")
-        } else {
-          Image(systemName: "xmark.octagon.fill")
-            .font(.system(size: 10))
-            .foregroundStyle(tokens.failure)
-            .help("Run command failed")
-            .accessibilityLabel("run failed")
-        }
-      }
+      if let run = marks.run { WorkroomRunMark(run: run) }
     }
   }
 

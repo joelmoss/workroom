@@ -475,17 +475,6 @@ private struct TerminalTabChip: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
 
-  /// Glyph + colour + a11y/help word for the run-state chip icon. Failure is carried by BOTH the
-  /// glyph (octagon vs play) and the colour, so it survives red/green colourblindness (#79).
-  private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
-    switch state {
-    case .running: return ("play.circle.fill", tokens.success, "running")
-    case .stopping: return ("stop.circle.fill", tokens.warning, "stopping")
-    case .stopped: return ("play.circle.fill", tokens.fgMuted, "stopped")
-    case .failed: return ("xmark.octagon.fill", tokens.failure, "failed")
-    }
-  }
-
   /// Pulled out of the `body` modifier chain, with an explicit return type: inlined, the
   /// map/ternary combo made the chip's already-large `body` "unable to type-check in reasonable
   /// time" on a clean CI build (it type-checked fine locally only because a warm `DerivedData`
@@ -517,7 +506,7 @@ private struct TerminalTabChip: View {
   }
 
   private var runOrBusyAccessibilityValue: String {
-    if let runState { return runIconSpec(runState).label }
+    if let runState { return RunStateIcon.label(runState) }
     return ProgramStatusPresentation.accessibilityValue(
       indicator: tab.indicator, rollup: tab.programStatus)
   }
@@ -554,24 +543,13 @@ private struct TerminalTabChip: View {
       // Run state: green play while running, a warning spinner while stopping, dim play once it
       // exits, and a red octagon if it failed (#79). Keep the slot stable across state changes.
       if let runState {
-        let spec = runIconSpec(runState)
-        Group {
-          if runState == .stopping {
-            ProgressView().controlSize(.mini).tint(spec.color)
-          } else {
-            Image(systemName: spec.glyph)
-              .font(.system(size: 10))
-              .foregroundStyle(spec.color)
-          }
-        }
-        .frame(width: 12, height: 12)
-        .help("Run command \(spec.label)")
-        // Purely visual: the chip's own `.accessibilityValue` below (not this glyph) is the
-        // XCUITest query handle for run state (#79) — the chip's explicit `.accessibilityLabel`
-        // (issue #141) makes it a single accessibility element, so this nested image's own
-        // label/identifier are unreachable regardless of `.accessibilityElement(children:)`
-        // policy (measured: `.contain` in either modifier position still didn't expose it).
-        .accessibilityHidden(true)
+        RunStateIcon(state: runState)
+          // Purely visual: the chip's own `.accessibilityValue` below (not this glyph) is the
+          // XCUITest query handle for run state (#79) — the chip's explicit `.accessibilityLabel`
+          // (issue #141) makes it a single accessibility element, so this nested image's own
+          // label/identifier are unreachable regardless of `.accessibilityElement(children:)`
+          // policy (measured: `.contain` in either modifier position still didn't expose it).
+          .accessibilityHidden(true)
       }
       // A content tab gets a leading glyph so it reads as not-a-terminal at a glance (#66 diff, #59
       // changeset). The symbol comes from `TabContent.glyph`, shared with the pane's own title bar
