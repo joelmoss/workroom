@@ -10,6 +10,6 @@ on demand, the first time a document actually contains a \`\`\`mermaid fence.
 
 | File | Package | Version | SHA-256 | Source |
 |------|---------|---------|---------|--------|
-| `dompurify.min.js` | dompurify | 3.4.11 | `dbabb5b205a333ec49c8c09e7fca30ef66df0523bb8bc0fa9ea843841f111dbd` | https://cdn.jsdelivr.net/npm/dompurify@3.4.11/dist/purify.min.js |
-| `marked.min.js` | marked | 18.0.5 | `8855491f5f19e2584a87785cb1982ae831547c38d324989f9ea77cb3f7fd4217` | https://cdn.jsdelivr.net/npm/marked@18.0.5/lib/marked.umd.min.js |
-| `pele.global.js` | pele | 1.8.0 | `9bf34b3a9a19351dc69d0d238e365560331a8ae392c41656df7f5090653253d0` | https://cdn.jsdelivr.net/npm/pele@1.8.0/dist/pele.global.js |
+| `dompurify.min.js` | dompurify | 3.5.0 | `f69a46022ab1f53e969c8ebbca98172c8995785a9b3be72ea4a12d25b1a1bf67` | https://cdn.jsdelivr.net/npm/dompurify@3.5.0/dist/purify.min.js |
+| `marked.min.js` | marked | 18.3.0 | `4d31a4e7ba7f4e169860f1e85b991639cb04d457b0b0204dbb0723b3871e0c90` | https://cdn.jsdelivr.net/npm/marked@18.3.0/lib/marked.umd.min.js |
+| `pele.global.js` | pele | 1.13.0 | `0b0a46c57a5a6971670c09f5ec4066705bd78505f90fd11adf6260325efa0910` | https://cdn.jsdelivr.net/npm/pele@1.13.0/dist/pele.global.js |

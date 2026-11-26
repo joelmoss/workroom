@@ -482,36 +482,36 @@
     {
       "id": "dompurify",
       "name": "DOMPurify (Markdown preview)",
-      "version": "3.4.11",
+      "version": "3.5.0",
       "license": "Apache-2.0",
       "offered": "MPL-2.0 OR Apache-2.0",
-      "source": "https://github.com/cure53/DOMPurify/tree/3.4.11",
+      "source": "https://github.com/cure53/DOMPurify/tree/3.5.0",
       "ships": "app",
       "copyright": "Copyright (c) Cure53 and other contributors",
       "note": "DOMPurify has no NOTICE file.",
       "files": ["third-party/licenses/dompurify/LICENSE"],
-      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `dompurify\\.min\\.js` \\| dompurify \\| ([^ ]+) \\|", "value": "3.4.11"}
+      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `dompurify\\.min\\.js` \\| dompurify \\| ([^ ]+) \\|", "value": "3.5.0"}
     },
     {
       "id": "marked",
       "name": "marked (Markdown preview)",
-      "version": "18.0.5",
+      "version": "18.3.0",
       "license": "MIT AND BSD-3-Clause",
-      "source": "https://github.com/markedjs/marked/tree/v18.0.5",
+      "source": "https://github.com/markedjs/marked/tree/v18.3.0",
       "ships": "app",
       "files": ["third-party/licenses/marked/LICENSE"],
-      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `marked\\.min\\.js` \\| marked \\| ([^ ]+) \\|", "value": "18.0.5"}
+      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `marked\\.min\\.js` \\| marked \\| ([^ ]+) \\|", "value": "18.3.0"}
     },
     {
       "id": "pele",
       "name": "Pele (Markdown preview diagrams), with Lucide's rotate-ccw icon",
-      "version": "1.8.0, Lucide 1.14.0",
+      "version": "1.13.0, Lucide 1.14.0",
       "license": "MIT AND ISC",
-      "source": "https://github.com/obsidianmd/pele/tree/1.8.0",
+      "source": "https://github.com/obsidianmd/pele/tree/1.13.0",
       "ships": "app",
-      "note": "pele.global.js carries Lucide's rotate-ccw icon (https://lucide.dev, ISC), whose notice is in Pele's licence file below. It bundles no other third-party code: Pele 1.8.0 has no runtime dependencies, and its devDependencies are build and test tools (checked against its package.json and sources at 1.8.0).",
+      "note": "pele.global.js carries Lucide's rotate-ccw icon (https://lucide.dev, ISC), whose notice is in Pele's licence file below. It bundles no other third-party code: Pele 1.13.0 has no runtime dependencies, its devDependencies are the same build and test tools as 1.8.0's (checked against its package.json and sources at 1.8.0), and its built pele.global.js carries none of their code or licence headers (checked at 1.13.0).",
       "files": ["third-party/licenses/pele/LICENSE"],
-      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `pele\\.global\\.js` \\| pele \\| ([^ ]+) \\|", "value": "1.8.0"}
+      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `pele\\.global\\.js` \\| pele \\| ([^ ]+) \\|", "value": "1.13.0"}
     }
   ],
   "crate_supplements": {
