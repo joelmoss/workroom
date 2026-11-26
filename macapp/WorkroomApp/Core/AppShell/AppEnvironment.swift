@@ -121,4 +121,14 @@ struct AppEnvironment: Equatable {
   ) -> Bool {
     !isHostedUnitRun(environment: environment) && !isUILaunch
   }
+
+  /// Whether a popped-out pane's window animates its pop out and pull back (`PaneWindowMotion`,
+  /// `DetachedPaneWindows.animates`). Not in a hosted unit run: its windows stay behind the
+  /// developer's work, and its tests assert the end state the instant an action returns. The
+  /// transition's own tests turn it on and drive it through a manual animator.
+  static func animatesPaneWindows(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    !isHostedUnitRun(environment: environment)
+  }
 }
