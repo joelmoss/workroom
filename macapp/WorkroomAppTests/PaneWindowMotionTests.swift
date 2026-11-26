@@ -435,6 +435,27 @@ final class PaneWindowMotionTests: XCTestCase {
     XCTAssertEqual(alpha(of: band), 1, "opaque, on the window's background")
   }
 
+  /// The title bar alone is the same pixels as the top of the whole window's picture.
+  func testATitlebarSnapshotIsTheTopOfTheWindowSnapshot() throws {
+    let windows = DetachedPaneWindows()
+    let tabID = UUID()
+    windows.open(
+      tabID: tabID, title: "Snapshot Title", project: "proj", workroom: nil, origin: nil,
+      onCloseTab: {}, onDock: {}, content: { Color.clear })
+    defer { windows.close(tabID: tabID) }
+    let window = try XCTUnwrap(windows.window(for: tabID))
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+
+    let whole = try XCTUnwrap(PaneSnapshot.window(window))
+    let expected = try XCTUnwrap(
+      PaneSnapshot.split(
+        whole, height: window.frame.height, top: PaneSnapshot.titlebarHeight(of: window)
+      ).top)
+    let band = try XCTUnwrap(PaneSnapshot.titlebar(of: window))
+    XCTAssertEqual([band.width, band.height], [expected.width, expected.height])
+    XCTAssertTrue(try pixels(band) == pixels(expected), "pixel for pixel")
+  }
+
   /// A split cuts on a whole pixel row from the top, and the halves go back together the right
   /// way up.
   func testASplitAndComposeKeepTheTopAtTheTop() throws {
@@ -527,6 +548,24 @@ final class PaneWindowMotionTests: XCTestCase {
       }
     }
     return seen.count
+  }
+
+  /// Every byte of `image`, drawn into a plain sRGB bitmap of its own size.
+  private func pixels(_ image: CGImage) throws -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+    let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
+      guard
+        let context = CGContext(
+          data: buffer.baseAddress, width: image.width, height: image.height,
+          bitsPerComponent: 8, bytesPerRow: image.width * 4, space: space,
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else { return false }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+      return true
+    }
+    XCTAssertTrue(drawn)
+    return bytes
   }
 
   private func alpha(of image: CGImage) -> CGFloat {

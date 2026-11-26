@@ -213,6 +213,26 @@ enum PaneSnapshot {
       background: (window.backgroundColor ?? .windowBackgroundColor).withAlphaComponent(1))
   }
 
+  /// Just `window`'s title bar, the same pixels as the top of `window(_:)`'s picture, cut on the
+  /// same whole pixel row (`split`): only the band is drawn. It holds no terminal.
+  static func titlebar(of window: NSWindow) -> CGImage? {
+    guard let frameView = window.contentView?.superview else { return nil }
+    let bounds = frameView.bounds
+    let scale = window.backingScaleFactor
+    let pixels = (bounds.height * scale).rounded()
+    guard pixels > 0 else { return nil }
+    let rows = (pixels * min(max(titlebarHeight(of: window), 0), bounds.height) / bounds.height)
+      .rounded()
+    guard rows > 0 else { return nil }
+    let height = rows / scale
+    let region = NSRect(
+      x: bounds.minX, y: frameView.isFlipped ? bounds.minY : bounds.maxY - height,
+      width: bounds.width, height: height)
+    return capture(
+      region, of: frameView, surfaces: [],
+      background: (window.backgroundColor ?? .windowBackgroundColor).withAlphaComponent(1))
+  }
+
   /// How tall `window`'s title bar is: everything above its content view.
   static func titlebarHeight(of window: NSWindow) -> CGFloat {
     guard let content = window.contentView else { return 0 }
