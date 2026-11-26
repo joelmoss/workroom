@@ -533,7 +533,7 @@ struct SidebarOpenWorkroomRow: View, Equatable {
     SidebarInlineNameField(
       placeholder: group ? "Terminal group name" : presentation.fullTitle, draft: $draft,
       help: group
-        ? "The group's name. Leave it empty to label the group by its terminals' names"
+        ? "The group's name. Leave it empty to number the group, as Group 1"
         : "The terminal's name. Leave it empty to show the title the program sets",
       id: "sidebar.open.rename.\(id)",
       commit: {

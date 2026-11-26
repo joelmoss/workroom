@@ -248,7 +248,7 @@
           Terminal(title: "claude", mark: .waiting, tool: "claude"),
           Terminal(title: "fly deploy", mark: .busy),
         ]),
-      // Unnamed: its row is labelled by its terminals' names.
+      // Unnamed: its row is numbered ("Group 1").
       Group(name: nil, terminals: [Terminal(title: "zsh"), Terminal(title: "htop", tool: "htop")]),
       Group(name: "Failing", terminals: [Terminal(title: "go test ./...", mark: .failed)]),
       Group(name: "Empty", terminals: []),

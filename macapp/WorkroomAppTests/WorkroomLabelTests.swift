@@ -138,8 +138,8 @@ final class WorkroomLabelTests: XCTestCase {
       TerminalGroup.newTerminalTitle(for: TerminalGroup(id: UUID(), name: "Ops")),
       "New Terminal in Ops")
     XCTAssertEqual(
-      TerminalGroup.newTerminalTitle(for: TerminalGroup(id: UUID(), name: nil)),
-      "New Terminal in Group")
+      TerminalGroup.newTerminalTitle(for: TerminalGroup(id: UUID(), name: nil, number: 2)),
+      "New Terminal in Group 2")
   }
 
   // MARK: Store — displayName(forWorkroom:inProject:)

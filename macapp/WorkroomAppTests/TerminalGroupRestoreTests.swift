@@ -74,10 +74,8 @@ final class TerminalGroupRestoreTests: XCTestCase {
     XCTAssertNil(relaunched.terminalGroup(servers)?.name, "an unnamed group stays unnamed")
     XCTAssertEqual(relaunched.terminals.tabCount(forTargetID: try XCTUnwrap(ops.targetID)), 2)
     XCTAssertEqual(relaunched.terminals.tabCount(forTargetID: try XCTUnwrap(servers.targetID)), 1)
-    let title = try XCTUnwrap(relaunched.target(for: servers)?.title)
-    XCTAssertTrue(
-      title.hasPrefix("\(TerminalState.shellName) "),
-      "\(title) is named by its program and folder")
+    XCTAssertEqual(
+      relaunched.target(for: servers)?.title, "Group 1", "it keeps its number across the quit")
     XCTAssertEqual(
       relaunched.pendingRestoreSelection.flatMap(\.sidebarID).flatMap {
         relaunched.liveSelection($0, in: [])
@@ -164,6 +162,7 @@ final class TerminalGroupRestoreTests: XCTestCase {
       """
     try Data(file.utf8).write(to: sectionURL)
 
-    XCTAssertEqual(makeSection().entries, [.group(TerminalGroup(id: Self.id))])
+    // Unnamed, so numbered as it loads.
+    XCTAssertEqual(makeSection().entries, [.group(TerminalGroup(id: Self.id, number: 1))])
   }
 }

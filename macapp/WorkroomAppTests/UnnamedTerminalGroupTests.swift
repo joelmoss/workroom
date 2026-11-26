@@ -117,7 +117,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertEqual(retags.map(\.0), [session])
     XCTAssertEqual(retags.map(\.1), [try XCTUnwrap(group.targetID).encoded])
     let names = section.terminalNames(of: try XCTUnwrap(group.targetID))
-    XCTAssertEqual(store.target(for: group)?.title, "\(names[0]) + 1 more")
+    XCTAssertEqual(store.target(for: group)?.title, "Group 1", "numbered, never by its terminals")
     XCTAssertEqual(names.count, 2, "two terminals")
 
     store.closeCurrentTerminalTab()
@@ -472,11 +472,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
 
     XCTAssertEqual(rows, [sid])
     XCTAssertTrue(isUnnamedGroup(sid))
-    let target = try XCTUnwrap(store.target(for: sid))
-    let first = TerminalState.programAndFolder(
-      program: TerminalState.shellName, folder: target.path
-    ).text
-    XCTAssertEqual(target.title, "\(first) + 1 more")
+    XCTAssertEqual(try XCTUnwrap(store.target(for: sid)).title, "Group 1", "cleared: numbered")
 
     store.renameTerminalGroup(sid, to: "Servers")
     store.closeCurrentTerminalTab()
