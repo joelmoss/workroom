@@ -111,19 +111,16 @@ final class WorkroomMenuModelTests: XCTestCase {
   }
 
   /// Value: protects=a standalone terminal's Open row keeps its old Terminals row's Move to… and
-  /// Pop Out beside the chip's items, Pop Out off once it is popped out (#819 story 46);
-  /// fails_when=either is missing, out of order, or reaches the title-bar chip's menu;
+  /// Pop Out beside the chip's items, Pop Out off once it is popped out, and offers Pop Out alone of
+  /// the two window items (#819 story 46, owner's review call); fails_when=either is missing, out of
+  /// order, Move to New Window shows beside Pop Out, or the chip's menu changes;
   /// seam=WorkroomMenuModel.entries
   func testAStandaloneTerminalsOpenRowAddsMoveToAndPopOut() {
     var model = WorkroomMenuModel(
       run: .off, closeName: "Terminal 1", showsMoveToNewWindow: true, canMoveWorkroom: true,
       section: .standalone)
     XCTAssertEqual(
-      model.entries(for: .openRow),
-      [
-        .rename, .moveTo, .popOut(enabled: true), .divider, .close,
-        .moveToNewWindow(enabled: true),
-      ])
+      model.entries(for: .openRow), [.rename, .moveTo, .popOut(enabled: true), .divider, .close])
     XCTAssertEqual(
       model.entries(for: .full), [.rename, .divider, .close, .moveToNewWindow(enabled: true)],
       "the chip's menu is unchanged")
@@ -131,13 +128,22 @@ final class WorkroomMenuModelTests: XCTestCase {
     XCTAssertEqual(model.entries(for: .openRow)[2], .popOut(enabled: false))
   }
 
-  /// A group's Open row offers just what its chip does: that menu already holds its old row's.
-  func testAGroupsOpenRowOffersItsChipsItems() {
-    let model = WorkroomMenuModel(
+  /// Value: protects=a group's Open row offers its chip's items, led by the Expand or Collapse its
+  /// old Terminals row had, which folds the Open row (#819 review, owner's call);
+  /// fails_when=the fold item is missing, not first, worded against the fold, or reaches the chip's
+  /// menu; seam=WorkroomMenuModel.entries
+  func testAGroupsOpenRowLeadsWithItsFoldThenItsChipsItems() {
+    var model = WorkroomMenuModel(
       run: .off, closeName: "Ops", canOpenInSplit: true,
       section: .group(
         builtIn: false, hasStartingFolder: true, title: "Ops", newTerminal: "New Terminal in Ops"))
-    XCTAssertEqual(model.entries(for: .openRow), model.entries(for: .full))
+    XCTAssertEqual(model.entries(for: .openRow), model.entries(for: .full), "nothing to fold")
+
+    model.openRowFold = SidebarFoldItem(expanded: true)
+    XCTAssertEqual(
+      model.entries(for: .openRow),
+      [.fold(SidebarFoldItem(expanded: true)), .divider] + model.entries(for: .full))
+    XCTAssertFalse(model.entries(for: .full).contains(.fold(SidebarFoldItem(expanded: true))))
   }
 
   // MARK: A root

@@ -169,7 +169,7 @@ struct SidebarOpenList: View, Equatable {
 
   private var emptyState: some View {
     Text("Nothing open")
-      .font(.callout)
+      .font(FontRole.body)
       .foregroundStyle(.secondary)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.leading, SidebarRowMetrics.caretWidth + Spacing.s)
@@ -194,7 +194,7 @@ struct SidebarOpenList: View, Equatable {
     let offset = items.firstIndex(of: item) ?? 0
     let edge = insertionEdge(of: item, in: items)
     return SidebarHoverRegion(openItem: item) { hovered in
-      SidebarOpenWorkroomRow(row: row, hovered: hovered, store: store).equatable()
+      SidebarOpenWorkroomRow(row: row.model, hovered: hovered, store: store).equatable()
         .modifier(SidebarDragDim(id: row.sid, drag: drag.drag))
         .overlay(alignment: edge ?? .top) {
           if edge != nil { DropInsertionMark(vertical: false) }
@@ -223,7 +223,7 @@ struct SidebarOpenList: View, Equatable {
     let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
     let edge = insertionEdge(of: item, in: items)
     return SidebarHoverRegion(openItem: item) { hovered in
-      SidebarOpenTabRow(row: tab, hovered: hovered, store: store)
+      SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: hovered, store: store).equatable()
         .overlay(alignment: edge ?? .top) {
           if edge != nil { DropInsertionMark(vertical: false) }
         }
@@ -425,13 +425,19 @@ struct SidebarOpenRowBackground: View {
 /// Its menu is the chip's, a standalone terminal's with Move to… and Pop Out too
 /// (`WorkroomMenuModel.Style.openRow`). A standalone terminal's or group's name edits in place,
 /// from Rename… on its menu or its title-bar chip (`SidebarInlineRename`).
-struct SidebarOpenWorkroomRow: View {
-  let row: OpenSectionRow
+struct SidebarOpenWorkroomRow: View, Equatable {
+  let row: OpenSectionWorkroomRowModel
   let hovered: Bool
   let store: AppStore
   @Environment(\.themeTokens) private var tokens
   @State private var renaming = false
   @State private var draft = ""
+
+  /// It redraws only when what it draws changes: the list rebuilds every row from
+  /// `openSectionRows()` whenever any of them changes, as one agent starting or stopping does.
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.store === rhs.store && lhs.hovered == rhs.hovered && lhs.row == rhs.row
+  }
 
   private var presentation: WorkroomTabPresentation { row.presentation }
   private var marks: WorkroomTabMarks { row.marks }
@@ -517,7 +523,7 @@ struct SidebarOpenWorkroomRow: View {
 
   @ViewBuilder private var title: some View {
     let unread = marks.hasUnread
-    HStack(alignment: .firstTextBaseline, spacing: 4) {
+    HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
       if let standalone = presentation.standaloneTitle {
         TerminalTitleLabel(title: standalone, folderFont: .subheadline)
           .foregroundStyle(
@@ -534,7 +540,7 @@ struct SidebarOpenWorkroomRow: View {
         Text(workroom).foregroundStyle(.secondary)
       }
     }
-    .font(.callout)
+    .font(FontRole.body)
     .lineLimit(1)
     .truncationMode(.tail)
   }
@@ -628,8 +634,8 @@ struct SidebarOpenWorkroomRow: View {
     if case .running = marks.busy { parts.append("busy") }
     if marks.reportedError { parts.append("a command reported an error") }
     if marks.hasUnread { parts.append("unread activity") }
-    if !row.tabs.isEmpty {
-      parts.append(row.isFolded ? "\(row.tabs.count) tabs, folded" : "\(row.tabs.count) tabs")
+    if row.tabCount > 0 {
+      parts.append(row.isFolded ? "\(row.tabCount) tabs, folded" : "\(row.tabCount) tabs")
     }
     return parts.joined(separator: ", ")
   }
@@ -639,29 +645,36 @@ struct SidebarOpenWorkroomRow: View {
 /// glyph, ✦ badge, title in italics while a preview, unread dot, waiting or finished glyph, busy
 /// spinner or run state), a hover ✕ that closes it as the chip's does, and the chip's menu. A
 /// second click on a preview's row keeps it, as on the chip.
-struct SidebarOpenTabRow: View {
-  let row: OpenSectionTabRow
+struct SidebarOpenTabRow: View, Equatable {
+  let row: OpenSectionTabRowModel
+  /// What its title is read from, and its menu's tab. Outside the model, which compares
+  /// `row.title` in its place.
+  let tab: TerminalTab
   let hovered: Bool
   let store: AppStore
   @Environment(\.themeTokens) private var tokens
   @State private var lastClick: Date?
 
-  private var tab: TerminalTab { row.tab }
-  private var indicator: PaneIndicator { tab.indicator }
+  /// It redraws only when what it draws changes, as its workroom's row does.
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.store === rhs.store && lhs.hovered == rhs.hovered && lhs.row == rhs.row
+  }
+
+  private var indicator: PaneIndicator { row.indicator }
 
   var body: some View {
     #if DEBUG
       SidebarRowPasses.openRows[.tab(tab.id, in: row.sid), default: 0] += 1
     #endif
     return HStack(spacing: Spacing.s) {
-      SidebarTabIcon(glyph: tab.content.glyph ?? "terminal", tool: tab.recognizedTool)
+      SidebarTabIcon(glyph: row.glyph, tool: row.tool)
         .frame(width: SidebarRowMetrics.caretWidth, alignment: .center)
       TabTitleReader(content: tab.content) { title in
         TerminalTitleLabel(
           title: tab.content.titleParts.omittingFolder(row.target.path), folderFont: .caption
         )
         .font(.subheadline)
-        .italic(tab.isPreview)
+        .italic(row.isPreview)
         .foregroundStyle(
           row.hasUnread ? tokens.accent : Color.primary,
           row.hasUnread ? tokens.accent.opacity(0.7) : Color.secondary
@@ -693,7 +706,7 @@ struct SidebarOpenTabRow: View {
     .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
     .onTapGesture { click() }
-    .tabChipContextMenu(tab: tab, target: row.target, host: store, panes: store.terminals)
+    .modifier(SidebarOpenTabMenu(tab: tab, target: row.target, store: store))
     .accessibilityElement(children: .contain)
     .accessibilityAddTraits(row.isFocused ? [.isButton, .isSelected] : .isButton)
     .accessibilityAction { store.selectOpenTab(tab.id, in: row.sid) }
@@ -709,7 +722,7 @@ struct SidebarOpenTabRow: View {
   private func click() {
     let now = Date()
     store.selectOpenTab(tab.id, in: row.sid)
-    if let lastClick, now.timeIntervalSince(lastClick) < 0.35 {
+    if let lastClick, now.timeIntervalSince(lastClick) < NSEvent.doubleClickInterval {
       store.promoteOpenTab(tab.id, in: row.sid)
       self.lastClick = nil
     } else {
@@ -723,7 +736,7 @@ struct SidebarOpenTabRow: View {
     } else if indicator == .blocked || indicator == .done {
       let blocked = indicator == .blocked
       ProgramStatusGlyph(
-        mark: blocked ? .blocked : .done, stale: tab.programStatus?.stale == true
+        mark: blocked ? .blocked : .done, stale: row.programStatus?.stale == true
       )
       .help(blocked ? "Waiting for you" : ProgramStatusPresentation.turnFinished)
       .accessibilityHidden(true)
@@ -754,27 +767,27 @@ struct SidebarOpenTabRow: View {
 
   private func accessibilityLabel(_ title: String) -> String {
     var parts = [title]
-    if tab.isPreview { parts.append("preview") }
+    if row.isPreview { parts.append("preview") }
     if row.hasDiagnosis { parts.append("diagnosis available") }
     if let runState = row.runState { parts.append("run \(runState)") }
     parts += ProgramStatusPresentation.accessibilityParts(
-      indicator: indicator, rollup: tab.programStatus)
+      indicator: indicator, rollup: row.programStatus)
     if row.hasUnread { parts.append("unread activity") }
     if row.isVisibleInSplit { parts.append("on screen in a split") }
     return parts.joined(separator: ", ")
   }
 }
 
-/// A workroom row redraws only when what it draws changes: the list rebuilds every row from
-/// `openSectionRows()` whenever any of them changes, as one agent starting or stopping does.
-extension SidebarOpenWorkroomRow: Equatable {
-  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    MainActor.assumeIsolated {
-      lhs.store === rhs.store && lhs.hovered == rhs.hovered && lhs.row.sid == rhs.row.sid
-        && lhs.row.target == rhs.row.target && lhs.row.presentation == rhs.row.presentation
-        && lhs.row.marks == rhs.row.marks && lhs.row.isSelected == rhs.row.isSelected
-        && lhs.row.isVisibleInSplit == rhs.row.isVisibleInSplit
-        && lhs.row.isFolded == rhs.row.isFolded && lhs.row.tabs.count == rhs.row.tabs.count
-    }
+/// A tab row's menu, its strip chip's. A modifier of its own, so the menu's reads of the panes are
+/// its own and not the gated row's, and it reads the tab as it is now when the gate skipped the row.
+private struct SidebarOpenTabMenu: ViewModifier {
+  let tab: TerminalTab
+  let target: TerminalTarget
+  let store: AppStore
+
+  func body(content: Content) -> some View {
+    content.tabChipContextMenu(
+      tab: store.terminals.tab(tab.id, for: target) ?? tab, target: target, host: store,
+      panes: store.terminals)
   }
 }

@@ -630,6 +630,40 @@ final class SidebarInvalidationTests: XCTestCase {
       Set(SidebarRowPasses.openRows.keys), [.workroom(sid)], "only its row shows its agent")
   }
 
+  /// Value: protects=an Open tab row is a gated value view, so a change one tab shows (its agent
+  /// stopping) re-runs that tab's row and its workroom's, and never the tab beside it (#819 review);
+  /// fails_when=the tab rows have no equality gate, so any change to the list re-runs every one;
+  /// seam=SidebarRowPasses.openRows
+  func testAnAgentInOneTabReRunsOnlyThatTabsOpenRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    let other = f.store.terminals.addTab(for: f.a.rootTarget)
+    f.store.terminals.select(f.tabA, for: f.a.rootTarget)
+    f.store.selectedTargetID = f.rootA
+    f.store.selectionStatusTask?.cancel()
+    try await render(f)
+    XCTAssertEqual(
+      Set(f.store.openSectionRows().first { $0.sid == f.rootA }?.tabs.map(\.id) ?? []),
+      [f.tabA, other.id], "A's row is unfolded to its two tabs")
+    // Twice, measuring the second: a view type's first update re-runs it whatever its inputs.
+    try await agentStartsWorking(on: f.surfaceA)
+    try await render(f)
+    f.surfaceA.handleProgressReport(false)
+    try await render(f)
+    try await agentStartsWorking(on: f.surfaceA)
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    f.surfaceA.handleProgressReport(false)
+    try await render(f)
+
+    XCTAssertFalse(
+      f.store.terminals.isRunning(forTargetID: f.a.rootTarget.id), "the change landed")
+    XCTAssertEqual(
+      Set(SidebarRowPasses.openRows.keys), [.workroom(f.rootA), .tab(f.tabA, in: f.rootA)],
+      "only the working tab's row and its workroom's show it")
+  }
+
   /// A group's Open row is hovered as a workroom's is: the pointer over it re-runs that row
   /// alone, which swaps its glyph for the fold chevron while it can fold.
   func testHoveringAGroupsOpenRowReRunsOnlyThatRow() async throws {
