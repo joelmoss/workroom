@@ -1,6 +1,6 @@
 import XCTest
 
-/// A Terminals-section row is one hit target from its top edge to its bottom edge (#652 critique):
+/// An Open-section row is one hit target from its top edge to its bottom edge (#652 critique):
 /// its spacing is padding inside the row, not a List inset outside it, so a click near either edge
 /// selects the row as a click on its middle does. Seeded by the fixture's standalone terminals and
 /// its "Ops" group, never a real project or config.
@@ -72,6 +72,9 @@ final class SidebarRowHitUITests: XCTestCase {
     let second = element(app, "sidebar.open.workroom.\(standalone[1])")
     XCTAssertTrue(first.waitForExistence(timeout: 15), "the first standalone terminal's row")
     XCTAssertTrue(second.waitForExistence(timeout: 5), "the second's")
+    // Only the selected Open row lists its tabs (#819).
+    let groupTab = element(app, "workroom.tab.\(group)")
+    groupTab.click()
     let children = groupTerminalRows(app)
     XCTAssertEqual(children.count, 2, "the group's two terminals' rows")
     guard children.count == 2 else { return }
@@ -90,15 +93,16 @@ final class SidebarRowHitUITests: XCTestCase {
       "standalone \(first.frame), group terminal \(children[0].frame)")
 
     // Each click starts from another target's selection, so it is the click that selects.
-    let groupTab = element(app, "workroom.tab.\(group)")
     for y in [0.05, 0.95] {
       for (index, row) in [first, second].enumerated() {
         let tab = element(app, "workroom.tab.\(standalone[index])")
         click(row, at: y, from: groupTab, want: tab, "standalone row at \(y)")
       }
-      let standaloneTab = element(app, "workroom.tab.\(standalone[0])")
-      for child in children {
-        click(child, at: y, from: standaloneTab, want: groupTab, "group terminal row at \(y)")
+      // A tab row shows while its group is selected, so each starts from its sibling's.
+      groupTab.click()
+      for (index, child) in children.enumerated() {
+        click(
+          child, at: y, from: children[1 - index], want: child, "group terminal row at \(y)")
       }
     }
   }
