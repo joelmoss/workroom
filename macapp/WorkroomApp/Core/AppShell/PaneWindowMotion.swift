@@ -46,14 +46,20 @@ enum PaneWindowMotion {
   /// A damped spring from 0 to 1, given by how it feels: its damping ratio (1 is critically
   /// damped, below 1 overshoots) and how long it takes to settle, after which it is exactly 1.
   struct Spring: Equatable {
-    var dampingRatio: Double
-    var settle: TimeInterval
+    let dampingRatio: Double
+    let settle: TimeInterval
+    /// The natural frequency that settles it in time, solved once: every frame reads it.
+    let omega: Double
     /// Within this of its rest by `settle`, where it snaps to rest unseen.
     static let tolerance = 0.001
 
-    /// The natural frequency that settles it in time.
-    var omega: Double {
-      let tolerance = Self.tolerance
+    init(dampingRatio: Double, settle: TimeInterval) {
+      self.dampingRatio = dampingRatio
+      self.settle = settle
+      omega = Self.omega(dampingRatio: dampingRatio, settle: settle)
+    }
+
+    private static func omega(dampingRatio: Double, settle: TimeInterval) -> Double {
       if dampingRatio >= 1 {
         // (1 + u)e^-u = tolerance, solved for u = ωT.
         var lower = 0.0
