@@ -99,10 +99,10 @@ struct ProjectSidebar: View, Equatable {
   private var footer: some View { SidebarFooter() }
 }
 
-/// The window's environment, handed to the sidebar's views whatever hosts them: the edge-reveal
-/// panel and a test's window inject only some of it. The objects are the store's own, so the
-/// sidebar subscribes to none of them here.
-private struct SidebarEnvironment: ViewModifier {
+/// The window's environment, handed to the sidebar's views whatever hosts them, a lifted Open row's
+/// ghost too: the edge-reveal panel and a test's window inject only some of it. The objects are the
+/// store's own, so the sidebar subscribes to none of them here.
+struct SidebarEnvironment: ViewModifier {
   let store: AppStore
 
   func body(content: Content) -> some View {
