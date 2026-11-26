@@ -6,6 +6,11 @@ import IOSurface
 /// never takes the mouse, the keyboard or a place in the window cycle, and it goes the moment its
 /// transition ends.
 ///
+/// It holds two pictures, what the pane leaves as and what it lands as, each scaled to fill the
+/// card at every frame, and crossfades between them as it flies (`Pose.progress`), so its first
+/// frame is the slot or window it leaves, pixel for pixel, and its last is the window or slot it
+/// lands in.
+///
 /// Non-opaque with a clear background, so the windows behind it keep rendering (an opaque panel
 /// makes every terminal it covers believe it is occluded), and it draws its own shadow, since a
 /// borderless non-opaque window casts none.
@@ -14,13 +19,19 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
   /// Room around the card for its shadow to land in.
   static let margin: CGFloat = 24
 
-  private let panel: NSPanel
+  /// One end of the flight: its picture, its corners and whether it casts a window's shadow.
+  struct End {
+    var image: CGImage?
+    var cornerRadius: CGFloat
+    var shadow: Bool
+  }
 
-  /// `scale`: the snapshot's pixels per point, its source window's backing scale.
-  init(
-    snapshot: CGImage?, scale: CGFloat, background: NSColor, cornerRadius: CGFloat,
-    above level: NSWindow.Level
-  ) {
+  private let panel: NSPanel
+  private let card: Card
+  private let from: End
+  private let to: End
+
+  init(from: End, to: End, background: NSColor, above level: NSWindow.Level) {
     let panel = NSPanel(
       contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -37,29 +48,39 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
     panel.level = NSWindow.Level(
       rawValue: max(level.rawValue, NSWindow.Level.floating.rawValue) + 1)
     panel.setAccessibilityElement(false)
-    panel.contentView = Card(
-      snapshot: snapshot, scale: scale, background: background, cornerRadius: cornerRadius,
-      margin: Self.margin)
+    let card = Card(from: from.image, to: to.image, background: background, margin: Self.margin)
+    panel.contentView = card
     self.panel = panel
+    self.card = card
+    self.from = from
+    self.to = to
   }
 
   /// Ordered in by its first `set`, so it never shows before it is in place.
-  func set(frame: NSRect, alpha: CGFloat) {
+  func set(_ pose: PaneWindowMotion.Pose) {
     defer { if !panel.isVisible { panel.orderFrontRegardless() } }
-    // A zero-length group replaces an animation still running on either property, so it cannot
-    // carry on past the end it was cut short at.
+    // A zero-length group replaces an animation still running on any of these, so it cannot carry
+    // on past the end it was cut short at.
     NSAnimationContext.runAnimationGroup { context in
       context.duration = 0
-      panel.animator().setFrame(padded(frame), display: true)
-      panel.animator().alphaValue = alpha
+      panel.animator().setFrame(padded(pose.frame), display: true)
+      panel.animator().alphaValue = pose.alpha
+      card.toImage.animator().alphaValue = pose.progress
     }
-    panel.setFrame(padded(frame), display: true)
-    panel.alphaValue = alpha
+    panel.setFrame(padded(pose.frame), display: true)
+    panel.alphaValue = pose.alpha
+    card.toImage.alphaValue = pose.progress
+    card.setCorners(radius(pose.progress), shadow: shadow(pose.progress), animation: nil)
   }
 
-  func animate(to frame: NSRect, alpha: CGFloat) {
-    panel.animator().setFrame(padded(frame), display: true)
-    panel.animator().alphaValue = alpha
+  func animate(
+    to pose: PaneWindowMotion.Pose, duration: TimeInterval, timing: PaneWindowMotion.Timing
+  ) {
+    panel.animator().setFrame(padded(pose.frame), display: true)
+    panel.animator().alphaValue = pose.alpha
+    card.toImage.animator().alphaValue = pose.progress
+    card.setCorners(
+      radius(pose.progress), shadow: shadow(pose.progress), animation: (duration, timing))
   }
 
   func tearDown(fade: TimeInterval) {
@@ -76,41 +97,87 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
     }
   }
 
+  private func radius(_ progress: CGFloat) -> CGFloat {
+    from.cornerRadius + (to.cornerRadius - from.cornerRadius) * progress
+  }
+
+  private func shadow(_ progress: CGFloat) -> Float {
+    let a: Float = from.shadow ? Card.shadowOpacity : 0
+    let b: Float = to.shadow ? Card.shadowOpacity : 0
+    return a + (b - a) * Float(progress)
+  }
+
   private func padded(_ frame: NSRect) -> NSRect {
     frame.insetBy(dx: -Self.margin, dy: -Self.margin)
   }
 
-  /// The snapshot on the pane's background, rounded, with its shadow. The snapshot keeps its size
-  /// and sits at the top-left, as the terminal itself draws (`IOSurfaceLayer`): growing reveals
-  /// background, shrinking crops, and the text never stretches.
+  /// The two pictures on the pane's background, rounded, with a shadow. Each is scaled to fill the
+  /// card (`.resize`): aspect-fill would crop at the ends, where the picture has to be exactly the
+  /// slot or the window, so the slot's shape stretches to the window's in flight instead.
   private final class Card: NSView {
-    init(
-      snapshot: CGImage?, scale: CGFloat, background: NSColor, cornerRadius: CGFloat,
-      margin: CGFloat
-    ) {
-      super.init(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+    static let shadowOpacity: Float = 0.35
+
+    let toImage: NSView
+    private let card: NSView
+    private let clip: NSView
+
+    init(from: CGImage?, to: CGImage?, background: NSColor, margin: CGFloat) {
+      card = NSView(frame: NSRect(x: margin, y: margin, width: 100, height: 100))
+      clip = NSView(frame: card.bounds)
+      toImage = NSView(frame: card.bounds)
+      super.init(frame: NSRect(x: 0, y: 0, width: 100 + 2 * margin, height: 100 + 2 * margin))
       wantsLayer = true
-      let card = NSView(frame: bounds.insetBy(dx: margin, dy: margin))
       card.autoresizingMask = [.width, .height]
       card.wantsLayer = true
       card.layer?.backgroundColor = background.cgColor
-      card.layer?.cornerRadius = cornerRadius
       card.layer?.cornerCurve = .continuous
       card.layer?.shadowColor = NSColor.black.cgColor
-      card.layer?.shadowOpacity = 0.35
       card.layer?.shadowRadius = 14
       card.layer?.shadowOffset = CGSize(width: 0, height: -6)
       addSubview(card)
-      let image = NSView(frame: card.bounds)
-      image.autoresizingMask = [.width, .height]
-      image.wantsLayer = true
-      image.layer?.contents = snapshot
-      image.layer?.contentsGravity = .topLeft
-      image.layer?.contentsScale = scale
-      image.layer?.cornerRadius = cornerRadius
-      image.layer?.cornerCurve = .continuous
-      image.layer?.masksToBounds = true
-      card.addSubview(image)
+      clip.autoresizingMask = [.width, .height]
+      clip.wantsLayer = true
+      clip.layer?.cornerCurve = .continuous
+      clip.layer?.masksToBounds = true
+      card.addSubview(clip)
+      let fromImage = Self.imageView(from, frame: card.bounds)
+      clip.addSubview(fromImage)
+      Self.configure(toImage, image: to)
+      clip.addSubview(toImage)
+    }
+
+    func setCorners(
+      _ radius: CGFloat, shadow: Float, animation: (TimeInterval, PaneWindowMotion.Timing)?
+    ) {
+      for (layer, key, value) in [
+        (card.layer, "cornerRadius", radius as Any), (clip.layer, "cornerRadius", radius as Any),
+        (card.layer, "shadowOpacity", shadow as Any),
+      ] {
+        guard let layer else { continue }
+        layer.removeAnimation(forKey: key)
+        if let (duration, timing) = animation {
+          let move = CABasicAnimation(keyPath: key)
+          move.fromValue = layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKey: key)
+          move.toValue = value
+          move.duration = duration
+          move.timingFunction = timing.function
+          layer.add(move, forKey: key)
+        }
+        layer.setValue(value, forKey: key)
+      }
+    }
+
+    private static func imageView(_ image: CGImage?, frame: NSRect) -> NSView {
+      let view = NSView(frame: frame)
+      configure(view, image: image)
+      return view
+    }
+
+    private static func configure(_ view: NSView, image: CGImage?) {
+      view.autoresizingMask = [.width, .height]
+      view.wantsLayer = true
+      view.layer?.contents = image
+      view.layer?.contentsGravity = .resize
     }
 
     @available(*, unavailable)
@@ -124,16 +191,20 @@ final class PaneWindowFadeIn: PaneWindowTransitionSurface {
   private weak var window: NSWindow?
   init(_ window: NSWindow) { self.window = window }
 
-  func set(frame: NSRect, alpha: CGFloat) {
+  func set(_ pose: PaneWindowMotion.Pose) {
     guard let window else { return }
     NSAnimationContext.runAnimationGroup { context in
       context.duration = 0
-      window.animator().alphaValue = alpha
+      window.animator().alphaValue = pose.alpha
     }
-    window.alphaValue = alpha
+    window.alphaValue = pose.alpha
   }
 
-  func animate(to frame: NSRect, alpha: CGFloat) { window?.animator().alphaValue = alpha }
+  func animate(
+    to pose: PaneWindowMotion.Pose, duration: TimeInterval, timing: PaneWindowMotion.Timing
+  ) {
+    window?.animator().alphaValue = pose.alpha
+  }
 
   func tearDown(fade: TimeInterval) {}
 }
@@ -141,27 +212,24 @@ final class PaneWindowFadeIn: PaneWindowTransitionSurface {
 /// A picture of a pane, for its transition to fly (issue #172). A view's own drawing is cached,
 /// then each terminal surface in it is drawn over that from the frame it last presented: the
 /// renderer hands its layer an `IOSurface` (`IOSurfaceLayer`), which a view cache does not draw.
-/// Nothing here touches the surface beyond reading that frame.
+/// Nothing here touches the surface beyond reading that frame. All local drawing: no window-server
+/// capture, so nothing here can ask for Screen Recording.
 @MainActor
 enum PaneSnapshot {
   private static let context = CIContext(options: [.cacheIntermediates: false])
 
-  /// `region` of `root` (in its coordinates), with `surfaces` drawn over it where they sit.
-  static func capture(_ region: NSRect, of root: NSView, surfaces: [NSView]) -> CGImage? {
-    guard region.width >= 1, region.height >= 1 else { return nil }
+  /// `region` of `root` (in its coordinates) at `root`'s backing scale, on `background`, with
+  /// `surfaces` drawn over it where they sit.
+  static func capture(
+    _ region: NSRect, of root: NSView, surfaces: [NSView], background: NSColor? = nil
+  ) -> CGImage? {
     let scale = root.window?.backingScaleFactor ?? 2
-    let width = Int((region.width * scale).rounded())
-    let height = Int((region.height * scale).rounded())
-    guard
-      let space = CGColorSpace(name: CGColorSpace.sRGB),
-      let bitmap = CGContext(
-        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-        space: space,
-        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-          | CGBitmapInfo.byteOrder32Little.rawValue)
-    else { return nil }
-    bitmap.scaleBy(x: scale, y: scale)
+    guard let bitmap = context(size: region.size, scale: scale) else { return nil }
     let size = region.size
+    if let background {
+      bitmap.setFillColor(background.cgColor)
+      bitmap.fill(CGRect(origin: .zero, size: size))
+    }
     if let rep = root.bitmapImageRepForCachingDisplay(in: region) {
       root.cacheDisplay(in: region, to: rep)
       if let base = rep.cgImage { bitmap.draw(base, in: CGRect(origin: .zero, size: size)) }
@@ -177,6 +245,59 @@ enum PaneSnapshot {
     return bitmap.makeImage()
   }
 
+  /// The whole of `window` as it shows: its title bar (traffic lights, title and toolbar, drawn by
+  /// the frame view, which holds the title bar's views) over its content, its terminals included,
+  /// on its background at full opacity (under Glass the title bar draws none of its own).
+  static func window(_ window: NSWindow) -> CGImage? {
+    guard let frameView = window.contentView?.superview else { return nil }
+    return capture(
+      frameView.bounds, of: frameView, surfaces: surfaces(in: frameView),
+      background: (window.backgroundColor ?? .windowBackgroundColor).withAlphaComponent(1))
+  }
+
+  /// How tall `window`'s title bar is: everything above its content view.
+  static func titlebarHeight(of window: NSWindow) -> CGFloat {
+    guard let content = window.contentView else { return 0 }
+    return max(0, window.frame.height - content.frame.height)
+  }
+
+  /// `image`, `height` points tall, cut `top` points from its top: the chrome row above, the body
+  /// below. Cut on a whole pixel row.
+  static func split(_ image: CGImage, height: CGFloat, top: CGFloat) -> (
+    top: CGImage?, body: CGImage?
+  ) {
+    guard height > 0 else { return (nil, nil) }
+    let rows = Int((CGFloat(image.height) * min(max(top, 0), height) / height).rounded())
+    let width = image.width
+    return (
+      rows > 0 ? image.cropping(to: CGRect(x: 0, y: 0, width: width, height: rows)) : nil,
+      rows < image.height
+        ? image.cropping(to: CGRect(x: 0, y: rows, width: width, height: image.height - rows))
+        : nil
+    )
+  }
+
+  /// A picture `size` points at `scale`: `top` filling a `topHeight` row at its top and `body`
+  /// filling the rest, on `background`. What a pop out lands as (the window's title bar over the
+  /// slot's body) and a pull back (the slot's title bar over the window's body).
+  static func compose(
+    size: NSSize, scale: CGFloat, background: NSColor, top: CGImage?, topHeight: CGFloat,
+    body: CGImage?
+  ) -> CGImage? {
+    guard let bitmap = context(size: size, scale: scale) else { return nil }
+    bitmap.setFillColor(background.cgColor)
+    bitmap.fill(CGRect(origin: .zero, size: size))
+    let topHeight = min(max(topHeight, 0), size.height)
+    if let top {
+      bitmap.draw(
+        top, in: CGRect(x: 0, y: size.height - topHeight, width: size.width, height: topHeight))
+    }
+    if let body {
+      bitmap.draw(body, in: CGRect(x: 0, y: 0, width: size.width, height: size.height - topHeight))
+    }
+    return bitmap.makeImage()
+  }
+
   /// The frame a layer presents, when its contents are an `IOSurface` or an image.
   static func presentedImage(of layer: CALayer?) -> CGImage? {
     guard let contents = layer?.contents else { return nil }
@@ -188,6 +309,54 @@ enum PaneSnapshot {
     }
     if CFGetTypeID(object) == CGImage.typeID { return (object as! CGImage) }
     return nil
+  }
+
+  /// Every terminal surface under `view`, for a snapshot to draw them in.
+  static func surfaces(in view: NSView) -> [NSView] {
+    if view is GhosttySurfaceView { return [view] }
+    return view.subviews.flatMap { surfaces(in: $0) }
+  }
+
+  /// A bitmap `size` points at `scale`, drawn in points, y up.
+  private static func context(size: NSSize, scale: CGFloat) -> CGContext? {
+    let width = Int((size.width * scale).rounded())
+    let height = Int((size.height * scale).rounded())
+    guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+      let bitmap = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+        space: space,
+        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+          | CGBitmapInfo.byteOrder32Little.rawValue)
+    else { return nil }
+    bitmap.scaleBy(x: scale, y: scale)
+    bitmap.interpolationQuality = .high
+    return bitmap
+  }
+}
+
+/// A docked pane's slot as it is now (issue #172): where it is on screen, on whole device pixels,
+/// and a picture of it.
+@MainActor
+struct PaneSlot {
+  var rect: NSRect
+  var snapshot: CGImage?
+  /// The snapshot's pixels per point.
+  var scale: CGFloat
+  /// What the slot's window draws under it, at full opacity.
+  var background: NSColor
+  var level: NSWindow.Level
+
+  /// `tabID`'s slot, with `surface` drawn in it; nil when it isn't on screen.
+  static func current(of tabID: TerminalTab.ID, surface: NSView?) -> PaneSlot? {
+    let anchors = PaneSlotAnchors.shared
+    guard let view = anchors.view(for: tabID), let window = view.window,
+      let rect = anchors.screenRect(for: tabID)
+    else { return nil }
+    return PaneSlot(
+      rect: rect, snapshot: anchors.snapshot(for: tabID, surface: surface),
+      scale: window.backingScaleFactor,
+      background: (window.backgroundColor ?? .windowBackgroundColor).withAlphaComponent(1),
+      level: window.level)
   }
 }
 
@@ -221,17 +390,23 @@ final class PaneSlotAnchors {
     return view
   }
 
-  /// The slot's rect on screen.
+  /// The slot's rect on screen, on whole device pixels: the same pixels its snapshot covers.
   func screenRect(for tabID: TerminalTab.ID) -> NSRect? {
     guard let view = view(for: tabID), let window = view.window else { return nil }
     return PaneWindowMotion.screenRect(
-      of: view.convert(view.bounds, to: nil), windowFrame: window.frame)
+      of: inWindow(view), windowFrame: window.frame)
   }
 
   /// A picture of the slot as it is now, `surface` included.
   func snapshot(for tabID: TerminalTab.ID, surface: NSView?) -> CGImage? {
     guard let view = view(for: tabID), let root = view.window?.contentView else { return nil }
     return PaneSnapshot.capture(
-      view.convert(view.bounds, to: root), of: root, surfaces: surface.map { [$0] } ?? [])
+      root.convert(inWindow(view), from: nil), of: root, surfaces: surface.map { [$0] } ?? [])
+  }
+
+  /// `view`'s bounds in its window's base coordinates, snapped to its device pixels.
+  private func inWindow(_ view: NSView) -> NSRect {
+    PaneWindowMotion.snapped(
+      view.convert(view.bounds, to: nil), scale: view.window?.backingScaleFactor ?? 2)
   }
 }

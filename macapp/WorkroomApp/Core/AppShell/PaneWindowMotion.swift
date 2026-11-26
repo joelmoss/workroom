@@ -50,9 +50,24 @@ enum PaneWindowMotion {
     var endAlpha: CGFloat
     var duration: TimeInterval
     var timing: Timing
+    /// How far the snapshot has crossfaded from what it leaves (0) to what it lands as (1): from the
+    /// slot to the window on a pop out, from the window to the slot on a pull back.
+    var startProgress: CGFloat = 0
+    var endProgress: CGFloat = 1
     /// Whether the transition moves. A crossfade fades in place: the real window itself on a pop
     /// out, a snapshot of it on a pull back.
     var moves: Bool { start != end }
+
+    var startPose: Pose { Pose(frame: start, alpha: startAlpha, progress: startProgress) }
+    var endPose: Pose { Pose(frame: end, alpha: endAlpha, progress: endProgress) }
+  }
+
+  /// Where a transition's snapshot is at one moment: its frame on screen, its opacity, and how far
+  /// it has crossfaded into what it lands as.
+  struct Pose: Equatable {
+    var frame: NSRect
+    var alpha: CGFloat
+    var progress: CGFloat
   }
 
   /// Whether this process animates at all. A hosted unit run never does: its windows stay behind
@@ -74,9 +89,10 @@ enum PaneWindowMotion {
     // A drag showed the window to come, full size under the pointer (`DetachedPaneDragPreview`), so
     // growing out of the slot afterwards would send the pane back to where it was dragged from.
     if byDrag, let pointer {
+      // The window as it lands throughout: the slot's shape would stretch to the window's.
       return Plan(
         start: scaled(final, by: dragStartScale, about: pointer), end: final, startAlpha: 0,
-        endAlpha: 1, duration: popOutDuration, timing: .easeOut)
+        endAlpha: 1, duration: popOutDuration, timing: .easeOut, startProgress: 1)
     }
     guard let slot = onScreen(slot, screens: screens) else { return fade }
     return Plan(
@@ -89,9 +105,10 @@ enum PaneWindowMotion {
     -> Plan
   {
     guard !reduceMotion, let slot = onScreen(slot, screens: screens) else {
+      // The window's own picture fading where it was: there is no slot to turn into.
       return Plan(
         start: window, end: window, startAlpha: 1, endAlpha: 0, duration: crossfadeDuration,
-        timing: .easeInOut)
+        timing: .easeInOut, endProgress: 0)
     }
     return Plan(
       start: window, end: slot, startAlpha: 1, endAlpha: pullBackEndAlpha,
@@ -116,6 +133,16 @@ enum PaneWindowMotion {
   static func onScreen(_ rect: NSRect?, screens: [NSRect]) -> NSRect? {
     guard let rect, rect.width >= 1, rect.height >= 1 else { return nil }
     return screens.contains { $0.intersects(rect) } ? rect : nil
+  }
+
+  /// `rect` with each edge on the nearest device pixel at `scale`, so a snapshot drawn to it lands
+  /// on the same pixels the view it pictures draws on.
+  static func snapped(_ rect: NSRect, scale: CGFloat) -> NSRect {
+    guard scale > 0 else { return rect }
+    func snap(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+    let minX = snap(rect.minX)
+    let minY = snap(rect.minY)
+    return NSRect(x: minX, y: minY, width: snap(rect.maxX) - minX, height: snap(rect.maxY) - minY)
   }
 
   /// `rect` scaled by `factor` about `point`, so the point keeps its place in it.
@@ -154,10 +181,12 @@ struct LivePaneWindowAnimator: PaneWindowAnimating {
 /// What a transition draws on: a snapshot's borderless window, or the real window fading in place.
 @MainActor
 protocol PaneWindowTransitionSurface: AnyObject {
-  /// Put it at `frame` and `alpha` at once, ending any animation of either.
-  func set(frame: NSRect, alpha: CGFloat)
-  /// Move it to `frame` and `alpha` through the animator, inside an animation's `changes`.
-  func animate(to frame: NSRect, alpha: CGFloat)
+  /// Put it at `pose` at once, ending any animation.
+  func set(_ pose: PaneWindowMotion.Pose)
+  /// Move it to `pose` through the animator, inside an animation's `changes`. `duration` and
+  /// `timing` are the animation's, for what the animator proxies don't reach (a layer's corners).
+  func animate(
+    to pose: PaneWindowMotion.Pose, duration: TimeInterval, timing: PaneWindowMotion.Timing)
   /// The transition is over: go, fading out over `fade` (0 for at once).
   func tearDown(fade: TimeInterval)
 }
@@ -190,12 +219,14 @@ final class PaneWindowTransition {
   }
 
   func start() {
-    surface.set(frame: plan.start, alpha: plan.startAlpha)
+    surface.set(plan.startPose)
     let plan = plan
     let surface = surface
     animator.animate(
       duration: plan.duration, timing: plan.timing,
-      changes: { surface.animate(to: plan.end, alpha: plan.endAlpha) },
+      changes: {
+        surface.animate(to: plan.endPose, duration: plan.duration, timing: plan.timing)
+      },
       completion: { [weak self] in self?.end(interrupted: false) })
   }
 
@@ -213,7 +244,7 @@ final class PaneWindowTransition {
   private func end(interrupted: Bool) {
     guard !isDone else { return }
     isDone = true
-    surface.set(frame: plan.end, alpha: plan.endAlpha)
+    surface.set(plan.endPose)
     let onEnd = onEnd
     self.onEnd = nil
     onEnd?(interrupted)
