@@ -179,38 +179,65 @@ struct WorkroomCommands: Commands {
     } ?? project
   }
 
+  /// What the inspector pane toggles' checkmarks read of the store. Built in a menu's body, so
+  /// Observation re-runs the body when the pane changes (their bindings' getters alone run too
+  /// late to be tracked); a toggle takes its value from here, so none can go untracked.
+  private struct InspectorPanes {
+    let section: ActivitySection?
+    let changesCollapsed: Bool?
+    let historyCollapsed: Bool?
+    let prCollapsed: Bool?
+
+    @MainActor init(_ store: AppStore?) {
+      section = store?.activeInspectorSection
+      changesCollapsed = store?.changesSectionCollapsed
+      historyCollapsed = store?.historySectionCollapsed
+      prCollapsed = store?.prSectionCollapsed
+    }
+  }
+
   /// The inspector's panes, in its activity bar's order (Details first). In View with their
   /// shortcuts, and copied into Room without them, so no key equivalent belongs to two items.
   @ViewBuilder
-  private func inspectorPaneToggles(shortcuts: Bool) -> some View {
+  private func inspectorPaneToggles(_ panes: InspectorPanes, shortcuts: Bool) -> some View {
     // Details (where the selected workroom runs, and its ports) and Files are single-section panes:
     // showing one selects it and opens the inspector; turning it off hides the pane. Bumping
     // `inspectorToggles` makes the bar + inspector re-render synchronously, even when the section
     // stays put (see `AppStore.apply`).
-    Toggle("Details", isOn: paneBinding(.details))
+    Toggle("Details", isOn: paneBinding(.details, shown: panes.section))
       .shortcut(shortcuts ? .details : nil)
       .disabled(modalBlocked || nothingToInspect)
     // Changes, History and Pull Request share the **Changes** pane (a stack), so "showing" one means
     // selecting that pane, opening the inspector, and expanding its sub-section; the checkmark is on
     // only when all three hold. Turning it off just collapses the sub-section. (History is ⌥⌘Y:
     // ⌥⌘H is macOS "Hide Others".)
-    Toggle("Changes", isOn: subSectionBinding(\.changesSectionCollapsed))
-      .shortcut(shortcuts ? .changes : nil)
-      .disabled(modalBlocked || nothingToInspect)
-    Toggle("History", isOn: subSectionBinding(\.historySectionCollapsed))
-      .shortcut(shortcuts ? .history : nil)
-      .disabled(modalBlocked || nothingToInspect)
-    Toggle("Pull Request", isOn: subSectionBinding(\.prSectionCollapsed))
-      .shortcut(shortcuts ? .pullRequestPane : nil)
-      .disabled(modalBlocked || nothingToInspect)
-    Toggle("Files", isOn: paneBinding(.files))
+    Toggle(
+      "Changes",
+      isOn: subSectionBinding(\.changesSectionCollapsed, panes, collapsed: panes.changesCollapsed)
+    )
+    .shortcut(shortcuts ? .changes : nil)
+    .disabled(modalBlocked || nothingToInspect)
+    Toggle(
+      "History",
+      isOn: subSectionBinding(\.historySectionCollapsed, panes, collapsed: panes.historyCollapsed)
+    )
+    .shortcut(shortcuts ? .history : nil)
+    .disabled(modalBlocked || nothingToInspect)
+    Toggle(
+      "Pull Request",
+      isOn: subSectionBinding(\.prSectionCollapsed, panes, collapsed: panes.prCollapsed)
+    )
+    .shortcut(shortcuts ? .pullRequestPane : nil)
+    .disabled(modalBlocked || nothingToInspect)
+    Toggle("Files", isOn: paneBinding(.files, shown: panes.section))
       .shortcut(shortcuts ? .files : nil)
       .disabled(modalBlocked || nothingToInspect)
   }
 
-  private func paneBinding(_ section: ActivitySection) -> Binding<Bool> {
+  /// `shown`: the inspector's active section, as the menu's body read it.
+  private func paneBinding(_ section: ActivitySection, shown: ActivitySection?) -> Binding<Bool> {
     Binding(
-      get: { showInspector && store?.activeInspectorSection == section },
+      get: { showInspector && shown == section },
       set: { on in
         store?.activeInspectorSection = section
         showInspector = on
@@ -218,23 +245,21 @@ struct WorkroomCommands: Commands {
       })
   }
 
-  private func subSectionBinding(_ collapsed: ReferenceWritableKeyPath<AppStore, Bool>)
-    -> Binding<Bool>
-  {
+  /// `collapsed`: the sub-section's flag, as the menu's body read it into `panes`.
+  private func subSectionBinding(
+    _ flag: ReferenceWritableKeyPath<AppStore, Bool>, _ panes: InspectorPanes, collapsed: Bool?
+  ) -> Binding<Bool> {
     Binding(
-      get: {
-        showInspector && store?.activeInspectorSection == .changes
-          && store?[keyPath: collapsed] == false
-      },
+      get: { showInspector && panes.section == .changes && collapsed == false },
       set: { on in
         guard let store else { return }
         if on {
           store.activeInspectorSection = .changes
           showInspector = true
-          store[keyPath: collapsed] = false
+          store[keyPath: flag] = false
           store.inspectorToggles += 1
         } else {
-          store[keyPath: collapsed] = true
+          store[keyPath: flag] = true
         }
       })
   }
@@ -468,18 +493,14 @@ struct WorkroomCommands: Commands {
     CommandGroup(after: .sidebar) {
       // View ▸ Inspector: Show Inspector toggles the right-hand panel as a whole (⌘B), whichever
       // section was last active; the section toggles under it select a section AND open it. What
-      // their checkmarks read is read here too, in the body, so Observation re-runs it when the
-      // pane changes (their bindings' getters alone run too late to be tracked).
-      let _ = (
-        store?.activeInspectorSection, store?.changesSectionCollapsed,
-        store?.historySectionCollapsed, store?.prSectionCollapsed
-      )
+      // their checkmarks read is read here, in the body (`InspectorPanes`).
+      let panes = InspectorPanes(store)
       Menu("Inspector") {
         Toggle("Show Inspector", isOn: $showInspector)
           .shortcut(.inspector)
           .disabled(modalBlocked || nothingToInspect)
         Divider()
-        inspectorPaneToggles(shortcuts: true)
+        inspectorPaneToggles(panes, shortcuts: true)
       }
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
@@ -573,7 +594,7 @@ struct WorkroomCommands: Commands {
 
       // The inspector's panes, as View has them (without their shortcuts, which stay View's).
       Divider()
-      inspectorPaneToggles(shortcuts: false)
+      inspectorPaneToggles(InspectorPanes(store), shortcuts: false)
 
       // Open the selected target in the remembered external editor (the toolbar's open button, ⇧⌘O),
       // or show its folder in Finder. Disabled when nothing's selected or its directory is missing
