@@ -76,7 +76,9 @@ extension OpenRowLift {
     in store: AppStore
   ) {
     guard reflow == nil, store.sidebarView == .open, let window = store.hostWindow,
-      let item = Self.item(for: source, from: surface)
+      let item = Self.item(for: source, from: surface),
+      // Cheap first, as this runs on every move of the drag: over the list at all.
+      let (_, shown) = Self.listRow(.target(item.owner), in: store), shown.contains(screen)
     else { return }
     let rows = store.openSectionRows()
     guard let row = rows.first(where: { $0.sid == item.owner }) else { return }
