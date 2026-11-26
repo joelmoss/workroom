@@ -122,6 +122,19 @@ struct AppEnvironment: Equatable {
     !isHostedUnitRun(environment: environment) && !isUILaunch
   }
 
+  /// Whether a drop that makes a terminal group takes the suggested name unasked, as Return would
+  /// (`AppStore.askGroupName`). Only in a hosted unit run, where the prompt would show over the
+  /// developer's work and hold its test; never in Release, which reads no test signal.
+  static func takesSuggestedGroupNames(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    #if DEBUG
+      isHostedUnitRun(environment: environment)
+    #else
+      false
+    #endif
+  }
+
   /// Whether a popped-out pane's window animates its pop out and pull back (`PaneWindowMotion`,
   /// `DetachedPaneWindows.animates`). Not in a hosted unit run: its windows stay behind the
   /// developer's work, and its tests assert the end state the instant an action returns. The

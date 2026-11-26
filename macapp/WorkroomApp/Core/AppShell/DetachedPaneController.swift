@@ -336,7 +336,7 @@ final class DetachedPaneWindows {
   /// at once.
   ///
   /// The snapshot starts as the window, title bar and all, and lands as the slot will draw the
-  /// pane: the slot's own title bar over the window's body.
+  /// pane: the slot's own title bar (`PaneSlot.titleBar`) over the window's body.
   func dock(
     _ tabID: TerminalTab.ID, into slot: PaneSlot?,
     setInFlight: @escaping @MainActor (Bool) -> Void = { _ in }, then dock: @escaping () -> Void
@@ -365,11 +365,8 @@ final class DetachedPaneWindows {
           $0, height: window.frame.height, top: PaneSnapshot.titlebarHeight(of: window)
         ).body
       }
-      let slotTop = slot.snapshot.flatMap {
-        PaneSnapshot.split($0, height: slot.rect.height, top: PaneTitleBarMetrics.height).top
-      }
       landed = PaneSnapshot.compose(
-        size: slot.rect.size, scale: slot.scale, background: slot.background, top: slotTop,
+        size: slot.rect.size, scale: slot.scale, background: slot.background, top: slot.titleBar,
         topHeight: PaneTitleBarMetrics.height, body: windowBody)
     }
     let panel = PaneTransitionPanel(

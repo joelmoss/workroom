@@ -190,7 +190,7 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   func dockPane(_ tabID: TerminalTab.ID) {
     let target = target
     detachedPanes.dock(
-      tabID, into: PaneSlot.current(of: tabID, surface: nil),
+      tabID, into: PaneSlot.titleBar(of: tabID),
       setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) },
       then: { [weak self] in
         self?.terminals.dockPane(tabID, for: target)
@@ -200,7 +200,9 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
 
   /// Rebuilds restored popped-out pane `tabID`'s window at its saved `frame`, and says whether it is
   /// open, as a window's store does (`AppStore.reopenDetachedPane`).
-  func reopenDetachedPane(_ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget) -> Bool {
+  func reopenDetachedPane(
+    _ tabID: TerminalTab.ID, frame: NSRect, in target: TerminalTarget
+  ) -> Bool {
     openDetachedPane(tabID, origin: nil, frame: frame)
     return detachedPanes.window(for: tabID) != nil
   }

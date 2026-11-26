@@ -231,21 +231,28 @@ enum PaneSnapshot {
   /// Just `window`'s title bar, the same pixels as the top of `window(_:)`'s picture, cut on the
   /// same whole pixel row (`split`): only the band is drawn. It holds no terminal.
   static func titlebar(of window: NSWindow) -> CGImage? {
-    guard let frameView = window.contentView?.superview else { return nil }
-    let bounds = frameView.bounds
-    let scale = window.backingScaleFactor
-    let pixels = (bounds.height * scale).rounded()
-    guard pixels > 0 else { return nil }
-    let rows = (pixels * min(max(titlebarHeight(of: window), 0), bounds.height) / bounds.height)
-      .rounded()
-    guard rows > 0 else { return nil }
-    let height = rows / scale
-    let region = NSRect(
-      x: bounds.minX, y: frameView.isFlipped ? bounds.minY : bounds.maxY - height,
-      width: bounds.width, height: height)
+    guard let frameView = window.contentView?.superview,
+      let region = topBand(
+        of: frameView.bounds, in: frameView, top: titlebarHeight(of: window),
+        scale: window.backingScaleFactor)
+    else { return nil }
     return capture(
       region, of: frameView, surfaces: [],
       background: (window.backgroundColor ?? .windowBackgroundColor).withAlphaComponent(1))
+  }
+
+  /// The top `top` points of `rect`, in `root`'s coordinates, cut on the whole pixel row `split`
+  /// cuts a picture of `rect` on at `scale`: what a picture of just that band covers. Nil when the
+  /// band has no pixel row.
+  static func topBand(of rect: NSRect, in root: NSView, top: CGFloat, scale: CGFloat) -> NSRect? {
+    let pixels = (rect.height * scale).rounded()
+    guard pixels > 0 else { return nil }
+    let rows = (pixels * min(max(top, 0), rect.height) / rect.height).rounded()
+    guard rows > 0 else { return nil }
+    let height = rows / scale
+    return NSRect(
+      x: rect.minX, y: root.isFlipped ? rect.minY : rect.maxY - height, width: rect.width,
+      height: height)
   }
 
   /// How tall `window`'s title bar is: everything above its content view.
@@ -332,8 +339,11 @@ enum PaneSnapshot {
 @MainActor
 struct PaneSlot {
   var rect: NSRect
+  /// All of the slot, its terminal included: what a pop out starts as (`current`).
   var snapshot: CGImage?
-  /// The snapshot's pixels per point.
+  /// Just the slot's title bar: what a pull back lands with (`titleBar`).
+  var titleBar: CGImage? = nil
+  /// The pictures' pixels per point.
   var scale: CGFloat
   /// What the slot's window draws under it, at full opacity.
   var background: NSColor
@@ -341,13 +351,27 @@ struct PaneSlot {
 
   /// `tabID`'s slot, with `surface` drawn in it; nil when it isn't on screen.
   static func current(of tabID: TerminalTab.ID, surface: NSView?) -> PaneSlot? {
+    var slot = bare(tabID)
+    slot?.snapshot = PaneSlotAnchors.shared.snapshot(for: tabID, surface: surface)
+    return slot
+  }
+
+  /// `tabID`'s slot, pictured by just its title bar: all a pull back keeps of it. Nil when it isn't
+  /// on screen.
+  static func titleBar(of tabID: TerminalTab.ID) -> PaneSlot? {
+    var slot = bare(tabID)
+    slot?.titleBar = PaneSlotAnchors.shared.titleBarSnapshot(for: tabID)
+    return slot
+  }
+
+  /// `tabID`'s slot with no picture yet.
+  private static func bare(_ tabID: TerminalTab.ID) -> PaneSlot? {
     let anchors = PaneSlotAnchors.shared
     guard let view = anchors.view(for: tabID), let window = view.window,
       let rect = anchors.screenRect(for: tabID)
     else { return nil }
     return PaneSlot(
-      rect: rect, snapshot: anchors.snapshot(for: tabID, surface: surface),
-      scale: window.backingScaleFactor,
+      rect: rect, snapshot: nil, scale: window.backingScaleFactor,
       background: (window.backgroundColor ?? .windowBackgroundColor).withAlphaComponent(1),
       level: window.level)
   }
@@ -395,6 +419,18 @@ final class PaneSlotAnchors {
     guard let view = view(for: tabID), let root = view.window?.contentView else { return nil }
     return PaneSnapshot.capture(
       root.convert(inWindow(view), from: nil), of: root, surfaces: surface.map { [$0] } ?? [])
+  }
+
+  /// Just the slot's title bar: the same pixels as the top `PaneTitleBarMetrics.height` of
+  /// `snapshot(for:surface:)`'s picture, cut on the same whole pixel row (`PaneSnapshot.split`).
+  /// Only the band is drawn. It holds no terminal.
+  func titleBarSnapshot(for tabID: TerminalTab.ID) -> CGImage? {
+    guard let view = view(for: tabID), let window = view.window, let root = window.contentView,
+      let region = PaneSnapshot.topBand(
+        of: root.convert(inWindow(view), from: nil), in: root, top: PaneTitleBarMetrics.height,
+        scale: window.backingScaleFactor)
+    else { return nil }
+    return PaneSnapshot.capture(region, of: root, surfaces: [])
   }
 
   /// `view`'s bounds in its window's base coordinates, snapped to its device pixels.

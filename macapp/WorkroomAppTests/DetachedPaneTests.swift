@@ -490,8 +490,8 @@ final class DetachedPaneTests: XCTestCase {
     handOff.detached[b.id] = NSRect(x: 0, y: 0, width: 400, height: 300)
     let destination = makeSessions()
     var reopened: [TerminalTab.ID] = []
-    destination.adopt(handOff) {
-      reopened.append($0)
+    destination.adopt(handOff) { id, _ in
+      reopened.append(id)
       return true
     }
 
