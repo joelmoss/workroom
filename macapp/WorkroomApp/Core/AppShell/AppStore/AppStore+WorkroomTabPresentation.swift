@@ -48,23 +48,22 @@ extension AppStore {
       ? nil
       : runCommand.isRunCommandRunning(for: id)
         ? .running : runCommand.runFailed(for: id) ? .failed : nil
+    let summary = terminals.statusSummary(forTargetID: id)
+    // `failed` counts a stopped error and a working command's error alike; only the first is a
+    // program error, and with none it is the working command's.
+    let hasProgramError = summary.failed && terminals.hasProgramError(forTargetID: id)
     // One line at a time: waiting, then a stopped error, then a working command.
     let busy: PaneIndicator =
-      terminals.needsAttention(forTargetID: id)
+      summary.waiting > 0
       ? .blocked
-      : terminals.hasProgramError(forTargetID: id)
-        ? .error
-        : terminals.isRunning(forTargetID: id)
-          ? .running(failed: terminals.isProgressFailed(forTargetID: id)) : .none
+      : hasProgramError
+        ? .error : summary.running ? .running(failed: summary.failed) : .none
     return WorkroomTabMarks(
       vcs: vcsStatus.workroomStatuses[sid] ?? .unresolved,
       unavailability: target.terminalUnavailability,
       hasUnread: notifications.count(target: id) > 0,
-      waitingCount: terminals.blockedTerminalCount(forTargetID: id),
-      waitingStale: terminals.isWaitingStale(forTargetID: id),
-      reportedError: terminals.isProgressFailed(forTargetID: id)
-        || terminals.hasProgramError(forTargetID: id),
-      busy: busy, run: run)
+      waitingCount: summary.waiting, waitingStale: summary.allWaitingStale,
+      reportedError: summary.failed, busy: busy, run: run)
   }
 }
 
