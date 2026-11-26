@@ -16,7 +16,7 @@ Workroom manages development workrooms (isolated project copies) using Git workt
   #682 retired it; Windows builds of the CLI have ended, and installed copies keep working but get no
   updates.
 
-The app's structured **VCS engine** reads git through SwiftGitX (libgit2), with the same binary's
+The app's structured **VCS engine** reads git through libgit2's C API, with the same binary's
 daemon (and the `vcs/` workspace's git read crates) serving daemon-routed reads and writes; see
 [app VCS and sessions](macapp/vcs-and-sessions.md).
 

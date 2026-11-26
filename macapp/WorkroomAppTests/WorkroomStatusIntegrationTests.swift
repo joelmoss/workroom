@@ -153,7 +153,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertNil(s.branchForCI)  // (detached) → no branch for CI
   }
 
-  // MARK: GitProvider.workingStatus (SwiftGitX / libgit2 — the structured status read)
+  // MARK: GitProvider.workingStatus (libgit2 — the structured status read)
 
   func testGitProviderWorkingStatus() throws {
     let dir = try gitRepoWithUpstream()
@@ -185,7 +185,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   }
 
   /// The working counts must match `git diff --shortstat` on the one case where a hand-rolled sum over
-  /// SwiftGitX's hunk lines does NOT: a change to a file's trailing newline. libgit2 emits an EOFNL
+  /// hunk lines does NOT: a change to a file's trailing newline. libgit2 emits an EOFNL
   /// marker line (`\ No newline at end of file`) alongside the real deletion, and the old code counted
   /// it as a second deletion. git counts one, and so does `GitDiffStats` (via `git_diff_get_stats`).
   func testGitProviderWorkingStatusIgnoresEOFNLMarkers() throws {
@@ -236,7 +236,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
 
   /// The same EOFNL rule on the changeset (commit) path, which reads its counts through
   /// `GitCommitDiff` — the same `git_diff_get_stats` call, on the commit's rename-detected diff. No
-  /// `+N −M` in the app is summed off SwiftGitX hunk lines any more; this pins that down against
+  /// `+N −M` in the app is summed off hunk lines; this pins that down against
   /// `git show --numstat`.
   func testGitProviderChangesetIgnoresEOFNLMarkers() async throws {
     let dir = try gitRepoWithUpstream()

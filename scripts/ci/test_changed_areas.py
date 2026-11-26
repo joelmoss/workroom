@@ -159,6 +159,7 @@ class ChangedAreasTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"rust", "app", "scripts"})
         for path in ("macapp/Packages/TreeSitter/VENDOR.md",
+                     "macapp/Packages/LibGit2/VENDOR.md",
                      "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-css/VENDOR.md"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"rust", "packages", "app", "scripts"})

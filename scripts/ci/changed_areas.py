@@ -64,6 +64,8 @@ RULES = (
       "macapp/Resources/ghostty/shell-integration/*/LICENSE"),
      {"rust", "app", "scripts"}),
     (("macapp/Packages/TreeSitter/VENDOR.md", "macapp/Packages/TreeSitter/lib/LICENSE",
+      "macapp/Packages/LibGit2/VENDOR.md", "macapp/Packages/LibGit2/libgit2/COPYING",
+      "macapp/Packages/LibGit2/libgit2/deps/llhttp/LICENSE-MIT",
       "macapp/Packages/SyntaxHighlighting/Grammars/*/VENDOR.md",
       "macapp/Packages/SyntaxHighlighting/Grammars/*/LICENSE"),
      {"rust", "packages", "app", "scripts"}),

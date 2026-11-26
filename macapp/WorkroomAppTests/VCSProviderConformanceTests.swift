@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Workroom
 
-/// `GitProvider` (SwiftGitX) against real git repos: changeset file lists and line counts, working-copy
+/// `GitProvider` (libgit2) against real git repos: changeset file lists and line counts, working-copy
 /// diffs, file content, history, current ref, renames and push state.
 ///
 /// Requires real `git`. Throwaway repos under `NSTemporaryDirectory()`, removed in `tearDown` — never
@@ -42,9 +42,9 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertEqual(git.deletions, 0, "git changeset deletions")
   }
 
-  /// The working-copy per-file diff, read structurally (SwiftGitX/libgit2), must reflect an
+  /// The working-copy per-file diff, read structurally (libgit2), must reflect an
   /// uncommitted on-disk edit — and must render an untracked file as an all-added diff from
-  /// `/dev/null` (the SwiftGitX `patch(from:)` path that replaced the old `git diff --no-index`
+  /// `/dev/null` (the blob-to-file patch that replaced the old `git diff --no-index`
   /// shell-out).
   func testWorkingFileDiff() async throws {
     try requireTool("git")
@@ -212,7 +212,7 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertEqual(GitProvider.maxContentBytes, SyntaxLanguage.byteCap)
   }
 
-  /// `GitProvider.log` (SwiftGitX) against a real repo: newest-first ordering and the `reachedEnd`
+  /// `GitProvider.log` (libgit2) against a real repo: newest-first ordering and the `reachedEnd`
   /// boundary (it takes one extra commit to learn whether more history exists). Previously only a
   /// stub/fake exercised `log`; the real libgit2 walk had no coverage.
   func testGitLogOrderingAndPagination() async throws {
@@ -273,8 +273,8 @@ final class VCSProviderConformanceTests: XCTestCase {
   }
 
   /// The **commit** (History) counterpart of the working-copy test above, and the reason
-  /// `GitCommitDiff` exists: a SwiftGitX `repo.diff(commit:)` is a plain tree-to-tree diff that no
-  /// `git_diff_find_similar` ever touched, so git used to report delete + add here. git's own CLI
+  /// `GitCommitDiff` exists: a plain tree-to-tree diff that no `git_diff_find_similar` touches
+  /// reports delete + add here, as the app's read once did. git's own CLI
   /// defaults to `diff.renames=true`, so `git show` on this commit has always shown one rename row;
   /// this asserts we agree with it.
   ///

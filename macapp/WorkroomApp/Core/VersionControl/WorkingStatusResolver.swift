@@ -83,8 +83,8 @@ struct WorkingStatusResolver: Sendable {
   /// read as busy (`.busy`) and a working tree that moved under the read (`.staleWorkingCopy`) — both
   /// self-describing in the sidebar tooltip and the Changes panel.
   /// Everything else stays `.notRepository`, which is also the honest answer for the common git case:
-  /// `GitProvider` can't bind SwiftGitX's typed error (a Swift 6 SIL crash — see its doc), so a
-  /// missing/broken repo arrives as `.io` and must keep reading as "not a repository".
+  /// `GitProvider` reports every libgit2 failure as `.io`, so a missing/broken repo arrives as `.io`
+  /// and must keep reading as "not a repository".
   static func failure(for error: VCSError) -> VCSStatusFailure {
     switch error {
     case .lockContention: return .busy

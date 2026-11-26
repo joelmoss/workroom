@@ -369,24 +369,25 @@
     {
       "id": "libgit2",
       "name": "libgit2",
-      "version": "1.9.2",
+      "version": "v1.9.7",
       "license": "GPL-2.0-only WITH LicenseRef-libgit2-linking-exception AND LGPL-2.1-or-later",
-      "source": "https://github.com/ibrahimcetin/libgit2/tree/1.9.2",
+      "source": "https://github.com/libgit2/libgit2/tree/v1.9.7",
       "ships": "app",
-      "swiftpm": {"identity": "libgit2", "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f"},
-      "note": "COPYING is libgit2's whole licence file: GPL-2.0 with the linking exception, the terms of the code it bundles, and the LGPL-2.1 text at its end. Its bundled xdiff (LibXDiff, Copyright (C) 2003 Davide Libenzi) is LGPL-2.1-or-later and statically linked into the app. Its source, as built, is deps/xdiff of libgit2 1.9.2, commit 52287b0914f300f916b58fec80e13d8dd8f6824f: https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f/deps/xdiff. To relink the app with a modified xdiff, take Workroom's own source for the release at https://github.com/joelmoss/workroom at that release's tag (vX.Y.Z; a Nightly names its commit in its release notes), point the libgit2 package in macapp/Packages/WorkroomGit/Package.swift at a libgit2 checkout holding the modified xdiff, and build the app with `make app-build` (or `make app-release` for a signed build), as CONTRIBUTING.md describes.",
+      "note": "COPYING is libgit2's whole licence file: GPL-2.0 with the linking exception, the terms of the code it bundles, and the LGPL-2.1 text at its end. Its bundled xdiff (LibXDiff, Copyright (C) 2003 Davide Libenzi) is LGPL-2.1-or-later and statically linked into the app. Its source, as built, is deps/xdiff of libgit2 v1.9.7, commit 49e408b3208bc3093757a1c2db938d3590f3f412: https://github.com/libgit2/libgit2/tree/49e408b3208bc3093757a1c2db938d3590f3f412/deps/xdiff, vendored unmodified in Workroom's source at macapp/Packages/LibGit2/libgit2/deps/xdiff. To relink the app with a modified xdiff, take Workroom's own source for the release at https://github.com/joelmoss/workroom at that release's tag (vX.Y.Z; a Nightly names its commit in its release notes), change the files in that directory, and build the app with `make app-build` (or `make app-release` for a signed build), as CONTRIBUTING.md describes.",
       "review": "libgit2 is GPL-2.0 with its linking exception, and its bundled xdiff (deps/xdiff, statically linked) is LGPL-2.1-or-later. Owner, 2026-11-21: ship the LGPL-2.1 text and name xdiff's source.",
-      "files": ["third-party/licenses/libgit2/COPYING"]
+      "files": ["macapp/Packages/LibGit2/libgit2/COPYING"],
+      "pin": {"file": "macapp/Packages/LibGit2/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v1.9.7"}
     },
     {
-      "id": "swiftgitx",
-      "name": "SwiftGitX",
-      "version": "0.4.0",
+      "id": "llhttp",
+      "name": "llhttp (in libgit2)",
+      "version": "9.2.1",
       "license": "MIT",
-      "source": "https://github.com/ibrahimcetin/SwiftGitX/tree/0.4.0",
+      "source": "https://github.com/nodejs/llhttp/tree/v9.2.1",
       "ships": "app",
-      "swiftpm": {"identity": "swiftgitx", "revision": "fcfb71e3dcbbaa70d120b98b7477ce173074aec3"},
-      "files": ["third-party/licenses/swiftgitx/LICENSE"]
+      "note": "libgit2 bundles it as deps/llhttp, for its http:// transport, which is compiled in although the app never uses it; libgit2's COPYING does not cover it.",
+      "files": ["macapp/Packages/LibGit2/libgit2/deps/llhttp/LICENSE-MIT"],
+      "pin": {"file": "macapp/Packages/LibGit2/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v1.9.7"}
     },
     {
       "id": "sparkle",

@@ -8,7 +8,7 @@ SwiftUI client over **one shared engine**: the Rust `workroom` binary (ADR 0078)
 drives over a stable `--json` contract (no duplicated lifecycle logic). The same binary is the daemon
 (`workroom serve`) that holds terminal sessions on this Mac and on every host, and it is usable
 standalone as the CLI. VCS **reading** (history, diffs, working-copy status) is done natively in the
-app through a structured core — git via SwiftGitX (libgit2) — not by scraping CLI output.
+app through a structured core — git via libgit2's C API — not by scraping CLI output.
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -75,7 +75,7 @@ SwiftUI app. The core loop:
    it and the app subscribes to it per host ([docs/program-status.md](../program-status.md),
    [ADR 0050](../adr/0050-program-status-service.md)).
 4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
-   goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and the daemon for
+   goes through a `VCSProviding` layer: libgit2 for local Git, and the daemon for
    daemon-routed projects — both mapped to app-native models, no CLI text parsing.
 5. **Mutations** (create/delete workroom, add/remove project) call the bundled `workroom` CLI via
    `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
@@ -89,8 +89,8 @@ SwiftUI app. The core loop:
 7. **Preferences** live in `DefaultsKeys` (via the `Defaults` library); **auto-update** is Sparkle
    (`Updater`); **themes** load from bundled CSS theme families.
 
-Key dependencies: **libghostty** (terminal), **SwiftGitX**
-(VCS reading), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
+Key dependencies: **libghostty** (terminal), **libgit2**
+(VCS reading, vendored), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
 the **tree-sitter** C runtime + grammars (syntax highlighting). The app is **non-sandboxed** with the
 **hardened runtime** enabled (it spawns `git`/`workroom` and opens arbitrary directories), and
 registers a global `⌘§` hotkey via Carbon. The app bundles one binary (ADR 0078): the Rust

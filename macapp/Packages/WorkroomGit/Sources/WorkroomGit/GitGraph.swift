@@ -1,15 +1,13 @@
 import Foundation
 import libgit2
 
-/// Reachability reads against a git repo's `origin` refs, straight on libgit2's C API (one of only
-/// three readers that do — `GitCommitDiff` does rename-detected commit diffs and `GitDiffStats` the
-/// working-tree line counts; all three open their handles through `LibGit2`).
+/// Reachability reads against a git repo's `origin` refs, straight on libgit2's C API (beside
+/// `GitRepository`, `GitCommitDiff` for rename-detected commit diffs and `GitDiffStats` for the
+/// working-tree line counts; all of them open their handles through `LibGit2`).
 ///
-/// Why not SwiftGitX (which the rest of `GitProvider` uses)? It cannot express a commit RANGE: its
-/// `CommitSequence` only calls `git_revwalk_push` and never `git_revwalk_hide`, it surfaces no
-/// merge-base/graph helper, and it keeps its own `git_repository` pointer `internal` so we can't borrow
-/// one. "Which of these commits aren't on origin yet" is exactly `HEAD --not <origin tips>`, so we open
-/// our own handle and ask libgit2 directly. Every handle is freed with `defer`; no pointer escapes.
+/// "Which of these commits aren't on origin yet" is a commit RANGE, exactly `HEAD --not <origin
+/// tips>`: `git_revwalk_push` plus `git_revwalk_hide`. Every handle is freed with `defer`; no pointer
+/// escapes.
 ///
 /// **Semantics.** `origin` only, deliberately: a commit sitting on some other remote (a backup, a fork)
 /// is not on the project's shared repo, and that's what the badge claims. `nil` from either entry point

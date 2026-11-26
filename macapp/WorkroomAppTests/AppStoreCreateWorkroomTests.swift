@@ -889,7 +889,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// was the CPU storm behind the reported spike. Drives the real ordering: flag set before reload,
   /// then selection (didSet probe), then a burst — all must be suppressed for the creating worktree.
   // Probing is observed via the OUTCOME, not a mock runner: git status is now read through
-  // GitProvider/SwiftGitX (in-process, no command runner to record). `makeRealProject` makes a plain
+  // GitProvider/libgit2 (in-process, no command runner to record). `makeRealProject` makes a plain
   // directory (not a git repo), so a probe RESOLVES a status with `.notRepository`; a suppressed
   // worktree records no local status at all.
   func testNoProbeAgainstWorktreeWhileCreating() async {

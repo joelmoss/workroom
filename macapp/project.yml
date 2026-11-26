@@ -51,9 +51,9 @@ packages:
     path: Packages/SyntaxHighlighting
   TerminalModel:
     path: Packages/TerminalModel
-  # The local git engine (SwiftGitX and raw libgit2, ADR 0002). The SwiftGitX and libgit2 pins live
-  # in its Package.swift. Local repositories are read here; the bundled workroomd serves the same
-  # reads over its VCS service. Both feed one VCSProviding model layer.
+  # The local git engine (libgit2's C API, ADR 0002), on the vendored libgit2 in Packages/LibGit2.
+  # Local repositories are read here; the bundled workroomd serves the same reads over its VCS
+  # service. Both feed one VCSProviding model layer.
   WorkroomGit:
     path: Packages/WorkroomGit
   # The Dev Containers spec a container workroom is made from (#308): devcontainer.json, its

@@ -4,14 +4,16 @@ Paths beginning `Core/`, `Packages/`, `Resources/` and `Scripts/` are relative t
 Read the [session/VCS working rules](../../macapp/AGENTS.md#session-and-vcs-changes) when changing
 or reviewing these layers.
 
-## VCS core (SwiftGitX git + the daemon)
+## VCS core (libgit2 + the daemon)
 
 Workroom is git-only. VCS data reaches the app two ways, behind
 one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the first brick):
 
-- **Local reads → SwiftGitX (libgit2), pure Swift.** `GitProvider` wraps SwiftGitX and implements
-  `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
-  dropped: gix bought no real unification and libgit2 is the more complete git engine.)
+- **Local reads → libgit2's C API, from Swift.** `GitProvider` implements `LocalVCSProviding` over
+  `GitRepository`, which holds its libgit2 reads and returns Swift values. libgit2 is the release
+  `macapp/Scripts/vendor-libgit2.sh` vendors into `macapp/Packages/LibGit2` (`VENDOR.md` there),
+  built with no network transport. No Rust bridge or xcframework. (An all-Rust core with gix was
+  tried and dropped: gix bought no real unification and libgit2 is the more complete git engine.)
 - **Daemon-routed reads and writes → the daemon (`workroom serve`).** The `vcs/` Rust workspace
   holds the `workroom` binary's daemon (once named `workroomd`) (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus
   services) and its git read crates (`wr-vcs-git`,
@@ -19,44 +21,39 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
   `DaemonClient`.
 
 The local git engine is the `WorkroomGit` package (`macapp/Packages/WorkroomGit`): `GitProvider`,
-the four libgit2 files below, `UnifiedDiff` and its line algorithms, `CLIVCSWriter` and
-`RepositoryWriteGate`. Its tests run under `swift test` (`make app-package-test`).
+the libgit2 readers below, `UnifiedDiff` and its line algorithms, `CLIVCSWriter` and
+`RepositoryWriteGate`. Its tests run under `swift test` (`make app-package-test`), as do the
+`LibGit2` package's checks of the vendored build.
 
-**Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
-in `WorkroomGit`'s `Package.swift`, URL + version identical to SwiftGitX's own dependency so SwiftPM
-sees one package identity). `LibGit2.swift` owns the single `git_libgit2_init` and hands out raw
-`git_repository` handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't
-rely on); these four files are the only ones touching raw libgit2 (ADR 0002):
+Only `WorkroomGit` imports `libgit2` (ADR 0002). `LibGit2.swift` owns the single `git_libgit2_init`,
+hands out raw `git_repository` handles and turns a failed call into a `LibGit2.Failure` carrying
+libgit2's reason. `GitRepository.swift` holds `GitProvider`'s reads (history, HEAD and branches,
+tags, status, blobs, single-file patches), and three reads have readers of their own:
 
-- **Push state — `GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
-  `CommitSequence` only calls `git_revwalk_push`, never `git_revwalk_hide`, it exposes no
-  merge-base/graph helper, and its repository pointer is `internal` — so "which commits aren't on
-  `origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. Push state is
-  **origin-scoped** and any unreadable ref degrades the WHOLE page to "unknown" (no badge) rather than
-  a partial answer.
+- **Push state — `GitGraph.swift`.** "Which commits aren't on `origin` yet"
+  (`HEAD --not refs/remotes/origin/*`) is a commit *range*: `git_revwalk_push` plus
+  `git_revwalk_hide`. Push state is **origin-scoped** and any unreadable ref degrades the WHOLE page
+  to "unknown" (no badge) rather than a partial answer.
 - **Commit diffs — `GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
-  live `git_diff`, and a SwiftGitX `Diff` materializes its deltas/patches in an `internal` init and
-  frees the `git_diff` before returning, so there's nothing left to detect on. Without it a committed
-  rename read as delete + add while `git show` showed one rename row (git defaults to
-  `diff.renames=true`), and a root commit's diff came back empty (SwiftGitX diffs it against itself).
+  live `git_diff`. Without it a committed rename read as delete + add while `git show` showed one
+  rename row (git defaults to `diff.renames=true`), and a root commit's diff came back empty.
   Detection options are NULL, which is what makes libgit2 read the repo's own `diff.renames` /
   `diff.renamelimit` — naming a flag explicitly suppresses that config read, so a repo set to
   `diff.renames=false` or `=copies` would silently disagree with its own CLI. Typechanges are included
   (`GIT_DIFF_INCLUDE_TYPECHANGE`); without it libgit2 splits a file↔symlink change into delete + add
   on the SAME path, giving the file list two rows with one `id`. `GitProvider.changeset`/`.fileDiff`
   both read through it, so the History file list and the patch text can't disagree.
-- **Working-tree ± line counts — `GitDiffStats.swift`**, via `git_diff_get_stats`. SwiftGitX
-  surfaces no diffstat, and its `Diff` is **eager**: `Diff.init` builds a `Patch` per delta and
-  materializes every hunk line into a Swift `String` before the caller sees it. Summing those for the
-  badge cost one `String` per changed line of the whole worktree on **every** status refresh, so the
-  counts moved to libgit2, which counts in C and allocates nothing Swift-side. The diff itself is
-  irreducible — that's what `git diff --shortstat` costs too. With `changeset` now counting through
-  `GitCommitDiff`, **no** `+N −M` in the app is summed off SwiftGitX hunk lines any more, which also
-  ends a real bug: that sum counted the EOFNL markers (`\ No newline at end of file`) as lines, so
-  changing only a file's trailing newline reported two deletions where git reports `1 insertion(+),
-  1 deletion(-)`. libgit2 skips them, as `git diff --shortstat`/`--numstat` do. It runs
+- **Working-tree ± line counts — `GitDiffStats.swift`**, via `git_diff_get_stats`, which counts in C
+  and allocates nothing Swift-side, where summing hunk lines would cost one `String` per changed line
+  of the whole worktree on **every** status refresh. The diff itself is irreducible — that's what
+  `git diff --shortstat` costs too. **No** `+N −M` in the app is summed off hunk lines (`changeset`
+  counts through `GitCommitDiff`), which also keeps a past bug out: that sum counted the EOFNL
+  markers (`\ No newline at end of file`) as lines, so changing only a file's trailing newline
+  reported two deletions where git reports `1 insertion(+), 1 deletion(-)`. libgit2 skips them, as
+  `git diff --shortstat`/`--numstat` do. It runs
   `git_diff_find_similar` too, for the same reason `GitCommitDiff` does: the file list beside these
-  counts already pairs renames (libgit2 status' `.renamesIndex`/`.renamesWorkingTree`), so without it
+  counts already pairs renames (status' `GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX` and
+  `_INDEX_TO_WORKDIR`), so without it
   a staged rename rendered as one "renamed" row badged `+N −N` while `git diff HEAD --shortstat`
   reported `0 insertions(+), 0 deletions(-)`.
 
@@ -64,8 +61,8 @@ rely on); these four files are the only ones touching raw libgit2 (ADR 0002):
 `VCSWriting` protocols and the validated `RepositoryLocation` / `RepositoryContext` they bind to;
 only `RepositoryRouter` (`Core/VersionControl/RepositoryRouter.swift`) builds a context, through an
 SPI initializer. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
-native engines implement `LocalVCSProviding` behind its local adapter, and `GitProvider` wraps
-SwiftGitX. `WorkingStatusResolver` and `BranchResolver` read through this layer — no CLI text
+native engines implement `LocalVCSProviding` behind its local adapter, and `GitProvider` is the git
+one. `WorkingStatusResolver` and `BranchResolver` read through this layer — no CLI text
 parsing. Reads never take a repository lock and are not gated. The exceptions run `git` themselves
 and live in one place, `GitRepositoryProbe`: a checkout's origin and remotes, whether origin has a
 branch, and the branch and commit a local CI probe keys off. `gh` runs in `GitHubStatusResolver`.

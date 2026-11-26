@@ -174,7 +174,7 @@ jobs:
             hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
             }}
 
-      # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
+      # Compiling the dependency graph — libgit2 (~430 tasks), the tree-sitter grammars,
       # Sentry, Sparkle, swift-syntax — is ~60% of the build's work and none of it changes between
       # runs. Caching the build dir lets xcodebuild's incremental check reuse those objects, and with
       # the sources' mtimes restored to their landing times (the step below) our own objects too:

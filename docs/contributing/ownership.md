@@ -36,7 +36,7 @@ Each package builds and tests alone with `swift test --package-path macapp/Packa
 | --- | --- | --- |
 | `macapp/Packages/WorkroomDomain/` | Shared models, such as `HostDescriptor`, `HostKind`, `PaneLayout` | `joelmoss` |
 | `macapp/Packages/WorkroomVCS/` | VCS protocols and models: `LocalVCSProviding`, `WorkroomStatus` | `joelmoss` |
-| `macapp/Packages/WorkroomGit/` | The local git engine: `GitProvider`, over SwiftGitX | `joelmoss` |
+| `macapp/Packages/WorkroomGit/` | The local git engine: `GitProvider`, over libgit2's C API | `joelmoss` |
 | `macapp/Packages/WorkroomWire/` | The session wire format | `joelmoss` |
 | `macapp/Packages/WorkroomSystem/` | Processes, shells, sockets and timeouts | `joelmoss` |
 | `macapp/Packages/DaemonConnection/` | The client for the daemon (`workroom serve`) | `joelmoss` |

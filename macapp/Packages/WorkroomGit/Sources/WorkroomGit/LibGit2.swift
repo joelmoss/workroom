@@ -2,16 +2,13 @@ import Foundation
 import libgit2
 import os
 
-/// The app's owner of libgit2's global state and of raw `git_repository` handles — shared by the three
-/// readers that go straight to the C API (`GitGraph` for reachability, `GitCommitDiff` for
-/// rename-detected commit diffs, `GitDiffStats` for working-tree line counts). Those three plus this
-/// file are the ONLY four in the app touching raw libgit2; everything else on the git side goes
-/// through SwiftGitX.
+/// The app's owner of libgit2's global state and of raw `git_repository` handles, shared by every
+/// reader in this package that calls the C API: `GitRepository` (the reads `GitProvider` maps into
+/// the app's models), `GitGraph` (reachability), `GitCommitDiff` (rename-detected commit diffs) and
+/// `GitDiffStats` (working-tree line counts). Only this package imports `libgit2` (ADR 0002).
 ///
-/// It exists so there is exactly ONE `git_libgit2_init` owner in the app: SwiftGitX initializes the
-/// library inside `Repository.open` (`SwiftGitXRuntime.initialize()`), which a direct C caller can't
-/// rely on having happened, so the raw readers need their own refcounted `+1` — but they should not
-/// each keep one.
+/// There is exactly ONE `git_libgit2_init` owner, here, so no reader has to know whether another one
+/// ran first.
 ///
 /// It also owns the layer's **diagnostics** (`lastError`/`reportFailure`). A raw reader can only
 /// answer `nil`, and `GitProvider` flattens every `nil` into one `VCSError.io` string — so without
@@ -19,8 +16,8 @@ import os
 /// indistinguishable in a bug report. See `reportFailure`.
 enum LibGit2 {
   /// The refcounted `+1`. Deliberately never paired with `git_libgit2_shutdown()`: the count must stay
-  /// above zero for the app's lifetime, and tearing it down while SwiftGitX holds live repositories
-  /// would pull the rug out from under them.
+  /// above zero for the app's lifetime, and tearing it down while another thread's read holds a live
+  /// repository would pull the rug out from under it.
   private static let initialized: Bool = {
     git_libgit2_init() >= 0
   }()
@@ -44,6 +41,18 @@ enum LibGit2 {
     return body(repo)
   }
 
+  /// `withRepository` for a reader that throws: a failed init or open is a `Failure` carrying
+  /// libgit2's reason, rather than `nil`. No pointer may escape `body`.
+  static func withOpenedRepository<T>(_ root: URL, _ body: (OpaquePointer) throws -> T) throws -> T
+  {
+    guard initialized else { throw Failure(operation: "git_libgit2_init", code: -1, reason: nil) }
+    var repo: OpaquePointer?
+    try check(git_repository_open(&repo, root.path), "git_repository_open(\(root.path))")
+    guard let repo else { throw Failure(operation: "git_repository_open", code: -1, reason: nil) }
+    defer { git_repository_free(repo) }
+    return try body(repo)
+  }
+
   static func oid(fromHex hex: String) -> git_oid? {
     var oid = git_oid()
     let code = git_oid_fromstr(&oid, hex)
@@ -60,6 +69,23 @@ enum LibGit2 {
   }
 
   // MARK: - Diagnostics
+
+  /// A libgit2 call that returned an error, with libgit2's own reason for it. Its description is what
+  /// a `VCSError.io` built from it carries.
+  struct Failure: Error, CustomStringConvertible {
+    let operation: String
+    let code: Int32
+    let reason: String?
+
+    var description: String { "\(operation) failed (\(code)): \(reason ?? "no libgit2 message")" }
+  }
+
+  /// Throw a `Failure` when `code` is a libgit2 error. Call it on the return code straight away:
+  /// `lastError()` is read here, before any other libgit2 call can overwrite it.
+  static func check(_ code: Int32, _ operation: @autoclosure () -> String) throws {
+    guard code < 0 else { return }
+    throw Failure(operation: operation(), code: code, reason: lastError())
+  }
 
   /// libgit2's own message for the call that JUST failed, or `nil` when it left none.
   ///
