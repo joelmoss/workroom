@@ -115,38 +115,41 @@ final class OpenSectionUITests: XCTestCase {
       .map(\.identifier)
   }
 
-  /// A workroom row dragged below the last row lifts out of the list and, let go there, lands
-  /// last: the list and the title bar both show the new order (#819). The ghost and the gap are
-  /// what it looks like on the way, not asserted here (`OpenRowReflowTests`).
-  func testDraggingAWorkroomRowBelowTheOthersMovesItLast() {
+  /// The title-bar tab of the workroom whose Open row is `rowID`.
+  private func chip(_ app: XCUIApplication, ofRow rowID: String) -> XCUIElement {
+    element(
+      app, "workroom.tab." + rowID.replacingOccurrences(of: "sidebar.open.workroom.", with: ""))
+  }
+
+  /// The first workroom row, dragged down to the lower edge of the second's row (between rows,
+  /// never onto it), lifts out of the list and, let go there, lands second: the list and the title
+  /// bar both show the new order (#819). The ghost and the gap are what it looks like on the way,
+  /// not asserted here (`OpenRowReflowTests`).
+  func testDraggingAWorkroomRowPastTheNextReordersThem() {
     let app = launchedApp()
-    let first = element(app, "sidebar.open.workroom.\(standalone[0])")
-    XCTAssertTrue(first.waitForExistence(timeout: 15), "the Open view's rows")
-    XCTAssertTrue(element(app, "sidebar.open.workroom.\(group)").waitForExistence(timeout: 5))
     XCTAssertTrue(
-      poll { self.workroomRowOrder(app).count == 3 }, "three rows: two terminals and a group")
+      element(app, "sidebar.open.workroom.\(group)").waitForExistence(timeout: 15),
+      "the Open view's rows")
+    XCTAssertTrue(
+      poll { self.workroomRowOrder(app).count >= 3 }, "the fixture's terminals, group and more")
     let before = workroomRowOrder(app)
-    XCTAssertEqual(before.first, first.identifier, "the first standalone terminal leads")
+    let first = element(app, before[0])
+    let second = element(app, before[1])
 
-    // Below every row, in the list's empty space: between rows, never onto one.
-    let last = element(app, before[before.count - 1])
-    let below = last.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5))
-      .withOffset(CGVector(dx: 0, dy: 3 * last.frame.height))
     first.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
-      forDuration: 0.6, thenDragTo: below, withVelocity: .slow, thenHoldForDuration: 0.4)
+      forDuration: 0.6,
+      thenDragTo: second.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.9)),
+      withVelocity: .slow, thenHoldForDuration: 0.4)
 
-    let expected = Array(before.dropFirst()) + [first.identifier]
+    var expected = before
+    expected.swapAt(0, 1)
     XCTAssertTrue(
       poll(timeout: 8) { self.workroomRowOrder(app) == expected },
-      "it lands last: \(workroomRowOrder(app))")
-    let chip = element(app, "workroom.tab.\(standalone[0])")
-    let others = before.dropFirst().map {
-      element(
-        app, "workroom.tab." + $0.replacingOccurrences(of: "sidebar.open.workroom.", with: ""))
-    }
+      "it lands second: \(workroomRowOrder(app))")
+    let moved = chip(app, ofRow: before[0])
+    let passed = chip(app, ofRow: before[1])
     XCTAssertTrue(
-      poll { others.allSatisfy { $0.frame.minX < chip.frame.minX } },
-      "and its title-bar tab is last too")
+      poll { passed.frame.minX < moved.frame.minX }, "and its title-bar tab follows the other's")
   }
 
   /// The switcher's "+" menu makes a terminal or a group, in the Open view; opening a workroom is

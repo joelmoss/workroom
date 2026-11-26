@@ -80,9 +80,9 @@ struct OpenRowReflow: Equatable {
   }
 
   /// The pointer is at `y` in the list (nil: outside it). Over the gap nothing moves; over another
-  /// row (or, lifting a workroom, its workroom's rows) the gap goes before it while the pointer is
-  /// in its upper half and after it in its lower half, so a row the gap passes slides under a
-  /// pointer that is then in the gap: no row flickers back. `holds`: the pointer is onto a row
+  /// row the gap goes before it while the pointer is in its upper half and after it in its lower
+  /// half (lifting a workroom, after another workroom's tabs too), so a row the gap passes slides
+  /// under a pointer that is then in the gap: no row flickers back. `holds`: the pointer is onto a row
   /// that takes the drop (or refuses it), which shows that instead of moving the gap.
   mutating func pointer(at y: CGFloat?, pitch: CGFloat, holds: Bool = false) {
     guard let y, pitch > 0 else {
@@ -106,7 +106,10 @@ struct OpenRowReflow: Equatable {
         y >= CGFloat($0.top) * pitch && y < CGFloat($0.top + $0.count) * pitch
       }), unit.lead != dragged, let index = others.firstIndex(of: unit.lead)
     else { return }
-    let fraction = (y - CGFloat(unit.top) * pitch) / (CGFloat(unit.count) * pitch)
+    // Judged on the unit's own row, a workroom's tabs under it being past it. Judged on the whole
+    // block, its row's upper half would push the gap above it before the pointer reached the
+    // row's middle, where a drop is onto it, and the row would slide away from under the pointer.
+    let fraction = (y - CGFloat(unit.top) * pitch) / pitch
     landing = fraction < 0.5 ? index : index + 1
   }
 
