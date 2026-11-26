@@ -425,7 +425,7 @@ struct PaneLeafView: View {
           // Not while a transition is in flight over the slot: it fades in once a pop out has
           // lifted the pane out, and out fast as a pull back starts, so the pane lands on a calm
           // slot (`PaneWindowMotion.placeholderFade`).
-          let showsPlaceholder = poppedOut && !panes.inFlightTabIDs.contains(tabID)
+          let showsPlaceholder = !isDetached && panes.showsPlaceholder(tabID)
           ZStack {
             if showsPlaceholder {
               PoppedOutPlaceholder(

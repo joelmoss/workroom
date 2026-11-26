@@ -757,22 +757,31 @@ final class TerminalPanes {
       guard newValue != detachedIDs else { return }
       paneWillChange.send()
       detachedIDs = newValue
+      // A flight is over its slot, so a pane no longer popped out (docked, closed, handed off, or
+      // its window never came back) has none. Every way out of this set passes here.
+      if !inFlightTabIDs.isSubset(of: newValue) { inFlightTabIDs.formIntersection(newValue) }
     }
   }
   private var detachedIDs: Set<TerminalTab.ID> = []
   /// Popped-out panes whose transition is in flight over their slot, which then shows no
-  /// placeholder (`PaneLeafView`): the first part of a pop out, while the pane lifts out of its
+  /// placeholder (`showsPlaceholder`): the first part of a pop out, while the pane lifts out of its
   /// place, and the whole of a pull back, so the pane lands on a calm slot. Set by the pane's host
-  /// as `DetachedPaneWindows` runs the transition; a tab leaves it as it docks or goes.
+  /// as `DetachedPaneWindows` runs the transition; always a subset of `detachedTabIDs`.
   private(set) var inFlightTabIDs: Set<TerminalTab.ID> = []
 
-  /// Mark `tabID`'s transition as in flight over its slot, or landed.
+  /// Mark `tabID`'s transition as in flight over its slot, or landed. Only a popped-out pane flies.
   func setInFlight(_ tabID: TerminalTab.ID, _ flying: Bool) {
     if flying, detachedIDs.contains(tabID) {
       inFlightTabIDs.insert(tabID)
     } else if !flying, inFlightTabIDs.contains(tabID) {
       inFlightTabIDs.remove(tabID)
     }
+  }
+
+  /// Whether `tabID`'s slot in the pane tree shows its popped-out placeholder: popped out, with no
+  /// transition in flight over it.
+  func showsPlaceholder(_ tabID: TerminalTab.ID) -> Bool {
+    detachedIDs.contains(tabID) && !inFlightTabIDs.contains(tabID)
   }
   /// The pane rects the renderer last laid out, per target — the only measurement a CONTENT pane
   /// (diff / file / changeset) has, since it owns no `GhosttySurfaceView` whose bounds could be
@@ -2260,7 +2269,6 @@ final class TerminalPanes {
   /// profile and branch reads, and a finish it watched. Every way a tab leaves this window (close,
   /// reap, hand-off) does.
   private func forgetPerTabWork(_ tabID: TerminalTab.ID) {
-    setInFlight(tabID, false)
     activityPulses[tabID] = nil
     liveState.forget(tabID)
     programStatusBinding.forget(tabID)
@@ -2319,7 +2327,6 @@ final class TerminalPanes {
   @discardableResult
   private func undetach(_ tabID: TerminalTab.ID) -> Bool {
     guard detachedTabIDs.remove(tabID) != nil else { return false }
-    setInFlight(tabID, false)
     onEvent?(.paneDocked(tabID))
     return true
   }
