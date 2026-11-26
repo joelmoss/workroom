@@ -22,13 +22,13 @@ extension AppStore {
   }
 
   /// Drops standalone terminal `dropped`'s row on standalone terminal `destination`'s: once the
-  /// user names it (`TerminalGroupNaming`), a group of the two in `destination`'s place,
+  /// user names it (`askGroupName`), a group of the two in `destination`'s place,
   /// `dropped`'s terminal its second tab. Each terminal stays in the window that holds it. Whether
   /// it was named; Cancel drops nothing.
   @discardableResult
   func dropStandalone(_ dropped: SidebarID, onto destination: SidebarID) async -> Bool {
     guard let dropped = dropped.targetID, let destination = destination.targetID,
-      let name = await TerminalGroupNaming.ask(terminalsSection.suggestedGroupName)
+      let name = await askGroupName(terminalsSection.suggestedGroupName)
     else { return false }
     let section = terminalsSection
     section.enqueueRegroup {

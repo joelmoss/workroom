@@ -55,6 +55,17 @@ final class AppStore: ObservableObject {
   weak var hostWindow: NSWindow?
   /// Brings a window forward. A seam: a test host's windows never become key.
   @ObservationIgnored var raiseWindow: (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) }
+  /// How a drop that makes a new terminal group gets its name: always asked, never taken unasked.
+  /// A standalone terminal's row or tab let go on another standalone terminal asks first, offering
+  /// the suggestion it is handed, and gets the name, or nil for Cancel or an empty one, which drops
+  /// nothing. A seam: a hosted unit run (Debug only) takes the suggestion, as Return would, so no
+  /// prompt shows over the developer's work; a test that answers the ask sets its own.
+  @ObservationIgnored var askGroupName: @MainActor (_ suggested: String) async -> String? = {
+    #if DEBUG
+      if AppEnvironment.isHostedUnitRun() { return { $0 } }
+    #endif
+    return { await TerminalGroupNamePrompt.name(suggested: $0) }
+  }()
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).

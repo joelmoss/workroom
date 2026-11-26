@@ -354,7 +354,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     let cTab = try XCTUnwrap(tabs(store, c).first)
     store.selectedTargetID = c
 
-    TerminalGroupNaming.ask = { _ in "Ops" }
+    store.askGroupName = { _ in "Ops" }
     await store.dropStandalone(c, onto: a)
     await settle()
 
@@ -398,7 +398,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
 
   /// Value: protects=a drop that would make a group asks its name, offering the next "Group N"
   /// free, and Cancel (or an empty name) drops nothing; fails_when=a group is made unasked, or the
-  /// suggestion repeats a name in use; why_new=owner, 2026-11-26; seam=TerminalGroupNaming;
+  /// suggestion repeats a name in use; why_new=owner, 2026-11-26; seam=AppStore.askGroupName;
   /// no_claim=the alert itself.
   func testCancellingTheNameDropsNothing() async throws {
     let store = makeStore()
@@ -406,7 +406,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     let a = try standalone(store)
     let b = try standalone(store)
     var suggested: [String] = []
-    TerminalGroupNaming.ask = {
+    store.askGroupName = {
       suggested.append($0)
       return nil
     }

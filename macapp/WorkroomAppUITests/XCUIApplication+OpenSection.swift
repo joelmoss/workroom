@@ -40,7 +40,7 @@ extension XCUIApplication {
     showSidebarView("open", file: file, line: line)
   }
 
-  /// Answers the name prompt a drop that makes a terminal group shows (`TerminalGroupNaming`):
+  /// Answers the name prompt a drop that makes a terminal group shows (`AppStore.askGroupName`):
   /// types `name` and chooses Create, or Cancel when `name` is nil.
   func answerNewGroupName(_ name: String?, file: StaticString = #filePath, line: UInt = #line) {
     let field = textFields["terminalGroup.name.field"]
