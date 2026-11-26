@@ -283,18 +283,11 @@ struct SidebarOpenList: View, Equatable {
   }
 
   /// The ghost of `row`, a row of `store`'s list, with the environment its own hosting view needs:
-  /// the theme and every object the sidebar's rows read.
+  /// the theme and the sidebar's (`SidebarEnvironment`).
   static func ghost(of row: some View, store: AppStore) -> AnyView {
     AnyView(
       OpenRowGhostChrome(content: row)
-        .environmentObject(store)
-        .environmentObject(store.notifications)
-        .environmentObject(store.terminals.codingAgentManager)
-        .environmentObject(store.runCommand)
-        .environmentObject(store.vcsStatus)
-        .environmentObject(store.projectStore)
-        .environmentObject(store.lifecycle)
-        .environmentObject(store.modals)
+        .modifier(SidebarEnvironment(store: store))
         .themeTokensRoot())
   }
 
