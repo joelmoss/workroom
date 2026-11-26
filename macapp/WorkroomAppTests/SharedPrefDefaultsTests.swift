@@ -37,8 +37,6 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private let activeSectionKey = "inspector.activeSection"
   private let diffModeKey = "diffViewMode"
   private let sidebarVisibleKey = "sidebar.visible"
-  private let projectsFoldedKey = "sidebar.projectsFolded"
-  private let sidebarPaneWeightsKey = "sidebar.paneWeights"
   private let dimArgKey = "WorkroomUITestDimUnfocusedPanes"
   private let autoEvenArgKey = "WorkroomUITestAutoResizeSplitsEvenly"
   private let dimKey = "dimUnfocusedPanes"
@@ -55,7 +53,6 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private var keys: [String] {
     [
       sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey,
-      projectsFoldedKey, sidebarPaneWeightsKey,
       dimArgKey, dimKey, autoEvenArgKey, "autoResizeSplitsEvenly",
     ]
   }
@@ -155,63 +152,6 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
     Defaults[.sidebarVisible] = true
     XCTAssertTrue(AppStore().sidebarVisible, "and must reopen a persisted-visible sidebar")
-  }
-
-  /// Value: protects=the sidebar's Projects section stays folded across a relaunch, as the
-  /// Terminals section does; fails_when=a new store reads the fold from anywhere but the persisted
-  /// setting, or the setting starts folded; no_claim=the write-back (see above), the heading's view
-  @MainActor
-  func testAStoreSeedsTheProjectsFoldFromThePersistedSetting() {
-    XCTAssertFalse(Defaults[.projectsFolded], "the Projects section starts unfolded")
-    Defaults[.projectsFolded] = true
-    XCTAssertTrue(AppStore().projectsFolded, "a folded Projects section stays folded")
-    Defaults[.projectsFolded] = false
-    XCTAssertFalse(AppStore().projectsFolded, "and an unfolded one unfolded")
-  }
-
-  /// Value: protects=a sidebar pane's collapse is its section's fold, one state per section: the
-  /// Terminals pane's the shared `TerminalsSection`'s, the Projects pane's `projectsFolded`
-  /// (#652); fails_when=collapsing one pane folds the other's section, or a pane keeps a fold
-  /// state of its own; no_claim=the split's sizing (`InspectorSplitLayoutTests`)
-  @MainActor
-  func testASidebarPanesCollapseIsItsSectionsFold() {
-    let section = TerminalsSection()
-    let store = AppStore(terminalsSection: section)
-    XCTAssertEqual(store.sidebarPanesCollapsed, [false, false])
-
-    store.setCollapsed(.open, true)
-    XCTAssertTrue(
-      section.isFolded,
-      "the Open pane folds the shared section: the retired Terminals section's saved fold carries over (#819)"
-    )
-    XCTAssertFalse(store.projectsFolded)
-    XCTAssertEqual(store.sidebarPanesCollapsed, [true, false])
-
-    store.setCollapsed(.projects, true)
-    XCTAssertTrue(store.projectsFolded, "the Projects pane folds the Projects section")
-    XCTAssertTrue(Defaults[.projectsFolded], "which persists as before")
-    XCTAssertEqual(store.sidebarPanesCollapsed, [true, true])
-
-    section.isFolded = false
-    store.projectsFolded = false
-    XCTAssertEqual(
-      store.sidebarPanesCollapsed, [false, false], "a fold made elsewhere is the pane's too")
-  }
-
-  /// Value: protects=the sidebar's divider position persists globally, as the inspector's pane
-  /// weights do, and a new window starts from it (#652); fails_when=a drag's weights aren't
-  /// written, a malformed report is, or a new store doesn't read them
-  @MainActor
-  func testTheSidebarPaneWeightsPersist() {
-    XCTAssertEqual(AppStore().sidebarPaneWeights, [], "no saved layout: Terminals fits its rows")
-    let store = AppStore()
-    store.updateSidebarPaneWeights([1])
-    store.updateSidebarPaneWeights([0, 300])
-    XCTAssertEqual(Defaults[.sidebarPaneWeights], [], "only two positive heights are a layout")
-
-    store.updateSidebarPaneWeights([180, 520])
-    XCTAssertEqual(Defaults[.sidebarPaneWeights], [180, 520])
-    XCTAssertEqual(AppStore().sidebarPaneWeights, [180, 520], "a new window starts from it")
   }
 
   /// Value: protects=with no projects the sidebar toggles (⌃⌘S, ⌥⌘S, the title-bar button) do

@@ -4,9 +4,9 @@ import XCTest
 
 @testable import Workroom
 
-/// The Open section's group management (#819 stories 43, 48–51): the drops its heading and rows
-/// take, read back as the rows the section shows. Each test drives the source and zone the
-/// section's views send (`SidebarOpenHeader`'s `.standalone`, a workroom row's `.target`, a row's
+/// The Open view's group management (#819 stories 43, 48–51): the drops its switcher tab and rows
+/// take, read back as the rows the view shows. Each test drives the source and zone the
+/// view's controls send (the Open tab's `.standalone`, a workroom row's `.target`, a row's
 /// drag as `.entry`); the whole rule matrix is `TerminalDropTests`'.
 @MainActor
 final class OpenSectionDropTests: XCTestCase {

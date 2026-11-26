@@ -86,7 +86,7 @@ final class SidebarInlineRenameTests: XCTestCase {
   // MARK: From the tab
 
   /// Value: protects=Rename… on a section target's tab edits its row in place only when the row is
-  /// in view; fails_when=it asks a hidden sidebar's or folded section's row (leaving the user with
+  /// in view; fails_when=it asks a hidden sidebar's or the Projects view's row (leaving the user with
   /// nothing), or asks a project's target; seam=AppStore.beginSidebarRename
   func testTheTabsRenameAsksTheRowOnlyWhenItIsInView() throws {
     let store = makeStore()
@@ -101,9 +101,9 @@ final class SidebarInlineRenameTests: XCTestCase {
     XCTAssertFalse(store.beginSidebarRename(sid), "the sidebar is hidden")
     store.sidebarVisible = true
 
-    section.isFolded = true
-    XCTAssertFalse(store.beginSidebarRename(sid), "the section is folded")
-    section.isFolded = false
+    store.sidebarView = .projects
+    XCTAssertFalse(store.beginSidebarRename(sid), "the sidebar shows its Projects view")
+    store.sidebarView = .open
 
     let root = SidebarID.root(project: "/p")
     store.sidebarRename.rowAppeared(root)

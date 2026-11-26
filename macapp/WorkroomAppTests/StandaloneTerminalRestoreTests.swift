@@ -109,10 +109,6 @@ final class StandaloneTerminalRestoreTests: XCTestCase {
     section.flush()
 
     XCTAssertEqual(makeSection().entries, section.entries, "a crash keeps them too")
-
-    section.isFolded = true
-    section.flush()
-    XCTAssertTrue(makeSection().isFolded, "and the fold")
   }
 
   // MARK: The file

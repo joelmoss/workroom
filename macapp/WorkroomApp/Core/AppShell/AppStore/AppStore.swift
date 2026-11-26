@@ -278,33 +278,6 @@ final class AppStore: ObservableObject {
   var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
     didSet { if persistsSidebarPrefs { Defaults[.collapsedProjects] = collapsedProjects } }
   }
-  /// Whether the sidebar's Projects section is folded under its heading, hiding every project's
-  /// rows, as the Terminals section folds (#652). Gated and persisted as `collapsedProjects` is;
-  /// unfolded under the fixture, whose launches share the real `Defaults` domain.
-  var projectsFolded: Bool = AppStore.initialProjectsFolded {
-    didSet { if persistsSidebarPrefs { Defaults[.projectsFolded] = projectsFolded } }
-  }
-
-  nonisolated private static var initialProjectsFolded: Bool {
-    #if DEBUG
-      if AppEnvironment.current.isFixture { return false }
-    #endif
-    return Defaults[.projectsFolded]
-  }
-  /// The sidebar's Terminals and Projects panes' relative heights (`SidebarPane` order), once the
-  /// user has dragged the divider between them; empty sizes the Terminals pane to its rows. Global,
-  /// as the inspector's pane weights are, and gated and persisted as `projectsFolded` is. Written
-  /// only through `updateSidebarPaneWeights`.
-  var sidebarPaneWeights: [Double] = AppStore.initialSidebarPaneWeights {
-    didSet { if persistsSidebarPrefs { Defaults[.sidebarPaneWeights] = sidebarPaneWeights } }
-  }
-
-  nonisolated private static var initialSidebarPaneWeights: [Double] {
-    #if DEBUG
-      if AppEnvironment.current.isFixture { return [] }
-    #endif
-    return Defaults[.sidebarPaneWeights]
-  }
   /// Remembered workroom tab-bar order (issue #23), stored as `TargetID.encoded`. `@Published`
   /// (not read via `@Default` in the view) because a `@Default` write doesn't reliably re-render the
   /// `NavigationSplitView` detail, so a drag-reorder's write didn't take and the dropped chip snapped
@@ -447,6 +420,17 @@ final class AppStore: ObservableObject {
   var foldedSelectedOpenTarget: TerminalTarget.ID? {
     didSet { if foldedSelectedOpenTarget != oldValue { markSessionDirty() } }
   }
+  /// Which view the sidebar shows under its switcher (ADR 0083): Open in a new window. This
+  /// window's own, persisted with its session as the Open rows' folds are.
+  var sidebarView: SidebarView = .open {
+    didSet { if sidebarView != oldValue { markSessionDirty() } }
+  }
+  /// The hidden sidebar view whose tab a terminal drag rests on, which shows that view when the
+  /// wait is up (`TerminalDragSession.springLoad`); its tab shows the wait. Never persisted.
+  var sidebarSpringTarget: SidebarView?
+  /// The sidebar switcher's tabs' views, which say where each tab is on screen to a drag
+  /// (`sidebarViewTabRects`).
+  @ObservationIgnored var sidebarViewTabViews: [SidebarView: SidebarViewTabMarker.Box] = [:]
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   var prActionInFlight = false
 

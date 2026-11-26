@@ -51,10 +51,6 @@ final class TerminalsSection {
   private(set) var quickTerminal = TerminalGroup.quickTerminal
   /// Every row the sidebar lists, top to bottom: the Quick Terminal's group, then `entries`.
   var rows: [Entry] { [.group(quickTerminal)] + entries }
-  /// Whether the sidebar shows the section folded, as a project folds. Kept in the file.
-  var isFolded: Bool {
-    didSet { if isFolded != oldValue { save() } }
-  }
 
   @ObservationIgnored private let file: TerminalsSectionFile?
   /// The windows (and, from #661, the Quick Terminal host) that hold these targets' tabs, weakly
@@ -78,7 +74,6 @@ final class TerminalsSection {
     let document = file?.read()
     let stored = document?.entries.compactMap(\.entry) ?? []
     self.entries = stored.filter { $0.targetID != .quickTerminal }
-    self.isFolded = document?.folded ?? false
     // Only what can change of it is read back: its id, name and place are fixed.
     for case .group(let group) in stored where group.isBuiltIn {
       quickTerminal.startingFolder = group.startingFolder
@@ -298,7 +293,7 @@ final class TerminalsSection {
   /// that never changed it reads as it did before it was built in.
   private func save() {
     let builtIn = quickTerminal.startingFolder != nil || quickTerminal.isFolded
-    file?.write(builtIn ? rows : entries, folded: isFolded)
+    file?.write(builtIn ? rows : entries)
   }
 
   /// Waits for the last write to land: the quit path, and tests reading the file back.
@@ -358,16 +353,10 @@ final class TerminalsSectionFile: @unchecked Sendable {
     static let currentSchemaVersion = 1
     var schemaVersion: Int
     @Lossy var entries: [StoredEntry]
-    /// Written only when true, so an unfolded section's file is just its entries.
-    var folded: Bool?
 
-    init(
-      schemaVersion: Int = Document.currentSchemaVersion, entries: [StoredEntry],
-      folded: Bool? = nil
-    ) {
+    init(schemaVersion: Int = Document.currentSchemaVersion, entries: [StoredEntry]) {
       self.schemaVersion = schemaVersion
       self.entries = entries
-      self.folded = folded
     }
   }
 
@@ -466,9 +455,9 @@ final class TerminalsSectionFile: @unchecked Sendable {
     return document
   }
 
-  func write(_ entries: [TerminalsSection.Entry], folded: Bool = false) {
+  func write(_ entries: [TerminalsSection.Entry]) {
     guard !isDisabled, !writesDisabled else { return }
-    let document = Document(entries: entries.map(StoredEntry.init), folded: folded ? true : nil)
+    let document = Document(entries: entries.map(StoredEntry.init))
     queue.async { [weak self] in self?.persist(document) }
   }
 

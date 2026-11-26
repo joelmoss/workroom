@@ -707,16 +707,12 @@ struct SectionHeader<Accessory: View>: View {
   }
 }
 
-/// What every section header shares: the inspector's (`SectionHeader`) and the sidebar's Terminals
-/// and Projects headings (`SidebarSectionHeading`). One set of numbers, so the two read as one kind.
+/// What every inspector section header shares (`SectionHeader`).
 enum SectionHeaderMetrics {
   /// The band's height: a collapsed inspector pane's, too.
   static let height: CGFloat = InspectorPanePolicy.headerHeight
   /// Between the band's leading edge and the chevron, and the trailing edge and the accessory.
   static let horizontalPadding: CGFloat = 12
-  /// The sidebar headings' leading padding: the sidebar rows' own base margin
-  /// (`ProjectSidebar.rowInsets.leading`), so the band reads tight against the narrower column.
-  static let sidebarLeadingPadding: CGFloat = 6
   static let verticalPadding: CGFloat = 8
   /// Between the chevron, the title and the indicator.
   static let spacing: CGFloat = 7
@@ -744,8 +740,8 @@ struct SectionHeaderLabel<Indicator: View>: View {
   let title: String
   let collapsed: Bool?
   let indicator: Indicator
-  /// Between the band's leading edge and the chevron: the inspector's `horizontalPadding`, or the
-  /// sidebar's tighter `SectionHeaderMetrics.sidebarLeadingPadding`.
+  /// Between the band's leading edge and the chevron: the inspector's `horizontalPadding` unless
+  /// its caller gives another.
   var leadingPadding: CGFloat = SectionHeaderMetrics.horizontalPadding
 
   init(

@@ -1,45 +1,61 @@
 import Foundation
+import WorkroomDomain
 
-/// The sidebar's two panes (#652), top to bottom: the Open section (#819, in the Terminals section's
-/// old slot, so a saved divider position carries over) and the Projects section.
-/// Each is a sticky heading over its own scrolling list, in the inspector's split
-/// (`InspectorSplitView`).
-enum SidebarPane: Int, CaseIterable {
+/// What the sidebar shows under its switcher (ADR 0083): one view at a time, this window's Open
+/// view (its workroom tabs, #819) or the Projects view (the project tree).
+enum SidebarView: String, CaseIterable, Sendable {
   case open
   case projects
+
+  /// Its tab's name: the Open tab shows only its glyph, so this is its tooltip and spoken name.
+  var title: String {
+    switch self {
+    case .open: "Open"
+    case .projects: "Projects"
+    }
+  }
+
+  /// Its tab's tooltip.
+  var help: String {
+    switch self {
+    case .open: "Open: the workrooms and terminals open in this window"
+    case .projects: "Projects: every project and its workrooms"
+    }
+  }
+
+  /// Its tab's accessibility identifier.
+  var identifier: String { "sidebar.view.\(rawValue)" }
 }
 
-/// The sidebar's split layout. A pane's collapse is its section's fold, so there is one fold state
-/// per section: the Open section's is the retired Terminals section's, `TerminalsSection.isFolded`,
-/// so a user's fold carries over (shared by every window, kept in its file); the Projects section's
-/// is `projectsFolded`. The divider's position is
-/// `sidebarPaneWeights`.
+/// Which view the sidebar shows, and whether the one it hides needs the user. The selection is
+/// this window's own and is saved with its session (`WindowSession.sidebarView`), as its Open
+/// rows' folds are.
 extension AppStore {
-  /// Each pane's collapse, in `SidebarPane` order: its section's fold.
-  var sidebarPanesCollapsed: [Bool] {
-    SidebarPane.allCases.map(isCollapsed)
+  /// Show `view` in the sidebar, as its tab does. A no-op when it shows already.
+  func selectSidebarView(_ view: SidebarView) {
+    guard sidebarView != view else { return }
+    sidebarView = view
   }
 
-  func isCollapsed(_ pane: SidebarPane) -> Bool {
-    switch pane {
-    case .open: terminalsSection.isFolded
-    case .projects: projectsFolded
+  /// View ▸ Show Open / Show Projects: `view`, in the sidebar, shown if it is hidden.
+  func showSidebarView(_ view: SidebarView) {
+    selectSidebarView(view)
+    if sidebarHasContent, !sidebarVisible { sidebarVisible = true }
+  }
+
+  /// Whether something in `view` waits on the user: a target with unread notifications or a
+  /// terminal waiting for input, as its rows mark them. The switcher shows it on `view`'s tab while
+  /// the other view is shown. Read from what the rows read, not from the rows.
+  func sidebarViewNeedsAttention(_ view: SidebarView) -> Bool {
+    switch view {
+    case .open:
+      return displayedWorkroomTargets().contains { _, target in needsAttention(target.id) }
+    case .projects:
+      return projectStore.projects.contains { $0.targetIDs.contains(where: needsAttention) }
     }
   }
 
-  /// Collapse or expand a pane: fold or unfold its section.
-  func setCollapsed(_ pane: SidebarPane, _ collapsed: Bool) {
-    switch pane {
-    case .open: terminalsSection.isFolded = collapsed
-    case .projects: projectsFolded = collapsed
-    }
-  }
-
-  /// Record the pane heights the sidebar's split reports after the user drags its divider.
-  func updateSidebarPaneWeights(_ weights: [Double]) {
-    guard weights.count == SidebarPane.allCases.count, weights.allSatisfy({ $0 > 0 }),
-      weights != sidebarPaneWeights
-    else { return }
-    sidebarPaneWeights = weights
+  private func needsAttention(_ id: TerminalTarget.ID) -> Bool {
+    notifications.count(target: id) > 0 || terminals.blockedTerminalCount(forTargetID: id) > 0
   }
 }

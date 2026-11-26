@@ -49,14 +49,28 @@ final class TerminalDragSession {
   /// Another window's host whose zones the drag measured: the Quick Terminal's panel.
   private weak var otherHost: (any PaneDropZoneHost)?
   private let measure: @MainActor (AppStore) -> [Zone]
+  /// Where the sidebar switcher's tabs are on screen (ADR 0083): tests give their own.
+  private let springTabs: @MainActor (AppStore) -> [(view: SidebarView, rect: CGRect)]
+  /// The hidden view whose tab the drag rests on, and the timer that shows it.
+  private(set) var springCandidate: SidebarView?
+  private var springTimer: Timer?
+
+  /// How long a drag rests on a sidebar view's tab before the sidebar shows that view.
+  static let springDelay: TimeInterval = 0.5
+  /// After a spring the new view's rows lay out, and the drag measures its zones again.
+  static let remeasureDelay: TimeInterval = 0.1
 
   /// `measure` reads the zones off the screen as a drag starts: tests give their own.
   init(
     store: AppStore,
-    measure: @escaping @MainActor (AppStore) -> [Zone] = { $0.terminalDropZones() }
+    measure: @escaping @MainActor (AppStore) -> [Zone] = { $0.terminalDropZones() },
+    springTabs: @escaping @MainActor (AppStore) -> [(view: SidebarView, rect: CGRect)] = {
+      $0.sidebarViewTabRects()
+    }
   ) {
     self.store = store
     self.measure = measure
+    self.springTabs = springTabs
   }
 
   /// `source`'s drag from `surface` is at `screenPoint`: starts the session if it is a new drag,
@@ -71,6 +85,7 @@ final class TerminalDragSession {
     }
     let hit = accepting(at: screenPoint)
     highlight(hit?.zone, on: hit?.host)
+    springLoad(at: screenPoint)
     showGhost(at: screenPoint, overOtherHost: hit?.host != nil)
     return hit != nil
   }
@@ -147,10 +162,69 @@ final class TerminalDragSession {
   /// Ends the session with no drop.
   func cancel() {
     DragGhost.shared.hide()
+    clearSpring()
     source = nil
     highlight(nil, on: nil)
     zones = []
     otherHost = nil
+  }
+
+  // MARK: Spring-loading
+
+  /// Whether `source`'s drag from `surface` can show the sidebar's other view mid-drag (ADR 0083).
+  /// Not a Projects-tree terminal row's: its drag is the row's own gesture, which ends with the
+  /// row's List as the view switches. An Open row's survives it (`OpenRowDrag` follows it).
+  nonisolated static func springLoads(_ source: TerminalDragSource, from surface: Surface) -> Bool {
+    guard surface == .sidebar, case .terminal = source else { return true }
+    return false
+  }
+
+  /// Rests the drag on the hidden view's tab under `screenPoint`, if any: after `springDelay` the
+  /// sidebar shows that view, so a drop can land in it. Moving off the tab drops the wait.
+  private func springLoad(at screenPoint: CGPoint) {
+    guard let store, let source, Self.springLoads(source, from: surface) else {
+      return clearSpring()
+    }
+    let over = springTabs(store).first {
+      $0.view != store.sidebarView && $0.rect.contains(screenPoint)
+    }?.view
+    guard over != springCandidate else { return }
+    clearSpring()
+    guard let over else { return }
+    springCandidate = over
+    store.sidebarSpringTarget = over
+    // In the common modes: an Open row's drag runs in the List's event-tracking mode.
+    let timer = Timer(timeInterval: Self.springDelay, repeats: false) { [weak self] _ in
+      MainActor.assumeIsolated { self?.springFired() }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    springTimer = timer
+  }
+
+  /// The drag has rested on a tab for `springDelay`: shows its view, then measures the zones again
+  /// once its rows are laid out, since those measured at the start are the other view's.
+  func springFired() {
+    guard let store, source != nil, let view = springCandidate else { return clearSpring() }
+    clearSpring()
+    store.selectSidebarView(view)
+    let timer = Timer(timeInterval: Self.remeasureDelay, repeats: false) { [weak self] _ in
+      MainActor.assumeIsolated { self?.remeasure() }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+  }
+
+  /// Measures the zones again, mid-drag: after a spring, the rows on screen are another view's.
+  func remeasure() {
+    guard let store, source != nil else { return }
+    zones = measure(store)
+    otherHost = zones.lazy.compactMap(\.host).first ?? otherHost
+  }
+
+  private func clearSpring() {
+    springTimer?.invalidate()
+    springTimer = nil
+    springCandidate = nil
+    if let store, store.sidebarSpringTarget != nil { store.sidebarSpringTarget = nil }
   }
 
   /// The zone under `screenPoint`, as it was when the drag started, other than the source's own.
@@ -296,6 +370,17 @@ extension AppStore {
     guard let index = order.firstIndex(of: window) else { return false }
     guard let otherIndex = order.firstIndex(of: other) else { return true }
     return index < otherIndex
+  }
+
+  /// Where the sidebar switcher's tabs are on screen now, in this window (ADR 0083).
+  func sidebarViewTabRects() -> [(view: SidebarView, rect: CGRect)] {
+    guard let window = hostWindow else { return [] }
+    return SidebarView.allCases.compactMap { view in
+      guard let marker = sidebarViewTabViews[view]?.view, marker.window === window,
+        !marker.isHiddenOrHasHiddenAncestor
+      else { return nil }
+      return (view, window.convertToScreen(marker.convert(marker.bounds, to: nil)))
+    }
   }
 
   /// This window's own zones.

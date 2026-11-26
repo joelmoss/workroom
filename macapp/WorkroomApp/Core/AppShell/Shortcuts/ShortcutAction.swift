@@ -88,7 +88,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
   // Version Control
   case commit, fetch, push, pullWithRebase, goToPullRequest, changeDraft
   // Sidebar & Inspector
-  case projects, inspector, details, changes, history, pullRequestPane, files
+  case projects, showOpenView, showProjectsView, inspector, details, changes, history
+  case pullRequestPane, files
   // Navigation & Attention
   case back, forward, nextNotification, goToWaitingTerminal
   // Windows
@@ -125,7 +126,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .find, .findNext, .findPrevious, .scrollToTop, .scrollToBottom, .copyOnSelect: .terminal
     case .run, .restart, .stop, .goToRunTerminal: .run
     case .commit, .fetch, .push, .pullWithRebase, .goToPullRequest, .changeDraft: .versionControl
-    case .projects, .inspector, .details, .changes, .history, .pullRequestPane, .files: .sidebar
+    case .projects, .showOpenView, .showProjectsView, .inspector, .details, .changes, .history,
+      .pullRequestPane, .files:
+      .sidebar
     case .back, .forward, .nextNotification, .goToWaitingTerminal: .navigation
     case .newWindow, .nextWindow, .previousWindow: .windows
     case .theme, .toggleLightDark: .appearance
@@ -205,6 +208,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .goToPullRequest: "Go to Pull Request"
     case .changeDraft: "Ready for Review / Convert to Draft"
     case .projects: "Projects"
+    case .showOpenView: "Show Open"
+    case .showProjectsView: "Show Projects"
     case .inspector: "Inspector"
     case .details: "Details"
     case .changes: "Changes"
@@ -289,6 +294,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .goToPullRequest: "Open the branch's pull request in your browser."
     case .changeDraft: "Mark the pull request ready for review, or turn it back into a draft."
     case .projects: "Show or hide the Projects sidebar."
+    case .showOpenView: "Show the sidebar's Open view: what this window has open."
+    case .showProjectsView: "Show the sidebar's Projects view: every project and its workrooms."
     case .inspector: "Show or hide the inspector."
     case .details: "Show or hide the inspector's Details."
     case .changes: "Show or hide the inspector's Changes."
@@ -381,7 +388,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
       .deleteWorkroom, .closeOtherTabs, .closeAllTabs, .confirmBeforeClosingTerminal, .splitLeft,
       .splitUp, .copyOnSelect, .goToRunTerminal, .goToPullRequest, .changeDraft, .newWindow,
       .keyboardShortcuts, .checkForUpdates, .installCommandLine, .documentation,
-      .confirmBeforeQuitting:
+      .confirmBeforeQuitting, .showOpenView, .showProjectsView:
+      // ⌘1 and ⌘2, the obvious keys for the sidebar's views, are Switch to Workroom Tab 1 and 2.
       return nil
     }
   }

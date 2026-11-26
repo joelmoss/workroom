@@ -34,26 +34,8 @@ enum OpenSectionReorder {
   }
 }
 
-/// The Open section's sticky heading: "Open", its fold chevron, which collapses the pane, and one
-/// "+" whose menu opens anything: Open Workroom…, New Terminal and New Terminal Group…. A terminal's
-/// tab let go on the band becomes a standalone terminal (#660); the drop zone is on the band, not
-/// the heading's content, so the fold button keeps its clicks.
-struct SidebarOpenHeader: View {
-  let store: AppStore
-
-  var body: some View {
-    SidebarSectionHeading(
-      title: "Open",
-      isFolded: Binding(get: { store.isCollapsed(.open) }, set: { store.setCollapsed(.open, $0) }),
-      id: "sidebar.open"
-    ) {
-      SidebarOpenAddMenu(store: store)
-    }
-    .background(SidebarSectionHeadingBand().paneDropZone(.standalone, store: store))
-  }
-}
-
-/// The Open heading's "+": every way to open something, each item with its shortcut.
+/// The switcher's "+" in the Open view (ADR 0083): every way to open something, each item with its
+/// shortcut.
 struct SidebarOpenAddMenu: View {
   let store: AppStore
 
@@ -83,11 +65,11 @@ struct SidebarOpenAddMenu: View {
       .help("Make a named group of terminals")
       .accessibilityIdentifier("sidebar.open.add.newGroup")
     }
-    .accessibilityIdentifier("sidebar.open.add")
+    .accessibilityIdentifier("sidebar.add")
   }
 }
 
-/// The Open section's list, the sidebar's top pane under its sticky heading (#819, ADR 0082): this
+/// The sidebar's Open view (#819, ADR 0082, ADR 0083): this
 /// window's workroom tabs in title-bar order (`AppStore.openSectionRows`), each unfolding to its
 /// tabs in strip order. It keeps nothing of its own but the drag in flight: every row reads the
 /// model and calls the store, so the section, the title bar and the strip never disagree. Its own
@@ -137,39 +119,35 @@ struct SidebarOpenList: View, Equatable {
     }
   }
 
-  /// The height the list's rows take, for the pane to size itself to them while no layout is
-  /// saved; one row for the empty state.
-  static func contentHeight(of rows: [OpenSectionRow]) -> CGFloat {
-    CGFloat(max(1, items(of: rows).count)) * rowPitch + ProjectSidebar.listPadding
-      + SidebarRowMetrics.headingGap
-  }
-
   var body: some View {
     let rows = store.openSectionRows()
     let items = Self.items(of: rows)
     return ScrollViewReader { proxy in
       List {
-        SidebarHeadingGap()
-        if !store.isCollapsed(.open) {
-          if rows.isEmpty {
-            emptyState
-          }
-          // One element per List row: a ForEach whose element yields a varying number of rows (a
-          // workroom's row and its tabs) can't be diffed, so the List reloads whole as one unfolds.
-          ForEach(Self.entries(of: rows)) { entry in
-            if let tab = entry.tab {
-              tabRow(tab, in: entry.row, items: items)
-            } else {
-              workroomRow(entry.row, items: items)
-            }
+        if rows.isEmpty {
+          emptyState
+        }
+        // One element per List row: a ForEach whose element yields a varying number of rows (a
+        // workroom's row and its tabs) can't be diffed, so the List reloads whole as one unfolds.
+        ForEach(Self.entries(of: rows)) { entry in
+          if let tab = entry.tab {
+            tabRow(tab, in: entry.row, items: items)
+          } else {
+            workroomRow(entry.row, items: items)
           }
         }
       }
       .sidebarListStyle()
+      .background(SidebarOverlayScrollers())
       .animation(rowAnimation, value: items)
       .onChange(of: Self.scrollTarget(of: rows)) { _, target in
         guard let target else { return }
         withAnimation(rowAnimation) { proxy.scrollTo(target) }
+      }
+      // Shown again by the switcher, the List starts at its top: bring the selection into view,
+      // with no animation, as it appears.
+      .onAppear {
+        if let target = Self.scrollTarget(of: rows) { proxy.scrollTo(target) }
       }
     }
   }

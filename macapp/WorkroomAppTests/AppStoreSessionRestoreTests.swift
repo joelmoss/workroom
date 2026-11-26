@@ -397,6 +397,34 @@ final class AppStoreSessionRestoreTests: XCTestCase {
       restored(folded: "wr|/p|one").foldedSelectedOpenTarget, "not the selection, so not folded")
   }
 
+  /// Value: protects=the sidebar's view is the window's own and comes back with it, Open for a new
+  /// window and for a value this build doesn't know (ADR 0083); fails_when=the capture drops the
+  /// view, the claim doesn't restore it, or an unknown value fails the window's restore;
+  /// seam=AppStore.captureWindowSession / claimSessionIfNeeded
+  func testTheSidebarsViewRoundTripsWithTheWindow() throws {
+    let projects = [project("/p", workrooms: ["one"])]
+    let window = makeStore(projects: projects, session: nil, isLaunchWindow: false)
+    XCTAssertEqual(window.sidebarView, .open, "a new window shows Open")
+    XCTAssertNil(window.captureWindowSession().sidebarView, "the default isn't written")
+
+    window.selectSidebarView(.projects)
+    let saved = window.captureWindowSession()
+    XCTAssertEqual(saved.sidebarView, "projects")
+    let decoded = try JSONDecoder().decode(
+      WindowSession.self, from: JSONEncoder().encode(saved))
+    XCTAssertEqual(decoded.sidebarView, "projects", "it survives the file")
+
+    let relaunched = makeStore(projects: projects, session: decoded)
+    relaunched.claimSessionIfNeeded()
+    XCTAssertEqual(relaunched.sidebarView, .projects, "it comes back with the window's claim")
+
+    var unknown = decoded
+    unknown.sidebarView = "inbox"
+    let older = makeStore(projects: projects, session: unknown)
+    older.claimSessionIfNeeded()
+    XCTAssertEqual(older.sidebarView, .open, "a view this build doesn't know shows Open")
+  }
+
   /// A group whose second workroom was deleted is not a group any more.
   func testWorkroomSplitDissolvesWhenALeafIsGone() {
     let projects = [project("/p", workrooms: ["one"])]
