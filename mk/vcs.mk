@@ -4,7 +4,7 @@
 # change between releases, so another toolchain can pass here and fail there; the root Makefile's
 # PATH puts Homebrew's cargo first, so the recipe puts this one ahead of it. ci-rust.yml writes it
 # out again; scripts/ci/test_tool_pins.py fails when the two differ.
-VCS_RUST := 1.99.1
+VCS_RUST := 1.100.0
 
 vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (Docker, Podman or container on macOS; WR_LINT_RUNTIME= picks one)
 	bash vcs/scripts/lint-linux.sh "$(VCS_RUST)"

@@ -47,8 +47,8 @@ maintainer follows.
 - **Xcode 27.1**, the version CI, Nightly and Release build with.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
-- **Rust 1.99.1** through rustup (`rustup toolchain install 1.99.1`, then `rustup target add
-  --toolchain 1.99.1` the darwin and `*-unknown-linux-musl` targets you build) — the app build compiles
+- **Rust 1.100.0** through rustup (`rustup toolchain install 1.100.0`, then `rustup target add
+  --toolchain 1.100.0` the darwin and `*-unknown-linux-musl` targets you build) — the app build compiles
   the embedded `workroom` from the `vcs/` workspace (`macapp/Scripts/build-daemon.sh`) on
   `mk/vcs.mk`'s `VCS_RUST`, the Rust its third-party notices describe; a Release or Nightly build
   refuses any other.
@@ -58,8 +58,8 @@ maintainer follows.
 
 Those are the only toolchains: Rust and Swift (Xcode's). The Go CLI retired with #682.
 
-**To change the CLI or the rest of the Rust workspace (`vcs/`):** Rust **1.99.1** with rustfmt and clippy for `make vcs-lint`
-(`rustup toolchain install 1.99.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
+**To change the CLI or the rest of the Rust workspace (`vcs/`):** Rust **1.100.0** with rustfmt and clippy for `make vcs-lint`
+(`rustup toolchain install 1.100.0 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
 `terminal-state` half also needs Zig 0.17.1 (installed through mise when it is available) and builds a
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
 code already passes; never silence one with an `allow` without asking first.
@@ -116,7 +116,7 @@ optional standalone CLI).
 | **App build tooling** | [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`project.yml` → `.xcodeproj`) |
 | **VCS backend** | Git worktrees |
 | **Config store** | JSON at `~/.config/workroom/config.json` |
-| **CLI and daemon language** | Rust 1.99.1 (the `vcs/` workspace; one binary, `workroom`, ADR 0078) |
+| **CLI and daemon language** | Rust 1.100.0 (the `vcs/` workspace; one binary, `workroom`, ADR 0078) |
 | **CLI commands** | One table in `vcs/crates/workroomd/src/commands/mod.rs`, which `--help`, shell completion (cobra's scripts and protocol) and the docs' CLI pages read |
 | **CLI release tooling** | `macapp/Scripts/cli-archives.sh` (the Rust binary, under the archive names the retired Go CLI's GoReleaser used) |
 | **CI/CD** | GitHub Actions (CI on push/PR, release on `v*` tags) |
@@ -232,9 +232,9 @@ make docs-cli
 | `app-icon` | Regenerate the AppIcon PNGs |
 | `app-clean` | Remove `DerivedData` + the `.xcodeproj` |
 | `contract-test` | Run the CLI's black-box contract suite against this checkout's `workroom`, or `WORKROOM_BIN=<binary>` |
-| `vcs-test` | The Rust workspace's tests, then the daemon's with `terminal-state`, on CI's Rust 1.99.1 |
+| `vcs-test` | The Rust workspace's tests, then the daemon's with `terminal-state`, on CI's Rust 1.100.0 |
 | `docs-cli` / `docs-check` | Regenerate the CLI reference pages / check `docs-site/` |
-| `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.99.1 |
+| `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.100.0 |
 | `vcs-lint-linux` | The same pinned lint gate on Linux, including Linux-only code; uses the first working Docker, Podman or Apple `container` runtime on macOS (`WR_LINT_RUNTIME` names one) |
 
 ---
@@ -300,7 +300,7 @@ release artifacts, the macOS app release pipeline and the Sparkle appcast are in
 ## Troubleshooting a build
 
 **App build fails** — most app build failures trace to a stale generated project or a missing tool.
-Run `make app-generate` (or `make app-clean` then `make app-build`), confirm `xcodegen` and Rust 1.99.1
+Run `make app-generate` (or `make app-clean` then `make app-build`), confirm `xcodegen` and Rust 1.100.0
 are on `PATH`, and remember adding/removing Swift files requires regenerating the project.
 
 See the docs' [Troubleshooting page](docs-site/pages/help/troubleshooting.md) for runtime issues.

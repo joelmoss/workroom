@@ -27,7 +27,7 @@ let package = Package(
     // above). TreeSitterBash carries an external scanner — the lane-A packaging proof.
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-json",
-      revision: "001c28d7a29832b06b0e831ec77845553c89b56d"),
+      revision: "254c42a6476413b776221e03982ac8ae159eeb72"),
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-bash",
       revision: "a06c2e4415e9bc0346c6b86d401879ffb44058f7"),

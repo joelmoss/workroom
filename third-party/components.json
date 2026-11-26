@@ -95,17 +95,17 @@
       "ships": "workroom",
       "note": "The musl Rust's musl targets link (self-contained libc.a). Its COPYRIGHT is musl's at v1.2.5.",
       "files": ["third-party/licenses/musl/COPYRIGHT"],
-      "pin": {"file": "mk/vcs.mk", "pattern": "(?m)^VCS_RUST := ([0-9.]+)$", "value": "1.99.1"}
+      "pin": {"file": "mk/vcs.mk", "pattern": "(?m)^VCS_RUST := ([0-9.]+)$", "value": "1.100.0"}
     },
     {
       "id": "rust-std",
       "name": "The Rust standard library, and the crates it links",
-      "version": "1.99.1",
+      "version": "1.100.0",
       "license": "MIT",
       "offered": "Apache-2.0 OR MIT",
-      "source": "https://github.com/rust-lang/rust/tree/1.99.1/library",
+      "source": "https://github.com/rust-lang/rust/tree/1.100.0/library",
       "ships": "workroom",
-      "note": "The crates std links on the binary's targets, from library/Cargo.lock at 1.99.1: addr2line 0.27.1, adler2 2.0.1, cfg-if 1.0.4, gimli 0.34.0, hashbrown 0.17.1, libc 0.2.189, memchr 2.8.3, miniz_oxide 0.9.1, object 0.39.1 and rustc-demangle 0.1.28, each offered under MIT among others and taken under it. The LLVM libunwind and compiler-rt code it embeds is Apache-2.0 WITH LLVM-exception, whose exception needs no notice for object code.",
+      "note": "The crates std links on the binary's targets, from library/Cargo.lock at 1.100.0: addr2line 0.27.1, adler2 2.0.1, cfg-if 1.0.4, gimli 0.34.0, hashbrown 0.17.1, libc 0.2.189, memchr 2.8.3, miniz_oxide 0.9.1, object 0.39.1 and rustc-demangle 0.1.28, each offered under MIT among others and taken under it. The LLVM libunwind and compiler-rt code it embeds is Apache-2.0 WITH LLVM-exception, whose exception needs no notice for object code.",
       "files": [
         "third-party/licenses/rust-std/LICENSE-MIT",
         "third-party/licenses/rust-std/addr2line-0.27.1-LICENSE-MIT",
@@ -119,7 +119,7 @@
         "third-party/licenses/rust-std/object-0.39.1-LICENSE-MIT",
         "third-party/licenses/rust-std/rustc-demangle-0.1.28-LICENSE-MIT"
       ],
-      "pin": {"file": "mk/vcs.mk", "pattern": "(?m)^VCS_RUST := ([0-9.]+)$", "value": "1.99.1"}
+      "pin": {"file": "mk/vcs.mk", "pattern": "(?m)^VCS_RUST := ([0-9.]+)$", "value": "1.100.0"}
     },
     {
       "id": "freetype",
@@ -473,7 +473,7 @@
     {"id": "tree-sitter-bash", "name": "tree-sitter-bash", "version": "a06c2e44", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-bash", "ships": "app", "swiftpm": {"identity": "tree-sitter-bash", "revision": "a06c2e4415e9bc0346c6b86d401879ffb44058f7"}, "files": ["third-party/licenses/tree-sitter-bash/LICENSE"]},
     {"id": "tree-sitter-go", "name": "tree-sitter-go", "version": "2346a3ab", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-go", "ships": "app", "swiftpm": {"identity": "tree-sitter-go", "revision": "2346a3ab1bb3857b48b29d779a1ef9799a248cd7"}, "files": ["third-party/licenses/tree-sitter-go/LICENSE"]},
     {"id": "tree-sitter-html", "name": "tree-sitter-html", "version": "73a39473", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-html", "ships": "app", "swiftpm": {"identity": "tree-sitter-html", "revision": "73a3947324f6efddf9e17c0ea58d454843590cc0"}, "files": ["third-party/licenses/tree-sitter-html/LICENSE"]},
-    {"id": "tree-sitter-json", "name": "tree-sitter-json", "version": "001c28d7", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-json", "ships": "app", "swiftpm": {"identity": "tree-sitter-json", "revision": "001c28d7a29832b06b0e831ec77845553c89b56d"}, "files": ["third-party/licenses/tree-sitter-json/LICENSE"]},
+    {"id": "tree-sitter-json", "name": "tree-sitter-json", "version": "254c42a6", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-json", "ships": "app", "swiftpm": {"identity": "tree-sitter-json", "revision": "254c42a6476413b776221e03982ac8ae159eeb72"}, "files": ["third-party/licenses/tree-sitter-json/LICENSE"]},
     {"id": "tree-sitter-markdown", "name": "tree-sitter-markdown", "version": "41ff24a6", "license": "MIT", "source": "https://github.com/tree-sitter-grammars/tree-sitter-markdown", "ships": "app", "swiftpm": {"identity": "tree-sitter-markdown", "revision": "41ff24a6c775492c543b09228aeb98d1cd2b3a0f"}, "files": ["third-party/licenses/tree-sitter-markdown/LICENSE"]},
     {"id": "tree-sitter-ruby", "name": "tree-sitter-ruby", "version": "ad907a69", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-ruby", "ships": "app", "swiftpm": {"identity": "tree-sitter-ruby", "revision": "ad907a69da0c8a4f7a943a7fe012712208da6dee"}, "files": ["third-party/licenses/tree-sitter-ruby/LICENSE"]},
     {"id": "tree-sitter-sql", "name": "tree-sitter-sql", "version": "2d088525", "license": "MIT", "source": "https://github.com/DerekStride/tree-sitter-sql", "ships": "app", "swiftpm": {"identity": "tree-sitter-sql", "revision": "2d088525f3f986108d969dab526a0d7129281e24"}, "files": ["third-party/licenses/tree-sitter-sql/LICENSE"]},
