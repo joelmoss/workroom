@@ -447,8 +447,8 @@ struct WorkroomCommands: Commands {
     // and Projects pick the sidebar's two views (ADR 0083), as its switcher's tabs do, showing the
     // sidebar if it is hidden, and the one it shows is checked. Its view is read here, in the body,
     // so Observation re-runs the body when it changes (a binding's getter alone runs too late to be
-    // tracked, and its checkmark went stale). No default keys for them: ⌘1 and ⌘2 switch workroom
-    // tabs.
+    // tracked, and its checkmark went stale). Their keys are ⌃⌘T and ⌃⌘P, beside ⌃⌘S: ⌘1 and ⌘2
+    // switch workroom tabs.
     CommandGroup(replacing: .sidebar) {
       let shown = store?.sidebarView
       Menu("Sidebar") {
