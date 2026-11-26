@@ -156,11 +156,6 @@ enum PaneWindowMotion {
     var progress: CGFloat
   }
 
-  /// Whether this process animates at all. A hosted unit run never does: its windows stay behind
-  /// the developer's work, and its tests assert the end state the instant an action returns. The
-  /// transition's own tests drive it through a manual animator instead.
-  static let isEnabledByDefault = !AppEnvironment.isHostedUnitRun()
-
   /// A popped-out pane's way into its window. `final` is the frame the window opens at, as it always
   /// has; `slot` is the pane's slot on screen, nil when it isn't on one; `pointer` is where the drop
   /// landed for a drag.

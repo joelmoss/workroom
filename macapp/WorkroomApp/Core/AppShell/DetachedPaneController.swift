@@ -114,7 +114,7 @@ final class DetachedPaneWindows {
   /// its end, a close drops it.
   private var transitions: [TerminalTab.ID: PaneWindowTransition] = [:]
   /// Whether pop out and pull back animate; off in a hosted unit run.
-  var animates = PaneWindowMotion.isEnabledByDefault
+  var animates = AppEnvironment.animatesPaneWindows()
   var animator: PaneWindowAnimating = LivePaneWindowAnimator()
   /// The system's Reduce Motion, read as each transition starts.
   var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }

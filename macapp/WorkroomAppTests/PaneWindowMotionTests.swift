@@ -16,6 +16,14 @@ final class PaneWindowMotionTests: XCTestCase {
   private let secondary = NSRect(x: -1920, y: 200, width: 1920, height: 1080)
   private let final = NSRect(x: 300, y: 200, width: 800, height: 528)
 
+  /// A hosted unit run's pane windows move without animating; an app's animate.
+  func testOnlyAHostedUnitRunTurnsTheMotionOff() {
+    XCTAssertTrue(AppEnvironment.animatesPaneWindows(environment: [:]))
+    XCTAssertFalse(
+      AppEnvironment.animatesPaneWindows(environment: ["XCTestConfigurationFilePath": "x"]))
+    XCTAssertFalse(DetachedPaneWindows().animates, "this run is a hosted one")
+  }
+
   // MARK: Frames
 
   func testAPopOutGrowsFromTheSlotToTheFrameItOpensAt() {
