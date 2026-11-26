@@ -81,7 +81,7 @@ A workroom's row or tab doesn't take part. Dragging one reorders, splits the win
 
 Where you can let go, and what happens:
 
-- **A group, a workroom or the Quick Terminal** (its row, its title-bar tab or its title bar): the terminals join it at the end. A folded group's row takes them anywhere below its top edge.
+- **A group, a workroom or the Quick Terminal** (its row, its title-bar tab or its title bar): the terminals join it at the end. A folded group's row takes them anywhere below its top edge, except from a terminal's row in the **Open** view that can become standalone, which joins only over a row's middle (see **Between rows in the Open view** below).
 - **A standalone terminal** (its row in the **Open** view or its tab): Workroom asks you to name a new group, and the two become that group in the standalone terminal's place. **Cancel** drops nothing. If you dragged a group, the standalone terminal joins it at the end instead, and the group keeps its name.
 - **A terminal** (its tab in the tab strip, or its row in the sidebar): the terminals join its group or workroom in that place. On a tab, the half you let go over decides whether they land before or after it. On a row, or between two of a group's terminals' rows, they land above it.
 - **The Open tab** at the top of the sidebar: a terminal becomes standalone. Nightly only: rest a drag on the **Projects** tab for a moment and the sidebar shows the project tree, so you can drop on a workroom's row there, and the same on **Open** to get back. A drag that starts on a terminal's row in the project tree doesn't switch.
