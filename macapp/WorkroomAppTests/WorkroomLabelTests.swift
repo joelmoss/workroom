@@ -133,7 +133,7 @@ final class WorkroomLabelTests: XCTestCase {
   func testAGroupRowsNewTerminalNamesTheGroup() {
     XCTAssertEqual(
       TerminalGroup.newTerminalTitle(for: .quickTerminal),
-      "New Terminal in Quick Terminals")
+      "New Terminal in Quick Terminal")
     XCTAssertEqual(
       TerminalGroup.newTerminalTitle(for: TerminalGroup(id: UUID(), name: "Ops")),
       "New Terminal in Ops")

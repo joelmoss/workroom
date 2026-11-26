@@ -103,6 +103,18 @@ extension AppStore {
     selectedProjectID = Self.projectPath(of: sid)
   }
 
+  /// An Open row's "+": a new terminal in its group, root or workroom, selected as ⌘T's would be,
+  /// with ⌘T's guards. A standalone terminal is one terminal, so its row has no "+".
+  func newTerminalInOpenRow(_ sid: SidebarID) {
+    switch sid {
+    case .terminalGroup: newTerminalInGroup(sid)
+    case .standalone: return
+    default:
+      selectWorkroomTab(sid)
+      newTerminalInSelectedTarget()
+    }
+  }
+
   /// Select tab `tabID` and its workroom, as a sidebar terminal row does.
   func selectOpenTab(_ tabID: TerminalTab.ID, in sid: SidebarID) {
     revealTerminal(tabID, at: sid)

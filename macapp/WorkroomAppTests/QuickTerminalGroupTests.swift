@@ -56,7 +56,7 @@ final class QuickTerminalGroupTests: XCTestCase {
     store.newStandaloneTerminal()
     let ops = store.newTerminalGroup(named: "Ops")
     XCTAssertEqual(section.rows.first?.sidebarID, builtIn)
-    XCTAssertEqual(store.target(for: builtIn)?.title, "Quick Terminals")
+    XCTAssertEqual(store.target(for: builtIn)?.title, "Quick Terminal")
 
     await store.deleteTerminalGroup(builtIn)
     section.remove(.quickTerminal)
@@ -67,7 +67,7 @@ final class QuickTerminalGroupTests: XCTestCase {
     XCTAssertEqual(section.rows.first?.sidebarID, builtIn, "still first")
     XCTAssertEqual(
       section.rows.dropFirst().first?.sidebarID, ops, "a row moved above it lands below")
-    XCTAssertEqual(store.target(for: builtIn)?.title, "Quick Terminals", "its name is fixed")
+    XCTAssertEqual(store.target(for: builtIn)?.title, "Quick Terminal", "its name is fixed")
     XCTAssertTrue(
       section.group(.quickTerminal) != nil, "a group's delete spares it")
   }
@@ -207,7 +207,7 @@ final class QuickTerminalGroupTests: XCTestCase {
 
     let groups = store.paneMoveChoices(tab.id, of: target, windows: [store], quickTerminal: panel)
     XCTAssertEqual(
-      groups.first?.choices.prefix(2).map(\.title), ["Standalone Terminal", "Quick Terminals"],
+      groups.first?.choices.prefix(2).map(\.title), ["Standalone Terminal", "Quick Terminal"],
       "in the Terminals section's places, right after Standalone Terminal")
     let choice = try XCTUnwrap(groups.first?.choices.dropFirst().first)
     XCTAssertTrue(choice.enabled)
@@ -222,7 +222,7 @@ final class QuickTerminalGroupTests: XCTestCase {
     XCTAssertEqual(revealed, [tab.id], "the panel slides in on it")
 
     let own = panel.paneMoveChoices(tab.id, of: panel.target, windows: [store])
-    let ownPlace = own.first?.choices.first { $0.title == "Quick Terminals" }
+    let ownPlace = own.first?.choices.first { $0.title == "Quick Terminal" }
     XCTAssertEqual(ownPlace?.enabled, false, "its own place is listed disabled")
   }
 
