@@ -243,7 +243,7 @@ struct SidebarOpenList: View, Equatable {
         .listRowSeparator(.hidden)
         .listRowBackground(
           SidebarOpenRowBackground(hovered: hovered, selected: tab.isFocused)
-          .opacity(lifted ? 0 : 1))
+            .opacity(lifted ? 0 : 1))
     }
     .id(item)
   }
