@@ -47,26 +47,31 @@ enum TerminalGroupPrompts {
   }
 }
 
-/// The New Terminal Group… prompt: one text field for the group's name. OK with a name makes the
-/// group; an empty name or Cancel makes nothing.
+/// The New Terminal Group… prompt: one text field for the group's name, filled in with the next
+/// "Group <number>" free (`TerminalsSection.suggestedGroupName`) and selected, so Return takes it
+/// and typing replaces it. OK with a name makes the group; an empty name or Cancel makes nothing.
 @MainActor
 enum TerminalGroupNamePrompt {
-  static func present(onName: @escaping @MainActor (String) -> Void) {
+  static func present(
+    suggested: String = TerminalsSection.shared.suggestedGroupName,
+    onName: @escaping @MainActor (String) -> Void
+  ) {
     TextFieldPrompt.present(
       title: "New Terminal Group",
       message: "A terminal group keeps its terminals together, and stays while it has a name.",
-      placeholder: "Terminal group name", fieldID: "terminalGroup.name.field",
+      value: suggested, placeholder: "Terminal group name", fieldID: "terminalGroup.name.field",
       fieldHelp: "The name shown on the group's row and title-bar tab",
       confirm: "Create", onConfirm: onName)
   }
 
-  /// The prompt, awaited: the name, trimmed, or nil on Cancel or an empty name.
-  static func name() async -> String? {
+  /// The prompt, awaited, filled in with `suggested`: the name, trimmed, or nil on Cancel or an
+  /// empty name.
+  static func name(suggested: String) async -> String? {
     let typed: String? = await withCheckedContinuation { done in
       TextFieldPrompt.present(
         title: "New Terminal Group",
         message: "Name the group these terminals will make.",
-        placeholder: "Terminal group name", fieldID: "terminalGroup.name.field",
+        value: suggested, placeholder: "Terminal group name", fieldID: "terminalGroup.name.field",
         fieldHelp: "The name shown on the group's row and title-bar tab",
         confirm: "Create",
         onConfirm: { done.resume(returning: $0) },
@@ -79,12 +84,15 @@ enum TerminalGroupNamePrompt {
   }
 }
 
-/// How a drop that makes a new terminal group gets its name: always asked, never made up. A
-/// standalone terminal's row or tab let go on another standalone terminal asks first; Cancel or an
-/// empty name drops nothing. The unit tests answer it themselves (`HostedRunGuardObserver`).
+/// How a drop that makes a new terminal group gets its name: always asked, never taken unasked. A
+/// standalone terminal's row or tab let go on another standalone terminal asks first, offering the
+/// suggestion it is handed; Cancel or an empty name drops nothing. The unit tests answer it
+/// themselves (`HostedRunGuardObserver`).
 @MainActor
 enum TerminalGroupNaming {
-  static var ask: () async -> String? = { await TerminalGroupNamePrompt.name() }
+  static var ask: (_ suggested: String) async -> String? = {
+    await TerminalGroupNamePrompt.name(suggested: $0)
+  }
 }
 
 extension TerminalGroup {

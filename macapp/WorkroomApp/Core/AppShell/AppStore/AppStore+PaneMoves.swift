@@ -215,7 +215,9 @@ extension AppStore {
     _ tabID: TerminalTab.ID, of target: TerminalTarget, from source: PaneDropSource,
     onto destination: TargetID
   ) async -> Bool {
-    guard let name = await TerminalGroupNaming.ask() else { return false }
+    guard let name = await TerminalGroupNaming.ask(terminalsSection.suggestedGroupName) else {
+      return false
+    }
     let section = terminalsSection
     if case .standalone = target.id, section.contains(target.id) {
       return await section.enqueueRegroup {
