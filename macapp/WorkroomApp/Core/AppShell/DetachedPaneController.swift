@@ -136,15 +136,18 @@ final class DetachedPaneWindows {
     var pointer: CGPoint?
 
     /// The slot of `tabID` as it is now, with `surface` in it; nil when it isn't on screen.
+    /// `onScreen`: whether its holder shows the pane's workroom at all, which a slot's view alone
+    /// cannot tell.
     @MainActor
     static func slot(
-      of tabID: TerminalTab.ID, surface: NSView?, byDrag: Bool, pointer: CGPoint?
+      of tabID: TerminalTab.ID, surface: NSView?, onScreen: Bool = true, byDrag: Bool,
+      pointer: CGPoint?
     ) -> PopOutSource {
       let anchors = PaneSlotAnchors.shared
-      let window = anchors.view(for: tabID)?.window
+      let window = onScreen ? anchors.view(for: tabID)?.window : nil
       return PopOutSource(
-        slot: anchors.screenRect(for: tabID),
-        snapshot: anchors.snapshot(for: tabID, surface: surface),
+        slot: window == nil ? nil : anchors.screenRect(for: tabID),
+        snapshot: window == nil ? nil : anchors.snapshot(for: tabID, surface: surface),
         scale: window?.backingScaleFactor ?? 2,
         background: DetachedPaneWindows.opaque(window?.backgroundColor),
         level: window?.level ?? .normal, byDrag: byDrag, pointer: pointer)

@@ -1162,7 +1162,9 @@ final class AppStore: ObservableObject {
       else { return }
       // The slot, read before the window mounts the surface: it still shows the pane.
       let source = DetachedPaneWindows.PopOutSource.slot(
-        of: tabID, surface: terminals.surface(of: tabID), byDrag: byDrag, pointer: screenPoint)
+        of: tabID, surface: terminals.surface(of: tabID),
+        onScreen: self.onScreenTarget(forID: targetID) != nil, byDrag: byDrag,
+        pointer: screenPoint)
       self.openDetachedPane(
         tab: tab, target: target, origin: screenPoint, frame: nil, popOut: source)
     case .paneRestoredDetached(let targetID, let tabID, let frame):
@@ -1666,13 +1668,14 @@ final class AppStore: ObservableObject {
   /// docks when it lands.
   func dockPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard terminals.detachedTabIDs.contains(tabID) else { return showDocked(tabID, for: target) }
-    let selected = sidebarID(for: target.id).map { selectedTargetID == $0 } ?? false
-    if selected {
+    // The selected workroom, or a member of the split on screen.
+    let onScreen = onScreenTarget(forID: target.id) != nil
+    if onScreen {
       NSApp.activate(ignoringOtherApps: true)
       hostWindow?.makeKeyAndOrderFront(nil)
     }
-    // A workroom not selected has no slot on screen to land in, so its pane docks in place.
-    let slot = selected ? PaneSlotAnchors.shared.screenRect(for: tabID) : nil
+    // A workroom not on screen has no slot to land in, so its pane docks in place.
+    let slot = onScreen ? PaneSlotAnchors.shared.screenRect(for: tabID) : nil
     detachedPanes.dock(tabID, intoSlot: slot) { [weak self] in
       self?.showDocked(tabID, for: target)
     }
