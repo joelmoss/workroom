@@ -201,7 +201,10 @@ final class UnifiedTerminalDragUITests: XCTestCase {
     XCTAssertTrue(opsRow.waitForExistence(timeout: 15))
     select(app, dev, tabs: 1)
 
-    drag(paneTabs(app)[0], onto: opsRow, hold: 0.8)
+    // Over the Open list the tab lifts its row (#819): coming down from the strip, past the row
+    // above Ops, its gap opens above Ops, which slides down a row. Ops's middle is then a row
+    // lower than where it was as the drag started.
+    drag(paneTabs(app)[0], onto: opsRow, dy: 1.5, hold: 0.8)
 
     XCTAssertTrue(waitFor { self.groupRows(app) == 1 }, "Dev, emptied, goes")
     XCTAssertTrue(waitFor { self.opsTerminals(app) == 3 }, "Ops has its terminal")
@@ -332,5 +335,106 @@ final class UnifiedTerminalDragUITests: XCTestCase {
 
     XCTAssertTrue(waitFor { self.opsTerminals(app) == 1 }, "it left Ops")
     XCTAssertTrue(waitFor { devTerminals() == 2 }, "and is Dev's")
+  }
+
+  // MARK: Into another group's place in the Open view (#819)
+
+  /// The ids of the tab rows `sid`'s Open row lists under it, top to bottom.
+  private func tabRowIDs(_ app: XCUIApplication, of sid: String) -> [String] {
+    let row = element(app, "sidebar.open.workroom.\(sid)")
+    guard row.exists else { return [] }
+    let top = row.frame.maxY
+    let bottom =
+      app.descendants(matching: .any).matching(
+        NSPredicate(format: "identifier BEGINSWITH 'sidebar.open.workroom.'")
+      ).allElementsBoundByIndex.map(\.frame.minY).filter { $0 >= top - 0.5 }.min()
+      ?? .greatestFiniteMagnitude
+    var seen = Set<String>()
+    return app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH 'sidebar.open.tab.'")
+    ).allElementsBoundByIndex.filter { $0.frame.midY > top && $0.frame.midY < bottom }
+      .sorted { $0.frame.minY < $1.frame.minY }.map(\.identifier)
+      .filter { seen.insert($0).inserted }
+  }
+
+  /// Dev selected (its one terminal's row under it) and Ops unfolded by its menu's Expand, its two
+  /// terminals' rows under it. Returns Ops's tab rows and Dev's.
+  private func showBothGroupsTerminals(_ app: XCUIApplication) -> (ops: [String], dev: [String]) {
+    select(app, dev, tabs: 1)
+    let opsRow = element(app, "sidebar.open.workroom.\(ops)")
+    XCTAssertTrue(opsRow.waitForExistence(timeout: 5))
+    opsRow.rightClick()
+    let expand = app.menuItems["Expand"]
+    XCTAssertTrue(expand.waitForExistence(timeout: 5), "Ops's row offers Expand")
+    expand.click()
+    XCTAssertTrue(waitFor { self.tabRowIDs(app, of: self.ops).count == 2 }, "Ops unfolds")
+    XCTAssertTrue(waitFor { self.tabRowIDs(app, of: self.dev).count == 1 }, "Dev shows its own")
+    return (tabRowIDs(app, of: ops), tabRowIDs(app, of: dev))
+  }
+
+  /// Value: protects=a group's terminal row dragged over another group's terminal rows opens a gap
+  /// there and, let go between two of them, lands in that group in that place, not at its end
+  /// (#819 owner report: the blue line showed); fails_when=it lands at the end, stays, or the drop
+  /// is refused; why_new=#819; seam=the real Open row drag; no_claim=the gap's look
+  /// (OpenRowReflowTests)
+  func testAnOpenTabRowLetGoBetweenAnotherGroupsTerminalsLandsThere() {
+    let app = launchedApp()
+    let (opsTabs, devTabs) = showBothGroupsTerminals(app)
+    guard opsTabs.count == 2, let moving = devTabs.first else { return XCTFail("rows") }
+
+    drag(element(app, moving), onto: element(app, opsTabs[1]), dy: 0.3, hold: 0.5)
+
+    XCTAssertTrue(
+      waitFor { self.tabRowIDs(app, of: self.ops) == [opsTabs[0], moving, opsTabs[1]] },
+      "between Ops's two: \(tabRowIDs(app, of: ops))")
+  }
+
+  /// Value: protects=a pane tab dragged from the strip into the Open view lifts its own Open row
+  /// and, let go between another group's terminals, lands there as that row's drag would (#819
+  /// owner request); fails_when=a strip drag shows the line, or lands at the group's end;
+  /// why_new=#819; seam=the real strip drag over the Open list; no_claim=the ghost's look
+  func testAPaneTabDraggedIntoTheOpenViewLandsBetweenAnotherGroupsTerminals() {
+    let app = launchedApp()
+    let (opsTabs, devTabs) = showBothGroupsTerminals(app)
+    guard opsTabs.count == 2, let moving = devTabs.first else { return XCTFail("rows") }
+
+    drag(paneTabs(app)[0], onto: element(app, opsTabs[1]), dy: 0.3, hold: 0.5)
+
+    XCTAssertTrue(
+      waitFor { self.tabRowIDs(app, of: self.ops) == [opsTabs[0], moving, opsTabs[1]] },
+      "between Ops's two: \(tabRowIDs(app, of: ops))")
+  }
+
+  /// The workroom rows of the Open view, top to bottom.
+  private func openRowOrder(_ app: XCUIApplication) -> [String] {
+    var seen = Set<String>()
+    return app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH 'sidebar.open.workroom.'")
+    ).allElementsBoundByIndex.filter { $0.exists && $0.frame.height > 0 }
+      .sorted { $0.frame.minY < $1.frame.minY }.map(\.identifier)
+      .filter { seen.insert($0).inserted }
+  }
+
+  /// Value: protects=a title-bar tab dragged into the Open view lifts its Open row and, let go
+  /// between two rows (the last row's lower edge, never onto it), reorders there, the title bar
+  /// following (#819 owner request); fails_when=it joins the row, does nothing, or only the title
+  /// bar's own reorder runs; why_new=#819; seam=the real title-bar drag over the Open list;
+  /// no_claim=the ghost's look
+  func testATitleBarTabDraggedIntoTheOpenViewReordersItsRow() {
+    let app = launchedApp()
+    let row = "sidebar.open.workroom.\(standalone)"
+    XCTAssertTrue(element(app, row).waitForExistence(timeout: 15))
+    XCTAssertTrue(waitFor { self.openRowOrder(app).count >= 3 }, "a standalone and two groups")
+    let before = openRowOrder(app)
+    guard let last = before.last, last != row else { return XCTFail("order \(before)") }
+
+    drag(element(app, "workroom.tab.\(standalone)"), onto: element(app, last), dy: 0.9, hold: 0.5)
+
+    let expected = before.filter { $0 != row } + [row]
+    XCTAssertTrue(
+      waitFor { self.openRowOrder(app) == expected }, "it lands last: \(openRowOrder(app))")
+    XCTAssertTrue(
+      waitFor { self.titleBarTabs(app).last == "workroom.tab.\(self.standalone)" },
+      "its title-bar tab follows: \(titleBarTabs(app))")
   }
 }
