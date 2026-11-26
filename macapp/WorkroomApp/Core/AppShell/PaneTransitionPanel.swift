@@ -63,7 +63,8 @@ final class PaneTransitionPanel: PaneWindowTransitionSurface {
     defer { if !panel.isVisible { panel.orderFrontRegardless() } }
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    panel.setFrame(padded(pose.frame), display: true)
+    // No display pass: the card is layers showing fixed images, with nothing to draw.
+    panel.setFrame(padded(pose.frame), display: false)
     panel.alphaValue = pose.alpha
     card.toImage.alphaValue = pose.progress
     card.setCorners(radius(pose.progress), shadow: shadow(pose.progress))
