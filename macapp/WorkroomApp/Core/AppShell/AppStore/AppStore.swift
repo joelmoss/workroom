@@ -442,8 +442,11 @@ final class AppStore: ObservableObject {
     didSet { markSessionDirty() }
   }
   /// The selected target, when its Open section row was folded by hand since it was selected
-  /// (#819). Selecting a target clears it, so selecting unfolds the row.
-  var foldedSelectedOpenTarget: TerminalTarget.ID?
+  /// (#819). Selecting a target clears it, so selecting unfolds the row. Persisted with the
+  /// session, with the selection it folds (story 70).
+  var foldedSelectedOpenTarget: TerminalTarget.ID? {
+    didSet { if foldedSelectedOpenTarget != oldValue { markSessionDirty() } }
+  }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   var prActionInFlight = false
 

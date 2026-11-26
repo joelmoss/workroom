@@ -26,7 +26,8 @@ extension AppStore {
       expandedTargets: expandedTerminalTargets.isEmpty
         ? nil : expandedTerminalTargets.sorted().map(\.encoded),
       unfoldedOpenTargets: unfoldedOpenTargets.isEmpty
-        ? nil : unfoldedOpenTargets.sorted().map(\.encoded))
+        ? nil : unfoldedOpenTargets.sorted().map(\.encoded),
+      foldedSelectedTarget: foldedSelectedOpenTarget?.encoded)
   }
 
   private static let sessionLogger = Logger(
@@ -187,6 +188,10 @@ extension AppStore {
       (session.unfoldedOpenTargets ?? []).compactMap(TargetID.init(encoded:))
     )
     .intersection(restoredTargetIDs.union(deferredTargetSessions.keys))
+    // The selected row folded by hand (story 70): only for the selection it was saved with, which
+    // `reconcileWindow` has restored by now.
+    foldedSelectedOpenTarget = session.foldedSelectedTarget.flatMap(TargetID.init(encoded:))
+      .flatMap { $0 == selectedTargetID?.targetID ? $0 : nil }
 
     refreshSelectionHasTabs()
 
