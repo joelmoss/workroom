@@ -60,13 +60,15 @@ final class OpenRowDrag {
 
   /// Row `item`'s gesture reported a move to `location` (`.global`), begun at `startLocation`.
   /// The first report, the press's, arms the drag; later ones are the timer's to make, so a
-  /// gesture that does keep reporting moves nothing twice. A drag of another row still followed
-  /// ends first.
+  /// gesture that does keep reporting moves nothing twice. A report once the button is up arms
+  /// nothing: it is the gesture's own, queued while the table held the mouse and delivered after
+  /// the release, of a drag that has already ended. A drag of another row still followed ends
+  /// first.
   func changed(
     _ item: OpenSectionItem, location: CGPoint, startLocation: CGPoint,
     onMove: @escaping (Report) -> Void, onEnd: @escaping (Report) -> Void
   ) {
-    guard self.item != item else { return }
+    guard self.item != item, mouse.isDown() else { return }
     if self.item != nil { finish(at: mouse.location()) }
     self.item = item
     self.onMove = onMove
@@ -114,15 +116,18 @@ final class OpenRowDrag {
   }
 
   /// Ends the drag at `point`: a move there first when the pointer got past the last read, so the
-  /// drop and the reorder are decided where it was let go. A click ends with nothing passed on.
+  /// drop and the reorder are decided where it was let go. A press let go short of `threshold` is
+  /// a click and ends with nothing passed on; one let go past it is a drag though no read saw it
+  /// travel (a quick drag's move and release can fall between two reads).
   private func finish(at point: CGPoint) {
     let onMove = onMove
     let onEnd = onEnd
-    let started = started
     let moved = point != last
     timer?.invalidate()
     timer = nil
     let report = report(at: point)
+    let started =
+      started || hypot(report.translation.width, report.translation.height) >= Self.threshold
     item = nil
     self.onMove = nil
     self.onEnd = nil
