@@ -122,9 +122,9 @@ struct SidebarOpenList: View, Equatable {
   }
 
   var body: some View {
-    let rows = store.openSectionRows()
     // Read here, so the list re-runs only when the gap moves, never as the pointer moves alone.
     let reflow = OpenRowLift.shared.reflow(for: store)
+    let rows = store.openSectionRows(showing: reflow?.dragged)
     let entries = Self.shown(Self.entries(of: rows, showing: reflow?.dragged), in: reflow)
     let shownIDs = entries.map(\.id)
     // The model's order, which a lift starts from: what the list shows while nothing is lifted.
@@ -365,7 +365,7 @@ struct SidebarOpenList: View, Equatable {
         leavesWorkroom: { store.canMoveOpenTabToStandalone(tab.tab.id, in: row.sid) },
         joinable: {
           OpenRowLift.joinable(
-            tab.tab.id, of: row.sid, rows: store.openSectionRows(), store: store)
+            tab.tab.id, of: row.sid, rows: store.openSectionRows(showing: item), store: store)
         })
       if !lifted { lift.follow(report) }
       if isDragOutsideWindow(report.location) {
