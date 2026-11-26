@@ -61,8 +61,8 @@ struct ProjectSidebar: View, Equatable {
     // footer stays under both, on the sidebar's background, so neither list scrolls beneath it.
     VStack(spacing: 0) {
       SidebarViewSwitcher(store: store)
-        // Air between the title bar (or the reveal card's top edge) and the tabs.
-        .padding(.top, Spacing.m)
+        // Air between the switcher's hairline and the first row.
+        .padding(.bottom, Spacing.m)
       selectedView
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(SidebarEnvironment(store: store))
@@ -421,19 +421,10 @@ private struct SidebarTerminalSubtree: View, Equatable {
   }
 }
 
-/// The sidebar's footer: the oldest notification, under a hairline; nothing while there are none.
+/// The sidebar's footer: the oldest notification, as a card under the lists; nothing while there
+/// are none. No band or hairline of its own: the card is its edge.
 private struct SidebarFooter: View {
-  @EnvironmentObject private var notifications: NotificationCenterStore
-  @Environment(\.themeTokens) private var tokens
-
-  var body: some View {
-    VStack(spacing: 0) {
-      if !notifications.items.isEmpty { tokens.border.frame(height: 1) }
-      SidebarNotificationStrip()
-    }
-    // No band of its own: it sits under the lists, not over them, so the sidebar's own background
-    // (the docked column's frame colour, or the reveal panel's card) shows through.
-  }
+  var body: some View { SidebarNotificationStrip() }
 }
 
 /// A sidebar row's icon button in the rows' trailing column (`SidebarRowMetrics.iconColumnWidth`):
