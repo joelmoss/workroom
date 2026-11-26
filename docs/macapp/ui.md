@@ -135,7 +135,8 @@ fill, as before Glass. A sheet that hosts a terminal (exe.dev sign-up) lays `tok
 within glass does not touch it, and only recolours each window's base, each percent of a slider
 drag, from the observable `GlassService.opacity`, with no throttle. Add no behind-window blur view, and never write Ghostty's
 `background-blur`.
-The chrome (sidebar and inspector cards, activity bar, footers, the pane status bar) draws through
+The chrome (the docked sidebar's flat column and the inspector card, both `.card`, the activity
+bar, footers, the pane status bar) draws through
 `ChromeBackground`, the one place its Glass rules live: under glass the window frame (title bar,
 gutters, the activity bar and window footer, `.bar`) is the bare base, one colour; the cards are the
 flat panel wash over it; a band inside a card (`.cardBand`, the sidebar footer) draws nothing; and
@@ -165,7 +166,9 @@ a value read model and an `Actions` struct, built by a small `<Name>Adapter` vie
 reads the store, so Observation stays where the view's reads were.
 The sidebar's rows go further: each is an Equatable view of a value model behind a gated adapter, so a
 change elsewhere in the store re-runs no row, and the selection, drag and run state are leaves that
-read their own. The Open section's list is its rows' adapter: it rebuilds `openSectionRows()` on
+read their own. The sidebar mounts only the view its switcher shows (`SidebarViewSwitcher`, ADR
+0083), so the hidden view's rows never run; the switcher reads the selection, and each tab's
+attention dot is a leaf of its own. The Open view's list is its rows' adapter: it rebuilds `openSectionRows()` on
 any change, and each workroom and tab row compares its whole value model
 (`OpenSectionWorkroomRowModel`, `OpenSectionTabRowModel`), so only the rows whose model changed
 re-run; a tab row's menu is a modifier of its own, so its reads stay out of the row. A `.contextMenu` closure is lazy (a re-rendering row does not build its menu), so the

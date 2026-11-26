@@ -15,24 +15,34 @@ Right-click a project row for **New Workroom**, **Project Settings…** and **De
 
 To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>).
 
-### The Open section {nightly}
+### Open and Projects {nightly}
 
-The top of the sidebar is the **Open** section. It lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
+The sidebar shows one of two views at a time. The bar at its top switches between them: the terminal icon is the **Open** view, and **Projects** is the project tree. The view you're on is underlined. A new window starts on **Open**, and each window remembers its view when you relaunch. **View ▸ Show Open** and **View ▸ Show Projects** switch too, and show the sidebar if it's hidden. They have no shortcut of their own, because <kbd>⌘1</kbd> and <kbd>⌘2</kbd> switch workroom tabs, but you can give them one in **Settings ▸ Shortcuts**.
+
+A dot in the accent colour after the other view's tab means something there needs you: a workroom with unread notifications, or a terminal waiting for you.
+
+The **+** at the end of the bar works on the view you're on. In **Open** it opens a menu: **Open Workroom…** (<kbd>⌘O</kbd>), **New Terminal** (<kbd>⌥⌘T</kbd>) and **New Terminal Group…**. In **Projects** it adds a project.
+
+While you drag a terminal or a tab, rest it on the other view's tab for a moment to switch to that view, then drop it on a row there. Let a terminal go on the **Open** tab to make it a standalone terminal.
+
+The sidebar sits flat against the window's edge, with a thin line between it and the workroom. When you hide it and hover the sidebar button to reveal it, it floats over the workroom as a card, with the same bar and views.
+
+### The Open view {nightly}
+
+The **Open** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
 
 - **Select.** Click a row to select it, or one of its tabs to show that tab. Selecting a workroom unfolds it. Fold it by hand, with the arrow that takes the place of its icon when you hover the row, and it stays folded until you next select it.
 - **Close.** Hover a row for its **✕**, or right-click it and choose **Close**. It asks when the title bar's tab would.
 - **Menus.** A row's right-click menu is the one its title-bar tab has.
 - **Reorder, split, move.** Drag a row as you drag its title-bar tab: up or down to reorder the tabs, onto a pane to split, out of the window to move the workroom to another window or a new one. Drag a tab row to reorder it among its workroom's tabs, onto another row or tab to move it there, into the panes to split, or out of the window to tear it off.
 - **Terminals with no project.** A standalone terminal or a terminal group is listed only while it has tabs in this window, as its title-bar tab is, and leaves when its last tab closes. A group you closed is not lost: open it again with **Open Workroom…** (<kbd>⌘O</kbd>). See [Terminals with no project](terminals-and-tabs.md#terminals-with-no-project).
-- **Nothing open.** The section says **Nothing open**.
+- **Nothing open.** The view says **Nothing open**.
 
-The **+** in the section's heading opens a menu: **Open Workroom…** (<kbd>⌘O</kbd>), **New Terminal** (<kbd>⌥⌘T</kbd>) and **New Terminal Group…**. Click the **Open** heading to fold the section down to it.
+The tabs in the title bar are unchanged.
 
-The project tree below it, and the tabs in the title bar, are unchanged.
+### The Projects view {nightly}
 
-### The Projects section {nightly}
-
-The projects sit in the **Projects** section of the sidebar, under the **Open** section. Each section's heading stays at the top of its part of the sidebar, and each section scrolls on its own, as the inspector's sections do. Drag the line between the two sections to give one more room; Workroom remembers where you leave it. Until you drag it, the **Open** section is as tall as its rows, up to under half the sidebar, and **Projects** takes the rest. Click **Projects** to fold every project away, down to the heading, and click it again to show them. Workroom remembers the fold when you relaunch. The **+** beside **Projects** adds a project, and it is there even when you have no projects yet but the **Open** section lists standalone terminals.
+The **Projects** view is the project tree described above. With no projects yet, while the **Open** view lists standalone terminals, it says **No projects yet** and offers **Add Project…**.
 
 ## Add a project
 
