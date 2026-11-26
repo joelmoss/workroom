@@ -132,7 +132,7 @@ private struct SidebarViewTab: View {
   @ViewBuilder private var label: some View {
     let weight: Font.Weight = selected ? .semibold : .medium
     // Glyphs alone, each as wide as the rows' glyph column (the Open tab's sits over it).
-    Image(systemName: view == .open ? "terminal" : "folder")
+    Image(systemName: view == .open ? "terminal" : "square.grid.2x2")
       .font(.system(size: 12, weight: weight))
       .frame(width: SidebarRowMetrics.caretWidth)
   }
