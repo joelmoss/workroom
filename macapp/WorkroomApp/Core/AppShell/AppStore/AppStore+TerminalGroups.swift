@@ -155,9 +155,10 @@ extension AppStore {
 
   /// Rename… for Terminals-section row `sid` from away from its row (its title-bar tab): asks the
   /// row to edit its name in place, and says whether it could. It can't while the sidebar is hidden,
-  /// the section folded, or the row not drawn in this window; the caller then shows the sheet.
+  /// shows its Projects view, or doesn't draw the row in this window; the caller then shows the
+  /// sheet.
   func beginSidebarRename(_ sid: SidebarID) -> Bool {
-    guard sid.isInTerminalsSection, sidebarVisible, !terminalsSection.isFolded else { return false }
+    guard sid.isInTerminalsSection, sidebarVisible, sidebarView == .open else { return false }
     return sidebarRename.begin(sid)
   }
 

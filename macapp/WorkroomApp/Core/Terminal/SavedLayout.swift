@@ -512,12 +512,16 @@ struct WindowSession: Codable, Hashable, Sendable {
   /// `AppStore.foldedSelectedOpenTarget` — the selected target, when its Open row was folded by
   /// hand (#819 story 70).
   var foldedSelectedTarget: String?
+  /// `AppStore.sidebarView` — the view the sidebar's switcher shows (ADR 0083), as its raw value;
+  /// written only when it isn't the default, Open.
+  var sidebarView: String?
 
   init(
     windowKey: String, frame: String? = nil, isKey: Bool = false,
     selectedTargetID: String? = nil, targets: [TargetSession] = [],
     workroomSplits: [LayoutNode<String>] = [], expandedTargets: [String]? = nil,
-    unfoldedOpenTargets: [String]? = nil, foldedSelectedTarget: String? = nil
+    unfoldedOpenTargets: [String]? = nil, foldedSelectedTarget: String? = nil,
+    sidebarView: String? = nil
   ) {
     self.windowKey = windowKey
     self.frame = frame
@@ -528,6 +532,7 @@ struct WindowSession: Codable, Hashable, Sendable {
     self.expandedTargets = expandedTargets
     self.unfoldedOpenTargets = unfoldedOpenTargets
     self.foldedSelectedTarget = foldedSelectedTarget
+    self.sidebarView = sidebarView
   }
 }
 
@@ -691,6 +696,7 @@ extension WindowSession {
     window.foldedSelectedTarget = foldedSelectedTarget.map {
       String($0.prefix(SessionLimits.maxStringLength))
     }
+    window.sidebarView = sidebarView.map { String($0.prefix(SessionLimits.maxStringLength)) }
     return window
   }
 }

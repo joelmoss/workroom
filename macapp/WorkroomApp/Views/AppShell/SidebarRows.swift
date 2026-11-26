@@ -111,12 +111,10 @@ enum SidebarRowMetrics {
   /// sits 2pt in from the row's highlight (with the column's own 1pt margin around its well).
   static let iconColumnInset: CGFloat = 1
   /// What a plain `List` keeps between each side of the sidebar and a row's content, over the
-  /// row's own insets. The sticky headings sit above their pane's List, not in it (#652), so they
-  /// add it themselves to keep their chevron and "+" in line with the rows'. A row's hover and
-  /// selection fills are inset by it too, so they span exactly the rows' and headings' content.
+  /// row's own insets. The view switcher sits above the List, not in it (ADR 0083), so it adds it
+  /// itself to keep its Open glyph and "+" in line with the rows'. A row's hover and selection
+  /// fills are inset by it too, so they span exactly the rows' content.
   static let listContentInset: CGFloat = 9
-  /// Between a pane's sticky heading and its first row, at the top of the pane's List.
-  static let headingGap: CGFloat = Spacing.xs
 }
 
 /// How a terminal's row looks (`SidebarTerminalRow`): compact under a root or workroom, or as a

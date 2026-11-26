@@ -340,12 +340,11 @@ final class OpenSectionTests: XCTestCase {
       OpenSectionReorder.workroomIndex(items, from: 1, to: 0), "a tab row is no workroom")
   }
 
-  /// The pane sizes to its rows, a folded row's tabs left out, and to one row when nothing is
-  /// open, which shows "Nothing open".
-  func testThePaneSizesToTheRowsItShows() throws {
+  /// The List lists each workroom tab's row and, unfolded, its tabs' rows: a folded row's tabs
+  /// are left out, and nothing open lists no row (the view shows "Nothing open").
+  func testTheListListsTheRowsItShows() throws {
     let store = makeStore()
-    let pitch = SidebarOpenList.rowPitch
-    let empty = SidebarOpenList.contentHeight(of: [])
+    XCTAssertTrue(SidebarOpenList.items(of: store.openSectionRows()).isEmpty, "nothing open")
     try open(one, in: store)
     let target = try XCTUnwrap(store.target(for: one))
     store.terminals.addTab(for: target)
@@ -353,11 +352,9 @@ final class OpenSectionTests: XCTestCase {
 
     XCTAssertEqual(
       SidebarOpenList.items(of: store.openSectionRows()).count, 3, "one folded; two and its tab")
-    XCTAssertEqual(SidebarOpenList.contentHeight(of: store.openSectionRows()), empty + 2 * pitch)
     store.setOpenRow(one, folded: false)
     XCTAssertEqual(
-      SidebarOpenList.contentHeight(of: store.openSectionRows()), empty + 4 * pitch,
-      "one's two tabs too")
+      SidebarOpenList.items(of: store.openSectionRows()).count, 5, "one's two tabs too")
   }
 
   /// The selection scrolls into view: its focused tab's row, or its own row once folded.

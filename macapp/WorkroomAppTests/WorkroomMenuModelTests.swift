@@ -377,6 +377,7 @@ final class WorkroomMenuModelTests: XCTestCase {
   func testASidebarRowDoesNotBuildItsMenuWhenItRenders() throws {
     let store = makeStore()
     store.collapsedProjects = []
+    store.sidebarView = .projects
     var hover: Binding<Bool>?
     ProjectSidebar.didRenderHover = { [featureSID] rowID, binding in
       if rowID == featureSID { hover = binding }

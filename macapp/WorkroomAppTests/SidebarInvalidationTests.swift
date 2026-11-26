@@ -71,7 +71,8 @@ final class SidebarInvalidationTests: XCTestCase {
 
   /// Real folders, so the targets open terminals and can run a command. With `section`, the
   /// Terminals section lists a standalone terminal and a named group too, each holding one terminal.
-  private func fixture(section: Bool = false) throws -> Fixture {
+  /// The sidebar shows `view`: the Projects view's rows unless a test asks for the Open view's.
+  private func fixture(section: Bool = false, view: SidebarView = .projects) throws -> Fixture {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
       .appendingPathComponent("sidebar-invalidation-\(UUID().uuidString)")
     let paths = ["a", "b", "a/w"].map { root.appendingPathComponent($0).path }
@@ -102,6 +103,7 @@ final class SidebarInvalidationTests: XCTestCase {
       store.selectedTargetID = nil
       store.selectionStatusTask?.cancel()
     }
+    store.sidebarView = view
 
     DragHost.drag = nil
     DragHost.unrelated = nil
@@ -140,18 +142,21 @@ final class SidebarInvalidationTests: XCTestCase {
   /// Lets SwiftUI run any update the change scheduled.
   private func render(_ f: Fixture) async throws { try await render(f.view) }
 
-  /// The rows of the sidebar's two Lists together, the Terminals pane's and the Projects pane's
-  /// (#652). The headings are each pane's sticky header, not a List row, so they aren't counted;
-  /// nor is the gap each List opens under its heading (`SidebarHeadingGap`), its first row.
-  private func listRows(_ f: Fixture) throws -> Int {
+  /// The native Lists the sidebar hosts now.
+  private func tables(_ f: Fixture) -> [NSTableView] {
     func tables(_ view: NSView) -> [NSTableView] {
       if let table = view as? NSTableView { return [table] }
       return view.subviews.flatMap { tables($0) }
     }
-    let lists = tables(f.view)
-    XCTAssertEqual(lists.count, 2, "one native List per pane, Open and Projects")
-    // The Projects pane's: the Open pane's rows are the window's workroom tabs (`OpenSectionTests`).
-    return (lists.last?.numberOfRows ?? 1) - 1
+    return tables(f.view)
+  }
+
+  /// The rows of the List the sidebar shows, the Projects view's unless a test switches it (ADR
+  /// 0083). The switcher sits above it, not in it, so it isn't counted.
+  private func listRows(_ f: Fixture) throws -> Int {
+    let lists = tables(f)
+    XCTAssertEqual(lists.count, 1, "one native List: the view the switcher shows")
+    return lists.first?.numberOfRows ?? 0
   }
 
   // MARK: Terminals
@@ -611,7 +616,7 @@ final class SidebarInvalidationTests: XCTestCase {
   /// A standalone terminal's agent stopping changes what its Open row shows (its spinner), and
   /// nothing of any other Open row, the group's and the roots' beside it included (#819).
   func testAnAgentInAStandaloneTerminalReRunsOnlyItsOpenRow() async throws {
-    let f = try fixture(section: true)
+    let f = try fixture(section: true, view: .open)
     defer { close(f) }
     let sid = try XCTUnwrap(f.standalone)
     let surface = try surface(of: sid, f)
@@ -635,7 +640,7 @@ final class SidebarInvalidationTests: XCTestCase {
   /// fails_when=the tab rows have no equality gate, so any change to the list re-runs every one;
   /// seam=SidebarRowPasses.openRows
   func testAnAgentInOneTabReRunsOnlyThatTabsOpenRow() async throws {
-    let f = try fixture()
+    let f = try fixture(view: .open)
     defer { close(f) }
     let other = f.store.terminals.addTab(for: f.a.rootTarget)
     f.store.terminals.select(f.tabA, for: f.a.rootTarget)
@@ -671,7 +676,7 @@ final class SidebarInvalidationTests: XCTestCase {
     var hovers: [OpenSectionItem: Binding<Bool>] = [:]
     ProjectSidebar.didRenderOpenHover = { item, binding in hovers[item] = binding }
     defer { ProjectSidebar.didRenderOpenHover = nil }
-    let f = try fixture(section: true)
+    let f = try fixture(section: true, view: .open)
     defer { close(f) }
     let group = try XCTUnwrap(f.group)
     try await render(f)
@@ -685,25 +690,44 @@ final class SidebarInvalidationTests: XCTestCase {
       Set(SidebarRowPasses.openRows.keys), [.workroom(group)], "only the hovered row re-runs")
   }
 
-  // MARK: Terminals section
+  // MARK: The view switcher
 
-  /// Value: protects=the Projects heading's fold hides every project's rows and brings them back,
-  /// leaving the Open section and the heading itself; fails_when=folding leaves a project row,
-  /// or takes the heading or a Terminals row with it; no_claim=the chevron's click (a UI test's)
-  func testFoldingTheProjectsHidesEveryProjectsRows() async throws {
-    let f = try fixture()
+  /// Value: protects=the sidebar mounts only the view its switcher shows, so the hidden one's rows
+  /// neither run nor stay on screen as drop zones (ADR 0083); fails_when=both Lists stay mounted,
+  /// the Projects tree keeps running behind the Open view, or switching back loses a row;
+  /// no_claim=the tabs' clicks (`SidebarViewSwitcherUITests`)
+  func testTheSidebarMountsOnlyTheViewItShows() async throws {
+    SidebarRowPasses.reset()
+    let f = try fixture(section: true)
     defer { close(f) }
     try await render(f)
-    XCTAssertEqual(try listRows(f), 5)
+    XCTAssertEqual(try listRows(f), 5, "the Projects view: A, its root and workroom, B, its root")
+    XCTAssertTrue(SidebarRowPasses.openRows.isEmpty, "no Open row behind it")
 
-    f.store.projectsFolded = true
+    f.store.sidebarView = .open
+    try await settleSwitch(f)
+    SidebarRowPasses.reset()
+    f.store.collapsedProjects.insert(f.a.path)
     try await render(f)
-    XCTAssertEqual(try listRows(f), 0, "no project's row")
+    XCTAssertEqual(tables(f).count, 1, "the Open view's List alone")
+    XCTAssertEqual(SidebarRowPasses.tree, 0, "a change to the hidden tree runs no tree")
+    XCTAssertEqual(SidebarRowPasses.total, 0, "nor any of its rows")
 
-    f.store.projectsFolded = false
-    try await render(f)
-    XCTAssertEqual(try listRows(f), 5, "unfolded, every project's rows are back")
+    f.store.collapsedProjects = []
+    f.store.sidebarView = .projects
+    try await settleSwitch(f)
+    XCTAssertEqual(try listRows(f), 5, "back, every project's rows are there")
   }
+
+  /// Renders past the views' cross-fade, so the view going has gone.
+  private func settleSwitch(_ f: Fixture) async throws {
+    for _ in 0..<6 {
+      try await render(f)
+      try await Task.sleep(for: .milliseconds(60))
+    }
+  }
+
+  // MARK: Terminals section
 
   /// A group's row leaves out only the terminals listed under it, whose own rows show their
   /// marks: a terminal waiting in another window, listed nowhere here, still shows on it.

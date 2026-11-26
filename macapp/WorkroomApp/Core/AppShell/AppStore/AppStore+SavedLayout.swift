@@ -27,7 +27,8 @@ extension AppStore {
         ? nil : expandedTerminalTargets.sorted().map(\.encoded),
       unfoldedOpenTargets: unfoldedOpenTargets.isEmpty
         ? nil : unfoldedOpenTargets.sorted().map(\.encoded),
-      foldedSelectedTarget: foldedSelectedOpenTarget?.encoded)
+      foldedSelectedTarget: foldedSelectedOpenTarget?.encoded,
+      sidebarView: sidebarView == .open ? nil : sidebarView.rawValue)
   }
 
   private static let sessionLogger = Logger(
@@ -130,6 +131,10 @@ extension AppStore {
     // last written by whichever OTHER window was active — decide this window's selection, which is
     // exactly the per-window authority the session file exists to provide.
     pendingRestoreSelection = claimed.selectedTargetID.flatMap(TargetID.init(encoded:))
+    // The sidebar's view (ADR 0083) depends on nothing loading, so it comes back with the claim,
+    // before the window's first restore: no flash of the Open view in a window saved on Projects.
+    // A value this build doesn't know shows Open.
+    sidebarView = claimed.sidebarView.flatMap(SidebarView.init(rawValue:)) ?? .open
   }
 
   /// Rehydrate the claimed session at the end of `apply(_:)`. One-shot: `apply` runs twice per

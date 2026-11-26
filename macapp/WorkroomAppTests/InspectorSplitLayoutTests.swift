@@ -148,13 +148,17 @@ final class InspectorSplitLayoutTests: XCTestCase {
     XCTAssertEqual(result.collapsed, [true, false, false])
     XCTAssertEqual(result.weights, [1, 2, 1])
   }
-  // MARK: The sidebar's split (#652)
+  // MARK: A content-sized split (#652)
 
-  /// A two-pane split laid out in a real view of `height`, with the sidebar's sizing.
+  /// A two-pane split laid out in a real view of `height`, sized as the sidebar's two sections
+  /// were before its view switcher (ADR 0083): the first pane floored at one row and held through a
+  /// resize, restoring its layout on unfold, sized to its content up to half the split.
   private func sidebarSplit(height: CGFloat) -> InspectorSplitContainerController {
     let container = InspectorSplitContainerController()
     container.isLikelyUserDrag = { false }
-    container.sizing = ProjectSidebar.splitSizing
+    container.sizing = InspectorSplitContainerController.Sizing(
+      minHeights: [76, 120], holdingPriorities: [.defaultLow + 10, .defaultLow],
+      restoresLayoutOnExpand: true, preferredCap: 0.5)
     container.install(panes: [InspectorPaneViewController(), InspectorPaneViewController()])
     container.view.frame = CGRect(x: 0, y: 0, width: 300, height: height)
     return container

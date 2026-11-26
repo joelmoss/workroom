@@ -24,6 +24,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         })
     }
     store.collapsedProjects = []
+    store.sidebarView = .projects
     let id = SidebarID.root(project: store.projectStore.projects[0].path)
     store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: false)
     ProjectSidebar.rowEvaluations = 0
@@ -86,6 +87,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         })
     }
     store.collapsedProjects = []
+    store.sidebarView = .projects
     let id = SidebarID.root(project: store.projectStore.projects[0].path)
     var hover: Binding<Bool>?
     ProjectSidebar.didRenderHover = { rowID, binding in
@@ -116,12 +118,10 @@ final class SidebarBenchmarkTests: XCTestCase {
       if let table = view as? NSTableView { return [table] }
       return view.subviews.flatMap { tables($0) }
     }
-    // The Projects pane's List, under the Terminals pane's (#652).
+    // The Projects view's List, the one the switcher shows (ADR 0083).
     let list = try XCTUnwrap(tables(hosting).last, "must host the native List")
-    // 32 projects × (project + root + five workrooms), under the gap below the heading
-    // (`SidebarHeadingGap`). The Terminals and Projects headings are their panes' sticky headers,
-    // and the Terminals rows are in their own List (#652).
-    XCTAssertEqual(list.numberOfRows, 225, "the hover wrappers must preserve individual List rows")
+    // 32 projects × (project + root + five workrooms). The switcher sits above the List.
+    XCTAssertEqual(list.numberOfRows, 224, "the hover wrappers must preserve individual List rows")
     var samples: [Double] = []
     var rows: [Int] = []
     for _ in 0..<3 {
@@ -140,11 +140,11 @@ final class SidebarBenchmarkTests: XCTestCase {
     store.collapsedProjects.insert(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
-    XCTAssertEqual(list.numberOfRows, 219, "collapse removes the root and five workrooms")
+    XCTAssertEqual(list.numberOfRows, 218, "collapse removes the root and five workrooms")
     store.collapsedProjects.remove(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
-    XCTAssertEqual(list.numberOfRows, 225, "expand restores every row")
+    XCTAssertEqual(list.numberOfRows, 224, "expand restores every row")
   }
 
   func testSidebarScaling() async throws {
@@ -164,6 +164,7 @@ final class SidebarBenchmarkTests: XCTestCase {
           })
       }
       store.collapsedProjects = []
+      store.sidebarView = .projects
       store.notifications.seedForTesting(
         (0..<500).map { index in
           WorkroomNotification(

@@ -176,18 +176,14 @@ struct EdgeRevealSidebar<Content: View>: View {
 
   private var panel: some View {
     content()
-      // Breathing room between the card's top edge and the first row — matches the native pinned
-      // card's top inset. Only for the leading sidebar (a List); the trailing inspector's first
-      // element is a full-width header bar that sits flush.
-      .padding(.top, side == .leading ? 10 : 0)
+      // Flush to the card's top: the leading sidebar's first element is its view switcher, and the
+      // trailing inspector's a full-width header bar, each a bar of its own.
       .frame(width: width)
       .frame(maxHeight: .infinity)
-      // The same floating card the docked column uses (`sidebarCard`). `topMargin: 0` extends the card
-      // up to sit flush below the toolbar like the native pinned card (the reveal's safe-area top is
-      // ~8pt lower than the native card's top), so pinned and unpinned line up.
-      // Both docked columns now use the frosted `.sidebar` vibrancy, so both reveals match them
-      // (pinned == unpinned). `elevated`: an unpinned panel floats over the content, so it gets a
-      // deeper drop shadow than the docked card.
+      // A floating card. `topMargin: 0` extends the card up to sit flush below the toolbar (the
+      // reveal's safe-area top is ~8pt lower than the docked columns' top). The docked sidebar is a
+      // flat column (ADR 0083) and the docked inspector a card, on the same backing as this one.
+      // `elevated`: an unpinned panel floats over the content, so it gets a deeper drop shadow.
       .sidebarCard(topMargin: 0, elevated: true)
       .offset(x: panelOffsetX)
       .opacity(reducer.revealed ? 1 : 0)

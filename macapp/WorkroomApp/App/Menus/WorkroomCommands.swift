@@ -441,6 +441,15 @@ struct WorkroomCommands: Commands {
       Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
         .shortcut(.projects)
         .disabled(modalBlocked || noSidebarContent)
+      // The sidebar's two views (ADR 0083), as its switcher's tabs pick them, showing the sidebar
+      // if it is hidden. Buttons, not checkmarked toggles: this body doesn't re-run when the store
+      // changes, so a checkmark would go stale. No default keys: ⌘1 and ⌘2 switch workroom tabs.
+      Button("Show Open") { store?.showSidebarView(.open) }
+        .shortcut(.showOpenView)
+        .disabled(modalBlocked || noSidebarContent)
+      Button("Show Projects") { store?.showSidebarView(.projects) }
+        .shortcut(.showProjectsView)
+        .disabled(modalBlocked || noSidebarContent)
     }
 
     CommandGroup(after: .sidebar) {
