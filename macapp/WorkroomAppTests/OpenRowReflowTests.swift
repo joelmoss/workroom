@@ -418,6 +418,7 @@ final class OpenRowReflowTests: XCTestCase {
         items: placeholder, dragged: .tab(d, in: one), leavesWorkroom: true, joinable: [two],
         measured: measured))
     XCTAssertEqual(reflow.order, placeholder, "its slot under its folded workroom")
+    XCTAssertEqual(reflow.anchor, .workroom(one), "measured on its folded workroom's row")
     XCTAssertEqual(
       reflow.liftedY(for: y(2, 0.5), pitch: pitch), y(1, 0.5), "two, measured a row up")
     XCTAssertEqual(reflow.liftedY(for: y(6, 0.5), pitch: pitch), y(5, 0.5), "three")

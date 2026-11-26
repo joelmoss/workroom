@@ -90,6 +90,10 @@ struct OpenRowReflow: Equatable {
     landing = .among(origin)
   }
 
+  /// The row whose place on screen measures the list: the lifted row's own, or, for a placeholder,
+  /// its folded workroom's.
+  var anchor: OpenSectionItem { measured.contains(dragged) ? dragged : .workroom(dragged.owner) }
+
   /// The index among `domain` a drop now gives it, nil when it would stay where it is or leave
   /// its workroom.
   var movedIndex: Int? {
