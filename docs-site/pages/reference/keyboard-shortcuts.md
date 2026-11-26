@@ -133,12 +133,16 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 | Action | Keys |
 | --- | --- |
 | Show Sidebar | <kbd>⌃⌘S</kbd> |
+| Sidebar: Terminals | <kbd>⌃⌘T</kbd> |
+| Sidebar: Projects | <kbd>⌃⌘P</kbd> |
 | Show Inspector | <kbd>⌘B</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
 | Changes | <kbd>⌥⌘C</kbd> |
 | History | <kbd>⌥⌘Y</kbd> |
 | Pull Request | <kbd>⌥⌘P</kbd> |
 | Files | <kbd>⌥⌘F</kbd> |
+
+Nightly only: **Sidebar: Terminals** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. In the stable release **Show Sidebar** is **Projects** and **Show Inspector** is **Inspector**. See [Open and Projects](../app/projects.md#open-and-projects).
 
 <!-- stable -->
 ## Navigation & Attention
