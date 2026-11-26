@@ -61,6 +61,8 @@ struct ProjectSidebar: View, Equatable {
     // footer stays under both, on the sidebar's background, so neither list scrolls beneath it.
     VStack(spacing: 0) {
       SidebarViewSwitcher(store: store)
+        // Air between the title bar (or the reveal card's top edge) and the tabs.
+        .padding(.top, Spacing.m)
       selectedView
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(SidebarEnvironment(store: store))
@@ -429,8 +431,8 @@ private struct SidebarFooter: View {
       if !notifications.items.isEmpty { tokens.border.frame(height: 1) }
       SidebarNotificationStrip()
     }
-    // A band of the sidebar card: under glass the card's own tint shows through it (#730).
-    .background { ChromeBackground(role: .cardBand) }
+    // No band of its own: it sits under the lists, not over them, so the sidebar's own background
+    // (the docked column's frame colour, or the reveal panel's card) shows through.
   }
 }
 

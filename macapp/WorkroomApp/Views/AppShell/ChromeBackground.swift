@@ -4,17 +4,14 @@ import SwiftUI
 
 /// A piece of the main window's chrome, by what it draws on with Glass off.
 enum ChromeRole: Equatable, Sendable {
-  /// The sidebar and inspector cards, docked and edge-revealed, and a pane's status bar: the
-  /// `.sidebar` vibrancy under a panel wash.
+  /// The inspector card and a pane's status bar: the `.sidebar` vibrancy under a panel wash.
   case card
   /// A card that floats over the window's content (the edge-reveal sidebar over the terminals):
   /// `card`, laid on the window base again under glass so what it covers does not show through.
   case floatingCard
-  /// A band inside a card that covers what scrolls under it, such as the sidebar's footer: the
-  /// card's own backing with Glass off; nothing under glass, where the card's tint shows through.
-  case cardBand
-  /// The activity bar and the window footer: the flat theme panel with Glass off; nothing under
-  /// glass, so they are the bare window base like the title bar and gutters, one frame colour.
+  /// The docked sidebar, the activity bar and the window footer: the flat theme panel with Glass
+  /// off; nothing under glass, so they are the bare window base like the title bar and gutters, one
+  /// frame colour.
   case bar
 }
 
@@ -41,7 +38,7 @@ struct ChromeBackground: View {
     switch (role, glass.isGlass) {
     case (.bar, false):
       panel
-    case (.card, false), (.floatingCard, false), (.cardBand, false):
+    case (.card, false), (.floatingCard, false):
       VisualEffectView().overlay(ThemeFill.panel.opacity(Self.cardWash))
     case (.card, true):
       panel
@@ -49,7 +46,7 @@ struct ChromeBackground: View {
       // The window base again under the wash, so the terminals it floats over do not show through.
       Rectangle().fill(Color(nsColor: WindowBackgroundThemer.baseColor(glass, tokens: tokens)))
         .overlay { panel }
-    case (.cardBand, true), (.bar, true):
+    case (.bar, true):
       Color.clear
     }
   }

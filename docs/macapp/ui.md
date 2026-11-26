@@ -135,11 +135,11 @@ fill, as before Glass. A sheet that hosts a terminal (exe.dev sign-up) lays `tok
 within glass does not touch it, and only recolours each window's base, each percent of a slider
 drag, from the observable `GlassService.opacity`, with no throttle. Add no behind-window blur view, and never write Ghostty's
 `background-blur`.
-The chrome (the docked sidebar's flat column and the inspector card, both `.card`, the activity
-bar, footers, the pane status bar) draws through
-`ChromeBackground`, the one place its Glass rules live: under glass the window frame (title bar,
-gutters, the activity bar and window footer, `.bar`) is the bare base, one colour; the cards are the
-flat panel wash over it; a band inside a card (`.cardBand`, the sidebar footer) draws nothing; and
+The chrome (the docked sidebar, the inspector card, the activity bar, footers, the pane status
+bar) draws through
+`ChromeBackground`, the one place its Glass rules live: the window frame (title bar, gutters, the
+docked sidebar, the activity bar and window footer, `.bar`) is one colour, the bare base under
+glass; the cards (`.card`) are the panel wash over it; and
 a floating card (`.floatingCard`, the edge-reveal sidebar) lays the base again under its wash, so the
 terminals do not show through it. A workroom's tab strip and pane header have no background of
 their own, Glass on or off: the pane card's raised fill is under them. No blur material, since a
