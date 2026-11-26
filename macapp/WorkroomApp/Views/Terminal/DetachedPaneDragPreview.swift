@@ -51,26 +51,10 @@ final class DetachedPaneDragPreview {
       if panel.frame.size != size { panel.setContentSize(size) }
       return panel
     }
-    let panel = NSPanel(
-      contentRect: NSRect(origin: .zero, size: size),
-      styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
-    panel.isFloatingPanel = true
-    panel.level = .floating
-    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
-    panel.isOpaque = false
-    panel.backgroundColor = .clear
-    panel.hasShadow = false
-    panel.isReleasedWhenClosed = false
-    panel.isExcludedFromWindowsMenu = true
-    panel.animationBehavior = .none
-    // A drag is in flight over this panel the whole time it is up; it must never intercept the mouse.
-    panel.ignoresMouseEvents = true
-    panel.setAccessibilityIdentifier("detachedPane.dragPreview")
-
     let host = NSHostingView(
       rootView: DetachedPaneGhost(title: "", glyph: nil, size: size).themeTokensRoot())
-    host.autoresizingMask = [.width, .height]
-    panel.contentView = host
+    let panel = DragGhostPanel.make(
+      identifier: "detachedPane.dragPreview", size: size, content: host)
     self.host = host
     self.panel = panel
     return panel
