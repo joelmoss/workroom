@@ -30,12 +30,15 @@ tools-check: ## Compare this machine's tools with the versions the repo pins (re
 # daemon, bootstrap, CLI or remote-host change.
 PRE_PUSH_GATES := app-test-scripts docs-check docs-site-check vcs-lint vcs-lint-linux vcs-test notices-check \
   app-lint app-package-test
-pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master)
+pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master, or a newer libgit2 is out)
 	@git fetch origin master --quiet 2>/dev/null || echo "pre-push: couldn't fetch origin/master"
 	@behind=$$(git rev-list --count HEAD..origin/master 2>/dev/null || echo 0); \
 	if [ "$$behind" -gt 0 ]; then \
 	  echo "pre-push: $$behind commit(s) behind origin/master. CI tests the merge: merge origin/master first."; \
 	fi; \
+	latest=$$(macapp/Scripts/vendor-libgit2.sh --latest 2>/dev/null) \
+	  || latest="newer: couldn't check for a newer libgit2 release (no network?)"; \
+	printf '%s\n' "$$latest" | sed -n 's/^newer: /pre-push: /p'; \
 	failed=""; \
 	for gate in $(PRE_PUSH_GATES); do \
 	  echo "== make $$gate"; \

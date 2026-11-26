@@ -9,7 +9,11 @@
 #   macapp/Scripts/vendor-libgit2.sh                  # vendor LIBGIT2 below
 #   LIBGIT2=v1.9.8 macapp/Scripts/vendor-libgit2.sh   # vendor another tag (then update LIBGIT2)
 #   macapp/Scripts/vendor-libgit2.sh --check          # verify libgit2/ matches VENDOR.md
-#   macapp/Scripts/vendor-libgit2.sh --latest         # print the pinned and the newest tags
+#   macapp/Scripts/vendor-libgit2.sh --latest         # print the pinned and the newest tags, and a
+#                                                     # `newer:` line for each newer release
+#
+# `make pre-push` shows the `newer:` lines, so a new libgit2 release (a security fix, usually) is
+# noticed at the next push. LIBGIT2_REPO points --latest at another repository (its test does).
 #
 # The copy is what upstream's CMake compiles for the configuration below, file for file, plus the
 # two headers CMake would generate (`src/util/git2_features.h`, `include/git2/experimental.h`),
@@ -23,7 +27,7 @@ set -euo pipefail
 PKG="$(cd "$(dirname "${BASH_SOURCE[0]}")/../Packages/LibGit2" && pwd)"
 LIB="$PKG/libgit2"
 MANIFEST="$PKG/VENDOR.md"
-REPO="https://github.com/libgit2/libgit2"
+REPO="${LIBGIT2_REPO:-https://github.com/libgit2/libgit2}"
 LIBGIT2_DEFAULT="v1.9.7"
 
 # The configuration: upstream CMake's macOS defaults, except that every network transport and
@@ -100,11 +104,25 @@ release_tags() {
 
 if [[ "${1:-}" == "--latest" ]]; then
   pinned="$(grep -E '^- Version:' "$MANIFEST" 2>/dev/null | awk -F'`' '{print $2}')"
-  tags="$(release_tags)"
-  line="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"${pinned:-$LIBGIT2_DEFAULT}")"
-  echo "pinned:              ${pinned:-none}"
-  echo "newest on ${line}:     $(grep -E "^${line//./\\.}\." <<<"$tags" | tail -1)"
-  echo "newest release:      $(tail -1 <<<"$tags")"
+  pinned="${pinned:-$LIBGIT2_DEFAULT}"
+  tags="$(release_tags)" || { echo "couldn't list the tags of $REPO" >&2; exit 1; }
+  [[ -n "$tags" ]] || { echo "$REPO has no release tags" >&2; exit 1; }
+  line="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$pinned")"
+  on_line="$(grep -E "^${line//./\\.}\." <<<"$tags" | tail -1 || true)"
+  newest="$(tail -1 <<<"$tags")"
+  echo "pinned:              $pinned"
+  echo "newest on ${line}:     ${on_line:-none}"
+  echo "newest release:      $newest"
+  # newer A B: A sorts after B as a version.
+  newer() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]; }
+  if [[ -n "$on_line" ]] && newer "$on_line" "$pinned"; then
+    echo "newer: libgit2 $on_line is out (pinned $pinned); read its release notes, then vendor it:" \
+      "LIBGIT2=$on_line macapp/Scripts/vendor-libgit2.sh"
+  fi
+  if [[ "$newest" != "$on_line" ]] && newer "$newest" "$pinned"; then
+    echo "newer: libgit2 $newest is out, a new release line (pinned $pinned); its API may" \
+      "have changed, so read its release notes before vendoring it"
+  fi
   exit 0
 fi
 
