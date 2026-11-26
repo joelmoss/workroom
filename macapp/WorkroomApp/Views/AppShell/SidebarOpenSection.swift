@@ -522,28 +522,11 @@ struct SidebarOpenWorkroomRow: View, Equatable {
     }
   }
 
-  @ViewBuilder private var title: some View {
-    let unread = marks.hasUnread
-    HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
-      if let standalone = presentation.standaloneTitle {
-        TerminalTitleLabel(title: standalone, folderFont: .subheadline)
-          .foregroundStyle(
-            unread ? tokens.accent : Color.primary,
-            unread ? tokens.accent.opacity(0.7) : tokens.fgMuted
-          )
-          .truncationMode(.middle)
-      } else {
-        Text(presentation.primaryLabel)
-          .foregroundStyle(unread ? tokens.accent : Color.primary)
-      }
-      if let workroom = presentation.workroomName {
-        Text("/").foregroundStyle(.tertiary)
-        Text(workroom).foregroundStyle(.secondary)
-      }
-    }
+  private var title: some View {
+    WorkroomTabTitle(
+      presentation: presentation, hasUnread: marks.hasUnread, folderFont: .subheadline
+    )
     .font(FontRole.body)
-    .lineLimit(1)
-    .truncationMode(.tail)
   }
 
   /// The name field Rename… shows in the title's place: a group's name, or a standalone
@@ -590,26 +573,12 @@ struct SidebarOpenWorkroomRow: View, Equatable {
         if let id = row.sid.targetID { store.showWaiting(inSectionTarget: id) }
       }
     } else {
-      switch marks.busy {
-      case .running(let failed):
-        RunningSpinner(failed: failed)
-          .help(failed ? "A command reported an error" : "A command is running")
-      case .error:
-        RunningSpinner(failed: true).help("A command reported an error")
-      default: EmptyView()
-      }
+      RunningSpinner.of(marks.busy)
     }
   }
 
   @ViewBuilder private var runMark: some View {
-    if let run = marks.run {
-      let running = run == .running
-      Image(systemName: running ? "play.circle.fill" : "xmark.octagon.fill")
-        .font(.system(size: 10))
-        .foregroundStyle(running ? tokens.success : tokens.failure)
-        .help(running ? "Run command running" : "Run command failed")
-        .accessibilityLabel(running ? "run running" : "run failed")
-    }
+    if let run = marks.run { WorkroomRunMark(run: run) }
   }
 
   private func requestClose() {
@@ -733,7 +702,8 @@ struct SidebarOpenTabRow: View, Equatable {
 
   @ViewBuilder private var statusMark: some View {
     if let runState = row.runState {
-      runStateMark(runState)
+      // The row's label says it, as the chip's value does.
+      RunStateIcon(state: runState).accessibilityHidden(true)
     } else if indicator == .blocked || indicator == .done {
       let blocked = indicator == .blocked
       ProgramStatusGlyph(
@@ -741,28 +711,8 @@ struct SidebarOpenTabRow: View, Equatable {
       )
       .help(blocked ? "Waiting for you" : ProgramStatusPresentation.turnFinished)
       .accessibilityHidden(true)
-    } else if case .running(let failed) = indicator {
-      RunningSpinner(failed: failed)
-        .help(failed ? "A command reported an error" : "A command is running")
-    } else if indicator == .error {
-      RunningSpinner(failed: true).help("A command reported an error")
-    }
-  }
-
-  @ViewBuilder private func runStateMark(_ state: TabRunState) -> some View {
-    switch state {
-    case .running:
-      Image(systemName: "play.circle.fill").font(.system(size: 10))
-        .foregroundStyle(tokens.success).help("Run command running")
-    case .stopping:
-      Image(systemName: "stop.circle").font(.system(size: 10))
-        .foregroundStyle(.secondary).help("Run command stopping")
-    case .failed:
-      Image(systemName: "xmark.octagon.fill").font(.system(size: 10))
-        .foregroundStyle(tokens.failure).help("Run command failed")
-    case .stopped:
-      Image(systemName: "stop.circle").font(.system(size: 10))
-        .foregroundStyle(.tertiary).help("Run command stopped")
+    } else {
+      RunningSpinner.of(indicator)
     }
   }
 
@@ -770,7 +720,7 @@ struct SidebarOpenTabRow: View, Equatable {
     var parts = [title]
     if row.isPreview { parts.append("preview") }
     if row.hasDiagnosis { parts.append("diagnosis available") }
-    if let runState = row.runState { parts.append("run \(runState)") }
+    if let runState = row.runState { parts.append("run \(RunStateIcon.label(runState))") }
     parts += ProgramStatusPresentation.accessibilityParts(
       indicator: indicator, rollup: row.programStatus)
     if row.hasUnread { parts.append("unread activity") }

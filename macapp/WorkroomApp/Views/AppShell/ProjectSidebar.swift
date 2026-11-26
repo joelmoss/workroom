@@ -664,6 +664,18 @@ struct RunningSpinner: View {
   }
 }
 
+extension RunningSpinner {
+  /// The busy mark `indicator` shows on a row: dots while a command runs, the failure mark once one
+  /// reported an error, else nothing. Shared by the Open section's workroom and tab rows (#819).
+  @ViewBuilder static func of(_ indicator: PaneIndicator) -> some View {
+    switch indicator {
+    case .running(let failed): RunningSpinner(failed: failed)
+    case .error: RunningSpinner(failed: true)
+    case .blocked, .done, .none: EmptyView()
+    }
+  }
+}
+
 /// The sidebar's busy mark: three small dots that light up in turn, left to right, like a typing
 /// indicator. Quieter than a system spinner, so a column of busy rows doesn't shout over their
 /// names. Its square frame is the small spinner's it replaced, so no row's layout moved. One
