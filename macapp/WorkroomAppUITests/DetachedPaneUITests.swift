@@ -114,10 +114,12 @@ final class DetachedPaneUITests: XCTestCase {
         .firstMatch.exists,
       "the pane drops its own title bar in there — the window's title bar names it instead")
 
-    // 2. The pane moved, nothing was cloned.
+    // 2. The pane moved, and its slot stayed behind in the main window, showing its placeholder:
+    // one more pane element app-wide, the slot's.
     XCTAssertTrue(
-      waitForPaneCount(app, panesBefore),
-      "the pane moved windows; nothing was created or destroyed")
+      waitForPaneCount(app, panesBefore + 1),
+      "the pane moved windows and its slot stayed; nothing else was created or destroyed")
+    XCTAssertTrue(placeholder(app).waitForExistence(timeout: 5), "the slot shows its placeholder")
 
     // 3. The menu item flips with key focus, then docking restores the launch state.
     detached.click()  // make the detached window key
@@ -158,6 +160,72 @@ final class DetachedPaneUITests: XCTestCase {
       waitForWindowCount(app, windowsBefore), "the window goes when its pane does")
     XCTAssertTrue(
       waitForPaneCount(app, panesBefore - 1),
-      "and the pane is gone from the app entirely, not docked back")
+      "and the pane is gone from the app entirely, not docked back, its slot with it")
+    XCTAssertFalse(placeholder(app).exists, "no placeholder is left behind")
+  }
+
+  /// The element matching `id` + a tab id, whichever tab it is.
+  private func element(_ app: XCUIApplication, idPrefix: String) -> XCUIElement {
+    app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", idPrefix)).firstMatch
+  }
+
+  private func placeholder(_ app: XCUIApplication) -> XCUIElement {
+    element(app, idPrefix: "pane.poppedOut.pullBack.")
+  }
+
+  /// The placeholder a popped-out pane leaves in its slot (issue #172): both buttons, Pull Back
+  /// Here docking the pane into that slot, and Go to Window bringing the pane's window to the
+  /// front.
+  func testThePoppedOutSlotsPlaceholderPullsBackAndGoesToTheWindow() throws {
+    let app = launchedApp()
+    waitForLaunchWindow(app)
+    let windowsBefore = app.windows.count
+    let panesBefore = terminalPanes(app).count
+
+    // Pop out: the slot shows the placeholder, with both of its buttons.
+    popOutMenuItem(app).click()
+    XCTAssertTrue(waitForWindowCount(app, windowsBefore + 1))
+    let pullBack = placeholder(app)
+    XCTAssertTrue(pullBack.waitForExistence(timeout: 5), "Pull Back Here is offered")
+    XCTAssertTrue(
+      element(app, idPrefix: "pane.poppedOut.goToWindow.").exists, "and so is Go to Window")
+    XCTAssertTrue(
+      element(app, idPrefix: "pane.poppedOut.title.").exists, "under a line saying where it went")
+
+    // Pull Back Here: the window goes, the pane is back in its slot, the placeholder gone.
+    pullBack.click()
+    XCTAssertTrue(waitForWindowCount(app, windowsBefore), "its window goes")
+    XCTAssertTrue(detachedWindow(app).waitForNonExistence(timeout: 5))
+    XCTAssertTrue(placeholder(app).waitForNonExistence(timeout: 5), "the placeholder goes")
+    XCTAssertTrue(waitForPaneCount(app, panesBefore), "and the pane is back where it was")
+
+    // Pop out again, put the main window in front, then Go to Window.
+    popOutMenuItem(app).click()
+    XCTAssertTrue(waitForWindowCount(app, windowsBefore + 1))
+    let slot = element(app, idPrefix: "pane.poppedOut.goToWindow.")
+    XCTAssertTrue(slot.waitForExistence(timeout: 5))
+    // A click on the placeholder away from its buttons makes the main window key.
+    element(app, idPrefix: "pane.poppedOut.title.")
+      .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: -2)).click()
+    XCTAssertTrue(
+      waitForFrontWindow(app, isDetached: false), "precondition: the main window is in front")
+
+    slot.click()
+
+    XCTAssertTrue(
+      waitForFrontWindow(app, isDetached: true),
+      "Go to Window brings the pane's window to the front")
+    XCTAssertTrue(placeholder(app).exists, "and leaves the pane popped out")
+  }
+
+  /// Whether the frontmost window is (or isn't) the detached pane's, once it settles. XCUITest
+  /// lists an app's windows front to back.
+  private func waitForFrontWindow(_ app: XCUIApplication, isDetached: Bool) -> Bool {
+    let predicate = NSPredicate { _, _ in
+      (app.windows.firstMatch.identifier == "detachedPane.window") == isDetached
+    }
+    let exp = XCTNSPredicateExpectation(predicate: predicate, object: nil)
+    return XCTWaiter().wait(for: [exp], timeout: 6) == .completed
   }
 }
