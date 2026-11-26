@@ -425,6 +425,21 @@ final class DetachedPaneTests: XCTestCase {
       "and it is still a tab, so a bulk close must be able to see it")
   }
 
+  /// The typing marker names a popped-out sender by its own window, where it is seen and typed
+  /// into, though it keeps its strip slot; the tab after it keeps its strip number.
+  func testATypingMarkerNamesAPoppedOutSenderByItsOwnWindow() {
+    let s = makeSessions()
+    let popped = s.addTab(for: target)
+    let docked = s.addTab(for: target)
+    let poppedSession = s.assignFixtureSession(tab: popped.id, target: target.id)
+    let dockedSession = s.assignFixtureSession(tab: docked.id, target: target.id)
+    s.detachPane(popped.id, for: target, at: .zero)
+
+    XCTAssertNotNil(s.typingPlace(ofSession: poppedSession))
+    XCTAssertNil(s.typingPlace(ofSession: poppedSession)?.tab, "\"own window\"")
+    XCTAssertEqual(s.typingPlace(ofSession: dockedSession)?.tab, 2, "⌘2 still selects it")
+  }
+
   // MARK: Hand-off to another window (#444)
 
   /// A workroom moving to another window takes its popped-out pane's slot with it: the same split,

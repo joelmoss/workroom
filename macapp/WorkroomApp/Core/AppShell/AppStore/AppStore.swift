@@ -1672,10 +1672,20 @@ final class AppStore: ObservableObject {
   }
 
   /// Pop the selected workroom's focused pane out into its own window — the View/Window-menu path
-  /// (issue #172). No-op when nothing is selected, or when that pane is already detached.
+  /// (issue #172) — or, when the focused slot is a popped-out pane's placeholder, pull it back
+  /// into that slot, as the placeholder's Pull Back Here does. No-op when nothing is selected.
   func detachFocusedPane() {
     guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else { return }
-    terminals.detachPane(tab.id, for: target, at: NSEvent.mouseLocation)
+    togglePaneWindow(tab.id, targetID: target.id)
+  }
+
+  /// Whether the selected workroom's focused slot is a popped-out pane's placeholder, for the
+  /// Window menu's item, which then reads "Move back to main window".
+  var focusedSlotIsPoppedOut: Bool {
+    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else {
+      return false
+    }
+    return terminals.detachedTabIDs.contains(tab.id)
   }
 
   /// Where a detached pane lives, for the secondary half of its window's title bar: which project,

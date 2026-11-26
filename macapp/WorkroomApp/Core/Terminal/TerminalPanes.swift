@@ -3095,7 +3095,11 @@ final class TerminalPanes {
         guard let state = tabRegistry.record(id)?.terminal, state.sessionID == session else {
           continue
         }
-        let tab = displayedTabIDs(forTargetID: targetID).firstIndex(of: id).map { $0 + 1 }
+        // A popped-out pane keeps its strip slot (issue #172), but the user sees and types into it
+        // in its own window, so it is named by that.
+        let tab =
+          detachedTabIDs.contains(id)
+          ? nil : displayedTabIDs(forTargetID: targetID).firstIndex(of: id).map { $0 + 1 }
         return (targetID, tab, state.activeCodingAgentBackend)
       }
     }
