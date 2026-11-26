@@ -243,12 +243,13 @@ struct SidebarOpenList: View, Equatable {
   // MARK: Drags
 
   /// A row's drag, followed to its release by `OpenRowDrag`: the List's table takes the mouse from
-  /// the row's own gesture after its first report.
+  /// the row's own gesture, so it reports from the press and `OpenRowDrag` decides when it is a
+  /// drag (`OpenRowDrag.threshold`).
   private func followedDrag(
     _ item: OpenSectionItem, onMove: @escaping (OpenRowDrag.Report) -> Void,
     onEnd: @escaping (OpenRowDrag.Report) -> Void
   ) -> some Gesture {
-    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+    DragGesture(minimumDistance: 0, coordinateSpace: .global)
       .onChanged { value in
         OpenRowDrag.shared.changed(
           item, location: value.location, startLocation: value.startLocation, onMove: onMove,
