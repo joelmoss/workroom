@@ -117,4 +117,46 @@ final class OpenRowDragTests: XCTestCase {
     XCTAssertTrue(ends.isEmpty)
     XCTAssertFalse(drag.isFollowing(item))
   }
+
+  /// Value: protects=a press let go past the threshold is a drag though no read of the pointer saw
+  /// it travel, so a quick drag still drops or reorders where it was let go; fails_when=a drag whose
+  /// move and release fall between two reads is taken for a click and drops nothing (#819: a
+  /// standalone row dragged 24 points onto another's middle in the VM never grouped them);
+  /// why_new=#819 diag; seam=OpenRowDrag; no_claim=the timer's own cadence
+  func testAPressLetGoPastTheThresholdBeforeAnyReadIsADrag() {
+    let drag = follower()
+    press(drag)
+    drag.poll()
+
+    location = CGPoint(x: 400, y: 924)
+    isDown = false
+    drag.poll()
+    XCTAssertEqual(
+      moves.map(\.translation), [CGSize(width: 0, height: -24)], "one move, at the release")
+    XCTAssertEqual(ends.map(\.translation), [CGSize(width: 0, height: -24)])
+    XCTAssertFalse(drag.isFollowing(item))
+  }
+
+  /// Value: protects=a drag makes one drop: the row's gesture's report that comes in late, once the
+  /// table hands the mouse back after the release, arms no second drag; fails_when=the late report
+  /// starts a drag that its own gesture end then drops or reorders again (#819 diag: every VM drag
+  /// of an Open row ended twice); why_new=#819 diag; seam=OpenRowDrag; no_claim=SwiftUI's delivery
+  func testAGesturesReportAfterTheReleaseArmsNoSecondDrag() {
+    let drag = follower()
+    press(drag)
+    location = CGPoint(x: 400, y: 940)
+    drag.poll()
+    isDown = false
+    drag.poll()
+    XCTAssertEqual(ends.count, 1)
+
+    // The gesture's queued report of the drag, then its end, both after the button came up.
+    drag.changed(
+      item, location: CGPoint(x: 100, y: 60), startLocation: CGPoint(x: 100, y: 100),
+      onMove: { self.moves.append($0) }, onEnd: { self.ends.append($0) })
+    drag.ended(item)
+    XCTAssertEqual(moves.count, 1, "no move from the late report")
+    XCTAssertEqual(ends.count, 1, "and no second end")
+    XCTAssertFalse(drag.isFollowing(item))
+  }
 }
