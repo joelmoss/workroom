@@ -1211,6 +1211,11 @@ fn a_sessions_live_title_follows_osc_0_and_2() {
 /// never the command's arguments.
 #[test]
 fn a_shells_resume_report_is_its_record_in_the_listing() {
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
     let workspace = Workspace::new("api-resume");
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);

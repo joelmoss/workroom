@@ -3032,6 +3032,11 @@ fn a_freeze_never_finds_the_events_holding_a_session_the_store_has_ended() {
 /// same report from a session given no token, a run or one-off command, is no record.
 #[test]
 fn a_report_from_a_sessions_shell_is_its_resume_record() {
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
     // `vim -S /state/s.vim`, its pid the shell's own, timed now, signed with the session's token:
     // `sha256sum` on Linux, `shasum` on macOS.
     let script = "body=\"pid=$$:time=$(date +%s):argv=dmlt,LVM=,L3N0YXRlL3Mudmlt\"; \
