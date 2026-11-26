@@ -2,12 +2,11 @@ import Defaults
 import SwiftUI
 import WorkroomDomain
 
-/// The docked Projects sidebar as a custom card laid out *beside* the detail in `RootView`'s split
-/// `HStack` — the mirror of `InspectorColumn` on the leading edge. We render our own `sidebarCard`
-/// rather than relying on `NavigationSplitView`'s native column so we own the card's exact position:
-/// the native column kept a ~30pt top inset (a toolbar reserve) that left an empty gap under the
-/// custom title bar. Built from the same `sidebarCard` the edge-reveal panel uses, so pinned and
-/// unpinned match.
+/// The docked sidebar as a flat column laid out *beside* the detail in `RootView`'s split `HStack`,
+/// on the leading edge. Our own rather than `NavigationSplitView`'s native column, so we own its
+/// exact position: the native column kept a ~30pt top inset (a toolbar reserve) that left an empty
+/// gap under the custom title bar. Its contents are the edge-reveal panel's (`ProjectSidebar`), in
+/// the panel's floating card there.
 ///
 /// A grab strip on the trailing edge drag-resizes it, persisting the width to `dockedSidebarWidth`
 /// (and `Defaults.sidebarWidth`) — the same value the reveal reads.
@@ -42,21 +41,22 @@ struct SidebarColumn: View {
       token: dragToken, drag: paneDrag, localize: localize, dropTarget: dropTarget)
   }
 
+  @Environment(\.themeTokens) private var tokens
+
   var body: some View {
     ProjectSidebar(drag: drag).equatable()
       .frame(width: width)
       .frame(maxHeight: .infinity)
-      // Tighten the gap to the detail panel: 2pt trailing vs the default 8 (mirrors the inspector's
-      // leading 2). Top and bottom take the workroom pane card's own gutter, so this card starts and
-      // ends on the SAME lines as the detail pane beside it — they used to be 4pt out at the top (card
-      // flush at 0 against the pane's 4) and 4pt out at the bottom (the default 8 against that 4),
-      // which reads as a misalignment with the two cards side by side. `vibrant` matches the right
-      // inspector's frosted `.sidebar` material so both sidebars read as the same surface.
-      .sidebarCard(
-        topMargin: WorkroomPaneMetrics.gutter,
-        bottomMargin: WorkroomPaneMetrics.gutter + WorkroomPaneMetrics.windowBottomMargin,
-        trailingMargin: 2
-      )
+      // A flat column (ADR 0083): flush to the window's leading edge, to the title bar above and to
+      // the window footer below, on the card's backing (`ChromeBackground.card`: the sidebar
+      // vibrancy under the panel wash, or the panel wash under Glass), with one hairline on its
+      // trailing edge between it and the detail. No corners, border box, shadow or margins; the
+      // edge-reveal panel keeps the floating card (`sidebarCard`). A view background, so not under
+      // the title bar, which would take the bar's drag region (`RootView.detail`'s fill says why).
+      .background { ChromeBackground(role: .card) }
+      .overlay(alignment: .trailing) {
+        tokens.border.frame(width: 0.5).allowsHitTesting(false).accessibilityHidden(true)
+      }
       // AppKit drag handle over the trailing edge (a SwiftUI gesture doesn't get events over the
       // List reliably). 12pt hit area with a resize cursor.
       .overlay(alignment: .trailing) {
