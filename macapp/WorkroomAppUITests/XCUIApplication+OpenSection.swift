@@ -28,4 +28,23 @@ extension XCUIApplication {
     }
     return count
   }
+
+  /// Shows the sidebar's Projects view through its switcher's tab (ADR 0083), as a click does: a
+  /// window opens on the Open view, and the project tree's rows are in the Projects view.
+  func showProjectsView(file: StaticString = #filePath, line: UInt = #line) {
+    showSidebarView("projects", file: file, line: line)
+  }
+
+  /// Shows the sidebar's Open view through its switcher's tab.
+  func showOpenView(file: StaticString = #filePath, line: UInt = #line) {
+    showSidebarView("open", file: file, line: line)
+  }
+
+  private func showSidebarView(_ view: String, file: StaticString, line: UInt) {
+    let tab = descendants(matching: .any).matching(identifier: "sidebar.view.\(view)").firstMatch
+    XCTAssertTrue(
+      tab.waitForExistence(timeout: 15), "the sidebar's \(view) tab", file: file, line: line)
+    // Clicking the view already shown does nothing.
+    tab.click()
+  }
 }

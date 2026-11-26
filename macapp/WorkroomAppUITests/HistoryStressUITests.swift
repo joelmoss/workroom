@@ -37,6 +37,7 @@ final class HistoryStressUITests: XCTestCase {
   }
 
   private func selectWorkroom(_ app: XCUIApplication) {
+    app.showProjectsView()
     let row = app.buttons.matching(
       NSPredicate(
         format: "identifier == %@ AND label == %@", "sidebar.workroom.uitest-room", "uitest-room")

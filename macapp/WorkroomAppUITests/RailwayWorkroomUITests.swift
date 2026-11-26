@@ -27,6 +27,7 @@ final class RailwayWorkroomUITests: XCTestCase {
     app.activate()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
+    app.showProjectsView()
     let row = element(app, "sidebar.workroom.uitest-railway")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "the Railway workroom isn't listed")
     row.click()
@@ -72,6 +73,7 @@ final class RailwayWorkroomUITests: XCTestCase {
     app.activate()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
+    app.showProjectsView()
     let row = element(app, "sidebar.workroom.uitest-railway")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "the Railway workroom isn't listed")
     row.click()
@@ -117,6 +119,7 @@ final class RailwayWorkroomUITests: XCTestCase {
     app.activate()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
+    app.showProjectsView()
     let row = element(app, "sidebar.workroom.uitest-railway")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "the Railway workroom isn't listed")
     row.click()

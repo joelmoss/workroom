@@ -26,7 +26,8 @@ final class RunSettingsPromptUITests: XCTestCase {
     // `.accessibilityAddTraits(.isButton)` (`ProjectSidebar.swift`), so XCUITest resolves it as a
     // button and an `otherElements` query matches nothing — which is what silently failed both
     // tests in this file. Same form as `ChangesetDetailUITests`/`HistoryPushStateUITests`, the two
-    // other places that select this row.
+    // other places that select this row. It is in the sidebar's Projects view.
+    app.showProjectsView()
     let row = app.buttons.matching(
       NSPredicate(
         format: "identifier == %@ AND label == %@", "sidebar.workroom.uitest-room", "uitest-room")

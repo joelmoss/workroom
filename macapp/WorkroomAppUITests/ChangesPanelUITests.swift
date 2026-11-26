@@ -77,6 +77,8 @@ final class ChangesPanelUITests: XCTestCase {
     let app = launchedApp(extraArguments: ["-WorkroomUITestConflict", "1"])
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
+    // The project tree is the sidebar's Projects view.
+    app.showProjectsView()
 
     // Expanded: no aggregate dot yet.
     let dot = app.descendants(matching: .any)

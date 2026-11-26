@@ -30,9 +30,10 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: id).firstMatch
   }
 
-  /// Fixture project row: it exists exactly while the real Projects sidebar is shown.
+  /// The sidebar switcher's Projects tab: it exists exactly while the real sidebar is shown,
+  /// whichever of its views it shows (ADR 0083).
   private func projectRow(_ app: XCUIApplication) -> XCUIElement {
-    element(app, id: "sidebar.project.\(uiTestFixtureProjectName)")
+    element(app, id: "sidebar.view.projects")
   }
 
   /// Waits until `el`'s existence matches `want`, so a test can assert a toggle flipped without

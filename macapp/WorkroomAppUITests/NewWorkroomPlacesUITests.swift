@@ -20,6 +20,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     ]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    app.showProjectsView()
     let project = app.otherElements["sidebar.project.UITestProject"]
     XCTAssertTrue(project.waitForExistence(timeout: 10), "fixture project row should exist")
     project.rightClick()
@@ -119,6 +120,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     ]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    app.showProjectsView()
     let row = app.descendants(matching: .any)
       .matching(identifier: "sidebar.creation.New workroom · Docker").firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 10), "the unnamed create lists no row of its own")
@@ -179,6 +181,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     ]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    app.showProjectsView()
     XCTAssertTrue(
       app.otherElements["sidebar.project.UITestProject"].waitForExistence(timeout: 10),
       "fixture project row should exist")
