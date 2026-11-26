@@ -132,6 +132,17 @@ extension AppStore {
     terminals.moveTab(tabID, toIndex: index, for: target)
   }
 
+  /// Tab `tabID`'s row under `sid`'s let go among workroom `into`'s tab rows: it joins `into`,
+  /// just before its tab `before` (nil: after its last), as a drop on that tab's row does. Whether
+  /// it moved.
+  @discardableResult
+  func moveOpenTab(
+    _ tabID: TerminalTab.ID, of sid: SidebarID, into: SidebarID, before: TerminalTab.ID?
+  ) async -> Bool {
+    let zone: PaneDropZone = before.map { .terminalRow($0, in: into) } ?? .target(into)
+    return await dropTerminals(.terminal(tabID, of: sid), on: zone)
+  }
+
   /// Whether tab `tabID`'s row under `sid`'s can be let go between the workroom tabs' rows, where
   /// it becomes a standalone terminal, as Move to → Standalone Terminal makes it.
   func canMoveOpenTabToStandalone(_ tabID: TerminalTab.ID, in sid: SidebarID) -> Bool {

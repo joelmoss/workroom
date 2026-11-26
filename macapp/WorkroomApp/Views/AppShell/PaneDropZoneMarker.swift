@@ -72,6 +72,9 @@ private struct PaneDropZoneModifier: ViewModifier {
   let store: any PaneDropZoneHost
   let zone: PaneDropZone
   let isPaneTab: Bool
+  /// A terminal's row shows the line above it; false, the accent on it (an Open tab row, #819,
+  /// whose list opens a gap for a drag that lifts a row, and has no line).
+  var marksInsertion = true
 
   func body(content: Content) -> some View {
     content
@@ -98,7 +101,7 @@ private struct PaneDropZoneModifier: ViewModifier {
     switch (zone, store.incomingPaneDrop) {
     case (.tab(let tab, let container, _), .tab(let hovered, let over, let after)):
       return hovered == tab && over == container ? after : nil
-    case (.terminalRow, let hovered?) where hovered == zone:
+    case (.terminalRow, let hovered?) where hovered == zone && marksInsertion:
       return false
     default:
       return nil
@@ -137,10 +140,13 @@ extension View {
   }
 
   /// Makes this view `zone`, somewhere a terminal drag over `store`'s window can drop; a pane tab's
-  /// halves are before and after it.
-  func paneDropZone(_ zone: PaneDropZone, store: any PaneDropZoneHost, isPaneTab: Bool = false)
-    -> some View
-  {
-    modifier(PaneDropZoneModifier(store: store, zone: zone, isPaneTab: isPaneTab))
+  /// halves are before and after it. `marksInsertion`: as `PaneDropZoneModifier.marksInsertion`.
+  func paneDropZone(
+    _ zone: PaneDropZone, store: any PaneDropZoneHost, isPaneTab: Bool = false,
+    marksInsertion: Bool = true
+  ) -> some View {
+    modifier(
+      PaneDropZoneModifier(
+        store: store, zone: zone, isPaneTab: isPaneTab, marksInsertion: marksInsertion))
   }
 }

@@ -58,6 +58,9 @@ final class TerminalDragSession {
   /// were measured, the list's rows having slid since; nil where no zone is (the gap). The lifted
   /// row carries its own ghost meanwhile, so the shared one stays hidden.
   var hitMap: (@MainActor (CGPoint) -> CGPoint?)?
+  /// Set while an Open row is lifted: whether its ghost stands in for the drag's own image at a
+  /// point, where the shared ghost stays hidden (`OpenRowLift.showsGhost`).
+  var ownGhost: (@MainActor (CGPoint) -> Bool)?
 
   /// How long a drag rests on a sidebar view's tab before the sidebar shows that view.
   static let springDelay: TimeInterval = 0.5
@@ -87,8 +90,17 @@ final class TerminalDragSession {
       WindowRegistry.shared.quickTerminal?.holdForDrag()
       begin(source, from: surface, zones: measure(store))
     }
+    // A strip, pane or title-bar tab over the Open list lifts its row there (#819).
+    let lift = OpenRowLift.shared
+    lift.handOver(source, from: surface, at: screenPoint, in: store)
     let hit = accepting(at: screenPoint)
     highlight(hit?.zone, on: hit?.host)
+    if case .terminal = source {
+      lift.handedOver(
+        to: screenPoint, in: store, holds: hit != nil || refuses(at: screenPoint))
+    } else {
+      lift.handedOver(to: screenPoint, in: store, holds: hit != nil)
+    }
     springLoad(at: screenPoint)
     showGhost(at: screenPoint, overOtherHost: hit?.host != nil)
     return hit != nil
@@ -111,7 +123,8 @@ final class TerminalDragSession {
   /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer.
   /// Out of the window the window it would make shows instead (`DetachedPaneDragPreview`).
   private func showGhost(at screenPoint: CGPoint, overOtherHost: Bool) {
-    guard let store, let source, hitMap == nil, Self.drawsGhost(of: source, from: surface),
+    guard let store, let source, ownGhost?(screenPoint) != true,
+      Self.drawsGhost(of: source, from: surface),
       let window = store.hostWindow, overOtherHost || window.frame.contains(screenPoint),
       !ownRow.contains(where: { $0.contains(screenPoint) }),
       let title = store.ghostTitle(of: source)
@@ -147,13 +160,28 @@ final class TerminalDragSession {
 
   /// The drag ends at `screenPoint`: over a destination that takes it, the drop is made. Whether it
   /// was, so the surface makes no drop of its own. The session ends either way.
+  ///
+  /// A drag from outside the Open list that lifted its row there (`OpenRowLift.handOver`) and is
+  /// let go over the list, on no row that takes it, lands where its gap is, as the row's own drag
+  /// would (`landedInOpenList`).
   @discardableResult
   func ended(at screenPoint: CGPoint) -> Bool {
     defer { cancel() }
-    guard let store, let source, let zone = accepting(at: screenPoint)?.zone else { return false }
+    landedInOpenList = false
+    guard let store, let source else { return false }
+    let lift = OpenRowLift.shared
+    guard let zone = accepting(at: screenPoint)?.zone else {
+      guard lift.isHandover, lift.landInGap(at: screenPoint, in: store) else { return false }
+      landedInOpenList = true
+      return true
+    }
     Task { await store.dropTerminals(source, on: zone) }
     return true
   }
+
+  /// The last drag that `ended` landed in the Open list's gap, which its surface shows by
+  /// letting its own image go.
+  private(set) var landedInOpenList = false
 
   /// Starts `source`'s drag from `surface` over `zones`, measured now: tests give their own.
   func begin(_ source: TerminalDragSource, from surface: Surface, zones: [Zone]) {
@@ -161,10 +189,13 @@ final class TerminalDragSession {
     self.surface = surface
     self.zones = zones
     otherHost = zones.lazy.compactMap(\.host).first
+    if let store { OpenRowLift.shared.endHandover(in: store) }
   }
 
   /// Ends the session with no drop.
   func cancel() {
+    // A row an outside drag lifted, not let go in the list, goes back.
+    if let store { OpenRowLift.shared.endHandover(in: store) }
     DragGhost.shared.hide()
     clearSpring()
     source = nil
@@ -220,6 +251,8 @@ final class TerminalDragSession {
   /// Measures the zones again, mid-drag: after a spring, the rows on screen are another view's.
   func remeasure() {
     guard let store, source != nil else { return }
+    // Measured with no row lifted: an outside drag lifts its row again as it next moves.
+    OpenRowLift.shared.endHandover(in: store)
     zones = measure(store)
     otherHost = zones.lazy.compactMap(\.host).first ?? otherHost
   }
@@ -250,12 +283,17 @@ final class TerminalDragSession {
     -> (zone: PaneDropZone, isPaneTab: Bool, host: (any PaneDropZoneHost)?)?
   {
     var point = screenPoint
+    // A title-bar tab over the Open list it has lifted its row in: rows' edges are its gaps.
+    let bandsRows =
+      (surface == .titleBar || surface == .groupTitleBar) && ownGhost?(screenPoint) == true
     if let hitMap {
       guard let mapped = hitMap(screenPoint) else { return nil }
       point = mapped
     }
     for zone in zones where !zone.covered.contains(point) {
-      if let hit = hit(zone, at: point) { return (hit, zone.isPaneTab, zone.host) }
+      if let hit = hit(zone, at: point, bandsRows: bandsRows) {
+        return (hit, zone.isPaneTab, zone.host)
+      }
     }
     return nil
   }
@@ -294,7 +332,7 @@ final class TerminalDragSession {
     return tabs
   }
 
-  private func hit(_ zone: Zone, at point: CGPoint) -> PaneDropZone? {
+  private func hit(_ zone: Zone, at point: CGPoint, bandsRows: Bool = false) -> PaneDropZone? {
     if let tabs = zone.titleBarTabs {
       // A pane's, let go in the title bar's row but on no tab: a standalone terminal there.
       guard surface == .paneTabs, zone.rect.contains(point),
@@ -316,7 +354,7 @@ final class TerminalDragSession {
       // Its edges reorder the title bar's tabs.
       return Self.titleBarBand(of: zone.rect).contains(point) ? zone.zone : nil
     }
-    if !zone.isTitleBarTab, surface == .sidebar, zone.zone != .standalone {
+    if !zone.isTitleBarTab, surface == .sidebar || bandsRows, zone.zone != .standalone {
       // Between rows is the List's: a reorder, or a group's terminal made standalone there. An
       // Open row's drag reorders at every row's edges, a folded group's too (#819).
       let folded: Bool

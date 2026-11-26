@@ -7,16 +7,23 @@ import WorkroomDomain
 /// The lifted row stays in the List, hidden, and is the gap: moving it in the preview order slides
 /// the rows round it with the List's own move animation. A lifted workroom row's tabs leave the
 /// list with it and come back under it once it lands. A workroom row lands among the workroom
-/// rows, past whole workrooms (a row and its tabs). A tab row lands among its own workroom's tabs,
-/// or, when it can become a standalone terminal (`leavesWorkroom`), between workrooms as well, as a
-/// workroom row would: let go there, it is one, in that place.
+/// rows, past whole workrooms (a row and its tabs). A tab row lands among its own workroom's tabs;
+/// among the tabs of another workroom that takes it (`joinable`), where let go it joins that
+/// workroom in that place; or, when it can become a standalone terminal (`leavesWorkroom`), between
+/// workrooms as well, as a workroom row would: let go there, it is one, in that place.
 ///
-/// Where a lifted tab's gap goes is decided by the row under the pointer. Its own workroom's block
-/// (that workroom's row from its middle down, and its tabs) is a reorder among its tabs; anywhere
-/// else, the upper half of its own workroom's row included, is between workrooms. Its own block's
-/// last slot and the slot under the block are the same place in the list, so a drop there without
-/// leaving it changes nothing, and it is between workrooms once the pointer has been past the
-/// block's end.
+/// Where a lifted tab's gap goes is decided by the row under the pointer, and every workroom's
+/// block has the same rule: the block (its row from its middle down, and its tabs) is among its
+/// tabs, and its row's upper half is above the block, between workrooms. Another workroom's row's
+/// middle half is onto it, a join at its end, which holds the gap (`liftedY`). A block's last slot
+/// and the slot under the block are the same place in the list: the gap there is the block's while
+/// the pointer came to it from the block, and between workrooms once the pointer has been past the
+/// block's end (the next row's upper half, or below the list). A workroom that refuses the tab, or
+/// shows no tabs, is a single row whose halves are above and below it.
+///
+/// A drag that started outside the list (a strip or title-bar tab) lifts its row as it comes over
+/// the list; a tab whose workroom is folded is in `items` as a placeholder, which `measured`, the
+/// list as the drag measured its drop zones, doesn't have.
 ///
 /// Positions are the list's content space: y down from the top of its first row, in rows of one
 /// `pitch`.
@@ -28,10 +35,17 @@ struct OpenRowReflow: Equatable {
     /// A lifted tab, between workrooms: just before the workroom row `workrooms[index]`, or after
     /// the last at `workrooms.count`.
     case between(Int)
+    /// A lifted tab, among another workroom's tabs: just before its tab row at this index, or
+    /// after its last.
+    case into(SidebarID, Int)
   }
 
-  /// The List's rows as the model had them when the row lifted.
+  /// The List's rows as the model had them when the row lifted, a placeholder for it included.
   let items: [OpenSectionItem]
+  /// The List's rows as the drag measured its drop zones: `items` without a placeholder.
+  let measured: [OpenSectionItem]
+  /// Other workrooms a lifted tab can join among their tabs.
+  let joinable: Set<SidebarID>
   let dragged: OpenSectionItem
   /// The rows it lands among, top to bottom, itself included.
   let domain: [OpenSectionItem]
@@ -46,7 +60,10 @@ struct OpenRowReflow: Equatable {
   /// Where it would land: nil while the pointer is outside the list, where no gap shows.
   private(set) var landing: Landing?
 
-  init?(items: [OpenSectionItem], dragged: OpenSectionItem, leavesWorkroom: Bool = false) {
+  init?(
+    items: [OpenSectionItem], dragged: OpenSectionItem, leavesWorkroom: Bool = false,
+    joinable: Set<SidebarID> = [], measured: [OpenSectionItem]? = nil
+  ) {
     guard items.contains(dragged) else { return nil }
     let owner = dragged.owner
     switch dragged {
@@ -54,13 +71,19 @@ struct OpenRowReflow: Equatable {
       domain = items.filter(\.isWorkroom)
       hidden = Set(items.filter { !$0.isWorkroom && $0.owner == owner })
       self.leavesWorkroom = false
+      self.joinable = []
     case .tab:
       domain = items.filter { !$0.isWorkroom && $0.owner == owner }
       hidden = []
       self.leavesWorkroom = leavesWorkroom
+      // Only those showing tabs: a workroom with none is one row, joined over its middle.
+      self.joinable = joinable.filter { sid in
+        sid != owner && items.contains { !$0.isWorkroom && $0.owner == sid }
+      }
     }
     guard let origin = domain.firstIndex(of: dragged) else { return nil }
     self.items = items
+    self.measured = measured ?? items
     self.dragged = dragged
     self.origin = origin
     workrooms = items.filter(\.isWorkroom)
@@ -85,6 +108,20 @@ struct OpenRowReflow: Equatable {
     )
   }
 
+  /// A lifted tab let go now joins another workroom among its tabs: that workroom, and the tab it
+  /// goes just before (nil: after its last). Nil anywhere else.
+  var joinPlace: (into: SidebarID, before: TerminalTab.ID?)? {
+    guard case .into(let sid, let index) = landing else { return nil }
+    let tabs = tabRows(of: sid)
+    guard index < tabs.count, case .tab(let before, _) = tabs[index] else { return (sid, nil) }
+    return (sid, before)
+  }
+
+  /// Workroom `sid`'s tab rows as they were when the row lifted, the lifted one left out.
+  private func tabRows(of sid: SidebarID) -> [OpenSectionItem] {
+    items.filter { !$0.isWorkroom && $0.owner == sid && $0 != dragged }
+  }
+
   /// The rows the List shows, top to bottom: the lifted row in the gap, or left out when there is
   /// none.
   var order: [OpenSectionItem] {
@@ -92,6 +129,19 @@ struct OpenRowReflow: Equatable {
     switch landing {
     case nil:
       return base.filter { $0 != dragged }
+    case .into(let sid, let index):
+      var rows = base.filter { $0 != dragged }
+      let tabs = tabRows(of: sid)
+      let at: Int
+      if index < tabs.count, let before = rows.firstIndex(of: tabs[index]) {
+        at = before
+      } else if let last = tabs.last.flatMap({ rows.firstIndex(of: $0) }) {
+        at = last + 1
+      } else {
+        at = (rows.firstIndex(of: .workroom(sid)) ?? rows.count - 1) + 1
+      }
+      rows.insert(dragged, at: min(at, rows.count))
+      return rows
     case .between(let index):
       let blocks = Self.blocks(of: base.filter { $0 != dragged })
       var rows: [OpenSectionItem] = []
@@ -207,7 +257,18 @@ struct OpenRowReflow: Equatable {
       landing = .among(fraction < 0.5 ? index : index + 1)
       return
     }
-    // Another workroom's block.
+    // Another workroom's block, whose tabs it can join: the block is among them, as its own is.
+    if joinable.contains(row.owner) {
+      if !row.isWorkroom, let index = tabRows(of: row.owner).firstIndex(of: row) {
+        landing = .into(row.owner, fraction < 0.5 ? index : index + 1)
+        return
+      }
+      // Its row's middle half is onto it (`liftedY`); its lower quarter starts its tabs.
+      if row.isWorkroom, fraction >= 0.5 {
+        landing = .into(row.owner, 0)
+        return
+      }
+    }
     guard leavesWorkroom else {
       // Its tabs are the only place it lands: their start above them, their end below.
       let ownTop = rows.firstIndex(of: own) ?? 0
@@ -228,9 +289,10 @@ struct OpenRowReflow: Equatable {
   /// Where the pointer at `y` in the list (as it shows now) would be in the list as it was when
   /// the row lifted, which is where the drag measured the rows' drop zones: the same place on the
   /// same row. Nil over the gap and, lifting a tab, over its own workroom's rows, where the drop is
-  /// this reorder's and no row's; and, lifting a tab that can leave its workroom, over another
-  /// workroom row's upper and lower quarters, which are the gaps between workrooms: only its
-  /// middle half is onto it (`AppStore.groupBand`).
+  /// this reorder's and no row's; over the tab rows of a workroom it can join, where its gap opens;
+  /// and over another workroom row's upper quarter (lifting a tab that can leave its workroom) and
+  /// lower quarter (that, or one whose tabs it can join), which are gaps: only its middle half is
+  /// onto it (`AppStore.groupBand`).
   func liftedY(for y: CGFloat, pitch: CGFloat) -> CGFloat? {
     guard pitch > 0, y >= 0 else { return y }
     let rows = order
@@ -239,11 +301,13 @@ struct OpenRowReflow: Equatable {
     let row = rows[slot]
     if row == dragged { return nil }
     if !dragged.isWorkroom, row.owner == dragged.owner { return nil }
-    if leavesWorkroom, row.isWorkroom {
+    // A tab row of a workroom it can join: the gap opens there, no row takes it.
+    if !row.isWorkroom, joinable.contains(row.owner) { return nil }
+    if row.isWorkroom, leavesWorkroom || joinable.contains(row.owner) {
       let fraction = y / pitch - CGFloat(slot)
-      if fraction < 0.25 || fraction >= 0.75 { return nil }
+      if fraction < 0.25 && leavesWorkroom || fraction >= 0.75 { return nil }
     }
-    guard let was = items.firstIndex(of: row) else { return nil }
+    guard let was = measured.firstIndex(of: row) else { return nil }
     return y + CGFloat(was - slot) * pitch
   }
 

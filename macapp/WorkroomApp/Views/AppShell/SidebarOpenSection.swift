@@ -63,10 +63,12 @@ struct SidebarOpenList: View, Equatable {
   }
 
   /// The List's rows, top to bottom: each workroom tab's, then its tabs' while it is unfolded.
-  static func items(of rows: [OpenSectionRow]) -> [OpenSectionItem] {
-    rows.flatMap { row -> [OpenSectionItem] in
-      [.workroom(row.sid)] + (row.isFolded ? [] : row.tabs.map { .tab($0.tab.id, in: row.sid) })
-    }
+  /// `showing`: a tab lifted from outside the list, under its workroom although that is folded
+  /// (its placeholder).
+  static func items(of rows: [OpenSectionRow], showing: OpenSectionItem? = nil)
+    -> [OpenSectionItem]
+  {
+    entries(of: rows, showing: showing).map(\.id)
   }
 
   /// One List row: a workroom tab's own (`tab` nil), or one of its tabs.
@@ -77,26 +79,45 @@ struct SidebarOpenList: View, Equatable {
   }
 
   /// `items(of:)`'s rows with what each draws.
-  static func entries(of rows: [OpenSectionRow]) -> [Entry] {
+  static func entries(of rows: [OpenSectionRow], showing: OpenSectionItem? = nil) -> [Entry] {
     rows.flatMap { row -> [Entry] in
-      [Entry(id: .workroom(row.sid), row: row, tab: nil)]
-        + (row.isFolded
-          ? [] : row.tabs.map { Entry(id: .tab($0.tab.id, in: row.sid), row: row, tab: $0) })
+      let tabs = row.tabs.filter { tab in
+        !row.isFolded || showing == .tab(tab.tab.id, in: row.sid)
+      }
+      return [Entry(id: .workroom(row.sid), row: row, tab: nil)]
+        + tabs.map { Entry(id: .tab($0.tab.id, in: row.sid), row: row, tab: $0) }
     }
   }
 
   /// `entries` in the order a lifted row's drag shows them (`OpenRowReflow.order`): the lifted
   /// row in its gap, or out of the list while the pointer is, and a lifted workroom's tabs out.
+  /// A lifted tab the store has moved into another workroom while its gap holds (`OpenRowLift.land`)
+  /// stays in the gap.
   static func shown(_ entries: [Entry], in reflow: OpenRowReflow?) -> [Entry] {
     guard let reflow else { return entries }
-    let byID = Dictionary(entries.map { ($0.id, $0) }) { first, _ in first }
+    var byID = Dictionary(entries.map { ($0.id, $0) }) { first, _ in first }
+    if byID[reflow.dragged] == nil,
+      let moved = entries.first(where: { isLifted($0.id, in: reflow) })
+    {
+      byID[reflow.dragged] = moved
+    }
     let order = reflow.order
     let listed = Set(order)
     // A row the model gained since the lift shows where the model has it, after the rest.
     let gained = entries.filter {
-      !listed.contains($0.id) && !reflow.hidden.contains($0.id) && $0.id != reflow.dragged
+      !listed.contains($0.id) && !reflow.hidden.contains($0.id) && !isLifted($0.id, in: reflow)
     }
     return order.compactMap { byID[$0] } + gained
+  }
+
+  /// Whether `id` is the row `reflow` lifted: it, or its tab moved into another workroom.
+  static func isLifted(_ id: OpenSectionItem, in reflow: OpenRowReflow?) -> Bool {
+    guard let reflow else { return false }
+    if id == reflow.dragged { return true }
+    guard case .tab(let tab, _) = id, case .tab(let lifted, _) = reflow.dragged else {
+      return false
+    }
+    return tab == lifted
   }
 
   var body: some View {
@@ -104,7 +125,7 @@ struct SidebarOpenList: View, Equatable {
     let items = Self.items(of: rows)
     // Read here, so the list re-runs only when the gap moves, never as the pointer moves alone.
     let reflow = OpenRowLift.shared.reflow(for: store)
-    let entries = Self.shown(Self.entries(of: rows), in: reflow)
+    let entries = Self.shown(Self.entries(of: rows, showing: reflow?.dragged), in: reflow)
     return ScrollViewReader { proxy in
       List {
         if rows.isEmpty {
@@ -113,7 +134,7 @@ struct SidebarOpenList: View, Equatable {
         // One element per List row: a ForEach whose element yields a varying number of rows (a
         // workroom's row and its tabs) can't be diffed, so the List reloads whole as one unfolds.
         ForEach(entries) { entry in
-          let lifted = reflow?.dragged == entry.id
+          let lifted = Self.isLifted(entry.id, in: reflow)
           if let tab = entry.tab {
             tabRow(tab, in: entry.row, items: items, lifted: lifted)
           } else {
@@ -199,8 +220,12 @@ struct SidebarOpenList: View, Equatable {
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: hovered, store: store).equatable()
         .opacity(lifted ? 0 : 1)
-        // A terminal let go on it lands in its workroom just above it (#652).
-        .paneDropZone(.terminalRow(tab.tab.id, in: row.sid), store: store)
+        // A terminal let go on it lands in its workroom just above it (#652). A drag that lifts
+        // a row opens a gap here instead, so it is a zone only for one that doesn't (a refusal,
+        // or a drag from a standalone terminal's own pane), which shows the accent, not a line.
+        .paneDropZone(
+          .terminalRow(tab.tab.id, in: row.sid), store: store, marksInsertion: false
+        )
         .simultaneousGesture(tabDrag(tab, in: row, items: items))
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
@@ -238,11 +263,13 @@ struct SidebarOpenList: View, Equatable {
   /// workrooms too (`OpenRowReflow.leavesWorkroom`).
   private func lift(
     _ item: OpenSectionItem, zone: PaneDropZone, items: [OpenSectionItem],
-    report: OpenRowDrag.Report, row: some View, leavesWorkroom: () -> Bool = { false }
+    report: OpenRowDrag.Report, row: some View, leavesWorkroom: () -> Bool = { false },
+    joinable: () -> Set<SidebarID> = { [] }
   ) {
     let lift = OpenRowLift.shared
     guard lift.reflow(for: store)?.dragged != item || lift.geometry == nil,
-      let reflow = OpenRowReflow(items: items, dragged: item, leavesWorkroom: leavesWorkroom())
+      let reflow = OpenRowReflow(
+        items: items, dragged: item, leavesWorkroom: leavesWorkroom(), joinable: joinable())
     else { return }
     lift.lift(
       reflow, in: store, zone: zone, report: report, content: Self.ghost(of: row, store: store))
@@ -304,11 +331,7 @@ struct SidebarOpenList: View, Equatable {
       }
       if drag.splitEnded(row.sid, at: report.location, actions: actions) { return lift.drop() }
       // The list already shows the new order: the store takes it, and the ghost settles into it.
-      guard lift.isOverList(report.screen), let index = lift.reflow?.movedIndex else {
-        return lift.cancel()
-      }
-      store.moveWorkroomTab(row.sid, toIndex: index)
-      lift.settle()
+      if !lift.landInGap(at: report.screen, in: store) { lift.cancel() }
     } onCancel: { [store, drag] in
       store.terminalDrag.cancel()
       drag.splitCancelled()
@@ -320,7 +343,8 @@ struct SidebarOpenList: View, Equatable {
   /// A tab row's drag, as its strip chip's: onto a sidebar row, a title-bar tab, a pane tab or the
   /// Open tab (`AppStore.paneDragMoved`); out of the window it tears off; into its workroom's
   /// panes while they are on screen it splits them (`TabContentDrop`); else a reorder among its
-  /// workroom's tabs or, when it can become a standalone terminal, a standalone terminal between
+  /// workroom's tabs, a join among the tabs of another that takes it, or, when it can become a
+  /// standalone terminal, a standalone terminal between
   /// workrooms, its gap opening under the pointer as it moves (`OpenRowLift`, `OpenRowReflow`).
   private func tabDrag(
     _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
@@ -333,7 +357,11 @@ struct SidebarOpenList: View, Equatable {
       self.lift(
         item, zone: .terminalRow(tab.tab.id, in: row.sid), items: items, report: report,
         row: SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: false, store: store),
-        leavesWorkroom: { store.canMoveOpenTabToStandalone(tab.tab.id, in: row.sid) })
+        leavesWorkroom: { store.canMoveOpenTabToStandalone(tab.tab.id, in: row.sid) },
+        joinable: {
+          OpenRowLift.joinable(
+            tab.tab.id, of: row.sid, rows: store.openSectionRows(), store: store)
+        })
       lift.follow(report)
       if isDragOutsideWindow(report.location) {
         lift.move(to: report.screen, holds: false)
@@ -371,17 +399,9 @@ struct SidebarOpenList: View, Equatable {
         return lift.drop()
       }
       clearPreview()
-      guard lift.isOverList(report.screen) else { return lift.cancel() }
-      // Between workrooms: a standalone terminal there, which the gap holds for until it is made.
-      if let place = lift.reflow?.standalonePlace {
-        return lift.land {
-          await store.moveOpenTabToStandalone(
-            tab.tab.id, in: row.sid, after: place.after, before: place.before)
-        }
-      }
-      guard let to = lift.reflow?.movedIndex else { return lift.cancel() }
-      store.moveOpenTab(tab.tab.id, toIndex: to, in: row.sid)
-      lift.settle()
+      // A reorder, a join among another workroom's tabs or a standalone terminal between
+      // workrooms, where the gap is.
+      if !lift.landInGap(at: report.screen, in: store) { lift.cancel() }
     } onCancel: { [store] in
       _ = store.paneDragMoved(tab.tab.id, of: tab.target, to: nil)
       panes.hideDragOutside()
