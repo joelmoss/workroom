@@ -145,18 +145,53 @@ final class OpenRowLift {
       ghost.clear()
       return end()
     }
-    let rect = CGRect(
-      x: geometry.row.minX, y: geometry.listTop - CGFloat(slot + 1) * geometry.pitch,
-      width: geometry.row.width, height: geometry.pitch)
     let lift = generation
-    ghost.fly(
-      to: CGPoint(x: rect.minX, y: rect.midY - geometry.row.height / 2),
-      animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    ) { [weak self] in
+    ghost.fly(to: origin(ofSlot: slot, in: geometry), animated: animates) { [weak self] in
       guard let self, self.generation == lift else { return }
       self.ghost.clear()
       self.end()
     }
+  }
+
+  /// Let go over its gap where `move` makes a new row of it (a tab let go between workrooms
+  /// becomes a standalone terminal there): the ghost settles into the gap while `move` runs, and
+  /// the gap holds until `move` is done, when the list shows the store's order, the new row where
+  /// the gap was. When `move` fails the ghost flies back and the list goes back to its order.
+  func land(_ move: @escaping @MainActor () async -> Bool) {
+    let lift = generation
+    let landing = Landing()
+    if let reflow, let geometry, ghost.isVisible, let slot = reflow.slot {
+      ghost.fly(to: origin(ofSlot: slot, in: geometry), animated: animates) { [weak self] in
+        landing.flown = true
+        guard let self, self.generation == lift, landing.moved == true else { return }
+        self.ghost.clear()
+      }
+    } else {
+      landing.flown = true
+    }
+    Task { @MainActor [weak self] in
+      let moved = await move()
+      landing.moved = moved
+      guard let self, self.generation == lift else { return }
+      guard moved else { return self.cancel() }
+      self.end()
+      if landing.flown { self.ghost.clear() }
+    }
+  }
+
+  /// How far a `land` has got.
+  @MainActor
+  private final class Landing {
+    var flown = false
+    var moved: Bool?
+  }
+
+  private var animates: Bool { !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+  /// Where the ghost's row goes to sit in list row `slot` (screen).
+  private func origin(ofSlot slot: Int, in geometry: Geometry) -> CGPoint {
+    let midY = geometry.listTop - (CGFloat(slot) + 0.5) * geometry.pitch
+    return CGPoint(x: geometry.row.minX, y: midY - geometry.row.height / 2)
   }
 
   private func end() {

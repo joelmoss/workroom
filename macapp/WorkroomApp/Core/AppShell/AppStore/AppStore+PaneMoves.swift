@@ -33,13 +33,14 @@ extension AppStore {
   /// window, its row just below `target`'s when that is in the Terminals section, or, given
   /// `placedBefore` (a row let go between the section's rows, #652), just above that row (nil:
   /// at the end). Given `titleBarBefore` (a pane let go in the title bar's empty space, #652), its
-  /// title-bar tab goes just before that tab (nil: last). Nothing is left behind when it can't
-  /// move.
+  /// title-bar tab goes just before that tab (nil: last), or, when that tab has gone by then (the
+  /// pane's own group, dissolved or emptied by the move), just after `titleBarAfter`'s (nil:
+  /// first). Nothing is left behind when it can't move.
   @discardableResult
   func movePaneToStandalone(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes,
     notifications: NotificationCenterStore, placedBefore: TargetID?? = .none,
-    titleBarBefore: SidebarID?? = .none
+    titleBarBefore: SidebarID?? = .none, titleBarAfter: SidebarID?? = .none
   ) async -> Bool {
     if case .standalone = target.id { return false }
     guard PaneMove.sourceRefusal(tabID, of: target, source: source) == nil else { return false }
@@ -47,7 +48,9 @@ extension AppStore {
     if case .some(let anchor) = placedBefore { terminalsSection.move(row, before: anchor) }
     let moved = await movePane(
       tabID, of: target, source: source, notifications: notifications, intoNewRow: row)
-    if moved, case .some(let before) = titleBarBefore { placeTitleBarTab(row, before: before) }
+    if moved, case .some(let before) = titleBarBefore {
+      placeTitleBarTab(row, before: before, orAfter: titleBarAfter)
+    }
     return moved
   }
 
@@ -57,12 +60,23 @@ extension AppStore {
       .compactMap(\.sidebarID)
   }
 
-  /// Puts `id`'s title-bar tab just before `before`'s (nil: last).
-  func placeTitleBarTab(_ id: TargetID, before: SidebarID?) {
+  /// Puts `id`'s title-bar tab just before `before`'s (nil: last). Given `after`, when `before`'s
+  /// tab isn't in the title bar, just after `after`'s instead (nil: first).
+  func placeTitleBarTab(_ id: TargetID, before: SidebarID?, orAfter after: SidebarID?? = .none) {
     var order = Self.orderedActiveTargets(
       persisted: workroomTabOrder, active: terminals.activeTargetIDs.union([id]))
     order.removeAll { $0 == id }
-    let index = before?.targetID.flatMap { order.firstIndex(of: $0) } ?? order.endIndex
+    var index = order.endIndex
+    if let before {
+      if let found = before.targetID.flatMap({ order.firstIndex(of: $0) }) {
+        index = found
+      } else if case .some(let after) = after {
+        index =
+          after == nil
+          ? order.startIndex
+          : after?.targetID.flatMap { order.firstIndex(of: $0) }.map { $0 + 1 } ?? order.endIndex
+      }
+    }
     order.insert(id, at: index)
     if order != workroomTabOrder { workroomTabOrder = order }
   }
