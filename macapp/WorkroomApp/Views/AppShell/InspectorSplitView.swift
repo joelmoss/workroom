@@ -44,40 +44,6 @@ final class InspectorPaneViewController: NSViewController {
   /// Whether the body fills the pane and scrolls itself (vs. the default `NSScrollView` hosting).
   /// Must be set before the view first loads.
   var fillsBody = false
-  /// Whether a fill-mode body's own scroll views draw overlay scrollers whatever the system's "Show
-  /// scroll bars" setting. The sidebar's: a legacy scroller narrows its List's rows but not the
-  /// sticky header above them, which would push the rows' "+" column out of line with the
-  /// heading's. Must be set before the view first loads.
-  var forcesOverlayScrollers = false
-  private var observesScrollerStyle = false
-
-  override func viewDidLayout() {
-    super.viewDidLayout()
-    if forcesOverlayScrollers { applyOverlayScrollers() }
-  }
-
-  /// A scroll view resets its style when the system preference changes, so that change re-applies
-  /// it on the next layout.
-  @objc private func preferredScrollerStyleDidChange(_ notification: Notification) {
-    view.needsLayout = true
-  }
-
-  /// Sets every scroll view in the body to overlay scrollers.
-  private func applyOverlayScrollers() {
-    if !observesScrollerStyle {
-      observesScrollerStyle = true
-      NotificationCenter.default.addObserver(
-        self, selector: #selector(preferredScrollerStyleDidChange(_:)),
-        name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
-    }
-    func visit(_ view: NSView) {
-      if let scroll = view as? NSScrollView, scroll.scrollerStyle != .overlay {
-        scroll.scrollerStyle = .overlay
-      }
-      view.subviews.forEach(visit)
-    }
-    visit(bodyHost.view)
-  }
 
   override func loadView() {
     let container = NSView()
@@ -563,9 +529,6 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   /// How this use sizes its panes (`InspectorSplitContainerController.Sizing`); the inspector's by
   /// default.
   var sizing = InspectorSplitContainerController.Sizing()
-  /// Whether the fill-mode panes draw overlay scrollers whatever the system setting
-  /// (`InspectorPaneViewController.forcesOverlayScrollers`).
-  var forcesOverlayScrollers = false
   /// What each pane's scroll position is remembered under (#810), nil for none; empty for no
   /// memory at all.
   var scrollKeys: [InspectorMemoryKey?] = []
@@ -622,7 +585,6 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     (0..<headers.count).map { index in
       let pane = InspectorPaneViewController()
       pane.fillsBody = index < fills.count && fills[index]
-      pane.forcesOverlayScrollers = forcesOverlayScrollers
       return pane
     }
   }
