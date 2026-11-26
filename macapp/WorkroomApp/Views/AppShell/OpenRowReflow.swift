@@ -57,8 +57,19 @@ struct OpenRowReflow: Equatable {
   let leavesWorkroom: Bool
   /// The workroom rows, top to bottom.
   let workrooms: [OpenSectionItem]
+  /// `domain` without the lifted row.
+  private let others: [OpenSectionItem]
+  /// Each row's index in `measured`.
+  private let measuredIndex: [OpenSectionItem: Int]
   /// Where it would land: nil while the pointer is outside the list, where no gap shows.
-  private(set) var landing: Landing?
+  private(set) var landing: Landing? {
+    didSet {
+      if landing != oldValue { order = arranged() }
+    }
+  }
+  /// The rows the List shows, top to bottom: the lifted row in the gap, or left out when there is
+  /// none. Arranged again only when `landing` changes, as the pointer reads it on every move.
+  private(set) var order: [OpenSectionItem] = []
 
   init?(
     items: [OpenSectionItem], dragged: OpenSectionItem, leavesWorkroom: Bool = false,
@@ -66,9 +77,10 @@ struct OpenRowReflow: Equatable {
   ) {
     guard items.contains(dragged) else { return nil }
     let owner = dragged.owner
+    let workrooms = items.filter(\.isWorkroom)
     switch dragged {
     case .workroom:
-      domain = items.filter(\.isWorkroom)
+      domain = workrooms
       hidden = Set(items.filter { !$0.isWorkroom && $0.owner == owner })
       self.leavesWorkroom = false
       self.joinable = []
@@ -83,11 +95,17 @@ struct OpenRowReflow: Equatable {
     }
     guard let origin = domain.firstIndex(of: dragged) else { return nil }
     self.items = items
-    self.measured = measured ?? items
+    let measured = measured ?? items
+    self.measured = measured
+    // The first, as `firstIndex(of:)` finds.
+    measuredIndex = Dictionary(
+      measured.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
     self.dragged = dragged
     self.origin = origin
-    workrooms = items.filter(\.isWorkroom)
+    self.workrooms = workrooms
+    others = domain.filter { $0 != dragged }
     landing = .among(origin)
+    order = arranged()
   }
 
   /// The row whose place on screen measures the list: the lifted row's own, or, for a placeholder,
@@ -126,9 +144,8 @@ struct OpenRowReflow: Equatable {
     items.filter { !$0.isWorkroom && $0.owner == sid && $0 != dragged }
   }
 
-  /// The rows the List shows, top to bottom: the lifted row in the gap, or left out when there is
-  /// none.
-  var order: [OpenSectionItem] {
+  /// `order` for `landing`.
+  private func arranged() -> [OpenSectionItem] {
     let base = items.filter { !hidden.contains($0) }
     switch landing {
     case nil:
@@ -147,7 +164,7 @@ struct OpenRowReflow: Equatable {
       rows.insert(dragged, at: min(at, rows.count))
       return rows
     case .between(let index):
-      let blocks = Self.blocks(of: base.filter { $0 != dragged })
+      let blocks = Self.blocksByLead(of: base.filter { $0 != dragged })
       var rows: [OpenSectionItem] = []
       for (at, lead) in workrooms.enumerated() {
         if at == index { rows.append(dragged) }
@@ -156,10 +173,10 @@ struct OpenRowReflow: Equatable {
       if index >= workrooms.count { rows.append(dragged) }
       return rows
     case .among(let landing):
-      var leads = domain.filter { $0 != dragged }
+      var leads = others
       leads.insert(dragged, at: min(landing, leads.count))
       if dragged.isWorkroom {
-        let blocks = Self.blocks(of: base)
+        let blocks = Self.blocksByLead(of: base)
         return leads.flatMap { blocks[$0] ?? [$0] }
       }
       var rows: [OpenSectionItem] = []
@@ -176,19 +193,26 @@ struct OpenRowReflow: Equatable {
     }
   }
 
-  /// Each workroom row's block in `rows`: the row and the tabs under it.
-  private static func blocks(of rows: [OpenSectionItem]) -> [OpenSectionItem: [OpenSectionItem]] {
-    var blocks: [OpenSectionItem: [OpenSectionItem]] = [:]
-    var current: OpenSectionItem?
-    for item in rows {
+  /// Each workroom row's block in `rows`, top to bottom: the row and the tabs under it, and where
+  /// in `rows` it starts. Rows above the first workroom row are in none.
+  private static func blocks(of rows: [OpenSectionItem]) -> [(top: Int, rows: [OpenSectionItem])] {
+    var blocks: [(top: Int, rows: [OpenSectionItem])] = []
+    for (index, item) in rows.enumerated() {
       if item.isWorkroom {
-        current = item
-        blocks[item] = [item]
-      } else if let current {
-        blocks[current, default: []].append(item)
+        blocks.append((index, [item]))
+      } else if !blocks.isEmpty {
+        blocks[blocks.count - 1].rows.append(item)
       }
     }
     return blocks
+  }
+
+  /// `blocks(of:)` by their workroom row.
+  private static func blocksByLead(of rows: [OpenSectionItem]) -> [OpenSectionItem:
+    [OpenSectionItem]]
+  {
+    Dictionary(
+      blocks(of: rows).map { ($0.rows[0], $0.rows) }, uniquingKeysWith: { _, last in last })
   }
 
   /// The pointer is at `y` in the list (nil: outside it). Over the gap nothing moves; over another
@@ -205,21 +229,21 @@ struct OpenRowReflow: Equatable {
     if !dragged.isWorkroom {
       return tabPointer(at: y, pitch: pitch)
     }
-    let units = self.units(in: order)
-    let others = domain.filter { $0 != dragged }
+    // Units of a workroom row and its tabs.
+    let units = Self.blocks(of: order)
     guard let first = units.first, let last = units.last else { return }
     if y < CGFloat(first.top) * pitch {
       landing = .among(0)
       return
     }
-    if y >= CGFloat(last.top + last.count) * pitch {
+    if y >= CGFloat(last.top + last.rows.count) * pitch {
       landing = .among(others.count)
       return
     }
     guard
       let unit = units.first(where: {
-        y >= CGFloat($0.top) * pitch && y < CGFloat($0.top + $0.count) * pitch
-      }), unit.lead != dragged, let index = others.firstIndex(of: unit.lead)
+        y >= CGFloat($0.top) * pitch && y < CGFloat($0.top + $0.rows.count) * pitch
+      }), unit.rows[0] != dragged, let index = others.firstIndex(of: unit.rows[0])
     else { return }
     // Judged on the unit's own row, a workroom's tabs under it being past it. Judged on the whole
     // block, its row's upper half would push the gap above it before the pointer reached the
@@ -231,7 +255,6 @@ struct OpenRowReflow: Equatable {
   /// `pointer(at:)` for a lifted tab.
   private mutating func tabPointer(at y: CGFloat, pitch: CGFloat) {
     let rows = order
-    let others = domain.filter { $0 != dragged }
     let own = OpenSectionItem.workroom(dragged.owner)
     let slot = Int((y / pitch).rounded(.down))
     guard y >= 0, slot < rows.count else {
@@ -311,22 +334,8 @@ struct OpenRowReflow: Equatable {
       let fraction = y / pitch - CGFloat(slot)
       if fraction < 0.25 && leavesWorkroom || fraction >= 0.75 { return nil }
     }
-    guard let was = measured.firstIndex(of: row) else { return nil }
+    guard let was = measuredIndex[row] else { return nil }
     return y + CGFloat(was - slot) * pitch
-  }
-
-  /// The units `rows` holds, top to bottom, for a lifted workroom: a workroom row and its tabs.
-  private func units(in rows: [OpenSectionItem]) -> [(lead: OpenSectionItem, top: Int, count: Int)]
-  {
-    var units: [(lead: OpenSectionItem, top: Int, count: Int)] = []
-    for (index, item) in rows.enumerated() {
-      if item.isWorkroom {
-        units.append((item, index, 1))
-      } else if !units.isEmpty {
-        units[units.count - 1].count += 1
-      }
-    }
-    return units
   }
 }
 
