@@ -13,11 +13,11 @@ Each project row has a **+** button that creates a workroom. See [Workrooms](wor
 
 Right-click a project row for **New Workroom**, **Project Settings…** and **Delete Project…**.
 
-To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>).
+To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>). Nightly only: it's **View ▸ Sidebar ▸ Show Sidebar**.
 
 ### Open and Projects {nightly}
 
-The sidebar shows one of two views at a time. The bar at its top switches between them: the terminal icon is the **Open** view, and the four-squares icon is **Projects**, the project tree. Hover either for its name. The view you're on is underlined. A new window starts on **Open**, and each window remembers its view when you relaunch. **View ▸ Show Open** and **View ▸ Show Projects** switch too, and show the sidebar if it's hidden. They have no shortcut of their own, because <kbd>⌘1</kbd> and <kbd>⌘2</kbd> switch workroom tabs, but you can give them one in **Settings ▸ Shortcuts**.
+The sidebar shows one of two views at a time. The bar at its top switches between them: the terminal icon is the **Open** view, and the four-squares icon is **Projects**, the project tree. Hover either for its name. The view you're on is underlined. A new window starts on **Open**, and each window remembers its view when you relaunch. **View ▸ Sidebar ▸ Terminals** and **View ▸ Sidebar ▸ Projects** switch too, and show the sidebar if it's hidden. They have no shortcut of their own, because <kbd>⌘1</kbd> and <kbd>⌘2</kbd> switch workroom tabs, but you can give them one in **Settings ▸ Shortcuts**.
 
 A dot in the accent colour after the other view's tab means something there needs you: a workroom with unread notifications, or a terminal waiting for you.
 

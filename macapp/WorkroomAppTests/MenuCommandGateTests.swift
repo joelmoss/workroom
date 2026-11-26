@@ -101,11 +101,11 @@ final class MenuCommandGateTests: XCTestCase {
     XCTAssertTrue(
       source.contains(
         """
-        Toggle("Projects", isOn: storeFlag(\\.sidebarVisible))
-                .shortcut(.projects)
-                .disabled(modalBlocked || noSidebarContent)
+        Toggle("Show Sidebar", isOn: storeFlag(\\.sidebarVisible))
+                  .shortcut(.projects)
+                  .disabled(modalBlocked || noSidebarContent)
         """),
-      "the Projects toggle must gate on `noSidebarContent`, not `noProjects`")
+      "the Show Sidebar toggle must gate on `noSidebarContent`, not `noProjects`")
     XCTAssertTrue(
       source.contains("store.newTerminalAvailable(workroomSelected: workroomSelected)"),
       "New Terminal's gate is the store's, which holds with no projects")

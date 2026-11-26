@@ -132,8 +132,8 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 
 | Action | Keys |
 | --- | --- |
-| Projects | <kbd>⌃⌘S</kbd> |
-| Inspector | <kbd>⌘B</kbd> |
+| Show Sidebar | <kbd>⌃⌘S</kbd> |
+| Show Inspector | <kbd>⌘B</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
 | Changes | <kbd>⌥⌘C</kbd> |
 | History | <kbd>⌥⌘Y</kbd> |
