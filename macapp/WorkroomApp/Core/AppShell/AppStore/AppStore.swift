@@ -1156,11 +1156,15 @@ final class AppStore: ObservableObject {
     // Pop-out panes (issue #172). `detachPane`/`dockPane` own the model half and fire these for the
     // window half, so membership and window are always written together — see `DetachedPaneWindows`
     // for the state machine and for why these windows are NOT in `WindowRegistry`.
-    case .paneDetached(let targetID, let tabID, let screenPoint):
+    case .paneDetached(let targetID, let tabID, let screenPoint, let byDrag):
       guard let target = self.terminalTarget(forID: targetID),
         let tab = self.terminals.tab(tabID, for: target)
       else { return }
-      self.openDetachedPane(tab: tab, target: target, origin: screenPoint, frame: nil)
+      // The slot, read before the window mounts the surface: it still shows the pane.
+      let source = DetachedPaneWindows.PopOutSource.slot(
+        of: tabID, surface: terminals.surface(of: tabID), byDrag: byDrag, pointer: screenPoint)
+      self.openDetachedPane(
+        tab: tab, target: target, origin: screenPoint, frame: nil, popOut: source)
     case .paneRestoredDetached(let targetID, let tabID, let frame):
       guard let target = self.terminalTarget(forID: targetID),
         let tab = self.terminals.tab(tabID, for: target)
@@ -1602,14 +1606,15 @@ final class AppStore: ObservableObject {
   /// Build and show a detached pane's window. `frame` restores a saved one (session restore);
   /// otherwise `origin` is the cursor at drop time and the window opens at the standard size.
   func openDetachedPane(
-    tab: TerminalTab, target: TerminalTarget, origin: CGPoint?, frame: NSRect?
+    tab: TerminalTab, target: TerminalTarget, origin: CGPoint?, frame: NSRect?,
+    popOut: DetachedPaneWindows.PopOutSource? = nil
   ) {
     let tabID = tab.id
     let surface = terminals.surface(of: tabID)
     let location = detachedLocation(for: target)
     detachedPanes.open(
       tabID: tabID, title: tab.title, project: location.project, workroom: location.workroom,
-      glyph: target.workroomGlyph, origin: origin, frame: frame,
+      glyph: target.workroomGlyph, origin: origin, frame: frame, popOut: popOut,
       onCloseTab: { [weak self] in self?.requestCloseTerminalTab(tabID, for: target) },
       onDock: { [weak self] in self?.dockPane(tabID, for: target) },
       content: {
@@ -1655,7 +1660,26 @@ final class AppStore: ObservableObject {
   /// pane returns to a workroom that may not be selected, in a window that may be behind everything
   /// or minimised. Detaching is most useful precisely when you then go and do something else in the
   /// origin, so that is the common case, and without this the pane simply appears to vanish.
+  ///
+  /// The window pulls back into the slot (`DetachedPaneWindows.dock`) when the slot is on screen:
+  /// the main window comes forward first so the slot shows as the pane lands in it, and the pane
+  /// docks when it lands.
   func dockPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    guard terminals.detachedTabIDs.contains(tabID) else { return showDocked(tabID, for: target) }
+    let selected = sidebarID(for: target.id).map { selectedTargetID == $0 } ?? false
+    if selected {
+      NSApp.activate(ignoringOtherApps: true)
+      hostWindow?.makeKeyAndOrderFront(nil)
+    }
+    // A workroom not selected has no slot on screen to land in, so its pane docks in place.
+    let slot = selected ? PaneSlotAnchors.shared.screenRect(for: tabID) : nil
+    detachedPanes.dock(tabID, intoSlot: slot) { [weak self] in
+      self?.showDocked(tabID, for: target)
+    }
+  }
+
+  /// Dock the pane in the model and show its window, its workroom selected.
+  private func showDocked(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     terminals.dockPane(tabID, for: target)
     if let sid = sidebarID(for: target.id), selectedTargetID != sid {
       selectedTargetID = sid

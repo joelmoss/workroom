@@ -422,15 +422,29 @@ struct PaneLeafView: View {
             isBlocked: { modals.activePicker != nil })
         )
         .overlay {
-          if poppedOut {
-            PoppedOutPlaceholder(
-              tabID: tabID, content: content, focused: focused,
-              onGoToWindow: { panes.raiseDetachedPane(tabID, for: target) },
-              onPullBack: { host.togglePaneWindow(tabID, targetID: target.id) },
-              onActivate: onActivate)
+          // Fades in behind the window growing out of the slot, and out as the pane lands back in
+          // it (`PaneWindowMotion.placeholderFade`).
+          ZStack {
+            if poppedOut {
+              PoppedOutPlaceholder(
+                tabID: tabID, content: content, focused: focused,
+                onGoToWindow: { panes.raiseDetachedPane(tabID, for: target) },
+                onPullBack: { host.togglePaneWindow(tabID, targetID: target.id) },
+                onActivate: onActivate
+              )
+              .transition(.opacity)
+            }
           }
+          .animation(
+            .easeOut(
+              duration: PaneWindowMotion.placeholderFade(
+                appearing: poppedOut, reduceMotion: reduceMotion)),
+            value: poppedOut)
         }
     }
+    // Where this slot is on screen, for a pop out to grow from and a pull back to land in. Only the
+    // pane tree's: the pane's own window is not a slot.
+    .background(PaneSlotAnchor(tabID: isDetached ? nil : tabID))
     .clipShape(
       RoundedRectangle(
         cornerRadius: chromeless ? 0 : TerminalPanelMetrics.cornerRadius, style: .continuous)

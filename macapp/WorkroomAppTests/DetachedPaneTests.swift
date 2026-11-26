@@ -323,9 +323,9 @@ final class DetachedPaneTests: XCTestCase {
   func testDetachReportsItsDropPoint() {
     let s = makeSessions()
     let tab = s.addTab(for: target)
-    var reported: [(TerminalTarget.ID, TerminalTab.ID, CGPoint)] = []
+    var reported: [(TerminalTarget.ID, TerminalTab.ID, CGPoint, Bool)] = []
     s.onEvent = {
-      if case .paneDetached(let a, let b, at: let c) = $0 { reported.append((a, b, c)) }
+      if case .paneDetached(let a, let b, at: let c, let d) = $0 { reported.append((a, b, c, d)) }
     }
 
     s.detachPane(tab.id, for: target, at: CGPoint(x: 120, y: 340))
@@ -333,6 +333,20 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(reported.count, 1)
     XCTAssertEqual(reported.first?.1, tab.id)
     XCTAssertEqual(reported.first?.2, CGPoint(x: 120, y: 340))
+    XCTAssertEqual(reported.first?.3, false, "a button, menu or shortcut is not a drag")
+  }
+
+  /// A pane let go outside its window says it was dragged, so its window scales up from the
+  /// pointer rather than growing out of its slot.
+  func testADropOutsideTheWindowDetachesByDrag() {
+    let s = makeSessions()
+    let tab = s.addTab(for: target)
+    var byDrag: [Bool] = []
+    s.onEvent = { if case .paneDetached(_, _, at: _, let d) = $0 { byDrag.append(d) } }
+
+    s.dropOutside(tab.id, for: target)
+
+    XCTAssertEqual(byDrag, [true])
   }
 
   // MARK: Session persistence — the durability promise

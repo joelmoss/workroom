@@ -841,7 +841,9 @@ final class TerminalPanes {
     /// A pane just became detached and needs a window opened for it at the
     /// given SCREEN point (issue #172). Firing it is the second
     /// half of the one coordinated transition `detachPane` performs; nothing else may open that window.
-    case paneDetached(TerminalTarget.ID, TerminalTab.ID, at: CGPoint)
+    /// `byDrag`: the pane was dragged out of its window and let go there, rather than sent by a
+    /// button, menu or shortcut, so its window grows from the pointer, not the slot.
+    case paneDetached(TerminalTarget.ID, TerminalTab.ID, at: CGPoint, byDrag: Bool)
     /// The mirror of `.paneDetached`: this tab is docked again, so its window must go. Also fired by
     /// `closeTab`/`reap` by way of `undetach`, so a detached window can never outlive its tab.
     case paneDocked(TerminalTab.ID)
@@ -2221,13 +2223,16 @@ final class TerminalPanes {
   /// A preview tab is pinned on the way out: `previewTabID` scans every tab, detached ones
   /// included, so the next Changes/Files click would otherwise replace this pane's content in place
   /// and the popped-out window would silently become a different file.
-  func detachPane(_ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint) {
+  func detachPane(
+    _ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint,
+    byDrag: Bool = false
+  ) {
     guard allowsDetach, let tab = record(tabID, in: target.id), !detachedTabIDs.contains(tabID)
     else { return }
     if tab.isPreview { persist(tabID, for: target) }
     detachedTabIDs.insert(tabID)
     reconcileOcclusion(for: target)
-    onEvent?(.paneDetached(target.id, tabID, at: screenPoint))
+    onEvent?(.paneDetached(target.id, tabID, at: screenPoint, byDrag: byDrag))
   }
 
   /// Bring popped-out pane `tabID`'s own window to the front (the placeholder's Go to Window). The
@@ -2277,7 +2282,7 @@ final class TerminalPanes {
   func dropOutside(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     if let dropOutsideWindow, dropOutsideWindow(tabID, target) { return }
     if allowsDetach {
-      detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+      detachPane(tabID, for: target, at: NSEvent.mouseLocation, byDrag: true)
     }
   }
 
