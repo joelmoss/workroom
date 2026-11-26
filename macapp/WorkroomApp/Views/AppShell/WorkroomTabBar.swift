@@ -248,15 +248,14 @@ struct WorkroomTabBar: View {
               // Worked out before the session ends, while it still has the tabs it measured.
               let reorder = pointerReorder(draggedIndex: index, at: NSEvent.mouseLocation)
               // Out of the window, only the Quick Terminal panel's tabs take it.
-              let dropped = store.terminalDrag.ended(at: NSEvent.mouseLocation)
-              let inOpenList = store.terminalDrag.landedInOpenList
+              let outcome = store.terminalDrag.ended(at: NSEvent.mouseLocation)
               endTerminalDrag()
-              if inOpenList {
+              if outcome == .landedInOpenList {
                 // Let go in the Open view's gap (#819), it lands there: the tab stays in its slot
                 // till the new order comes.
                 settleIndex = index
                 settle(tab.sid, hidden: false)
-              } else if dropped {
+              } else if outcome == .dropped {
                 // The gap stays where it was as the tab goes.
                 settleIndex = reorder?.index ?? index
                 settle(tab.sid, hidden: true)

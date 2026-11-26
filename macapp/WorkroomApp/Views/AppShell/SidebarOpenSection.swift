@@ -329,7 +329,7 @@ struct SidebarOpenList: View, Equatable {
       WorkroomWindowDrag.cancel()
     } onEnd: { [store, drag] report in
       // One drop: what takes its terminals, else out of the window, else a split, else a reorder.
-      if store.terminalDrag.ended(at: report.screen) {
+      if store.terminalDrag.ended(at: report.screen) != .missed {
         drag.splitCancelled()
         WorkroomWindowDrag.cancel()
         return lift.drop()

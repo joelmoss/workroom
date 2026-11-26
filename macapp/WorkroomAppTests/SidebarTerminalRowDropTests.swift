@@ -379,7 +379,7 @@ final class SidebarTerminalRowDropTests: XCTestCase {
     XCTAssertEqual(panel.incomingPaneDrop, .tab(q1, in: builtIn, after: false))
     XCTAssertNil(store.incomingPaneDrop, "moved off the window's row")
 
-    XCTAssertTrue(session.ended(at: underTab))
+    XCTAssertEqual(session.ended(at: underTab), .dropped)
     XCTAssertNil(panel.incomingPaneDrop, "the session's end clears the panel's highlight")
     await settle { panel.terminals.tabs(for: panel.target).count == 2 }
     XCTAssertEqual(panel.terminals.tabs(for: panel.target).map(\.id), [opsTab, q1])

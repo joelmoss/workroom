@@ -166,30 +166,34 @@ final class TerminalDragSession {
     }
   }
 
-  /// The drag ends at `screenPoint`: over a destination that takes it, the drop is made. Whether it
-  /// was, so the surface makes no drop of its own. The session ends either way.
+  /// What `ended` did with the drag.
+  enum Outcome: Equatable {
+    /// Nothing took it: the surface makes its own drop, if any.
+    case missed
+    /// A destination took it and the drop is made.
+    case dropped
+    /// It landed in the Open list's gap, which its surface shows by letting its own image go.
+    case landedInOpenList
+  }
+
+  /// The drag ends at `screenPoint`: over a destination that takes it, the drop is made. Anything
+  /// but `.missed`, and the surface makes no drop of its own. The session ends either way.
   ///
   /// A drag from outside the Open list that lifted its row there (`OpenRowLift.handOver`) and is
   /// let go over the list, on no row that takes it, lands where its gap is, as the row's own drag
-  /// would (`landedInOpenList`).
+  /// would (`.landedInOpenList`).
   @discardableResult
-  func ended(at screenPoint: CGPoint) -> Bool {
+  func ended(at screenPoint: CGPoint) -> Outcome {
     defer { cancel() }
-    landedInOpenList = false
-    guard let store, let source else { return false }
+    guard let store, let source else { return .missed }
     let lift = OpenRowLift.shared
     guard let zone = accepting(at: screenPoint)?.zone else {
-      guard lift.isHandover, lift.landInGap(at: screenPoint, in: store) else { return false }
-      landedInOpenList = true
-      return true
+      guard lift.isHandover, lift.landInGap(at: screenPoint, in: store) else { return .missed }
+      return .landedInOpenList
     }
     Task { await store.dropTerminals(source, on: zone) }
-    return true
+    return .dropped
   }
-
-  /// The last drag that `ended` landed in the Open list's gap, which its surface shows by
-  /// letting its own image go.
-  private(set) var landedInOpenList = false
 
   /// Starts `source`'s drag from `surface` over `zones`, measured now: tests give their own.
   func begin(_ source: TerminalDragSource, from surface: Surface, zones: [Zone]) {

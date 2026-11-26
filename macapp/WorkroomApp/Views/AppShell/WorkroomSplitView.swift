@@ -365,7 +365,7 @@ private struct WorkroomPaneLeaf: View {
         }
         .onEnded { value in
           // Out of the window, only the Quick Terminal panel's tabs take it (#652).
-          if store.terminalDrag.ended(at: NSEvent.mouseLocation) {
+          if store.terminalDrag.ended(at: NSEvent.mouseLocation) != .missed {
             externalDrag = nil
             return
           }
