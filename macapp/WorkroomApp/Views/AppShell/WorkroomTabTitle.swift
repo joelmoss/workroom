@@ -16,9 +16,12 @@ struct WorkroomTabTitle: View {
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
       if let standalone = presentation.standaloneTitle {
+        // Its terminal popped out into a window of its own (issue #172): the mark leads the
+        // title, which goes secondary.
+        if presentation.isPoppedOut { PoppedOutMark() }
         TerminalTitleLabel(title: standalone, folderFont: folderFont)
           .foregroundStyle(
-            hasUnread ? tokens.accent : Color.primary,
+            hasUnread ? tokens.accent : (presentation.isPoppedOut ? Color.secondary : .primary),
             hasUnread ? tokens.accent.opacity(0.7) : tokens.fgMuted
           )
           .truncationMode(.middle)

@@ -175,7 +175,8 @@ struct TerminalTabStrip: View {
           isGrouped: groupOf[tab.id] != nil,
           codingAgentBadge: codingAgentBadge, onCodingAgentTap: { codingAgentPopoverTab = tab.id },
           statusLines: ProgramStatusPresentation.tooltipLines(
-            for: tab, of: target, hosts: programStatus.hosts)
+            for: tab, of: target, hosts: programStatus.hosts),
+          isPoppedOut: panes.detachedTabIDs.contains(tab.id)
         ) {
           host.requestCloseTerminalTab(tab.id, for: target)
         }
@@ -471,9 +472,24 @@ private struct TerminalTabChip: View {
   /// What the program in this terminal reports, or why nothing does (#358): the tooltip's lines
   /// below the title.
   var statusLines: [String] = []
+  /// Popped out into a window of its own (issue #172): a pop-out glyph leads its title, which goes
+  /// secondary. Selecting it shows its placeholder.
+  var isPoppedOut = false
   let onClose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
+
+  /// The title's program and folder colours. The focused tab's title is brighter (full primary) so
+  /// it reads as selected; unfocused titles dim to muted. Brightness only — NOT weight: a
+  /// bold↔regular swap on switch re-measures the title and nudges the chips sideways. Unread
+  /// activity (accent) overrides either, on any tab; a popped-out tab's is secondary, focused or
+  /// not. A default title's folder sits one step fainter than its program. Out of `body` for the
+  /// type-checker, as `chipAccessibilityLabel` is.
+  private var titleColors: (program: Color, folder: Color) {
+    if hasActivity { return (tokens.accent, tokens.accent.opacity(0.7)) }
+    if isPoppedOut { return (Color.secondary, tokens.fgDim) }
+    return isActive ? (Color.primary, tokens.fgMuted) : (tokens.fgMuted, tokens.fgDim)
+  }
 
   /// Pulled out of the `body` modifier chain, with an explicit return type: inlined, the
   /// map/ternary combo made the chip's already-large `body` "unable to type-check in reasonable
@@ -494,6 +510,7 @@ private struct TerminalTabChip: View {
   /// budget on a clean build.
   private func chipAccessibilityLabel(_ title: String) -> String {
     var parts = [title]
+    if isPoppedOut { parts.append(PoppedOutMark.label) }
     if let tool = tab.recognizedTool { parts.append(tool.displayName) }
     if codingAgentBadge { parts.append("Diagnosis available") }
     // A run tab's value stays its run state (asserted exactly), so its OSC 9;4 ERROR goes here.
@@ -600,21 +617,17 @@ private struct TerminalTabChip: View {
         )
         .accessibilityHidden(true)
       }
+      // Popped out into its own window (issue #172): the mark leads the title.
+      if isPoppedOut {
+        PoppedOutMark(size: 9)
+      }
       // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
       // and only this text re-renders for it, not the chip.
       TabTitleReader(content: tab.content) { _ in
         // A default title's folder is one size smaller than its program, on the same baseline.
         TerminalTitleLabel(title: tab.content.titleParts, folderFont: .subheadline)
           .font(.callout)
-          // The focused tab's title is brighter (full primary) so it reads as selected; unfocused
-          // titles dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch
-          // re-measures the title and nudges the chips sideways. Unread activity (accent) overrides
-          // either, on any tab. A default title's folder sits one step fainter than its program.
-          .foregroundStyle(
-            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted),
-            hasActivity
-              ? tokens.accent.opacity(0.7) : (isActive ? tokens.fgMuted : tokens.fgDim)
-          )
+          .foregroundStyle(titleColors.program, titleColors.folder)
           // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
           .italic(tab.isPreview)
           .lineLimit(1)

@@ -683,6 +683,9 @@ struct SidebarOpenTabRow: View, Equatable {
     return HStack(spacing: Spacing.s) {
       SidebarTabIcon(glyph: row.glyph, tool: row.tool)
         .frame(width: SidebarRowMetrics.caretWidth, alignment: .center)
+      // Popped out into its own window (issue #172): the mark leads the title, which goes
+      // secondary.
+      if row.isPoppedOut { PoppedOutMark() }
       TabTitleReader(content: tab.content) { title in
         TerminalTitleLabel(
           title: tab.content.titleParts.omittingFolder(row.target.path), folderFont: .caption
@@ -690,7 +693,7 @@ struct SidebarOpenTabRow: View, Equatable {
         .font(.subheadline)
         .italic(row.isPreview)
         .foregroundStyle(
-          row.hasUnread ? tokens.accent : Color.primary,
+          row.hasUnread ? tokens.accent : (row.isPoppedOut ? Color.secondary : Color.primary),
           row.hasUnread ? tokens.accent.opacity(0.7) : Color.secondary
         )
         .lineLimit(1)
@@ -763,6 +766,7 @@ struct SidebarOpenTabRow: View, Equatable {
   private func accessibilityLabel(_ title: String) -> String {
     var parts = [title]
     if row.isPreview { parts.append("preview") }
+    if row.isPoppedOut { parts.append(PoppedOutMark.label) }
     if row.hasDiagnosis { parts.append("diagnosis available") }
     if let runState = row.runState { parts.append("run \(RunStateIcon.label(runState))") }
     parts += ProgramStatusPresentation.accessibilityParts(

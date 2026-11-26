@@ -352,7 +352,8 @@ struct PaneLeafView: View {
   /// chip would).
   let onActivate: () -> Void
   /// Whether this leaf is being rendered in its own window (issue #172) — only `DetachedPaneView`
-  /// passes true; the pane tree never renders a detached tab.
+  /// passes true. The pane tree renders a popped-out tab's slot too, as its placeholder
+  /// (`poppedOut`).
   var isDetached: Bool = false
   /// Drop the pane's own chrome: its title bar, its rounded card and its focus ring.
   ///
@@ -409,12 +410,26 @@ struct PaneLeafView: View {
       // been promoted to selected, so later selection-based commands (Run, Close All) retargeted to
       // a pane where nothing visibly happened. The bar does its own activation via `.onTapGesture`,
       // which a button consumes before it fires, so scoping this here loses nothing.
+      //
+      // A popped-out pane's slot (issue #172) draws its placeholder OVER the content, never in place
+      // of it: the terminal's container keeps its one structural slot, inert while the pane's own
+      // window holds the surface (`mayHostSurface`), so docking re-homes the surface into the same
+      // container it left. A content pane renders nothing under it (`paneContent`).
       paneContent(tab)
         .modifier(
           ActivateOnPress(
             enabled: !isTerminal, onActivate: onActivate,
             isBlocked: { modals.activePicker != nil })
         )
+        .overlay {
+          if poppedOut {
+            PoppedOutPlaceholder(
+              tabID: tabID, content: content, focused: focused,
+              onGoToWindow: { panes.raiseDetachedPane(tabID, for: target) },
+              onPullBack: { host.togglePaneWindow(tabID, targetID: target.id) },
+              onActivate: onActivate)
+          }
+        }
     }
     .clipShape(
       RoundedRectangle(
@@ -523,6 +538,22 @@ struct PaneLeafView: View {
       if let surface {
         terminalPanel(s, surface: surface, held: tab != nil)
       }
+    // A popped-out content pane renders in its own window only: its slot here shows the
+    // placeholder over nothing. It has no surface, so the branch re-parents nothing.
+    case .diff, .file, .changeset:
+      if poppedOut {
+        Color.clear
+      } else {
+        contentPane(tab)
+      }
+    }
+  }
+
+  /// A content pane's centre (diff / file / changeset), with its chip's context menu.
+  @ViewBuilder private func contentPane(_ tab: TerminalTab?) -> some View {
+    switch content {
+    case .terminal:
+      EmptyView()
     case .diff(let descriptor):
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — the live
       // tab, so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
@@ -605,11 +636,16 @@ struct PaneLeafView: View {
       // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
       // is per-surface, and only the focused pane can be searched. Nothing until active.
       .overlay(alignment: .topTrailing) {
-        if focused {
+        if focused && !poppedOut {
           TerminalSearchBar(model: surface.searchModel)
         }
       }
+      // Under a popped-out pane's placeholder the bar is its window's; under Glass the placeholder
+      // draws no fill of its own, so the bar here must not show through it.
       TerminalStatusBarAdapter(target: target, tabID: tabID, state: s, surface: surface)
+        .opacity(poppedOut ? 0 : 1)
+        .allowsHitTesting(!poppedOut)
+        .accessibilityHidden(poppedOut)
     }
   }
 
@@ -627,6 +663,10 @@ struct PaneLeafView: View {
     if case .terminal = content { return true }
     return false
   }
+
+  /// Whether this is a popped-out pane's slot in the pane tree, which shows its placeholder
+  /// (issue #172). Never in the pane's own window, which shows the pane.
+  private var poppedOut: Bool { !isDetached && panes.detachedTabIDs.contains(tabID) }
 
   /// "Terminal <title>" (or just the content tab's title), plus "pane N of M" in a split — so
   /// VoiceOver announces both what the pane is and where it sits in the group.
@@ -670,7 +710,8 @@ struct PaneLeafView: View {
       onActivate: onActivate,
       // Same screen placement a drag-out would produce, minus the drag: put the window under the
       // pointer rather than somewhere arbitrary.
-      onPopOut: panes.allowsDetach
+      // None on a popped-out pane's slot: its placeholder offers the way back.
+      onPopOut: panes.allowsDetach && !poppedOut
         ? { panes.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
       // Any terminal moves anywhere (#660).
       moveToWorkroom: isTerminal

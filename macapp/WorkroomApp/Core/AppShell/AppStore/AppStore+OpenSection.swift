@@ -56,7 +56,8 @@ extension AppStore {
           hasUnread: notifications.count(tab: tab.id) > 0,
           runState: runCommand.runState(ofTab: tab.id, in: target.id),
           hasDiagnosis: terminals.codingAgentManager.banners[tab.id] != nil,
-          isFocused: isFocused, isVisibleInSplit: !isFocused && shown.contains(tab.id)),
+          isFocused: isFocused, isVisibleInSplit: !isFocused && shown.contains(tab.id),
+          isPoppedOut: terminals.detachedTabIDs.contains(tab.id)),
         tab: tab)
     }
   }
@@ -252,4 +253,6 @@ struct OpenSectionTabRowModel: Equatable {
   let isFocused: Bool
   /// On screen in another pane of a split, not focused.
   let isVisibleInSplit: Bool
+  /// Popped out into a window of its own (issue #172): its slot shows a placeholder.
+  var isPoppedOut = false
 }
