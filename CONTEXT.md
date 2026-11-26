@@ -94,6 +94,10 @@ A tree that lays several of a target's tabs, or several workrooms in a window, o
 **Pane**:
 The area on screen that shows one tab.
 
+**Popped-out pane**:
+A pane moved into a window of its own (Pop Out, Move to New Window), its tab still held by the workroom window it came from. It keeps its slot there: its tab's place in the strip and its pane in a split. That slot shows a placeholder (the terminal is open in another window, with Go to Window and Pull Back Here), and the pane docks back into the same slot. Closing its tab closes the terminal and its window, and so does its window's own close (ADR 0069).
+_Avoid_: Detached pane (in user-facing copy), torn-off pane
+
 **Pane footer**:
 The strip along the bottom of a pane about that pane alone: its tab's live state and the coding agent running in it.
 _Avoid_: Status bar, terminal footer

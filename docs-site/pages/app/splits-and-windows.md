@@ -74,6 +74,17 @@ To put it back, press <kbd>⌃⌘O</kbd> again (**Window ▸ Move back to main w
 
 Workroom restores a popped-out pane to the same place when you relaunch.
 
+### Its place in the main window {nightly}
+
+A popped-out pane keeps its place in the main window: its tab stays where it was in the tab strip, and in a split its pane stays in the split. That pane says the terminal is open in another window, and offers two buttons:
+
+- **Go to Window** brings the pane's window to the front.
+- **Pull Back Here** moves the terminal back into this pane, where it was in the split and the tab strip. Press <kbd>Return</kbd> for it while that pane is focused.
+
+The pane keeps its title bar, with the terminal's name and its close button. Its tab, its title-bar tab and its row in the sidebar's **Open** view show a pop-out icon before its name, which is dimmed. Clicking that tab shows the pane in the main window and leaves the terminal's window where it is. **Move Back** in the window's toolbar and <kbd>⌃⌘O</kbd> also put the terminal back in its place.
+
+Closing the tab, with its **✕** or <kbd>⌘W</kbd>, closes the terminal and its window, and Workroom asks first if a process is still running. When a workroom moves to another window, its popped-out panes keep their places there. If a popped-out pane's window can't come back after a relaunch, the terminal goes back into its pane.
+
 ## Move a workroom to another window
 
 A whole workroom, with all of its terminals, can move to a new window or into another Workroom window.
