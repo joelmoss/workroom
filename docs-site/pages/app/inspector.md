@@ -7,7 +7,7 @@ The inspector is the panel on the right. It reads each workroom's Git repository
 
 ## Open the inspector
 
-Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. The icon strip at its right edge, the activity bar, switches between panes:
+Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. Nightly only: **View ▸ Inspector** is a submenu, with **Show Inspector** and each pane's item in it. The icon strip at its right edge, the activity bar, switches between panes:
 
 | Pane | Shows | Shortcut |
 | --- | --- | --- |

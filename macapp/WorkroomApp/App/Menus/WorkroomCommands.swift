@@ -433,34 +433,38 @@ struct WorkroomCommands: Commands {
         .shortcut(.confirmBeforeQuitting)
     }
 
-    // Replace the default "Show/Hide Sidebar" with a clearer "Projects" label — it's the projects
-    // sidebar. A `Toggle` (not a plain `toggleSidebar` Button) so the menu shows a checkmark when the
-    // sidebar is visible; it binds `store.sidebarVisible`, which drives the split view's column
-    // visibility. Keeps the conventional ⌃⌘S shortcut.
+    // View ▸ Sidebar, in place of the default "Show/Hide Sidebar". Show Sidebar is a `Toggle` (not
+    // a plain `toggleSidebar` Button) so it shows a checkmark while the sidebar is visible; it binds
+    // `store.sidebarVisible`, which drives the column, and keeps the conventional ⌃⌘S. Terminals
+    // and Projects pick the sidebar's two views (ADR 0083), as its switcher's tabs do, showing the
+    // sidebar if it is hidden: buttons, not checkmarked toggles, since this body doesn't re-run when
+    // the store changes and a checkmark would go stale. No default keys for them: ⌘1 and ⌘2 switch
+    // workroom tabs.
     CommandGroup(replacing: .sidebar) {
-      Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
-        .shortcut(.projects)
-        .disabled(modalBlocked || noSidebarContent)
-      // The sidebar's two views (ADR 0083), as its switcher's tabs pick them, showing the sidebar
-      // if it is hidden. Buttons, not checkmarked toggles: this body doesn't re-run when the store
-      // changes, so a checkmark would go stale. No default keys: ⌘1 and ⌘2 switch workroom tabs.
-      Button("Show Open") { store?.showSidebarView(.open) }
-        .shortcut(.showOpenView)
-        .disabled(modalBlocked || noSidebarContent)
-      Button("Show Projects") { store?.showSidebarView(.projects) }
-        .shortcut(.showProjectsView)
-        .disabled(modalBlocked || noSidebarContent)
+      Menu("Sidebar") {
+        Toggle("Show Sidebar", isOn: storeFlag(\.sidebarVisible))
+          .shortcut(.projects)
+          .disabled(modalBlocked || noSidebarContent)
+        Divider()
+        Button("Terminals") { store?.showSidebarView(.open) }
+          .shortcut(.showOpenView)
+          .disabled(modalBlocked || noSidebarContent)
+        Button("Projects") { store?.showSidebarView(.projects) }
+          .shortcut(.showProjectsView)
+          .disabled(modalBlocked || noSidebarContent)
+      }
     }
 
     CommandGroup(after: .sidebar) {
-      // View menu: toggle the right-hand inspector panel as a whole (⌘B), independent of which
-      // section is active — the Changes/Files/History/Pull Request toggles below select a section
-      // AND open the inspector; this one just shows/hides whatever section was last active.
-      Toggle("Inspector", isOn: $showInspector)
-        .shortcut(.inspector)
-        .disabled(modalBlocked || nothingToInspect)
-
-      inspectorPaneToggles(shortcuts: true)
+      // View ▸ Inspector: Show Inspector toggles the right-hand panel as a whole (⌘B), whichever
+      // section was last active; the section toggles under it select a section AND open it.
+      Menu("Inspector") {
+        Toggle("Show Inspector", isOn: $showInspector)
+          .shortcut(.inspector)
+          .disabled(modalBlocked || nothingToInspect)
+        Divider()
+        inspectorPaneToggles(shortcuts: true)
+      }
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
       // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.

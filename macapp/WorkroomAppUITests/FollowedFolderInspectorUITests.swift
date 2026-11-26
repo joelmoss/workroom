@@ -270,7 +270,12 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     XCTAssertFalse(element("activitySection.files").exists, "nothing selected: no panes")
     let view = app.menuBars.menuBarItems["View"]
     view.click()
-    XCTAssertFalse(view.menuItems["Inspector"].isEnabled, "nothing selected to inspect")
+    // View ▸ Inspector is a submenu: it opens on hover.
+    view.menuItems["Inspector"].hover()
+    let showInspector = view.menuItems["Show Inspector"]
+    XCTAssertTrue(showInspector.waitForExistence(timeout: 5), "View ▸ Inspector ▸ Show Inspector")
+    XCTAssertFalse(showInspector.isEnabled, "nothing selected to inspect")
+    app.typeKey(.escape, modifierFlags: [])
     app.typeKey(.escape, modifierFlags: [])
 
     newTerminal.click()
@@ -285,9 +290,14 @@ final class FollowedFolderInspectorUITests: XCTestCase {
     showSection("files", header: "Files")
 
     view.click()
-    for title in ["Inspector", "Details", "Changes", "History", "Pull Request", "Files"] {
-      XCTAssertTrue(view.menuItems[title].isEnabled, "View ▸ \(title) is enabled for the terminal")
+    view.menuItems["Inspector"].hover()
+    for title in ["Show Inspector", "Details", "Changes", "History", "Pull Request", "Files"] {
+      XCTAssertTrue(
+        view.menuItems[title].waitForExistence(timeout: 5), "View ▸ Inspector ▸ \(title)")
+      XCTAssertTrue(
+        view.menuItems[title].isEnabled, "View ▸ Inspector ▸ \(title) is enabled for the terminal")
     }
+    app.typeKey(.escape, modifierFlags: [])
     app.typeKey(.escape, modifierFlags: [])
   }
 }
