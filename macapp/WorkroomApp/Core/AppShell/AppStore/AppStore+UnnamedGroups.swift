@@ -21,15 +21,20 @@ extension AppStore {
     }
   }
 
-  /// Drops standalone terminal `dropped`'s row on standalone terminal `destination`'s: an unnamed
-  /// group of the two in `destination`'s place, `dropped`'s terminal its second tab. Each terminal
-  /// stays in the window that holds it.
-  func dropStandalone(_ dropped: SidebarID, onto destination: SidebarID) {
-    guard let dropped = dropped.targetID, let destination = destination.targetID else { return }
+  /// Drops standalone terminal `dropped`'s row on standalone terminal `destination`'s: once the
+  /// user names it (`TerminalGroupNaming`), a group of the two in `destination`'s place,
+  /// `dropped`'s terminal its second tab. Each terminal stays in the window that holds it. Whether
+  /// it was named; Cancel drops nothing.
+  @discardableResult
+  func dropStandalone(_ dropped: SidebarID, onto destination: SidebarID) async -> Bool {
+    guard let dropped = dropped.targetID, let destination = destination.targetID,
+      let name = await TerminalGroupNaming.ask()
+    else { return false }
     let section = terminalsSection
     section.enqueueRegroup {
-      _ = await section.groupStandalone(dropped, onto: destination)
+      _ = await section.groupStandalone(dropped, onto: destination, named: name)
     }
+    return true
   }
 
   /// A terminal left group `targetID` in this window, closed or moved: the group is settled

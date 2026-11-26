@@ -68,9 +68,11 @@ final class TitleBarTabGroupDropTests: XCTestCase {
   // MARK: The store
 
   /// Value: protects=case 1, a standalone tab dropped on another standalone tab makes the same
-  /// unnamed group a sidebar row drop makes; fails_when=it is refused, a terminal is lost or
-  /// restarted; why_new=#652 title-bar grouping; seam=AppStore.dropTab; no_claim=the pointer
-  func testAStandaloneTabOnAnotherMakesAnUnnamedGroup() async throws {
+  /// group a sidebar row drop makes, under the name asked for; fails_when=it is refused, a terminal
+  /// is lost or restarted, or the name is made up; why_new=#652 title-bar grouping;
+  /// seam=AppStore.dropTab; no_claim=the pointer
+  func testAStandaloneTabOnAnotherMakesANamedGroup() async throws {
+    TerminalGroupNaming.ask = { "Build" }
     let store = makeStore()
     let aSession = UUID()
     let a = try standalone(store, session: aSession)
@@ -87,7 +89,7 @@ final class TitleBarTabGroupDropTests: XCTestCase {
     let made = try XCTUnwrap(rows.first)
     XCTAssertEqual(rows, [made])
     guard case .terminalGroup = made else { return XCTFail("\(made) is not a group") }
-    XCTAssertNil(section.group(try XCTUnwrap(made.targetID))?.name, "unnamed")
+    XCTAssertEqual(section.group(try XCTUnwrap(made.targetID))?.name, "Build")
     XCTAssertEqual(tabs(store, made), [bTab, aTab], "the dropped terminal joins second")
     XCTAssertEqual(session(store, aTab, in: made), aSession, "the same shell")
   }

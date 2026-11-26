@@ -76,6 +76,12 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     return group.name == nil
   }
 
+  /// A group row's name: nil for anything else, or an unnamed group.
+  private func groupName(_ sid: SidebarID?) -> String? {
+    guard case .terminalGroup = sid, let id = sid?.targetID else { return nil }
+    return section.group(id)?.name
+  }
+
   private func settle() async { await section.regroupsSettled() }
 
   // MARK: ⌘D
@@ -348,11 +354,12 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     let cTab = try XCTUnwrap(tabs(store, c).first)
     store.selectedTargetID = c
 
-    store.dropStandalone(c, onto: a)
+    TerminalGroupNaming.ask = { "Ops" }
+    await store.dropStandalone(c, onto: a)
     await settle()
 
     let group = try XCTUnwrap(rows.first)
-    XCTAssertTrue(isUnnamedGroup(group))
+    XCTAssertEqual(groupName(group), "Ops", "it takes the name the user gave, not a made-up one")
     XCTAssertEqual(rows, [group, b])
     XCTAssertEqual(tabs(store, group), [aTab, cTab], "the dropped terminal joins second")
     XCTAssertEqual(store.selectedTargetID, group)
@@ -366,12 +373,12 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     let a = try standalone(first)
     let b = try standalone(second)
 
-    second.dropStandalone(b, onto: a)
+    await second.dropStandalone(b, onto: a)
     await settle()
 
     let group = try XCTUnwrap(rows.first)
     XCTAssertEqual(rows.count, 1)
-    XCTAssertTrue(isUnnamedGroup(group))
+    XCTAssertEqual(groupName(group), "Group")
     XCTAssertEqual(tabs(first, group).count, 1)
     XCTAssertEqual(tabs(second, group).count, 1)
     XCTAssertEqual(first.selectedTargetID, group)
@@ -383,10 +390,31 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     let store = makeStore()
     let a = try standalone(store)
 
-    store.dropStandalone(a, onto: a)
+    await store.dropStandalone(a, onto: a)
     await settle()
 
     XCTAssertEqual(rows, [a])
+  }
+
+  /// Value: protects=a drop that would make a group asks its name, and Cancel (or an empty name)
+  /// drops nothing; fails_when=a group is made unasked or under a made-up name; why_new=owner,
+  /// 2026-11-26; seam=TerminalGroupNaming; no_claim=the alert itself.
+  func testCancellingTheNameDropsNothing() async throws {
+    let store = makeStore()
+    let a = try standalone(store)
+    let b = try standalone(store)
+    var asked = 0
+    TerminalGroupNaming.ask = {
+      asked += 1
+      return nil
+    }
+
+    let dropped = await store.dropRow(.standalone(b), onto: a)
+    await settle()
+
+    XCTAssertFalse(dropped)
+    XCTAssertEqual(asked, 1)
+    XCTAssertEqual(rows, [a, b], "both stay standalone terminals where they were")
   }
 
   /// Value: protects=a standalone terminal's row dropped on another's groups them, the drag
@@ -407,7 +435,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertTrue(dropped)
     await settle()
 
-    XCTAssertTrue(isUnnamedGroup(rows.first))
+    XCTAssertEqual(groupName(rows.first), "Group")
     XCTAssertEqual(rows.count, 2)
   }
 

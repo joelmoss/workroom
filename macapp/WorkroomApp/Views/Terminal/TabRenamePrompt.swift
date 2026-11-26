@@ -18,13 +18,14 @@ enum TabRenamePrompt {
 }
 
 /// An alert with one text field, as a sheet on the key (else main) window, else app-modal: the
-/// field's text goes to `onConfirm` when the first button is chosen. Shared by the terminal's
-/// Rename… and New Terminal Group… prompts.
+/// field's text goes to `onConfirm` when the first button is chosen, and `onCancel` runs on Cancel.
+/// Shared by the terminal's Rename… and New Terminal Group… prompts.
 @MainActor
 enum TextFieldPrompt {
   static func present(
     title: String, message: String, value: String = "", placeholder: String, fieldID: String,
-    fieldHelp: String, confirm: String, onConfirm: @escaping @MainActor (String) -> Void
+    fieldHelp: String, confirm: String, onConfirm: @escaping @MainActor (String) -> Void,
+    onCancel: @escaping @MainActor () -> Void = {}
   ) {
     // One tick, so the menu's or button's own event has unwound before the sheet drops (as the
     // close confirm does, `TabCloseFlow`).
@@ -42,7 +43,7 @@ enum TextFieldPrompt {
       alert.addButton(withTitle: "Cancel")
       alert.window.initialFirstResponder = field
       let resolve: (NSApplication.ModalResponse) -> Void = { response in
-        if response == .alertFirstButtonReturn { onConfirm(field.stringValue) }
+        if response == .alertFirstButtonReturn { onConfirm(field.stringValue) } else { onCancel() }
       }
       if let window = NSApp.keyWindow ?? NSApp.mainWindow {
         alert.beginSheetModal(for: window, completionHandler: resolve)

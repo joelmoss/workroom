@@ -59,6 +59,32 @@ enum TerminalGroupNamePrompt {
       fieldHelp: "The name shown on the group's row and title-bar tab",
       confirm: "Create", onConfirm: onName)
   }
+
+  /// The prompt, awaited: the name, trimmed, or nil on Cancel or an empty name.
+  static func name() async -> String? {
+    let typed: String? = await withCheckedContinuation { done in
+      TextFieldPrompt.present(
+        title: "New Terminal Group",
+        message: "Name the group these terminals will make.",
+        placeholder: "Terminal group name", fieldID: "terminalGroup.name.field",
+        fieldHelp: "The name shown on the group's row and title-bar tab",
+        confirm: "Create",
+        onConfirm: { done.resume(returning: $0) },
+        onCancel: { done.resume(returning: nil) })
+    }
+    guard let name = typed?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+      return nil
+    }
+    return name
+  }
+}
+
+/// How a drop that makes a new terminal group gets its name: always asked, never made up. A
+/// standalone terminal's row or tab let go on another standalone terminal asks first; Cancel or an
+/// empty name drops nothing. The unit tests answer it themselves (`HostedRunGuardObserver`).
+@MainActor
+enum TerminalGroupNaming {
+  static var ask: () async -> String? = { await TerminalGroupNamePrompt.name() }
 }
 
 extension TerminalGroup {

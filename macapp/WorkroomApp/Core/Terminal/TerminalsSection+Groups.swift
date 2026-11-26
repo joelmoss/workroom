@@ -212,12 +212,13 @@ extension TerminalsSection {
     return true
   }
 
-  /// Turns standalone terminal `id` into an unnamed group in its place, its terminal the group's
-  /// first, and returns the group; nil when it couldn't (`id` isn't a listed standalone terminal,
-  /// or its session couldn't be retagged), leaving it as it was.
-  func convertToGroup(_ id: TargetID) async -> TargetID? {
+  /// Turns standalone terminal `id` into a group in its place, named `name` (nil: unnamed, as a
+  /// split makes), its terminal the group's first, and returns the group; nil when it couldn't
+  /// (`id` isn't a listed standalone terminal, or its session couldn't be retagged), leaving it as
+  /// it was.
+  func convertToGroup(_ id: TargetID, named name: String? = nil) async -> TargetID? {
     guard case .standalone = id, contains(id) else { return nil }
-    let group = TerminalGroup(id: UUID())
+    let group = TerminalGroup(id: UUID(), name: name)
     let groupID = TargetID.terminalGroup(group.id)
     let moved = await rehome([(id, groupID)]) {
       guard contains(id) else { return false }
@@ -227,13 +228,15 @@ extension TerminalsSection {
     return moved ? groupID : nil
   }
 
-  /// Makes an unnamed group of standalone terminals `destination` and `dropped`, in
+  /// Makes a group named `name` of standalone terminals `destination` and `dropped`, in
   /// `destination`'s place, `dropped`'s terminal joining after `destination`'s, and returns it.
-  func groupStandalone(_ dropped: TargetID, onto destination: TargetID) async -> TargetID? {
+  func groupStandalone(
+    _ dropped: TargetID, onto destination: TargetID, named name: String
+  ) async -> TargetID? {
     guard case .standalone = dropped, case .standalone = destination, dropped != destination,
       contains(dropped), contains(destination)
     else { return nil }
-    let group = TerminalGroup(id: UUID())
+    let group = TerminalGroup(id: UUID(), name: name)
     let groupID = TargetID.terminalGroup(group.id)
     let moved = await rehome([(destination, groupID), (dropped, groupID)]) {
       guard contains(destination), contains(dropped) else { return false }

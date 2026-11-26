@@ -16,7 +16,7 @@ enum TerminalDragSource: Hashable {
 /// moves so the highlight and the drop agree (`AppStore.terminalDrop`).
 enum TerminalDrop: Equatable {
   /// Tab `tab` of `owner` moves into `into`, at its end or just before `before`; onto a standalone
-  /// terminal the two become an unnamed group (#659).
+  /// terminal the two become a group the user names (#659, `TerminalGroupNaming`).
   case move(TerminalTab.ID, of: SidebarID, into: SidebarID, before: TerminalTab.ID?)
   /// Tab `tab` moves within its own target's tabs, just before `before` (nil: to the end).
   case reorder(TerminalTab.ID, in: SidebarID, before: TerminalTab.ID?)
@@ -203,8 +203,7 @@ extension AppStore {
     switch drop {
     case .move(let tab, let owner, let into, let before):
       if case .standalone = owner, case .standalone = into {
-        dropStandalone(owner, onto: into)
-        return true
+        return await dropStandalone(owner, onto: into)
       }
       guard let (target, source) = terminalHome(of: owner) else { return false }
       guard await dropPane(tab, of: target, on: .target(into), source: source) else {
