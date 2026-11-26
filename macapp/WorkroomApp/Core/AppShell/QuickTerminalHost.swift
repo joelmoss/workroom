@@ -121,8 +121,11 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
     case .tabContentChanged, .paneCountChanged, .surfaceFocused, .cwdChanged, .commandFinished:
       break
     // Pop-out panes (issue #172), as a window's store opens and closes them.
-    case .paneDetached(_, let tabID, let screenPoint):
-      openDetachedPane(tabID, origin: screenPoint, frame: nil)
+    case .paneDetached(_, let tabID, let screenPoint, let byDrag):
+      // The slot, read before the window mounts the surface: it still shows the pane.
+      let source = DetachedPaneWindows.PopOutSource.slot(
+        of: tabID, surface: terminals.surface(of: tabID), byDrag: byDrag, pointer: screenPoint)
+      openDetachedPane(tabID, origin: screenPoint, frame: nil, popOut: source)
       // Its last docked pane left: the panel hides, as when its last terminal closes.
       if !hasDockedTab { onTargetEmptied?(target.id) }
     case .paneRestoredDetached(_, let tabID, let frame):
@@ -184,21 +187,30 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
     return true
   }
 
-  /// Docks a popped-out pane back into the panel, and slides the panel in on it.
+  /// Docks a popped-out pane back into the panel, and slides the panel in on it. Its window pulls
+  /// back into its slot when the panel shows it, else it docks in place
+  /// (`DetachedPaneWindows.dock`).
   func dockPane(_ tabID: TerminalTab.ID) {
-    terminals.dockPane(tabID, for: target)
-    onReveal?(tabID)
+    let target = target
+    detachedPanes.dock(tabID, intoSlot: PaneSlotAnchors.shared.screenRect(for: tabID)) {
+      [weak self] in
+      self?.terminals.dockPane(tabID, for: target)
+      self?.onReveal?(tabID)
+    }
   }
 
   /// Builds and shows a popped-out pane's window, as a window's store does.
-  private func openDetachedPane(_ tabID: TerminalTab.ID, origin: CGPoint?, frame: NSRect?) {
+  private func openDetachedPane(
+    _ tabID: TerminalTab.ID, origin: CGPoint?, frame: NSRect?,
+    popOut: DetachedPaneWindows.PopOutSource? = nil
+  ) {
     let target = target
     guard let tab = terminals.tab(tabID, for: target) else { return }
     let surface = terminals.surface(of: tabID)
     let terminals = terminals
     detachedPanes.open(
       tabID: tabID, title: tab.title, project: target.title, workroom: nil,
-      glyph: TerminalGroup.glyph, origin: origin, frame: frame,
+      glyph: TerminalGroup.glyph, origin: origin, frame: frame, popOut: popOut,
       onCloseTab: { [weak self] in self?.requestCloseTerminalTab(tabID, for: target) },
       onDock: { [weak self] in self?.dockPane(tabID) },
       content: {

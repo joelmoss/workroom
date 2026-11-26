@@ -83,6 +83,8 @@ A popped-out pane keeps its place in the main window: its tab stays where it was
 
 The pane keeps its title bar, with the terminal's name and its close button. Its tab, its title-bar tab and its row in the sidebar's **Open** view show a pop-out icon before its name, which is dimmed. Clicking that tab shows the pane in the main window and leaves the terminal's window where it is. **Move Back** in the window's toolbar and <kbd>⌃⌘O</kbd> also put the terminal back in its place.
 
+The terminal's window grows out of its pane as it opens, and shrinks back into the pane when the terminal goes back. A pane you drag out of the window opens where you let go. With **Reduce motion** on in System Settings ▸ Accessibility ▸ Display, the window fades in and out instead.
+
 Closing the tab, with its **✕** or <kbd>⌘W</kbd>, closes the terminal and its window, and Workroom asks first if a process is still running. When a workroom moves to another window, its popped-out panes keep their places there. If a popped-out pane's window can't come back after a relaunch, the terminal goes back into its pane.
 
 ## Move a workroom to another window

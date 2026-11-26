@@ -109,6 +109,54 @@ final class DetachedPaneWindows {
   private var toolbarDelegates: [TerminalTab.ID: ToolbarDelegate] = [:]
   private var delegates: [TerminalTab.ID: Delegate] = [:]
 
+  /// The pop out or pull back running for a pane, at most one each (`PaneWindowMotion`). Anything
+  /// else that happens to the pane first settles it: a second pop out or pull back finishes it at
+  /// its end, a close drops it.
+  private var transitions: [TerminalTab.ID: PaneWindowTransition] = [:]
+  /// Whether pop out and pull back animate; off in a hosted unit run.
+  var animates = PaneWindowMotion.isEnabledByDefault
+  var animator: PaneWindowAnimating = LivePaneWindowAnimator()
+  /// The system's Reduce Motion, read as each transition starts.
+  var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+  /// The corner radius of a transition's card, between a pane's and a window's.
+  private static let transitionCornerRadius: CGFloat = 12
+
+  /// Where a popped-out pane came from, for its window to grow out of (issue #172): its slot on
+  /// screen and a picture of it, taken before the pane moved, and whether it was dragged out.
+  struct PopOutSource {
+    var slot: NSRect?
+    var snapshot: CGImage?
+    /// The snapshot's pixels per point.
+    var scale: CGFloat
+    /// What the snapshot sits on as the window grows past it: the slot window's background.
+    var background: NSColor
+    var level: NSWindow.Level
+    /// Dragged out of its window, and let go at `pointer`.
+    var byDrag: Bool
+    var pointer: CGPoint?
+
+    /// The slot of `tabID` as it is now, with `surface` in it; nil when it isn't on screen.
+    @MainActor
+    static func slot(
+      of tabID: TerminalTab.ID, surface: NSView?, byDrag: Bool, pointer: CGPoint?
+    ) -> PopOutSource {
+      let anchors = PaneSlotAnchors.shared
+      let window = anchors.view(for: tabID)?.window
+      return PopOutSource(
+        slot: anchors.screenRect(for: tabID),
+        snapshot: anchors.snapshot(for: tabID, surface: surface),
+        scale: window?.backingScaleFactor ?? 2,
+        background: DetachedPaneWindows.opaque(window?.backgroundColor),
+        level: window?.level ?? .normal, byDrag: byDrag, pointer: pointer)
+    }
+  }
+
+  /// A window's background at full opacity: under Glass it is translucent, and the card that flies
+  /// has no blur behind it.
+  private static func opaque(_ color: NSColor?) -> NSColor {
+    (color ?? .windowBackgroundColor).withAlphaComponent(1)
+  }
+
   /// The window hosting `tabID`, for the raise paths (`AppStore.window(forTab:)`).
   func window(for tabID: TerminalTab.ID) -> NSWindow? { windows[tabID] }
 
@@ -130,16 +178,22 @@ final class DetachedPaneWindows {
 
   /// Open a window for a freshly-detached pane. `origin` is a SCREEN point (the cursor at drop time);
   /// the window is placed so its top-left lands there, then nudged onto a visible screen.
+  ///
+  /// `popOut`, given for a pop out and never for a restore or a hand-off (#444), grows the window
+  /// out of the pane's slot (`PaneWindowMotion.popOut`).
   func open<Content: View>(
     tabID: TerminalTab.ID, title: String, project: String, workroom: String?,
     glyph: String = "cube", origin: CGPoint?,
-    frame: NSRect? = nil, onCloseTab: @escaping () -> Void, onDock: @escaping () -> Void,
+    frame: NSRect? = nil, popOut: PopOutSource? = nil, onCloseTab: @escaping () -> Void,
+    onDock: @escaping () -> Void,
     content: () -> Content
   ) {
     guard windows[tabID] == nil else {
+      settle(tabID)
       windows[tabID]?.makeKeyAndOrderFront(nil)
       return
     }
+    settle(tabID)
     // A restored window keeps the frame the user left it at; a fresh tear-off always opens at the
     // standard size.
     // `AppStore.frameOnAVisibleScreen`, not a local copy: it already encodes what "reachable" means
@@ -190,9 +244,13 @@ final class DetachedPaneWindows {
       window.center()
     }
     let delegate = Delegate(onCloseTab: onCloseTab)
+    // Moving or resizing the window as it grows in ends the growing, at the window.
+    delegate.onMove = { [weak self] in self?.settle(tabID) }
     window.delegate = delegate
     delegates[tabID] = delegate
     windows[tabID] = window
+    let transition = popOut.flatMap { popOutTransition(for: window, tabID: tabID, from: $0) }
+    transition?.start()
 
     // ORDER FRONT BEFORE MOUNTING THE CONTENT. `GhosttySurfaceView.viewDidMoveToWindow` decides
     // whether to render from `window.occlusionState.contains(.visible)`, and a window that has not
@@ -207,11 +265,99 @@ final class DetachedPaneWindows {
       rootView: content().modifier(GlassWindowRoot(titlebar: .standard)).themeTokensRoot())
     // Glass now, as that root will resolve it, not when it first mounts on a display cycle.
     WindowBackgroundThemer.applyResolved(to: window, titlebar: .standard)
+    if let transition { transitions[tabID] = transition }
+  }
+
+  /// The pop out of `window`, which opens at its final frame and shows when the snapshot growing
+  /// out of the slot reaches it; with Reduce Motion, or no slot on screen, it fades in where it
+  /// opens.
+  private func popOutTransition(
+    for window: NSWindow, tabID: TerminalTab.ID, from source: PopOutSource
+  ) -> PaneWindowTransition? {
+    guard animates else { return nil }
+    let plan = PaneWindowMotion.popOut(
+      slot: source.slot, final: window.frame, pointer: source.pointer, byDrag: source.byDrag,
+      reduceMotion: reduceMotion(), screens: NSScreen.screens.map(\.frame))
+    // Hidden until the transition ends, but still the window that takes the keyboard and the
+    // mouse: a window at alpha 0 otherwise lets clicks through to the window under it.
+    window.alphaValue = 0
+    window.ignoresMouseEvents = false
+    let surface: PaneWindowTransitionSurface =
+      plan.moves
+      ? PaneTransitionPanel(
+        snapshot: source.snapshot, scale: source.scale, background: source.background,
+        cornerRadius: Self.transitionCornerRadius, above: source.level)
+      : PaneWindowFadeIn(window)
+    return PaneWindowTransition(
+      kind: .popOut, plan: plan, surface: surface, animator: animator
+    ) { [weak self, weak window] _ in
+      window?.alphaValue = 1
+      self?.forgetEnded(tabID)
+    }
+  }
+
+  /// Dock `tabID` with its pull back (issue #172): its window shrinks into `slot` (its slot on
+  /// screen, nil when it isn't on one) and fades, and `dock` runs when it lands, so the pane is
+  /// never in its window and its slot at once. With Reduce Motion, or no slot, the pane docks at
+  /// once under a snapshot of its window that fades where it was. Nothing to animate (no window,
+  /// or one that is minimised or full screen) docks at once.
+  func dock(_ tabID: TerminalTab.ID, intoSlot slot: NSRect?, then dock: @escaping () -> Void) {
+    if let running = transitions.removeValue(forKey: tabID) {
+      // A pull back already running docks as it finishes; a pop out finishes into its window,
+      // which then pulls back.
+      running.finish()
+      if running.kind == .pullBack { return }
+    }
+    guard animates, let window = windows[tabID], window.isVisible, !window.isMiniaturized,
+      !window.styleMask.contains(.fullScreen), let root = window.contentView?.superview
+    else {
+      dock()
+      return
+    }
+    let plan = PaneWindowMotion.pullBack(
+      window: window.frame, slot: slot, reduceMotion: reduceMotion(),
+      screens: NSScreen.screens.map(\.frame))
+    let panel = PaneTransitionPanel(
+      snapshot: PaneSnapshot.capture(
+        root.bounds, of: root, surfaces: Self.surfaces(in: root)),
+      scale: window.backingScaleFactor, background: Self.opaque(window.backgroundColor),
+      cornerRadius: Self.transitionCornerRadius, above: window.level)
+    let docksFirst = !plan.moves
+    let transition = PaneWindowTransition(
+      kind: .pullBack, plan: plan, surface: panel, animator: animator
+    ) { [weak self] _ in
+      self?.forgetEnded(tabID)
+      if !docksFirst { dock() }
+    }
+    // The snapshot covers the window before the window goes, so the pane never blinks out.
+    transition.start()
+    window.animationBehavior = .none
+    window.orderOut(nil)
+    // Docking closes the window, which drops a transition registered for it: register after.
+    if docksFirst { dock() }
+    if !transition.isDone { transitions[tabID] = transition }
+  }
+
+  /// End `tabID`'s transition at its end now, if one is running.
+  func settle(_ tabID: TerminalTab.ID) {
+    transitions.removeValue(forKey: tabID)?.finish()
+  }
+
+  private func forgetEnded(_ tabID: TerminalTab.ID) {
+    if transitions[tabID]?.isDone == true { transitions[tabID] = nil }
+  }
+
+  /// Every terminal surface under `view`, for a snapshot to draw them in.
+  private static func surfaces(in view: NSView) -> [NSView] {
+    if view is GhosttySurfaceView { return [view] }
+    return view.subviews.flatMap { surfaces(in: $0) }
   }
 
   /// Close a detached pane's window WITHOUT closing its tab — a dock, or a teardown where the tab is
   /// already being removed by someone else. Idempotent.
   func close(tabID: TerminalTab.ID) {
+    // A transition for a pane that is going away has nothing left to end at.
+    transitions.removeValue(forKey: tabID)?.cancel()
     guard let window = windows[tabID] else { return }
     toolbarDelegates[tabID] = nil
     // Nilling the delegate is the whole guard: `NSWindow.close()` does not consult
@@ -370,10 +516,14 @@ final class DetachedPaneWindows {
   /// then closes as a consequence, via `closeTab` → `undetach` → `.paneDocked` → `close(tabID:)`.
   private final class Delegate: NSObject, NSWindowDelegate {
     private let onCloseTab: () -> Void
+    /// The window moved or resized: a pop out still growing into it settles.
+    var onMove: (() -> Void)?
     init(onCloseTab: @escaping () -> Void) { self.onCloseTab = onCloseTab }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
       onCloseTab()
       return false
     }
+    func windowDidMove(_ notification: Notification) { onMove?() }
+    func windowDidResize(_ notification: Notification) { onMove?() }
   }
 }
