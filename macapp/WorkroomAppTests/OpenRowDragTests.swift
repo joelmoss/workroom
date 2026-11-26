@@ -11,13 +11,20 @@ import XCTest
 final class OpenRowDragTests: XCTestCase {
   private var location = CGPoint(x: 400, y: 900)
   private var isDown = true
+  /// Escape pressed, until the drag reads it.
+  private var escape = false
   private var moves: [OpenRowDrag.Report] = []
   private var ends: [OpenRowDrag.Report] = []
   private let item = OpenSectionItem.workroom(.terminalGroup(UUID()))
 
   private func follower() -> OpenRowDrag {
     OpenRowDrag(
-      mouse: .init(location: { self.location }, isDown: { self.isDown }), startsTimer: false)
+      mouse: .init(
+        location: { self.location }, isDown: { self.isDown },
+        escape: {
+          defer { self.escape = false }
+          return self.escape
+        }), startsTimer: false)
   }
 
   private func begin(_ drag: OpenRowDrag) {
@@ -157,6 +164,35 @@ final class OpenRowDragTests: XCTestCase {
     drag.ended(item)
     XCTAssertEqual(moves.count, 1, "no move from the late report")
     XCTAssertEqual(ends.count, 1, "and no second end")
+    XCTAssertFalse(drag.isFollowing(item))
+  }
+
+  /// Value: protects=Escape during a drag cancels it once, and the moves and release after it
+  /// drop nothing; fails_when=the release after Escape still drops or reorders;
+  /// seam=OpenRowDrag; no_claim=reading the key from the queue
+  func testEscapeCancelsTheDragAndItsReleaseDropsNothing() {
+    let drag = follower()
+    var cancels = 0
+    drag.changed(
+      item, location: CGPoint(x: 100, y: 100), startLocation: CGPoint(x: 100, y: 100),
+      onMove: { self.moves.append($0) }, onEnd: { self.ends.append($0) },
+      onCancel: { cancels += 1 })
+    location = CGPoint(x: 400, y: 880)
+    drag.poll()
+    XCTAssertEqual(moves.count, 1)
+
+    escape = true
+    drag.poll()
+    XCTAssertEqual(cancels, 1)
+    location = CGPoint(x: 400, y: 850)
+    drag.poll()
+    XCTAssertTrue(drag.isFollowing(item), "followed to the release, so its reports arm nothing")
+    isDown = false
+    drag.poll()
+    drag.ended(item)
+    XCTAssertEqual(moves.count, 1, "no move after Escape")
+    XCTAssertTrue(ends.isEmpty, "and no drop")
+    XCTAssertEqual(cancels, 1)
     XCTAssertFalse(drag.isFollowing(item))
   }
 }

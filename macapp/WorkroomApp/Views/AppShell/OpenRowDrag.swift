@@ -16,6 +16,24 @@ final class OpenRowDrag {
   struct Mouse {
     var location: @MainActor () -> CGPoint = { NSEvent.mouseLocation }
     var isDown: @MainActor () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
+    /// Whether Escape was pressed, taking the key: it waits in the queue while the table
+    /// tracks the mouse, which takes only mouse events.
+    var escape: @MainActor () -> Bool = { OpenRowDrag.takeQueuedEscape() }
+  }
+
+  /// A run-loop mode nothing else runs in, so reading the queue fires no timer (this drag's own
+  /// included) and handles no other input.
+  private static let peekMode = RunLoop.Mode("workroom.openRowDrag.peek")
+
+  /// Takes an Escape key press waiting at the head of the app's key events, if one is.
+  static func takeQueuedEscape() -> Bool {
+    guard
+      let key = NSApp.nextEvent(
+        matching: .keyDown, until: .distantPast, inMode: peekMode, dequeue: false),
+      key.keyCode == 53
+    else { return false }
+    _ = NSApp.nextEvent(matching: .keyDown, until: .distantPast, inMode: peekMode, dequeue: true)
+    return true
   }
 
   /// Where the drag is, as a `.global` `DragGesture` reports it (the window's top-left space, y
@@ -47,7 +65,9 @@ final class OpenRowDrag {
   private var started = false
   private var onMove: ((Report) -> Void)?
   private var onEnd: ((Report) -> Void)?
+  private var onCancel: (() -> Void)?
   private var timer: Timer?
+  private var escapeMonitor: Any?
 
   /// `startsTimer`: false in tests, which call `poll` themselves.
   init(mouse: Mouse = Mouse(), startsTimer: Bool = true) {
@@ -63,16 +83,18 @@ final class OpenRowDrag {
   /// gesture that does keep reporting moves nothing twice. A report once the button is up arms
   /// nothing: it is the gesture's own, queued while the table held the mouse and delivered after
   /// the release, of a drag that has already ended. A drag of another row still followed ends
-  /// first.
+  /// first. Escape during the drag calls `onCancel` instead, and the release then does nothing.
   func changed(
     _ item: OpenSectionItem, location: CGPoint, startLocation: CGPoint,
-    onMove: @escaping (Report) -> Void, onEnd: @escaping (Report) -> Void
+    onMove: @escaping (Report) -> Void, onEnd: @escaping (Report) -> Void,
+    onCancel: @escaping () -> Void = {}
   ) {
     guard self.item != item, mouse.isDown() else { return }
     if self.item != nil { finish(at: mouse.location()) }
     self.item = item
     self.onMove = onMove
     self.onEnd = onEnd
+    self.onCancel = onCancel
     start = startLocation
     startGlobal = location
     startScreen = mouse.location()
@@ -85,6 +107,15 @@ final class OpenRowDrag {
       }
       RunLoop.main.add(timer, forMode: .common)
       self.timer = timer
+      // When the table doesn't hold the mouse, Escape is dispatched before a read could see it
+      // queued: take it here, before the terminal under the keys does.
+      escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        guard event.keyCode == 53, let self,
+          MainActor.assumeIsolated({ self.started && self.onEnd != nil })
+        else { return event }
+        MainActor.assumeIsolated { self.cancel() }
+        return nil
+      }
     }
   }
 
@@ -99,6 +130,7 @@ final class OpenRowDrag {
     guard item != nil else { return }
     let point = mouse.location()
     guard mouse.isDown() else { return finish(at: point) }
+    if started, onEnd != nil, mouse.escape() { return cancel() }
     guard point != last else { return }
     last = point
     advance(to: point)
@@ -115,6 +147,16 @@ final class OpenRowDrag {
     onMove?(report)
   }
 
+  /// Escape: the drag is cancelled. It is still followed, passing nothing on, until the release,
+  /// so the gesture's later reports start no new drag.
+  private func cancel() {
+    let onCancel = onCancel
+    onMove = nil
+    onEnd = nil
+    self.onCancel = nil
+    onCancel?()
+  }
+
   /// Ends the drag at `point`: a move there first when the pointer got past the last read, so the
   /// drop and the reorder are decided where it was let go. A press let go short of `threshold` is
   /// a click and ends with nothing passed on; one let go past it is a drag though no read saw it
@@ -125,12 +167,15 @@ final class OpenRowDrag {
     let moved = point != last
     timer?.invalidate()
     timer = nil
+    if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+    escapeMonitor = nil
     let report = report(at: point)
     let started =
       started || hypot(report.translation.width, report.translation.height) >= Self.threshold
     item = nil
     self.onMove = nil
     self.onEnd = nil
+    self.onCancel = nil
     self.started = false
     guard started else { return }
     if moved { onMove?(report) }

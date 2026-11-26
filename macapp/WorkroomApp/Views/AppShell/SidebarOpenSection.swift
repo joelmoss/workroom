@@ -9,31 +9,6 @@ enum OpenSectionItem: Hashable {
   case tab(TerminalTab.ID, in: SidebarID)
 }
 
-/// Where a dragged Open row lands. Every row is one height, so the drag's vertical travel counts
-/// rows; a reorder is the pointer's row, not a gap the List opens (the List's own drag would take
-/// the mouse from the split and tear-off drags).
-enum OpenSectionReorder {
-  /// The row `translation` points travel from `offset` reaches, among `count` rows.
-  static func row(from offset: Int, translation: CGFloat, pitch: CGFloat, count: Int) -> Int {
-    guard count > 0, pitch > 0 else { return offset }
-    let moved = Int((translation / pitch).rounded())
-    return min(max(offset + moved, 0), count - 1)
-  }
-
-  /// The index among the workroom tabs that workroom row `offset`, dragged to List row `row`, takes:
-  /// past every other workroom row above the pointer's row, and, dragged down, the one under it too.
-  /// Nil when it stays.
-  static func workroomIndex(_ items: [OpenSectionItem], from offset: Int, to row: Int) -> Int? {
-    guard items.indices.contains(offset), case .workroom = items[offset] else { return nil }
-    let others = items.indices.filter { index in
-      guard index != offset, case .workroom = items[index] else { return false }
-      return row > offset ? index <= row : index < row
-    }
-    let current = items[..<offset].filter { if case .workroom = $0 { true } else { false } }.count
-    return others.count == current ? nil : others.count
-  }
-}
-
 /// The switcher's "+" in the Open view (ADR 0083): a new terminal or terminal group, each item with
 /// its shortcut. Opening a workroom is ⌘O's (File ▸ Open Workroom…).
 struct SidebarOpenAddMenu: View {
@@ -63,9 +38,10 @@ struct SidebarOpenAddMenu: View {
 
 /// The sidebar's Open view (#819, ADR 0082, ADR 0083): this
 /// window's workroom tabs in title-bar order (`AppStore.openSectionRows`), each unfolding to its
-/// tabs in strip order. It keeps nothing of its own but the drag in flight: every row reads the
-/// model and calls the store, so the section, the title bar and the strip never disagree. Its own
-/// `List`, so it scrolls on its own and keeps the selected row in view.
+/// tabs in strip order. It keeps nothing of its own: every row reads the model and calls the
+/// store, so the section, the title bar and the strip never disagree, and a row a drag lifts is
+/// `OpenRowLift`'s until it lands. Its own `List`, so it scrolls on its own and keeps the selected
+/// row in view.
 struct SidebarOpenList: View, Equatable {
   let store: AppStore
   var drag: SidebarDragPlumbing = .inert
@@ -75,8 +51,6 @@ struct SidebarOpenList: View, Equatable {
   @EnvironmentObject private var runCommand: RunCommandController
   @EnvironmentObject private var vcsStatus: VCSStatusService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  /// The row being dragged and the List row it would land on.
-  @State private var reorder: (item: OpenSectionItem, row: Int)?
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.store === rhs.store && lhs.drag == rhs.drag
@@ -111,9 +85,26 @@ struct SidebarOpenList: View, Equatable {
     }
   }
 
+  /// `entries` in the order a lifted row's drag shows them (`OpenRowReflow.order`): the lifted
+  /// row in its gap, or out of the list while the pointer is, and a lifted workroom's tabs out.
+  static func shown(_ entries: [Entry], in reflow: OpenRowReflow?) -> [Entry] {
+    guard let reflow else { return entries }
+    let byID = Dictionary(entries.map { ($0.id, $0) }) { first, _ in first }
+    let order = reflow.order
+    let listed = Set(order)
+    // A row the model gained since the lift shows where the model has it, after the rest.
+    let gained = entries.filter {
+      !listed.contains($0.id) && !reflow.hidden.contains($0.id) && $0.id != reflow.dragged
+    }
+    return order.compactMap { byID[$0] } + gained
+  }
+
   var body: some View {
     let rows = store.openSectionRows()
     let items = Self.items(of: rows)
+    // Read here, so the list re-runs only when the gap moves, never as the pointer moves alone.
+    let reflow = OpenRowLift.shared.reflow(for: store)
+    let entries = Self.shown(Self.entries(of: rows), in: reflow)
     return ScrollViewReader { proxy in
       List {
         if rows.isEmpty {
@@ -121,17 +112,18 @@ struct SidebarOpenList: View, Equatable {
         }
         // One element per List row: a ForEach whose element yields a varying number of rows (a
         // workroom's row and its tabs) can't be diffed, so the List reloads whole as one unfolds.
-        ForEach(Self.entries(of: rows)) { entry in
+        ForEach(entries) { entry in
+          let lifted = reflow?.dragged == entry.id
           if let tab = entry.tab {
-            tabRow(tab, in: entry.row, items: items)
+            tabRow(tab, in: entry.row, items: items, lifted: lifted)
           } else {
-            workroomRow(entry.row, items: items)
+            workroomRow(entry.row, items: items, lifted: lifted)
           }
         }
       }
       .sidebarListStyle()
       .background(SidebarOverlayScrollers())
-      .animation(rowAnimation, value: items)
+      .animation(rowAnimation, value: entries.map(\.id))
       .onChange(of: Self.scrollTarget(of: rows)) { _, target in
         guard let target else { return }
         withAnimation(rowAnimation) { proxy.scrollTo(target) }
@@ -170,28 +162,19 @@ struct SidebarOpenList: View, Equatable {
       .listRowBackground(Color.clear)
   }
 
-  /// The insertion mark on the row a drag would land on, at the edge the dragged row comes in by.
-  private func insertionEdge(of item: OpenSectionItem, in items: [OpenSectionItem]) -> Alignment? {
-    guard let reorder, reorder.item != item, let from = items.firstIndex(of: reorder.item),
-      items.indices.contains(reorder.row), items[reorder.row] == item
-    else { return nil }
-    return reorder.row > from ? .bottom : .top
-  }
-
-  private func workroomRow(_ row: OpenSectionRow, items: [OpenSectionItem]) -> some View {
+  /// A workroom tab's row. `lifted`: a drag has lifted it, and its slot is the gap the ghost
+  /// lands in (`OpenRowLift`), so it shows nothing.
+  private func workroomRow(_ row: OpenSectionRow, items: [OpenSectionItem], lifted: Bool)
+    -> some View
+  {
     let item = OpenSectionItem.workroom(row.sid)
-    let offset = items.firstIndex(of: item) ?? 0
-    let edge = insertionEdge(of: item, in: items)
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenWorkroomRow(row: row.model, hovered: hovered, store: store).equatable()
-        .modifier(SidebarDragDim(id: row.sid, drag: drag.drag))
-        .overlay(alignment: edge ?? .top) {
-          if edge != nil { DropInsertionMark(vertical: false) }
-        }
+        .opacity(lifted ? 0 : 1)
         .paneDropZone(.target(row.sid), store: store)
         // Not while its name edits in place: a drag in the field selects its text.
         .simultaneousGesture(
-          workroomDrag(row, offset: offset, items: items),
+          workroomDrag(row, items: items),
           including: store.sidebarRename.editing == row.sid ? .subviews : .all
         )
         .listRowInsets(EdgeInsets())
@@ -201,21 +184,21 @@ struct SidebarOpenList: View, Equatable {
             hovered: hovered,
             emphasis: row.isSelected
               ? (row.isFolded || row.tabs.isEmpty ? .selected : .selectedParent)
-              : row.isVisibleInSplit ? .visible : .none))
+              : row.isVisibleInSplit ? .visible : .none
+          )
+          .opacity(lifted ? 0 : 1))
     }
     .id(item)
   }
 
+  /// One of a workroom's tabs' rows. `lifted`: as a workroom row's.
   private func tabRow(
-    _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
+    _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem], lifted: Bool
   ) -> some View {
     let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
-    let edge = insertionEdge(of: item, in: items)
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: hovered, store: store).equatable()
-        .overlay(alignment: edge ?? .top) {
-          if edge != nil { DropInsertionMark(vertical: false) }
-        }
+        .opacity(lifted ? 0 : 1)
         // A terminal let go on it lands in its workroom just above it (#652).
         .paneDropZone(.terminalRow(tab.tab.id, in: row.sid), store: store)
         .simultaneousGesture(tabDrag(tab, in: row, items: items))
@@ -224,7 +207,9 @@ struct SidebarOpenList: View, Equatable {
         .listRowBackground(
           SidebarOpenRowBackground(
             hovered: hovered,
-            emphasis: tab.isFocused ? .selected : tab.isVisibleInSplit ? .visible : .none))
+            emphasis: tab.isFocused ? .selected : tab.isVisibleInSplit ? .visible : .none
+          )
+          .opacity(lifted ? 0 : 1))
     }
     .id(item)
   }
@@ -236,94 +221,118 @@ struct SidebarOpenList: View, Equatable {
   /// drag (`OpenRowDrag.threshold`).
   private func followedDrag(
     _ item: OpenSectionItem, onMove: @escaping (OpenRowDrag.Report) -> Void,
-    onEnd: @escaping (OpenRowDrag.Report) -> Void
+    onEnd: @escaping (OpenRowDrag.Report) -> Void, onCancel: @escaping () -> Void
   ) -> some Gesture {
     DragGesture(minimumDistance: 0, coordinateSpace: .global)
       .onChanged { value in
         OpenRowDrag.shared.changed(
           item, location: value.location, startLocation: value.startLocation, onMove: onMove,
-          onEnd: onEnd)
+          onEnd: onEnd, onCancel: onCancel)
       }
       .onEnded { _ in OpenRowDrag.shared.ended(item) }
+  }
+
+  /// Lifts `item`'s row, drop zone `zone`, as its drag starts: the ghost draws `row` as the row
+  /// looks selected, and the row's slot becomes the gap (`OpenRowLift`). Once per drag.
+  private func lift(
+    _ item: OpenSectionItem, zone: PaneDropZone, items: [OpenSectionItem],
+    report: OpenRowDrag.Report, row: some View
+  ) {
+    let lift = OpenRowLift.shared
+    guard lift.reflow(for: store)?.dragged != item || lift.geometry == nil,
+      let reflow = OpenRowReflow(items: items, dragged: item)
+    else { return }
+    lift.lift(
+      reflow, in: store, zone: zone, report: report, content: Self.ghost(of: row, store: store))
+  }
+
+  /// The ghost of `row`, a row of `store`'s list, with the environment its own hosting view needs:
+  /// the theme and every object the sidebar's rows read.
+  static func ghost(of row: some View, store: AppStore) -> AnyView {
+    AnyView(
+      OpenRowGhostChrome(content: row)
+        .environmentObject(store)
+        .environmentObject(store.notifications)
+        .environmentObject(store.terminals.codingAgentManager)
+        .environmentObject(store.runCommand)
+        .environmentObject(store.vcsStatus)
+        .environmentObject(store.projectStore)
+        .environmentObject(store.lifecycle)
+        .environmentObject(store.modals)
+        .themeTokensRoot())
   }
 
   /// A workroom row's drag, as its title-bar chip's: onto a tab, row or title bar that takes its
   /// terminals (a standalone terminal's or group's, `TerminalDragSession`), into the content for a
   /// workroom split (`SidebarDragPlumbing`), out of the window into another or a new one
-  /// (`WorkroomWindowDrag`), else a reorder of the workroom tabs.
-  private func workroomDrag(
-    _ row: OpenSectionRow, offset: Int, items: [OpenSectionItem]
-  ) -> some Gesture {
+  /// (`WorkroomWindowDrag`), else a reorder of the workroom tabs, its gap opening under the
+  /// pointer as it moves (`OpenRowLift`).
+  private func workroomDrag(_ row: OpenSectionRow, items: [OpenSectionItem]) -> some Gesture {
     let actions = SidebarActions.live(store: store)
-    // Its ghost follows the pointer anywhere in the window, as the chip's own drag does in the
-    // title bar: no List drag image draws it.
-    let ghostTitle = store.ghostTitle(of: .entry(row.sid))
-    return followedDrag(.workroom(row.sid)) { [store, drag] report in
+    let item = OpenSectionItem.workroom(row.sid)
+    let lift = OpenRowLift.shared
+    return followedDrag(item) { [store, drag] report in
+      self.lift(
+        item, zone: .target(row.sid), items: items, report: report,
+        row: SidebarOpenWorkroomRow(row: row.model, hovered: false, store: store))
+      lift.follow(report)
       let overTerminalDrop = store.terminalDrag.moved(
         .entry(row.sid), from: .sidebar, to: report.screen)
-      drag.splitMoved(row.sid, to: report.location, ghostTitle: ghostTitle)
+      drag.splitMoved(row.sid, to: report.location, drawsGhost: false)
+      lift.move(to: report.screen, holds: overTerminalDrop)
       // Out of the window: into another window, or a new one, as its chip goes (#444).
       if isDragOutsideWindow(report.location) {
-        reorder = nil
         if overTerminalDrop { return WorkroomWindowDrag.cancel() }
         return WorkroomWindowDrag.update(
           store: store, sid: row.sid, target: row.target,
           width: store.workroomTabFrames[row.sid]?.width ?? 0)
       }
       WorkroomWindowDrag.cancel()
-      let inContent = drag.drag.wrappedValue != nil
-      reorder =
-        overTerminalDrop || inContent
-        ? nil
-        : (
-          .workroom(row.sid),
-          OpenSectionReorder.row(
-            from: offset, translation: report.translation.height, pitch: Self.rowPitch,
-            count: items.count)
-        )
     } onEnd: { [store, drag] report in
-      let landing = reorder?.row
-      reorder = nil
       // One drop: what takes its terminals, else out of the window, else a split, else a reorder.
       if store.terminalDrag.ended(at: report.screen) {
         drag.splitCancelled()
-        DragGhost.shared.hide()
-        return WorkroomWindowDrag.cancel()
+        WorkroomWindowDrag.cancel()
+        return lift.drop()
       }
       if isDragOutsideWindow(report.location) {
         drag.splitCancelled()
-        DragGhost.shared.hide()
+        lift.drop()
         return WorkroomWindowDrag.end(store: store, sid: row.sid)
       }
-      if drag.splitEnded(row.sid, at: report.location, actions: actions) { return }
-      guard let landing,
-        let index = OpenSectionReorder.workroomIndex(items, from: offset, to: landing)
-      else { return }
-      withAnimation(rowAnimation) {
-        store.moveWorkroomTab(row.sid, toIndex: index)
+      if drag.splitEnded(row.sid, at: report.location, actions: actions) { return lift.drop() }
+      // The list already shows the new order: the store takes it, and the ghost settles into it.
+      guard lift.isOverList(report.screen), let index = lift.reflow?.movedIndex else {
+        return lift.cancel()
       }
+      store.moveWorkroomTab(row.sid, toIndex: index)
+      lift.settle()
+    } onCancel: { [store, drag] in
+      store.terminalDrag.cancel()
+      drag.splitCancelled()
+      WorkroomWindowDrag.cancel()
+      lift.cancel()
     }
   }
 
   /// A tab row's drag, as its strip chip's: onto a sidebar row, a title-bar tab, a pane tab or the
-  /// Open heading (`AppStore.paneDragMoved`); out of the window it tears off; into its workroom's
+  /// Open tab (`AppStore.paneDragMoved`); out of the window it tears off; into its workroom's
   /// panes while they are on screen it splits them (`TabContentDrop`); else a reorder among its
-  /// workroom's tabs.
+  /// workroom's tabs, its gap opening under the pointer as it moves (`OpenRowLift`).
   private func tabDrag(
     _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
   ) -> some Gesture {
     let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
-    let index = row.tabs.firstIndex { $0.id == tab.id } ?? 0
     let panes = store.terminals
-    // Kept among its own workroom's tabs; another workroom's row takes it as a drop above.
-    let landing = { (translation: CGFloat) in
-      OpenSectionReorder.row(
-        from: index, translation: translation, pitch: Self.rowPitch, count: row.tabs.count)
-    }
+    let lift = OpenRowLift.shared
     let clearPreview = { panes.contentDrop(for: tab.target.id).preview = nil }
     return followedDrag(item) { [store] report in
+      self.lift(
+        item, zone: .terminalRow(tab.tab.id, in: row.sid), items: items, report: report,
+        row: SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: false, store: store))
+      lift.follow(report)
       if isDragOutsideWindow(report.location) {
-        reorder = nil
+        lift.move(to: report.screen, holds: false)
         clearPreview()
         if store.paneDragMoved(tab.tab.id, of: tab.target, to: report.screen) {
           panes.hideDragOutside()
@@ -333,38 +342,41 @@ struct SidebarOpenList: View, Equatable {
         return
       }
       panes.hideDragOutside()
+      // Onto a row that takes it, or refuses it: that row shows it, and the gap stays.
       if store.paneDragMoved(tab.tab.id, of: tab.target, to: report.screen) {
-        reorder = nil
         clearPreview()
-        return
+        return lift.move(to: report.screen, holds: true)
       }
-      if dragTab(tab, overContentAt: report.location) {
-        reorder = nil
-        return
-      }
-      let base = items.firstIndex(of: item).map { $0 - index } ?? 0
-      reorder = (item, base + landing(report.translation.height))
+      _ = dragTab(tab, overContentAt: report.location)
+      lift.move(to: report.screen, holds: false)
     } onEnd: { [store] report in
       panes.hideDragOutside()
-      reorder = nil
+      let refused = store.terminalDrag.refuses(at: report.screen)
       if store.paneDragEnded(tab.tab.id, of: tab.target, at: report.screen) {
-        return clearPreview()
+        clearPreview()
+        return refused ? lift.cancel() : lift.drop()
       }
       if isDragOutsideWindow(report.location) {
         clearPreview()
+        lift.drop()
         return panes.dropOutside(tab.tab.id, for: tab.target)
       }
       if store.onScreenTarget(forID: tab.target.id) != nil,
         panes.dropTab(tab.tab.id, of: tab.target, onContentAt: report.location)
       {
-        return
+        return lift.drop()
       }
       clearPreview()
-      let to = landing(report.translation.height)
-      guard to != index else { return }
-      withAnimation(rowAnimation) {
-        store.moveOpenTab(tab.tab.id, toIndex: to, in: row.sid)
+      guard lift.isOverList(report.screen), let to = lift.reflow?.movedIndex else {
+        return lift.cancel()
       }
+      store.moveOpenTab(tab.tab.id, toIndex: to, in: row.sid)
+      lift.settle()
+    } onCancel: { [store] in
+      _ = store.paneDragMoved(tab.tab.id, of: tab.target, to: nil)
+      panes.hideDragOutside()
+      clearPreview()
+      lift.cancel()
     }
   }
 

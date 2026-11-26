@@ -7,7 +7,8 @@ import SwiftUI
 /// the window (sidebar, title bar, panes). A floating panel, not an overlay of one view, so it
 /// follows the pointer across all of them. Out of the window, the drag shows the window it would
 /// make instead (`DetachedPaneDragPreview`). A terminal's sidebar row is the exception: the List
-/// draws its own drag image, and replacing it means SwiftUI's private table.
+/// draws its own drag image, and replacing it means SwiftUI's private table. An Open row carries a
+/// copy of itself instead (`OpenRowLift`).
 @MainActor
 final class DragGhost {
   static let shared = DragGhost()
@@ -23,7 +24,10 @@ final class DragGhost {
   /// The ghosts' windows, which a drop under the pointer looks past.
   static var windowNumbers: Set<Int> {
     Set(
-      [shared.panel?.windowNumber, DetachedPaneDragPreview.shared.windowNumber].compactMap(\.self))
+      [
+        shared.panel?.windowNumber, DetachedPaneDragPreview.shared.windowNumber,
+        OpenRowLift.shared.ghost.windowNumber,
+      ].compactMap(\.self))
   }
 
   /// Shows (or moves) the ghost for `title` just above `screenPoint`.

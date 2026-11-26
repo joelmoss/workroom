@@ -58,27 +58,22 @@ struct SidebarDragPlumbing: Equatable, Sendable {
   /// `drag`), and on release over a pane it forms or extends the workroom split, as the chip does.
   /// Attached with `.simultaneousGesture` so it coexists with the List's vertical scroll;
   /// `minimumDistance` keeps a plain click selecting the row (a zero-translation tap never starts
-  /// the drag). `ghostTitle`: the ghost shows anywhere in the window, with that title, for a row
-  /// whose drag draws no picture of its own (an Open row, #819); out of the window it is left to
-  /// the row's other drags.
-  @MainActor func splitGesture(
-    _ id: SidebarID, actions: SidebarActions, ghostTitle: String? = nil
-  ) -> some Gesture {
+  /// the drag).
+  @MainActor func splitGesture(_ id: SidebarID, actions: SidebarActions) -> some Gesture {
     DragGesture(minimumDistance: 6, coordinateSpace: .global)
-      .onChanged { value in splitMoved(id, to: value.location, ghostTitle: ghostTitle) }
+      .onChanged { value in splitMoved(id, to: value.location) }
       .onEnded { value in splitEnded(id, at: value.location, actions: actions) }
   }
 
   /// Row `id`'s split drag is at `location` (`.global`): previews the drop edge while over the
-  /// detail content, and carries the ghost (`splitGesture`).
-  @MainActor func splitMoved(_ id: SidebarID, to location: CGPoint, ghostTitle: String? = nil) {
+  /// detail content, and carries the ghost there (`splitGesture`). `drawsGhost` false: the row
+  /// carries a ghost of its own (an Open row, `OpenRowLift`).
+  @MainActor func splitMoved(_ id: SidebarID, to location: CGPoint, drawsGhost: Bool = true) {
     handlers.drag.wrappedValue = handlers.localize(location).map {
       WorkroomPaneDrag(sid: id, location: $0)
     }
-    if let ghostTitle {
-      if !isDragOutsideWindow(location) {
-        DragGhost.shared.show(title: ghostTitle, at: NSEvent.mouseLocation)
-      }
+    if !drawsGhost {
+      return
     } else if handlers.drag.wrappedValue != nil {
       // Over the panes, the shared ghost carries its name (#652).
       DragGhost.shared.show(title: id.ghostTitle, at: NSEvent.mouseLocation)
