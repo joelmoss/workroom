@@ -102,6 +102,8 @@ Whichever way you drag, the terminal keeps running, with its scrollback. A group
 
 Right-click a tab for **Split Right**, **Split Left**, **Split Down**, **Split Up**, **Move to New Window** and **Close**. See [Splits and windows](splits-and-windows.md). Right-click inside the terminal for **Paste** and the same split, window and close commands, plus **New Terminal**.
 
+Nightly only: a terminal you pop out into a window of its own, with **Move to New Window** or **Pop Out**, keeps its tab and its pane. Its tab shows a pop-out icon before its dimmed name, and its pane says it is open in another window, with **Go to Window** and **Pull Back Here**. **Pull Back Here** puts it back in the same pane. Closing its tab closes the terminal and its window. See [Its place in the main window](splits-and-windows.md#its-place-in-the-main-window).
+
 ## Find text
 
 Press <kbd>⌘F</kbd> to search the focused terminal's scrollback. <kbd>⌘G</kbd> goes to the next match and <kbd>⇧⌘G</kbd> to the previous one. Press <kbd>Esc</kbd> to close the find bar. The same keys search a file you have open in a pane.
