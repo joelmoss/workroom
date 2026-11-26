@@ -1164,7 +1164,8 @@ final class AppStore: ObservableObject {
       let source = DetachedPaneWindows.PopOutSource.slot(
         of: tabID, surface: terminals.surface(of: tabID),
         onScreen: self.onScreenTarget(forID: targetID) != nil, byDrag: byDrag,
-        pointer: screenPoint)
+        pointer: screenPoint,
+        setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) })
       self.openDetachedPane(
         tab: tab, target: target, origin: screenPoint, frame: nil, popOut: source)
     case .paneRestoredDetached(let targetID, let tabID, let frame):
@@ -1676,9 +1677,10 @@ final class AppStore: ObservableObject {
     }
     // A workroom not on screen has no slot to land in, so its pane docks in place.
     let slot = onScreen ? PaneSlot.current(of: tabID, surface: nil) : nil
-    detachedPanes.dock(tabID, into: slot) { [weak self] in
-      self?.showDocked(tabID, for: target)
-    }
+    detachedPanes.dock(
+      tabID, into: slot,
+      setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) },
+      then: { [weak self] in self?.showDocked(tabID, for: target) })
   }
 
   /// Dock the pane in the model and show its window, its workroom selected.

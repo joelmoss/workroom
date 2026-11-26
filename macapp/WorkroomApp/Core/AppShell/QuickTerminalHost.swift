@@ -124,7 +124,8 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
     case .paneDetached(_, let tabID, let screenPoint, let byDrag):
       // The slot, read before the window mounts the surface: it still shows the pane.
       let source = DetachedPaneWindows.PopOutSource.slot(
-        of: tabID, surface: terminals.surface(of: tabID), byDrag: byDrag, pointer: screenPoint)
+        of: tabID, surface: terminals.surface(of: tabID), byDrag: byDrag, pointer: screenPoint,
+        setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) })
       openDetachedPane(tabID, origin: screenPoint, frame: nil, popOut: source)
       // Its last docked pane left: the panel hides, as when its last terminal closes.
       if !hasDockedTab { onTargetEmptied?(target.id) }
@@ -192,11 +193,13 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   /// (`DetachedPaneWindows.dock`).
   func dockPane(_ tabID: TerminalTab.ID) {
     let target = target
-    detachedPanes.dock(tabID, into: PaneSlot.current(of: tabID, surface: nil)) {
-      [weak self] in
-      self?.terminals.dockPane(tabID, for: target)
-      self?.onReveal?(tabID)
-    }
+    detachedPanes.dock(
+      tabID, into: PaneSlot.current(of: tabID, surface: nil),
+      setInFlight: { [weak terminals = self.terminals] in terminals?.setInFlight(tabID, $0) },
+      then: { [weak self] in
+        self?.terminals.dockPane(tabID, for: target)
+        self?.onReveal?(tabID)
+      })
   }
 
   /// Builds and shows a popped-out pane's window, as a window's store does.
