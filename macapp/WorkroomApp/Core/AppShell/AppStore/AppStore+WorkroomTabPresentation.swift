@@ -26,12 +26,17 @@ extension AppStore {
     case .project, .workroom, .creation: glyph = target.workroomGlyph
     }
     var standaloneTitle: TerminalTitle?
+    var isPoppedOut = false
     if case .standalone = sid, let id = sid.targetID {
       standaloneTitle = terminalsSection.terminalTitles(of: id).first
+      // Its one terminal is in a window of its own (issue #172), from this window's panes.
+      isPoppedOut =
+        terminals.allTabs(for: target).first.map { terminals.detachedTabIDs.contains($0.id) }
+        ?? false
     }
     return WorkroomTabPresentation(
       glyph: glyph, primaryLabel: primaryLabel, workroomName: workroomName,
-      standaloneTitle: standaloneTitle,
+      standaloneTitle: standaloneTitle, isPoppedOut: isPoppedOut,
       // Nil while a create's run lasts (#483): it has no terminals to close then.
       closeName: lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel)
   }
@@ -73,6 +78,9 @@ struct WorkroomTabPresentation: Equatable {
   let workroomName: String?
   /// A standalone terminal's title in its parts, so its folder can fade; nil for anything else.
   let standaloneTitle: TerminalTitle?
+  /// A standalone terminal whose terminal is popped out into a window of its own (issue #172):
+  /// its title is led by the pop-out mark and goes secondary.
+  var isPoppedOut = false
   /// The name Close asks about; nil while a create's run lasts, which nothing closes.
   let closeName: String?
 
