@@ -1675,8 +1675,8 @@ final class AppStore: ObservableObject {
       hostWindow?.makeKeyAndOrderFront(nil)
     }
     // A workroom not on screen has no slot to land in, so its pane docks in place.
-    let slot = onScreen ? PaneSlotAnchors.shared.screenRect(for: tabID) : nil
-    detachedPanes.dock(tabID, intoSlot: slot) { [weak self] in
+    let slot = onScreen ? PaneSlot.current(of: tabID, surface: nil) : nil
+    detachedPanes.dock(tabID, into: slot) { [weak self] in
       self?.showDocked(tabID, for: target)
     }
   }

@@ -192,7 +192,7 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   /// (`DetachedPaneWindows.dock`).
   func dockPane(_ tabID: TerminalTab.ID) {
     let target = target
-    detachedPanes.dock(tabID, intoSlot: PaneSlotAnchors.shared.screenRect(for: tabID)) {
+    detachedPanes.dock(tabID, into: PaneSlot.current(of: tabID, surface: nil)) {
       [weak self] in
       self?.terminals.dockPane(tabID, for: target)
       self?.onReveal?(tabID)
