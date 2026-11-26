@@ -99,7 +99,14 @@ final class AppShortcutReservationTests: XCTestCase {
   /// menu item never fires — the exact bite the ⌃⌘S sidebar toggle already took.
   func testControlCommandOIsReservedForPopOut() {
     XCTAssertTrue(reserved("o", [.command, .control]))
-    XCTAssertFalse(reserved("p", [.command, .control]), "only S and O are ours on ⌃⌘")
+    XCTAssertFalse(reserved("x", [.command, .control]), "only S, O, T and P are ours on ⌃⌘")
+  }
+
+  /// ⌃⌘T and ⌃⌘P show the sidebar's Terminals and Projects views (View ▸ Sidebar), so a focused
+  /// TUI can't eat them, as ⌃⌘S, Show Sidebar, beside them.
+  func testControlCommandTAndPAreReservedForTheSidebarsViews() {
+    XCTAssertTrue(reserved("t", [.command, .control]))
+    XCTAssertTrue(reserved("p", [.command, .control]))
   }
 
   /// Tab (keyCode 48) is **deliberately never reserved**, for either quick switcher (issue #132).

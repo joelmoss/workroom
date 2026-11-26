@@ -370,6 +370,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .push: return key("p", [.command, .shift])
     case .pullWithRebase: return key("p", [.command, .option, .shift])
     case .projects: return key("s", [.command, .control])
+    // Beside ⌃⌘S, Show Sidebar: ⌘1 and ⌘2, the obvious keys, are Switch to Workroom Tab 1 and 2.
+    case .showOpenView: return key("t", [.command, .control])
+    case .showProjectsView: return key("p", [.command, .control])
     case .inspector: return key("b", .command)
     case .details: return key("i", [.command, .option])
     case .changes: return key("c", [.command, .option])
@@ -388,8 +391,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
       .deleteWorkroom, .closeOtherTabs, .closeAllTabs, .confirmBeforeClosingTerminal, .splitLeft,
       .splitUp, .copyOnSelect, .goToRunTerminal, .goToPullRequest, .changeDraft, .newWindow,
       .keyboardShortcuts, .checkForUpdates, .installCommandLine, .documentation,
-      .confirmBeforeQuitting, .showOpenView, .showProjectsView:
-      // ⌘1 and ⌘2, the obvious keys for the sidebar's views, are Switch to Workroom Tab 1 and 2.
+      .confirmBeforeQuitting:
       return nil
     }
   }
@@ -424,6 +426,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .movePaneWindow: ["Move pane into new window", "Move back to main window"]
     case .changeDraft: ["Ready for Review", "Convert to Draft"]
     case .toggleLightDark: ["Light Mode", "Dark Mode"]
+    // View ▸ Sidebar's items: their labels say which submenu they are in.
+    case .showOpenView: ["Terminals"]
+    case .showProjectsView: ["Projects"]
     case .openInEditor: ExternalEditor.allTitles
     // The app menu names it after the app: Workroom, Workroom Dev or Workroom Nightly.
     case .showHideWorkroom: ["Show/Hide \(Self.appName)"]
