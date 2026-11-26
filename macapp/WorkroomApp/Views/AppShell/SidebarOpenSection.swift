@@ -147,13 +147,16 @@ struct SidebarOpenList: View, Equatable {
         }
       }
       .sidebarListStyle()
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: items)
+      .animation(rowAnimation, value: items)
       .onChange(of: Self.scrollTarget(of: rows)) { _, target in
         guard let target else { return }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { proxy.scrollTo(target) }
+        withAnimation(rowAnimation) { proxy.scrollTo(target) }
       }
     }
   }
+
+  /// How the rows move as they reorder, fold or scroll: none with Reduce Motion.
+  private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.2) }
 
   /// The row the selection is on: the focused tab's, or its workroom's while folded.
   static func scrollTarget(of rows: [OpenSectionRow]) -> OpenSectionItem? {
@@ -189,11 +192,12 @@ struct SidebarOpenList: View, Equatable {
   private func workroomRow(_ row: OpenSectionRow, items: [OpenSectionItem]) -> some View {
     let item = OpenSectionItem.workroom(row.sid)
     let offset = items.firstIndex(of: item) ?? 0
+    let edge = insertionEdge(of: item, in: items)
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenWorkroomRow(row: row, hovered: hovered, store: store).equatable()
         .modifier(SidebarDragDim(id: row.sid, drag: drag.drag))
-        .overlay(alignment: insertionEdge(of: item, in: items) ?? .top) {
-          if insertionEdge(of: item, in: items) != nil { DropInsertionMark(vertical: false) }
+        .overlay(alignment: edge ?? .top) {
+          if edge != nil { DropInsertionMark(vertical: false) }
         }
         .paneDropZone(.target(row.sid), store: store)
         // Not while its name edits in place: a drag in the field selects its text.
@@ -217,10 +221,11 @@ struct SidebarOpenList: View, Equatable {
     _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
   ) -> some View {
     let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
+    let edge = insertionEdge(of: item, in: items)
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenTabRow(row: tab, hovered: hovered, store: store)
-        .overlay(alignment: insertionEdge(of: item, in: items) ?? .top) {
-          if insertionEdge(of: item, in: items) != nil { DropInsertionMark(vertical: false) }
+        .overlay(alignment: edge ?? .top) {
+          if edge != nil { DropInsertionMark(vertical: false) }
         }
         // A terminal let go on it lands in its workroom just above it (#652).
         .paneDropZone(.terminalRow(tab.tab.id, in: row.sid), store: store)
@@ -237,6 +242,21 @@ struct SidebarOpenList: View, Equatable {
 
   // MARK: Drags
 
+  /// A row's drag, followed to its release by `OpenRowDrag`: the List's table takes the mouse from
+  /// the row's own gesture after its first report.
+  private func followedDrag(
+    _ item: OpenSectionItem, onMove: @escaping (OpenRowDrag.Report) -> Void,
+    onEnd: @escaping (OpenRowDrag.Report) -> Void
+  ) -> some Gesture {
+    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      .onChanged { value in
+        OpenRowDrag.shared.changed(
+          item, location: value.location, startLocation: value.startLocation, onMove: onMove,
+          onEnd: onEnd)
+      }
+      .onEnded { _ in OpenRowDrag.shared.ended(item) }
+  }
+
   /// A workroom row's drag, as its title-bar chip's: onto a tab, row or title bar that takes its
   /// terminals (a standalone terminal's or group's, `TerminalDragSession`), into the content for a
   /// workroom split (`SidebarDragPlumbing`), out of the window into another or a new one
@@ -244,52 +264,55 @@ struct SidebarOpenList: View, Equatable {
   private func workroomDrag(
     _ row: OpenSectionRow, offset: Int, items: [OpenSectionItem]
   ) -> some Gesture {
+    let actions = SidebarActions.live(store: store)
     // Its ghost follows the pointer anywhere in the window, as the chip's own drag does in the
     // title bar: no List drag image draws it.
-    let split = drag.splitGesture(
-      row.sid, actions: .live(store: store),
-      ghostTitle: store.ghostTitle(of: .entry(row.sid)))
-    return DragGesture(minimumDistance: 6, coordinateSpace: .global)
-      .onChanged { [store] value in
-        let overTerminalDrop = store.terminalDrag.moved(
-          .entry(row.sid), from: .sidebar, to: NSEvent.mouseLocation)
-        // Out of the window: into another window, or a new one, as its chip goes (#444).
-        if isDragOutsideWindow(value.location) {
-          reorder = nil
-          if overTerminalDrop { return WorkroomWindowDrag.cancel() }
-          return WorkroomWindowDrag.update(
-            store: store, sid: row.sid, target: row.target,
-            width: store.workroomTabFrames[row.sid]?.width ?? 0)
-        }
-        WorkroomWindowDrag.cancel()
-        let inContent = drag.drag.wrappedValue != nil
-        reorder =
-          overTerminalDrop || inContent
-          ? nil
-          : (
-            .workroom(row.sid),
-            OpenSectionReorder.row(
-              from: offset, translation: value.translation.height, pitch: Self.rowPitch,
-              count: items.count)
-          )
-      }
-      .onEnded { [store] value in
-        let landing = reorder?.row
+    let ghostTitle = store.ghostTitle(of: .entry(row.sid))
+    return followedDrag(.workroom(row.sid)) { [store, drag] report in
+      let overTerminalDrop = store.terminalDrag.moved(
+        .entry(row.sid), from: .sidebar, to: report.screen)
+      drag.splitMoved(row.sid, to: report.location, ghostTitle: ghostTitle)
+      // Out of the window: into another window, or a new one, as its chip goes (#444).
+      if isDragOutsideWindow(report.location) {
         reorder = nil
-        if store.terminalDrag.ended(at: NSEvent.mouseLocation) {
-          return WorkroomWindowDrag.cancel()
-        }
-        if isDragOutsideWindow(value.location) {
-          return WorkroomWindowDrag.end(store: store, sid: row.sid)
-        }
-        guard drag.drag.wrappedValue == nil, let landing,
-          let index = OpenSectionReorder.workroomIndex(items, from: offset, to: landing)
-        else { return }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-          store.moveWorkroomTab(row.sid, toIndex: index)
-        }
+        if overTerminalDrop { return WorkroomWindowDrag.cancel() }
+        return WorkroomWindowDrag.update(
+          store: store, sid: row.sid, target: row.target,
+          width: store.workroomTabFrames[row.sid]?.width ?? 0)
       }
-      .simultaneously(with: split)
+      WorkroomWindowDrag.cancel()
+      let inContent = drag.drag.wrappedValue != nil
+      reorder =
+        overTerminalDrop || inContent
+        ? nil
+        : (
+          .workroom(row.sid),
+          OpenSectionReorder.row(
+            from: offset, translation: report.translation.height, pitch: Self.rowPitch,
+            count: items.count)
+        )
+    } onEnd: { [store, drag] report in
+      let landing = reorder?.row
+      reorder = nil
+      // One drop: what takes its terminals, else out of the window, else a split, else a reorder.
+      if store.terminalDrag.ended(at: report.screen) {
+        drag.splitCancelled()
+        DragGhost.shared.hide()
+        return WorkroomWindowDrag.cancel()
+      }
+      if isDragOutsideWindow(report.location) {
+        drag.splitCancelled()
+        DragGhost.shared.hide()
+        return WorkroomWindowDrag.end(store: store, sid: row.sid)
+      }
+      if drag.splitEnded(row.sid, at: report.location, actions: actions) { return }
+      guard let landing,
+        let index = OpenSectionReorder.workroomIndex(items, from: offset, to: landing)
+      else { return }
+      withAnimation(rowAnimation) {
+        store.moveWorkroomTab(row.sid, toIndex: index)
+      }
+    }
   }
 
   /// A tab row's drag, as its strip chip's: onto a sidebar row, a title-bar tab, a pane tab or the
@@ -301,61 +324,58 @@ struct SidebarOpenList: View, Equatable {
   ) -> some Gesture {
     let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
     let index = row.tabs.firstIndex { $0.id == tab.id } ?? 0
-    return DragGesture(minimumDistance: 6, coordinateSpace: .global)
-      .onChanged { [store] value in
-        let panes = store.terminals
-        if isDragOutsideWindow(value.location) {
-          reorder = nil
-          panes.contentDrop(for: tab.target.id).preview = nil
-          if store.paneDragMoved(tab.tab.id, of: tab.target, to: NSEvent.mouseLocation) {
-            panes.hideDragOutside()
-          } else {
-            panes.showDragOutside(tab.tab)
-          }
-          return
-        }
-        panes.hideDragOutside()
-        if store.paneDragMoved(tab.tab.id, of: tab.target, to: NSEvent.mouseLocation) {
-          reorder = nil
-          panes.contentDrop(for: tab.target.id).preview = nil
-          return
-        }
-        if dragTab(tab, overContentAt: value.location) {
-          reorder = nil
-          return
-        }
-        // Kept among its own workroom's tabs; another workroom's row takes it as a drop above.
-        let moved = Int((value.translation.height / Self.rowPitch).rounded())
-        let to = min(max(index + moved, 0), row.tabs.count - 1)
-        let base = items.firstIndex(of: item).map { $0 - index } ?? 0
-        reorder = (item, base + to)
-      }
-      .onEnded { [store] value in
-        let panes = store.terminals
-        panes.hideDragOutside()
+    let panes = store.terminals
+    // Kept among its own workroom's tabs; another workroom's row takes it as a drop above.
+    let landing = { (translation: CGFloat) in
+      OpenSectionReorder.row(
+        from: index, translation: translation, pitch: Self.rowPitch, count: row.tabs.count)
+    }
+    let clearPreview = { panes.contentDrop(for: tab.target.id).preview = nil }
+    return followedDrag(item) { [store] report in
+      if isDragOutsideWindow(report.location) {
         reorder = nil
-        if store.paneDragEnded(tab.tab.id, of: tab.target, at: NSEvent.mouseLocation) {
-          panes.contentDrop(for: tab.target.id).preview = nil
-          return
+        clearPreview()
+        if store.paneDragMoved(tab.tab.id, of: tab.target, to: report.screen) {
+          panes.hideDragOutside()
+        } else {
+          panes.showDragOutside(tab.tab)
         }
-        if isDragOutsideWindow(value.location) {
-          panes.contentDrop(for: tab.target.id).preview = nil
-          panes.dropOutside(tab.tab.id, for: tab.target)
-          return
-        }
-        if store.onScreenTarget(forID: tab.target.id) != nil,
-          panes.dropTab(tab.tab.id, of: tab.target, onContentAt: value.location)
-        {
-          return
-        }
-        panes.contentDrop(for: tab.target.id).preview = nil
-        let moved = Int((value.translation.height / Self.rowPitch).rounded())
-        let to = min(max(index + moved, 0), row.tabs.count - 1)
-        guard to != index else { return }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-          store.moveOpenTab(tab.tab.id, toIndex: to, in: row.sid)
-        }
+        return
       }
+      panes.hideDragOutside()
+      if store.paneDragMoved(tab.tab.id, of: tab.target, to: report.screen) {
+        reorder = nil
+        clearPreview()
+        return
+      }
+      if dragTab(tab, overContentAt: report.location) {
+        reorder = nil
+        return
+      }
+      let base = items.firstIndex(of: item).map { $0 - index } ?? 0
+      reorder = (item, base + landing(report.translation.height))
+    } onEnd: { [store] report in
+      panes.hideDragOutside()
+      reorder = nil
+      if store.paneDragEnded(tab.tab.id, of: tab.target, at: report.screen) {
+        return clearPreview()
+      }
+      if isDragOutsideWindow(report.location) {
+        clearPreview()
+        return panes.dropOutside(tab.tab.id, for: tab.target)
+      }
+      if store.onScreenTarget(forID: tab.target.id) != nil,
+        panes.dropTab(tab.tab.id, of: tab.target, onContentAt: report.location)
+      {
+        return
+      }
+      clearPreview()
+      let to = landing(report.translation.height)
+      guard to != index else { return }
+      withAnimation(rowAnimation) {
+        store.moveOpenTab(tab.tab.id, toIndex: to, in: row.sid)
+      }
+    }
   }
 
   /// Previews a drop of `tab` into its workroom's panes while they are on screen and under the
