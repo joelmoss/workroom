@@ -315,7 +315,7 @@ final class OpenSectionTests: XCTestCase {
   // MARK: The pane
 
   /// The List lists each workroom tab's row and, unfolded, its tabs' rows: a folded row's tabs
-  /// are left out, and nothing open lists no row (the view shows "Nothing open").
+  /// are left out, and nothing open lists no row (the view shows its New Terminal link).
   func testTheListListsTheRowsItShows() throws {
     let store = makeStore()
     XCTAssertTrue(SidebarOpenList.items(of: store.openSectionRows()).isEmpty, "nothing open")

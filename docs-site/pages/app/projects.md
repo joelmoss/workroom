@@ -32,11 +32,12 @@ The sidebar sits flat against the window's edge, with a thin line between it and
 The **Open** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
 
 - **Select.** Click a row to select it, or one of its tabs to show that tab. Selecting a workroom unfolds it. Fold it by hand, with the arrow that takes the place of its icon when you hover the row, and it stays folded until you next select it.
-- **Close.** Hover a row for its **✕**, or right-click it and choose **Close**. It asks when the title bar's tab would.
+- **What's highlighted.** Only the row that has the keyboard: the focused tab's row, or the selected workroom's own row while it shows no tab rows.
+- **Close.** Hover a row for its **✕**, or right-click it and choose **Close**. It asks when the title bar's tab would. A terminal group's row also shows a **+** on hover, for a new terminal in that group.
 - **Menus.** A row's right-click menu is the one its title-bar tab has.
 - **Reorder, split, move.** Drag a row as you drag its title-bar tab: up or down to reorder the tabs, onto a pane to split, out of the window to move the workroom to another window or a new one. Drag a tab row to reorder it among its workroom's tabs, between the rows outside its workroom to make it a standalone terminal there (see [Move a terminal](terminals-and-tabs.md#move-a-terminal)), onto another row or tab to move it there, into the panes to split, or out of the window to tear it off. The row lifts off the list and follows the pointer, and the other rows slide apart to show where it will land; let go and it settles there. Over the middle of a row that takes it, that row lights up instead. Press <kbd>Esc</kbd>, or let go where nothing takes it, and it goes back to its place. A workroom's tab rows leave with it while you drag and come back under it when it lands.
 - **Terminals with no project.** A standalone terminal or a terminal group is listed only while it has tabs in this window, as its title-bar tab is, and leaves when its last tab closes. A group you closed is not lost: open it again with **Open Workroom…** (<kbd>⌘O</kbd>). See [Terminals with no project](terminals-and-tabs.md#terminals-with-no-project).
-- **Nothing open.** The view says **Nothing open**.
+- **Nothing open.** The view offers a **New Terminal +** link, which opens a new standalone terminal.
 
 The tabs in the title bar are unchanged.
 
