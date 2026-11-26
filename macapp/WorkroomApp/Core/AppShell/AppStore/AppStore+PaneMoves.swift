@@ -292,7 +292,7 @@ extension AppStore {
     }
     let refusing = refusesPaneDrag(at: screenPoint)
     showPaneDragRefusing(false)
-    return terminalDrag.ended(at: screenPoint) || refusing
+    return terminalDrag.ended(at: screenPoint) != .missed || refusing
   }
 
   /// Whether `screenPoint` is over a sidebar row, the Terminals heading or a title-bar tab that the
