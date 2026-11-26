@@ -272,7 +272,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       _ = host.terminals.addTab(for: host.target)
     }
     if window == nil { createWindow(host) }
-    guard let window, let surface = currentSurface else { return }
+    // A focused pane that is popped out has no surface here: its slot shows its placeholder, and
+    // the panel still comes in on it (issue #172).
+    guard let window, currentSurface != nil || host.terminals.focusedTab(for: host.target) != nil
+    else { return }
     // No `NSApp.activate`: that would bring every Workroom window forward with it. The panel is
     // non-activating, so it takes focus over whatever app is frontmost (or while Workroom is
     // hidden: it doesn't hide with the app) and leaves the rest of Workroom where it was.
@@ -294,7 +297,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     } else {
       bringForward(window)
     }
-    window.makeFirstResponder(surface)
+    if let surface = currentSurface { window.makeFirstResponder(surface) }
   }
 
   /// A notification from one of its panes was clicked: slide in on that pane. Its host is no

@@ -988,6 +988,8 @@ final class AppStore: ObservableObject {
     // Everything `TerminalPanes` reports comes through one synchronous sink, handled in
     // `handleTerminalEvent` (eng review D8).
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
+    // A restored popped-out pane whose window didn't come back docks into its slot (issue #172).
+    terminals.detachedWindowExists = { [weak self] in self?.detachedPanes.window(for: $0) != nil }
     // Any terminal moves anywhere, from its right-click menu too (#660).
     terminals.moveToWorkroomChoices = { [weak self] tabID, target in
       self?.paneMoveChoices(tabID, of: target) ?? []
@@ -1166,7 +1168,7 @@ final class AppStore: ObservableObject {
       self.openDetachedPane(tab: tab, target: target, origin: nil, frame: frame)
     case .paneDocked(let tabID):
       detachedPanes.close(tabID: tabID)
-    // Something tried to focus a pane that lives in its own window; its window is the honest answer.
+    // A popped-out pane's placeholder asked for its window (Go to Window).
     case .paneRaiseRequested(let tabID):
       raiseDetachedPane(tabID)
     case .paneWindowToggleRequested(let targetID, let tabID):
@@ -2697,8 +2699,7 @@ final class AppStore: ObservableObject {
   /// A pane's right-click New Terminal, split or Close Terminal (#583), on that pane and its
   /// workroom, with the guards ⌘T, ⌘D and ⌘W apply. A pane in its own window opens and splits
   /// nothing, as those keys do nothing there (`WorkroomCommands.workroomCommandEnabled`): its window
-  /// holds one pane, and `splitTab` would split this window's focused pane instead, since a
-  /// detached tab is never focused here. Its close is its window's ⌘W.
+  /// holds one pane, and its slot here shows only its placeholder. Its close is its window's ⌘W.
   private func performPaneCommand(
     _ command: PaneCommand, tab tabID: TerminalTab.ID, in wiredTarget: TerminalTarget
   ) {

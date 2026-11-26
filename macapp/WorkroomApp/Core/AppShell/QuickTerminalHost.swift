@@ -72,6 +72,8 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
     self.runCommand = runCommand
     self.closeFlow = TabCloseFlow(terminals: terminals, runCommand: runCommand)
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
+    // A restored popped-out pane whose window didn't come back docks into its slot (issue #172).
+    terminals.detachedWindowExists = { [weak self] in self?.detachedPanes.window(for: $0) != nil }
     // `paneWillChange` fires before the change lands, so the coordinator schedules its capture.
     sessionObservation = terminals.paneWillChange.sink { _ in
       SavedLayoutCoordinator.shared.markDirty()

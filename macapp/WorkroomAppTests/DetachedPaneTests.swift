@@ -5,8 +5,8 @@ import XCTest
 /// Popping a detail panel out into its own window (issue #172).
 ///
 /// The design is "the tab never leaves its owning store": a detached pane's `TerminalTab` stays in
-/// `TerminalPanes` and only its host view moves, so what these tests pin is that the *model* now
-/// answers three different questions three different ways about the same tab.
+/// `TerminalPanes` and only its host view moves. Its slot stays too: its strip place, its pane in a
+/// split and the focus, and the slot shows a placeholder until the pane comes back into it.
 @MainActor
 final class DetachedPaneTests: XCTestCase {
   private let target = TerminalTarget(
@@ -27,32 +27,45 @@ final class DetachedPaneTests: XCTestCase {
     return sessions
   }
 
-  // MARK: The three accessors, which deliberately disagree
+  // MARK: The slot stays
 
-  /// The strip and the layout lose a detached pane; the session file must not.
+  /// A popped-out pane keeps its strip slot, and the session file keeps it there too.
   ///
   /// The capture half is not tidiness — the app writes its session on `willResignActive`, so a
   /// filtered capture would drop a popped-out pane from merely ⌘-tabbing away.
-  func testDetachedTabLeavesTheStripButStaysInCapture() {
+  func testDetachedTabKeepsItsStripSlotAndStaysInCapture() {
     let s = makeSessions()
     let first = s.addTab(for: target)
     let second = s.addTab(for: target)
     let third = s.addTab(for: target)
 
-    // The MIDDLE tab, deliberately: detaching the LAST one leaves `[first, second]` either way, so an
-    // implementation that appended detached tabs to the tail would satisfy the position claim below
-    // without restoring anything.
+    // The MIDDLE tab, deliberately: an implementation that moved detached tabs to the tail would
+    // satisfy a claim about the last one without keeping anything in place.
     s.detachPane(second.id, for: target, at: .zero)
 
     XCTAssertEqual(
-      s.displayedTabIDs(for: target), [first.id, third.id],
-      "a detached pane is not in the strip or the layout")
-    XCTAssertEqual(
-      s.normalizedTabIDs(forTargetID: target.id), [first.id, second.id, third.id],
-      "the raw order keeps it in its ORIGINAL slot, not at the end")
+      s.displayedTabIDs(for: target), [first.id, second.id, third.id],
+      "a popped-out pane keeps its place in the strip, where its placeholder is")
     XCTAssertEqual(
       s.sessionCapture(forTargetID: target.id)?.tabs.map(\.id), [first.id, second.id, third.id],
-      "capture reads the raw order, so a relaunch brings it back where it was")
+      "so a relaunch brings it back where it was")
+  }
+
+  /// Popping out the tab you are looking at leaves the focus on it: its slot shows the
+  /// placeholder. Its surface is not this window's to act on, so `focusedSurface` says none.
+  func testDetachingTheFocusedTabKeepsTheFocusOnItsSlot() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let shown = s.addTab(for: target)
+    XCTAssertEqual(s.focusedTab(for: target)?.id, shown.id)
+    var focusChanges = 0
+    s.onEvent = { if case .focusChanged = $0 { focusChanges += 1 } }
+
+    s.detachPane(shown.id, for: target, at: .zero)
+
+    XCTAssertEqual(s.focusedTab(for: target)?.id, shown.id, "the focus stays on the slot")
+    XCTAssertEqual(focusChanges, 0, "nothing moved")
+    XCTAssertNil(s.focusedSurface(for: target), "its surface is in its own window")
   }
 
   /// The black-pane regression: `reconcileOcclusion` pauses every surface not in `visibleTabIDs`, so
@@ -67,7 +80,12 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertTrue(
       s.visibleTabIDs(for: target).contains(second.id),
       "a detached pane is on screen in its own window, so it must keep rendering")
-    XCTAssertTrue(s.visibleTabIDs(for: target).contains(first.id))
+    XCTAssertEqual(
+      s.visibleTabIDs(for: target).filter { $0 == second.id }.count, 1,
+      "named once, though it is also the focused slot")
+    XCTAssertFalse(
+      s.visibleTabIDs(for: target).contains(first.id),
+      "the focus stayed on the popped-out slot, so the other tab is off screen")
   }
 
   /// A detached pane must stay visible even once the origin has moved on to another workroom — the
@@ -85,26 +103,68 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertTrue(s.detachedTabIDs.contains(detached.id))
   }
 
-  // MARK: The two guards
+  // MARK: Focus
 
-  /// Focusing a detached tab would make the origin render `.leaf(detached)` and `mount` would re-home
-  /// the libghostty view back out of the detached window, blanking it. `setFocused` is the single
-  /// write-point, so guarding it covers every route in — a surface click, `ActivateOnPress`,
-  /// back/forward, notification routing, ⌃Tab, and a preview retarget.
-  func testFocusingADetachedTabIsRefusedAndRaisesItsWindowInstead() {
+  /// Selecting a popped-out tab (its chip, its Open row) shows its placeholder: the focus lands on
+  /// it, and its window is not raised.
+  func testSelectingAPoppedOutTabShowsItsPlaceholderWithoutRaisingItsWindow() {
     let s = makeSessions()
-    let stay = s.addTab(for: target)
     let detached = s.addTab(for: target)
+    let other = s.addTab(for: target)
     s.detachPane(detached.id, for: target, at: .zero)
-    XCTAssertEqual(s.focusedTab(for: target)?.id, stay.id, "detaching hands focus to the successor")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, other.id)
 
     var raised: [TerminalTab.ID] = []
     s.onEvent = { if case .paneRaiseRequested(let a) = $0 { raised.append(a) } }
-    s.focus(detached.id, for: target)
+    s.select(detached.id, for: target)
 
-    XCTAssertEqual(
-      s.focusedTab(for: target)?.id, stay.id, "the focus write must not land on a detached tab")
-    XCTAssertEqual(raised, [detached.id], "raising its own window is the useful answer instead")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, detached.id, "its slot shows")
+    XCTAssertTrue(raised.isEmpty, "its window stays where it is")
+  }
+
+  /// A click into the popped-out pane in its own window makes its surface first responder there.
+  /// That must not move this window's selection onto the pane's placeholder.
+  ///
+  /// The other tab is a diff, which has no surface: with a terminal there, the window-less test
+  /// surface would read as a focus still being shown, and the handler would bail for that reason
+  /// instead.
+  func testThePoppedOutSurfaceTakingFocusInItsWindowMovesNothingHere() throws {
+    let s = makeSessions()
+    let detached = s.addTab(for: target)
+    let other = s.openDiffPreview(
+      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+    s.detachPane(detached.id, for: target, at: .zero)
+    s.focus(other, for: target)
+    var surfaceFocused = 0
+    s.onEvent = { if case .surfaceFocused = $0 { surfaceFocused += 1 } }
+
+    try XCTUnwrap(s.surface(of: detached.id)).onEvent?(.focused)
+
+    XCTAssertEqual(s.focusedTab(for: target)?.id, other, "this window's selection stays")
+    XCTAssertEqual(surfaceFocused, 0)
+    // The negative control: a docked pane's surface taking focus still selects it.
+    s.dockPane(detached.id, for: target)
+    s.focus(other, for: target)
+    try XCTUnwrap(s.surface(of: detached.id)).onEvent?(.focused)
+    XCTAssertEqual(s.focusedTab(for: target)?.id, detached.id)
+    XCTAssertEqual(surfaceFocused, 1)
+  }
+
+  /// Go to Window asks the host to raise the pane's window, and only for a popped-out pane.
+  func testGoToWindowRaisesOnlyAPoppedOutPanesWindow() {
+    let s = makeSessions()
+    let detached = s.addTab(for: target)
+    let docked = s.addTab(for: target)
+    s.detachPane(detached.id, for: target, at: .zero)
+    var raised: [TerminalTab.ID] = []
+    s.onEvent = { if case .paneRaiseRequested(let a) = $0 { raised.append(a) } }
+
+    s.raiseDetachedPane(detached.id, for: target)
+    s.raiseDetachedPane(docked.id, for: target)
+
+    XCTAssertEqual(raised, [detached.id])
+    XCTAssertEqual(s.focusedTab(for: target)?.id, docked.id, "raising moves nothing here")
   }
 
   /// `previewTabID` scans the unfiltered tab dictionary, so without pinning on the way out the next
@@ -128,13 +188,12 @@ final class DetachedPaneTests: XCTestCase {
 
   // MARK: Split behaviour
 
-  /// Detaching a split member runs the same removal `extractFromSplit` does, so the survivors are
-  /// evened — a divider the user had dragged elsewhere is budgeting space for a pane that has left.
+  /// Popping out a split member keeps its pane in the split, where its placeholder shows, and
+  /// leaves every divider where the user put it.
   ///
-  /// The divider is SKEWED first on purpose: under slot-weighted `equalized()` a two-leaf split
-  /// already sits at 0.5, so asserting 0.5 against an unskewed tree passes even with evening
-  /// disabled. (Six such vacuous tests shipped in issue #126.)
-  func testDetachingASplitMemberCollapsesAndEvensTheSurvivors() {
+  /// The divider is SKEWED first on purpose: an implementation that removed and re-evened the
+  /// split would read 0.5, so 0.8 surviving means nothing moved.
+  func testDetachingASplitMemberKeepsItsPaneAndTheDividers() {
     let s = makeSessions()
     let a = s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
@@ -150,36 +209,84 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(
       s.split(for: target)?.ratio(forSplit: rootID), 0.8, "skewed, so 0.5 means something")
 
+    let before = s.split(for: target)
     s.detachPane(c.id, for: target, at: .zero)
 
     let after = s.split(for: target)
-    XCTAssertEqual(Set(after?.tabIDs ?? []), [a.id, b.id], "the detached member leaves the split")
-    XCTAssertEqual(after?.ratio(forSplit: rootID), 0.5, "and the survivors are evened")
+    XCTAssertEqual(after, before, "the split is exactly as it was, the popped-out pane in it")
+    XCTAssertEqual(after?.ratio(forSplit: rootID), 0.8, "no divider moved")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, c.id, "and the focus stayed on its slot")
   }
 
   // MARK: Docking
 
-  /// Docking with no drop target puts the pane back as the focused solo tab, in its old strip slot.
-  func testDockingRestoresTheTabToTheStrip() {
+  /// Docking puts the pane back, focused, in the strip slot it kept.
+  func testDockingRestoresTheTabToItsStripSlot() {
     let s = makeSessions()
     let first = s.addTab(for: target)
     let second = s.addTab(for: target)
     let third = s.addTab(for: target)
     s.detachPane(second.id, for: target, at: .zero)
-    XCTAssertEqual(s.displayedTabIDs(for: target), [first.id, third.id])
+    s.focus(third.id, for: target)
 
     var closed: [TerminalTab.ID] = []
     s.onEvent = { if case .paneDocked(let a) = $0 { closed.append(a) } }
     s.dockPane(second.id, for: target)
 
-    // The MIDDLE tab again: a dock that re-appended would read `[first, third, second]`, which is
-    // exactly what "its old slot" has to rule out.
     XCTAssertEqual(
-      s.displayedTabIDs(for: target), [first.id, second.id, third.id], "back in its old slot")
+      s.displayedTabIDs(for: target), [first.id, second.id, third.id], "back in its slot")
     XCTAssertFalse(s.detachedTabIDs.contains(second.id))
     XCTAssertEqual(closed, [second.id], "and its window is closed")
     XCTAssertEqual(
       s.focusedTab(for: target)?.id, second.id, "docking focuses what you just put back")
+    XCTAssertNotNil(s.focusedSurface(for: target), "its surface is this window's again")
+  }
+
+  /// Pull Back Here, and the popped-out window's own Move Back, both dock: into the same pane of
+  /// the same split, with the dividers where they were, focused — from wherever the focus was.
+  func testDockingAPoppedOutSplitMemberPutsItBackInItsPane() {
+    let s = makeSessions()
+    let a = s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = s.focusedTab(for: target)!
+    let rootID = rootSplitID(s)!
+    s.setRatio(0.7, forSplit: rootID, for: target)
+    let solo = s.addTab(for: target)  // a tab outside the split
+    s.focus(b.id, for: target)
+    let before = s.split(for: target)
+
+    s.detachPane(b.id, for: target, at: .zero)
+    s.focus(solo.id, for: target)  // the user moves on to another tab
+    XCTAssertNil(s.split(for: target), "the split is off screen with its placeholder")
+
+    s.dockPane(b.id, for: target)
+
+    XCTAssertEqual(s.split(for: target), before, "the same split, b in its own pane")
+    XCTAssertEqual(s.split(for: target)?.ratio(forSplit: rootID), 0.7)
+    XCTAssertEqual(s.focusedTab(for: target)?.id, b.id)
+    XCTAssertEqual(s.displayedTabIDs(for: target), [a.id, b.id, solo.id])
+  }
+
+  // MARK: Closing from the placeholder
+
+  /// ⌘W, or the ✕ on a placeholder's tab, closes the terminal itself, and its window with it.
+  func testClosingAPoppedOutTabFromItsSlotClosesItAndItsWindow() {
+    let s = makeSessions()
+    let a = s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = s.focusedTab(for: target)!
+    s.detachPane(b.id, for: target, at: .zero)
+    XCTAssertEqual(s.activeTab(for: target)?.id, b.id, "⌘W acts on the placeholder's tab")
+
+    var closed: [TerminalTab.ID] = []
+    s.onEvent = { if case .paneDocked(let id) = $0 { closed.append(id) } }
+    s.closeTab(b.id, for: target)
+
+    XCTAssertEqual(closed, [b.id], "its window goes with it")
+    XCTAssertNil(s.tab(b.id, for: target), "the terminal is gone")
+    XCTAssertTrue(s.detachedTabIDs.isEmpty)
+    XCTAssertNil(s.split(for: target), "its pane went, so the split dissolved")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, a.id)
   }
 
   // MARK: Teardown — a window may never outlive its tab
@@ -259,8 +366,8 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(restored.first?.1, frame, "at the frame it was left at")
     let id = restored.first!.0
     XCTAssertTrue(s.detachedTabIDs.contains(id))
-    XCTAssertFalse(
-      s.displayedTabIDs(for: target).contains(id), "and it must not ALSO be in the strip")
+    XCTAssertEqual(
+      s.displayedTabIDs(for: target).last, id, "its slot in the strip comes back with it")
     XCTAssertTrue(s.visibleTabIDs(for: target).contains(id), "it renders in its own window")
   }
 
@@ -280,11 +387,11 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(s.displayedTabIDs(for: target).count, 1, "it comes back docked instead")
   }
 
-  // MARK: Splits — the two-pane case, which takes the other branch
+  // MARK: Splits — the two-pane case
 
-  /// Detaching one half of a TWO-pane split dissolves the split entirely. The three-member test above
-  /// only exercises the `>= 2 survivors` arm; this is the common gesture and it takes the other one.
-  func testDetachingOneHalfOfATwoPaneSplitDissolvesTheSplit() {
+  /// Popping out one half of a TWO-pane split keeps the split: the case that used to dissolve it.
+  /// Its slot is named once among the panes that must keep rendering.
+  func testDetachingOneHalfOfATwoPaneSplitKeepsTheSplit() {
     let s = makeSessions()
     let a = s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
@@ -293,27 +400,77 @@ final class DetachedPaneTests: XCTestCase {
 
     s.detachPane(b.id, for: target, at: .zero)
 
-    XCTAssertNil(s.split(for: target), "one survivor is not a split")
-    XCTAssertEqual(s.displayedTabIDs(for: target), [a.id])
-    XCTAssertEqual(s.focusedTab(for: target)?.id, a.id, "the survivor takes focus")
-    XCTAssertTrue(s.visibleTabIDs(for: target).contains(b.id), "the detached one keeps rendering")
+    XCTAssertEqual(Set(s.split(for: target)?.tabIDs ?? []), [a.id, b.id], "still a split")
+    XCTAssertEqual(s.displayedTabIDs(for: target), [a.id, b.id])
+    XCTAssertEqual(s.focusedTab(for: target)?.id, b.id, "the focus stays on its slot")
+    XCTAssertEqual(
+      s.visibleTabIDs(for: target).sorted(by: { $0.uuidString < $1.uuidString }),
+      [a.id, b.id].sorted(by: { $0.uuidString < $1.uuidString }),
+      "both keep rendering, the popped-out one named once")
   }
 
   // MARK: Bulk close — a detached pane is still a tab
 
-  /// `tabs(for:)` hides detached panes, so every path that means "all of this target's tabs" has to
-  /// read `allTabs`. It did not, and "Close All Tabs" left a popped-out pane alive with its process.
+  /// Every path that means "all of this target's tabs" reads `allTabs`, which a popped-out pane is
+  /// in, so "Close All Tabs" can't leave one alive with its process.
   func testAllTabsIncludesADetachedPaneSoBulkClosesReachIt() {
     let s = makeSessions()
     let first = s.addTab(for: target)
     let second = s.addTab(for: target)
     s.detachPane(second.id, for: target, at: .zero)
 
-    XCTAssertEqual(
-      s.tabs(for: target).map(\.id), [first.id], "the strip hides it")
+    XCTAssertEqual(s.tabs(for: target).map(\.id), [first.id, second.id], "the strip shows it")
     XCTAssertEqual(
       s.allTabs(for: target).map(\.id), [first.id, second.id],
-      "but it is still a tab, so a bulk close must be able to see it")
+      "and it is still a tab, so a bulk close must be able to see it")
+  }
+
+  // MARK: Hand-off to another window (#444)
+
+  /// A workroom moving to another window takes its popped-out pane's slot with it: the same split,
+  /// the same focus, and the pane still popped out there.
+  func testAHandOffCarriesAPoppedOutSlot() throws {
+    let s = makeSessions()
+    let a = s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = s.focusedTab(for: target)!
+    s.detachPane(b.id, for: target, at: .zero)
+    let split = s.split(for: target)
+
+    var handOff = try XCTUnwrap(s.handOff(target))
+    handOff.detached[b.id] = NSRect(x: 0, y: 0, width: 400, height: 300)
+    let destination = makeSessions()
+    var reopened: [TerminalTab.ID] = []
+    destination.onEvent = {
+      if case .paneRestoredDetached(_, let id, frame: _) = $0 { reopened.append(id) }
+    }
+    destination.adopt(handOff)
+
+    XCTAssertEqual(destination.split(for: target), split, "the split arrives whole")
+    XCTAssertEqual(destination.detachedTabIDs, [b.id])
+    XCTAssertEqual(reopened, [b.id], "its window reopens there")
+    XCTAssertEqual(destination.focusedTab(for: target)?.id, b.id, "and its slot is still focused")
+    XCTAssertEqual(destination.displayedTabIDs(for: target), [a.id, b.id])
+  }
+
+  /// A hand-off whose popped-out window can't reopen in the window it joins docks the pane into
+  /// its slot there, rather than strand a placeholder.
+  func testAHandOffWhoseWindowDidNotReopenDocksTheSlot() throws {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = s.focusedTab(for: target)!
+    s.detachPane(b.id, for: target, at: .zero)
+    let split = s.split(for: target)
+
+    let handOff = try XCTUnwrap(s.handOff(target))
+    let destination = makeSessions()
+    destination.detachedWindowExists = { _ in false }
+    destination.adopt(handOff)
+
+    XCTAssertTrue(destination.detachedTabIDs.isEmpty)
+    XCTAssertEqual(destination.split(for: target), split, "docked in its pane of the split")
+    XCTAssertNotNil(destination.focusedSurface(for: target), "and showing its terminal")
   }
 
   /// Docking a tab that was never detached must change nothing — the mirror of the repeated-detach
