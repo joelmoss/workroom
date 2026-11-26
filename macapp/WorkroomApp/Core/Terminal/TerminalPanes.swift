@@ -745,9 +745,12 @@ final class TerminalPanes {
   /// `detachPane`/`dockPane` firing `.paneDetached`/`.paneDocked`. The invariant every reader may
   /// rely on: **a tab in here has exactly one live detached window, and vice versa.**
   ///
-  /// A detached tab is deliberately absent from its target's split groups (detaching runs the same
-  /// removal `extractFromSplit` does), so the split/divider/auto-even machinery needs no awareness
-  /// of it.
+  /// A detached tab keeps its slot: its place in the strip and, in a split, its pane in the split
+  /// group. That slot shows a placeholder ("… is open in another window", `PoppedOutPlaceholder`)
+  /// rather than the pane, so the layout, divider and auto-even machinery need no awareness of it,
+  /// and docking puts the pane straight back where it was. It may be the focused tab: focus then
+  /// shows its placeholder. Only the surface is elsewhere, so `PaneLeafView` lets just the detached
+  /// window host it (`mayHostSurface`), and `focusedSurface` answers nil for it.
   private(set) var detachedTabIDs: Set<TerminalTab.ID> {
     get { detachedIDs }
     set {
@@ -842,8 +845,8 @@ final class TerminalPanes {
     /// The mirror of `.paneDetached`: this tab is docked again, so its window must go. Also fired by
     /// `closeTab`/`reap` by way of `undetach`, so a detached window can never outlive its tab.
     case paneDocked(TerminalTab.ID)
-    /// Something tried to focus a detached pane. Its window is the honest answer, so `AppStore` raises
-    /// it (see `setFocused`, which refuses the focus write itself).
+    /// Bring this popped-out pane's own window to the front: its placeholder's Go to Window
+    /// (`raiseDetachedPane`). The host that owns the window raises it.
     case paneRaiseRequested(TerminalTab.ID)
     /// The terminal's own right-click "Move to New Window" / "Move Back to Main Window" (#444):
     /// detach this pane, or dock it when it is already in its own window.
@@ -1035,24 +1038,20 @@ final class TerminalPanes {
 
   // MARK: Queries
 
-  // THREE tab-list accessors, and since issue #172 they deliberately DISAGREE about a detached tab.
-  // They look near-identical and they answer three different questions, so do not "consolidate" any
-  // two of them — collapsing the first two reintroduces the blank-pane class of issue #3:
+  // The tab-list accessors. Since a popped-out pane keeps its slot (it shows a placeholder there),
+  // they all include a detached tab; they still answer different questions:
   //
-  //   displayedTabIDs  "what is in the strip / the layout"   detached: EXCLUDED
+  //   displayedTabIDs  "what is in the strip / the layout"   detached: INCLUDED, as a placeholder
   //   allTabs          "every tab this target owns"          detached: INCLUDED
-  //   visibleTabIDs    "what must keep rendering"            detached: INCLUDED
+  //   visibleTabIDs    "what must keep rendering"            detached: INCLUDED, always
   //   sessionCapture   "what must survive a relaunch"        detached: INCLUDED
   //
-  // `allTabs` is the one to reach for when CLOSING or refreshing model state. Using `displayedTabIDs`
-  // there is how "Close All Tabs" came to leave a popped-out pane alive with its process running.
-  //
-  // A detached pane is not in this window's strip, but its surface is very much on screen (in its own
-  // window) and it very much has to come back after a relaunch. `normalizedTabIDs` is the shared core
-  // the first and third read, so the split-anchor normalisation itself exists once.
+  // `allTabs` is the one to reach for when CLOSING or refreshing model state. `visibleTabIDs` must
+  // name every detached pane even when its slot is off screen: its surface renders in its own
+  // window. `normalizedTabIDs` is the shared core, so the split-anchor normalisation exists once.
 
-  /// Tab ids in strip order, **excluding detached panes** — the layout and the strip both read this,
-  /// so a detached tab leaves both by this one exclusion.
+  /// Tab ids in strip order, popped-out panes included in their slots — the layout and the strip
+  /// both read this.
   func displayedTabIDs(for target: TerminalTarget) -> [TerminalTab.ID] {
     displayedTabIDs(forTargetID: target.id)
   }
@@ -1060,22 +1059,20 @@ final class TerminalPanes {
   /// The id-addressed core of `displayedTabIDs(for:)`. Session capture (issue #46) walks
   /// `activeTargetIDs` and has no `TerminalTarget` value in hand, and only the id was ever used.
   func displayedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
-    targets[targetID]?.state.displayedOrder(hiding: detachedTabIDs) ?? []
+    targets[targetID]?.state.normalizedOrder ?? []
   }
 
   /// Every tab a target owns, in strip order, **detached panes included** — the answer to "act on
-  /// all of this target's tabs", as opposed to `tabs(for:)`'s "what the strip shows".
-  ///
-  /// Anything that CLOSES, REAPS or refreshes model state must use this: a detached pane is still a
-  /// live tab with a live process, and `tabs(for:)` hides it. That distinction is what four bulk-close
-  /// paths got wrong when `tabs(for:)` was narrowed (issue #172).
+  /// all of this target's tabs". The strip shows the same tabs now (a popped-out pane keeps its
+  /// slot), but anything that CLOSES, REAPS or refreshes model state reads this, so a future change
+  /// to what the strip shows can't leave a popped-out pane's process running (issue #172).
   func allTabs(for target: TerminalTarget) -> [TerminalTab] {
     tabRegistry.records(normalizedTabIDs(forTargetID: target.id))
   }
 
   /// Strip order with EACH group's members normalised into one contiguous run, **detached panes
-  /// included**. This is the raw ordering; `displayedTabIDs` is this minus the detached ones, and
-  /// `sessionCapture` reads this directly so a detached pane is persisted in its old strip position.
+  /// included**, each in its slot. `displayedTabIDs` and `sessionCapture` both read it, so a
+  /// detached pane is shown and persisted in its strip position.
   ///
   /// The loose order, with every group's members replaced by that group's tree order as a contiguous
   /// block at its earliest member's slot (`PaneSplitGroups.normalized`, which the workroom tab bar's
@@ -1146,10 +1143,10 @@ final class TerminalPanes {
   /// panes included; nil when it holds none. What a saved session captures and what a move to
   /// another window takes, so the two can never disagree.
   ///
-  /// `normalizedOrder`, NOT the displayed order: a detached pane (issue #172) must be captured in
-  /// its old strip position or it is lost. This matters before quit as well as at quit — the app
-  /// writes the session on `willResignActive`, so a filtered capture would drop a detached pane
-  /// from merely ⌘-tabbing away.
+  /// `normalizedOrder`, every tab in its slot: a detached pane (issue #172) is captured in its
+  /// strip position and its split, or it is lost. This matters before quit as well as at quit —
+  /// the app writes the session on `willResignActive`, so a filtered capture would drop a detached
+  /// pane from merely ⌘-tabbing away.
   private func heldLayout(
     _ targetID: TerminalTarget.ID
   ) -> (tabs: [TerminalTab], layout: PaneState<TerminalTab.ID>)? {
@@ -1352,9 +1349,13 @@ final class TerminalPanes {
     return displayedTabIDs(for: target).first.flatMap { tabRegistry.record($0) }
   }
 
-  /// The focused tab's surface: nil when it is a content tab, or the target has no tab here.
+  /// The focused tab's surface: nil when it is a content tab, the target has no tab here, or the
+  /// focused tab is popped out. That one's slot here shows a placeholder and its surface is in its
+  /// own window, so nothing in this window may make it first responder or act on it as the pane
+  /// this window shows.
   func focusedSurface(for target: TerminalTarget) -> GhosttySurfaceView? {
-    surface(focusedTab(for: target))
+    guard let tab = focusedTab(for: target), !detachedTabIDs.contains(tab.id) else { return nil }
+    return surface(of: tab.id)
   }
 
   /// `tab`'s surface, for a tab read a moment ago: nil for none, a content tab, or a tab this
@@ -1375,11 +1376,20 @@ final class TerminalPanes {
   /// moment anything touched this store — a black pane in a window the user is looking at. It is also
   /// why a detached pane survives the origin switching workroom: it never leaves its own window, so
   /// `viewDidMoveToWindow`'s pause path cannot fire either.
+  ///
+  /// A detached pane keeps its slot, so it can be in the shown split or be the focused tab as well;
+  /// it is named once.
   func visibleTabIDs(for target: TerminalTarget) -> [TerminalTab.ID] {
-    let detached = detachedTabIDs.filter { record($0, in: target.id) != nil }
-    if let split = split(for: target) { return split.tabIDs + detached }
-    if let focused = focusedTab(for: target) { return [focused.id] + detached }
-    return Array(detached)
+    let shown: [TerminalTab.ID]
+    if let split = split(for: target) {
+      shown = split.tabIDs
+    } else {
+      shown = focusedTab(for: target).map { [$0.id] } ?? []
+    }
+    let detached = normalizedTabIDs(forTargetID: target.id).filter {
+      detachedTabIDs.contains($0) && !shown.contains($0)
+    }
+    return shown + detached
   }
 
   // MARK: Lifecycle
@@ -1492,44 +1502,44 @@ final class TerminalPanes {
     let panes = openPanes(target.id)
     for tab in contentTabs { store(tab) }
     panes.updateState { $0.order = order }
-    // Detached tabs resolve to NOTHING here, so a saved group naming one comes back without it.
-    // The split groups' invariant is that a detached tab is never a member (`targets`): rendering
-    // a group that contains one puts its surface in the origin pane tree as well as its own window,
-    // re-homing the libghostty view and blanking the detached window — the same failure the
-    // `setFocused` guard below exists to prevent, reached by a different door. `sanitized()` waves
-    // the shape through because the tab is live, so the exclusion belongs here, where the detached
-    // set is known. `materialize` already collapses unresolved leaves and drops a group that falls
-    // below two, so a two-member group with one detached member correctly restores as no group.
-    let detachedIDs = Set(restoredDetached.map(\.0))
+    // A popped-out pane keeps its slot (issue #172), so its split comes back whole, with the
+    // placeholder in its pane, and it may be the focused tab, which shows that placeholder.
     let restoredSplits = session.splits.compactMap { saved in
-      saved.materialize { key in idsByKey[key].flatMap { detachedIDs.contains($0) ? nil : $0 } }
+      saved.materialize { key in idsByKey[key] }
     }
     setSplits(PaneSplitGroups(restoredSplits), for: target.id)
-    // Mark detached panes BEFORE choosing focus. `setFocused`'s own guard refuses to focus a detached
-    // tab (focusing one makes `contentLayout` render it back in THIS window and re-homes the
-    // libghostty view out of its own window, which then goes blank) — but that guard reads
-    // `detachedTabIDs`, so with the insert below it, it could not fire during a restore. The ordinary
-    // flow that reached it: detach your only pane, quit, relaunch — `closeSuccessor` returns nil for a
-    // sole tab, so nothing was persisted as focused and the `?? order.first` fallback landed on the
-    // detached pane (`order` deliberately includes detached tabs, issue #172). The fallback skips them
-    // for the same reason. Windows still open afterwards, once the target's tabs are populated.
     for (tabID, _) in restoredDetached { detachedTabIDs.insert(tabID) }
     setFocused(
-      session.focusedKey.flatMap { idsByKey[$0] }.flatMap {
-        detachedTabIDs.contains($0) ? nil : $0
-      } ?? order.first { !detachedTabIDs.contains($0) }, for: target.id, notify: false)
+      session.focusedKey.flatMap { idsByKey[$0] } ?? order.first, for: target.id, notify: false)
     // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
     // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
     targets[target.id]?.updateState { $0.raiseCounter(to: session.terminalCounter ?? 0) }
-    // Open the windows AFTER the tabs are set: `.paneDetached` builds a window whose content
-    // looks the tab up by id. Restoring is not a user gesture, so this skips `detachPane` — the split
-    // was already captured without these tabs, and membership was recorded above.
-    for (tabID, frame) in restoredDetached {
-      onEvent?(.paneRestoredDetached(target.id, tabID, frame: frame))
-    }
+    // Open the windows AFTER the tabs are set: `.paneRestoredDetached` builds a window whose content
+    // looks the tab up by id. Restoring is not a user gesture, so this skips `detachPane`.
+    reopenDetachedWindows(restoredDetached, for: target)
     if let restoredRun { onEvent?(.runTabRestored(target.id, restoredRun)) }
     reconcileOcclusion(for: target)
     return RestoreResult(count: order.count)
+  }
+
+  /// Whether a popped-out pane's window is open, asked of the host that opens them (`AppStore`,
+  /// `QuickTerminalHost`). Nil asks nothing, and every restored pane stays popped out.
+  @ObservationIgnored var detachedWindowExists: ((TerminalTab.ID) -> Bool)?
+
+  /// Ask the host to rebuild each restored popped-out pane's window (a relaunch or a window
+  /// hand-off), then dock in its slot every one whose window did not come back: a placeholder
+  /// pointing at a window that doesn't exist would strand the terminal. The dock is quiet: no focus
+  /// move and no `.paneDocked`, since there is no window to close.
+  private func reopenDetachedWindows(
+    _ detached: [(TerminalTab.ID, NSRect)], for target: TerminalTarget
+  ) {
+    for (tabID, frame) in detached {
+      onEvent?(.paneRestoredDetached(target.id, tabID, frame: frame))
+    }
+    guard let detachedWindowExists else { return }
+    for (tabID, _) in detached where !detachedWindowExists(tabID) {
+      detachedTabIDs.remove(tabID)
+    }
   }
 
   /// The directory a restored terminal should open in: the remembered one while it is still a live
@@ -2204,11 +2214,9 @@ final class TerminalPanes {
   /// Move a pane into its own window (issue #172). One coordinated transition: the model half here,
   /// the window half through `.paneDetached`, so the two can never be observed apart.
   ///
-  /// The model half MIRRORS `extractFromSplit` (it does not call it) — a detached tab must not remain
-  /// a split member, or the layout would still try to render it. It is a mirror rather than a reuse
-  /// because `extractFromSplit` focuses the tab it pulls out, which is the one thing detaching must
-  /// NOT do: the focus has to go to a survivor. The successor is therefore computed BEFORE the
-  /// mutation, the same ordering `closeTab` uses, because `closeSuccessor` reads the on-screen order.
+  /// The pane keeps its slot: its strip place, its pane in a split, and the focus when it had it.
+  /// The slot shows a placeholder from now on (`PoppedOutPlaceholder`), with Go to Window and Pull
+  /// Back Here, so nothing in the layout moves and docking can put it straight back.
   ///
   /// A preview tab is pinned on the way out: `previewTabID` scans every tab, detached ones
   /// included, so the next Changes/Files click would otherwise replace this pane's content in place
@@ -2216,14 +2224,17 @@ final class TerminalPanes {
   func detachPane(_ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint) {
     guard allowsDetach, let tab = record(tabID, in: target.id), !detachedTabIDs.contains(tabID)
     else { return }
-    let wasFocused = targets[target.id]?.state.focused == tabID
-    let successor = closeSuccessor(of: tabID, for: target)
     if tab.isPreview { persist(tabID, for: target) }
-    removeFromGroup(tabID, for: target.id)
     detachedTabIDs.insert(tabID)
-    if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
     onEvent?(.paneDetached(target.id, tabID, at: screenPoint))
+  }
+
+  /// Bring popped-out pane `tabID`'s own window to the front (the placeholder's Go to Window). The
+  /// host that owns the window raises it, through `.paneRaiseRequested`. Nothing here changes.
+  func raiseDetachedPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    guard record(tabID, in: target.id) != nil, detachedTabIDs.contains(tabID) else { return }
+    onEvent?(.paneRaiseRequested(tabID))
   }
 
   /// Drop a tab's activity pulse and its collaborators' work: its in-flight host cwd, Claude
@@ -2273,9 +2284,8 @@ final class TerminalPanes {
   /// Bring a detached pane back into the pane tree (issue #172) — the mirror of `detachPane`, and the
   /// only way a tab leaves `detachedTabIDs` while staying alive.
   ///
-  /// It returns as the focused solo tab in its old strip position. There is deliberately no
-  /// land-on-an-edge variant: docking is a button in the detached window's title bar, so there is no
-  /// drop point to interpret. Re-splitting afterwards is the normal split gesture.
+  /// It returns, focused, into the slot it kept: its strip place, and its pane in its split. The
+  /// placeholder's Pull Back Here, the detached window's own Move Back and ⌃⌘O all land here.
   func dockPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard undetach(tabID) else { return }
     focus(tabID, for: target)
@@ -2433,14 +2443,13 @@ final class TerminalPanes {
       setSplits(handOff.layout.splits, for: target.id)
     }
     openPanes(target.id).updateState { $0.raiseCounter(to: handOff.layout.counter ?? 0) }
-    let focus =
-      handOff.layout.focused.flatMap { detachedTabIDs.contains($0) ? nil : $0 }
-      ?? ids.first { !detachedTabIDs.contains($0) }
-    if let focus { setFocused(focus, for: target.id, notify: false) }
-    for id in ids { refreshProgramStatus(tab: id, target: target.id) }
-    for (id, frame) in handOff.detached {
-      onEvent?(.paneRestoredDetached(target.id, id, frame: frame))
+    // A popped-out pane kept its slot in the window it left, so it may be the focused tab here too.
+    if let focus = handOff.layout.focused ?? ids.first {
+      setFocused(focus, for: target.id, notify: false)
     }
+    for id in ids { refreshProgramStatus(tab: id, target: target.id) }
+    reopenDetachedWindows(
+      ids.compactMap { id in handOff.detached[id].map { (id, $0) } }, for: target)
     reconcileOcclusion(for: target)
   }
 
@@ -2495,19 +2504,9 @@ final class TerminalPanes {
   private func setFocused(
     _ tabID: TerminalTab.ID?, for targetID: TerminalTarget.ID, notify: Bool = true
   ) {
-    // A DETACHED pane may never become this target's focused tab (issue #172). This is the single
-    // focus write-point, and every route into it clears `focus`'s only check (the tab still exists in
-    // its target's tabs), as a detached tab does. Letting the write through makes `contentLayout`
-    // render `.leaf(detached)` back in this window, and `TerminalContainerView.mount` then re-homes
-    // the libghostty view out of the detached window — which goes blank. At least six paths reach
-    // here: the surface's own `mouseDown` → `.focused` → `select`, `ActivateOnPress` on a content
-    // pane, navigation history back/forward, notification routing via `ownerOf(tabID:)`, ⌃Tab's pane
-    // switcher, and Files/Changes re-focusing an existing preview tab. Guarding the write-point
-    // covers all of them at once; raising the pane's own window is the useful thing to do instead.
-    if let tabID, detachedTabIDs.contains(tabID) {
-      onEvent?(.paneRaiseRequested(tabID))
-      return
-    }
+    // A popped-out pane may be focused here (issue #172): its slot then shows its placeholder. The
+    // slot's leaf never hosts the surface (`mayHostSurface`), so this cannot pull the libghostty
+    // view out of the pane's own window.
     guard let panes = targets[targetID], panes.state.focused != tabID else { return }
     panes.updateState { $0.focused = tabID }
     guard notify else { return }
@@ -2846,7 +2845,9 @@ final class TerminalPanes {
     .ID?
   {
     (targets[target.id]?.state ?? PaneState()).closeSuccessor(
-      of: tabID, hiding: detachedTabIDs, recency: recency.panes.ids)
+      // A popped-out pane is a tab in its slot like any other (issue #172); landing on one shows
+      // its placeholder.
+      of: tabID, hiding: [], recency: recency.panes.ids)
   }
 
   private func insert(_ tab: TerminalTab, for target: TerminalTarget) {
@@ -2979,7 +2980,11 @@ final class TerminalPanes {
     // and route up to the workroom selection so a click into a co-displayed split pane targets that
     // workroom (issue #23 follow-up).
     case .focused:
-      guard targets[targetID] != nil, !isFocusBeingShown(otherThan: tabID, in: target) else {
+      // A popped-out pane taking the keyboard in its own window moves nothing here: this window's
+      // selection stays whatever its user left it on (issue #172).
+      guard targets[targetID] != nil, !detachedTabIDs.contains(tabID),
+        !isFocusBeingShown(otherThan: tabID, in: target)
+      else {
         return
       }
       focus(tabID, for: target)

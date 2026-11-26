@@ -419,15 +419,10 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertEqual(s.split(for: target)?.tabIDs, [ids[2], ids[3]])
   }
 
-  /// A saved group naming a DETACHED tab must come back without it. `splitsByTarget`'s invariant is
-  /// that a detached tab is never a member: rendering a group containing one puts its surface in the
-  /// origin pane tree as well as its own window, re-homing the libghostty view and blanking the
-  /// detached window. `sanitized()` cannot catch the shape — the tab is live, so the group looks
-  /// valid — which is why `restore` resolves detached ids to nothing.
-  ///
-  /// The group here has exactly two members and one is detached, so it correctly restores as NO
-  /// group: `materialize` drops a tree that falls below two leaves.
-  func testARestoredGroupNeverContainsADetachedTab() throws {
+  /// A popped-out pane keeps its slot (issue #172), so a saved group naming one comes back whole,
+  /// the popped-out member's pane showing its placeholder. A two-member group is the case that
+  /// used to dissolve.
+  func testARestoredGroupKeepsItsPoppedOutMemberInItsSlot() throws {
     let s = makeSessions()
     var detached = terminal("b", title: "Terminal 2")
     detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
@@ -437,18 +432,16 @@ final class SessionRestoreTests: XCTestCase {
         splits: [split("a", "b")], focusedKey: "a"),
       for: target)
 
-    let docked = try XCTUnwrap(s.tabs(for: target).first).id
-    XCTAssertEqual(s.allTabs(for: target).count, 2, "both tabs come back")
-    XCTAssertTrue(
-      s.splits(for: target).isEmpty,
-      "the group held one detached member, so only one leaf resolves — that is not a group")
-    XCTAssertNil(s.split(containing: docked, for: target))
-    XCTAssertEqual(s.visibleTabIDs(for: target).first, docked)
+    let ids = s.tabs(for: target).map(\.id)
+    XCTAssertEqual(ids.count, 2, "both tabs come back, both in the strip")
+    XCTAssertTrue(s.detachedTabIDs.contains(ids[1]))
+    XCTAssertEqual(
+      s.split(for: target)?.tabIDs, ids, "the group comes back with the popped-out pane's slot")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, ids[0])
   }
 
-  /// The same rule with a group big enough to SURVIVE the exclusion: three saved members, one
-  /// detached, so two resolve and the group comes back holding exactly those two.
-  func testARestoredGroupKeepsItsDockedMembersWithoutTheDetachedOne() throws {
+  /// A three-member group with one popped-out member comes back with all three slots.
+  func testARestoredGroupKeepsAllThreeSlotsWithOnePoppedOut() throws {
     let s = makeSessions()
     var detached = terminal("c", title: "Terminal 3")
     detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
@@ -466,34 +459,75 @@ final class SessionRestoreTests: XCTestCase {
         focusedKey: "a"),
       for: target)
 
-    let docked = s.tabs(for: target).map(\.id)
-    XCTAssertEqual(docked.count, 2, "the detached tab is not in the strip")
-    let group = try XCTUnwrap(s.split(containing: docked[0], for: target))
-    XCTAssertEqual(
-      Set(group.tabIDs), Set(docked), "the group holds the docked members, and only them")
+    let ids = s.tabs(for: target).map(\.id)
+    XCTAssertEqual(ids.count, 3, "the popped-out tab keeps its strip slot")
+    let group = try XCTUnwrap(s.split(containing: ids[0], for: target))
+    XCTAssertEqual(Set(group.tabIDs), Set(ids), "and its pane in the group")
     XCTAssertEqual(s.splits(for: target).count, 1)
+    XCTAssertTrue(s.detachedTabIDs.contains(ids[2]))
   }
 
-  /// Restoring must never land focus on a DETACHED pane: focusing one renders it back in this window
-  /// and re-homes its libghostty view out of its own window, which then goes blank. The ordinary flow
-  /// that reached it \u2014 detach your only pane, quit, relaunch \u2014 persists no `focusedKey` at all
-  /// (`closeSuccessor` returns nil for a sole tab), so the fallback had to pick, and `order`
-  /// deliberately includes detached panes.
-  func testRestoreNeverFocusesADetachedPane() throws {
+  /// A popped-out pane saved as the focused tab comes back focused, showing its placeholder: its
+  /// slot's leaf never hosts the surface, so focus here can't take it out of its window.
+  func testRestoreKeepsFocusOnAPoppedOutPane() throws {
     let s = makeSessions()
     var detached = terminal("a", title: "Terminal 1")
     detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
     s.restore(
       TargetSession(
         targetID: target.id.encoded, tabs: [detached, terminal("b", title: "Terminal 2")],
-        focusedKey: nil),
+        focusedKey: "a"),
       for: target)
 
-    let detachedID = try XCTUnwrap(s.allTabs(for: target).first).id
-    let docked = try XCTUnwrap(s.tabs(for: target).first).id
-    XCTAssertNotEqual(detachedID, docked, "the detached pane is not in the strip")
-    XCTAssertEqual(s.focusedTab(for: target)?.id, docked, "focus landed on the docked pane")
-    XCTAssertFalse(s.visibleTabIDs(for: target).isEmpty)
+    let detachedID = try XCTUnwrap(s.tabs(for: target).first).id
+    XCTAssertTrue(s.detachedTabIDs.contains(detachedID))
+    XCTAssertEqual(s.focusedTab(for: target)?.id, detachedID, "its placeholder shows")
+    XCTAssertNil(s.focusedSurface(for: target), "no surface of this window's to act on")
+    XCTAssertTrue(s.visibleTabIDs(for: target).contains(detachedID))
+  }
+
+  /// Save a split with a popped-out member, restore it: the same slots, the same focus, and the
+  /// pane popped out again (issue #172).
+  func testAPoppedOutSlotRoundTripsThroughASavedLayout() throws {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = try XCTUnwrap(s.focusedTab(for: target))
+    s.detachPane(b.id, for: target, at: .zero)
+    var saved = try XCTUnwrap(capture(s))
+    // `AppStore` writes the window's frame into the tab it hosts, as `capture` here cannot.
+    saved.tabs[1].detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
+
+    let restored = makeSessions()
+    restored.restore(saved, for: target)
+
+    let ids = restored.tabs(for: target).map(\.id)
+    XCTAssertEqual(ids.count, 2)
+    XCTAssertEqual(restored.split(for: target)?.tabIDs, ids, "the split comes back whole")
+    XCTAssertEqual(restored.detachedTabIDs, [ids[1]], "the second pane is popped out again")
+    XCTAssertEqual(restored.focusedTab(for: target)?.id, ids[1], "and still focused")
+  }
+
+  /// A restored popped-out pane whose window didn't come back docks into its slot: a placeholder
+  /// pointing at no window would strand the terminal (issue #172).
+  func testARestoredPoppedOutPaneWhoseWindowDidNotOpenDocksInItsSlot() throws {
+    let s = makeSessions()
+    s.detachedWindowExists = { _ in false }
+    var docked = 0
+    s.onEvent = { if case .paneDocked = $0 { docked += 1 } }
+    var detached = terminal("b", title: "Terminal 2")
+    detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
+    s.restore(
+      TargetSession(
+        targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 1"), detached],
+        splits: [split("a", "b")], focusedKey: "a"),
+      for: target)
+
+    let ids = s.tabs(for: target).map(\.id)
+    XCTAssertTrue(s.detachedTabIDs.isEmpty, "no placeholder is left without its window")
+    XCTAssertEqual(s.split(for: target)?.tabIDs, ids, "it is back in its slot in the split")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, ids[0], "and the focus did not move")
+    XCTAssertEqual(docked, 0, "there was no window to close")
   }
 
   private func capture(_ sessions: TerminalPanes) -> TargetSession? {

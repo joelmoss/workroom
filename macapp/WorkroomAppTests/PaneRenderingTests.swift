@@ -206,14 +206,11 @@ final class PaneRenderingTests: XCTestCase {
 
   // MARK: Detaching (issue #172) — the origin must LET GO of the surface
 
-  /// Detaching a pane unmounts it from the origin tree, and — the part that matters — the surface is
-  /// still alive and unowned, ready for the detached window to adopt.
-  ///
-  /// This is the handoff half of the blank-pane class: `TerminalContainerView.mount` re-homes a
-  /// surface between containers by design, so the failure mode is not "the view dies" but "both hosts
-  /// think they own it". A tab the origin still rendered would drag the surface straight back out of
-  /// the detached window.
-  func testDetachingUnmountsThePaneFromTheOriginTree() {
+  /// Detaching a pane keeps its slot in the origin tree (its placeholder shows there), and the
+  /// surface stays alive for the detached window to adopt; the origin's other pane stays mounted.
+  /// The origin's host for the slot goes inert, so it lets the detached window take the surface
+  /// (the next test) and never takes it back.
+  func testDetachingKeepsTheSlotAndTheSurfaceAlive() {
     let s = makeSessions()
     let stay = s.addTab(for: target)
     // `splitFocusedPane` mints the second pane, so the split is (stay | detached).
@@ -228,15 +225,15 @@ final class PaneRenderingTests: XCTestCase {
 
     s.detachPane(detached, for: target, at: .zero)
 
-    let mounted = waitForSurfaces(in: view, count: 1)
-    XCTAssertEqual(mounted.count, 1, "the origin renders only the pane it still owns")
+    XCTAssertEqual(
+      s.split(for: target)?.tabIDs.count, 2, "the popped-out pane keeps its slot in the split")
     XCTAssertNotNil(
       s.surface(s.tab(detached, for: target)),
       "the detached tab keeps its surface — it moved windows, it did not die")
-    XCTAssertEqual(
-      s.surface(s.tab(stay.id, for: target)), mounted.first,
-      "and the one still mounted is the one that stayed")
-
+    let stayed = s.surface(s.tab(stay.id, for: target))
+    XCTAssertTrue(
+      waitForSurfaces(in: view, count: 2).contains { $0 === stayed },
+      "and the pane that stayed is still mounted")
   }
 
   /// The blank-detached-pane regression (issue #172), which needs BOTH hosts alive to reproduce.
@@ -308,7 +305,8 @@ final class PaneRenderingTests: XCTestCase {
       window.orderOut(nil)
       window.close()
     }
-    XCTAssertEqual(waitForSurfaces(in: view, count: 1).count, 1)
+    // The popped-out tab kept the focus, so its slot shows: its placeholder, hosting no surface.
+    XCTAssertEqual(waitForSurfaces(in: view, count: 0).count, 0)
 
     s.dockPane(second.id, for: target)
 
