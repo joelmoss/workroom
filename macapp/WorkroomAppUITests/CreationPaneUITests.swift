@@ -108,10 +108,11 @@ final class CreationPaneUITests: XCTestCase {
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
 
     // Hide the sidebar (View ▸ Projects, ⌃⌘S). Its state persists across launches, so only if shown.
-    let projectRow = element(app, "sidebar.project.UITestProject")
-    if projectRow.waitForExistence(timeout: 10) {
+    // The switcher's Projects tab is there exactly while the docked sidebar is.
+    let sidebar = element(app, "sidebar.view.projects")
+    if sidebar.waitForExistence(timeout: 10) {
       app.typeKey("s", modifierFlags: [.control, .command])
-      XCTAssertTrue(projectRow.waitForNonExistence(timeout: 5), "the sidebar didn't hide")
+      XCTAssertTrue(sidebar.waitForNonExistence(timeout: 5), "the sidebar didn't hide")
     }
 
     let file = app.menuBars.menuBarItems["File"]

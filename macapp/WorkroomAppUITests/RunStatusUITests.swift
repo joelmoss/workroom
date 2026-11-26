@@ -37,6 +37,14 @@ final class RunStatusUITests: XCTestCase {
     app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
   }
 
+  /// The sidebar, shown if a run left it hidden, on its Projects view, where the tree's rows are.
+  private func showProjectsView(_ app: XCUIApplication) {
+    let tab = app.descendants(matching: .any).matching(identifier: "sidebar.view.projects")
+      .firstMatch
+    if !tab.waitForExistence(timeout: 3) { app.buttons["toolbar.toggleSidebar"].click() }
+    app.showProjectsView()
+  }
+
   private func runTabChip(_ app: XCUIApplication) -> XCUIElement {
     app.descendants(matching: .any).matching(identifier: "terminal.tab.Run").firstMatch
   }
@@ -75,7 +83,7 @@ final class RunStatusUITests: XCTestCase {
     defer { app.terminate() }
     XCTAssertTrue(app.buttons["runCommand.run"].waitForExistence(timeout: 15))
     let project = app.otherElements["sidebar.project.UITestProject"]
-    if !project.exists { app.buttons["toolbar.toggleSidebar"].click() }
+    showProjectsView(app)
     XCTAssertTrue(project.waitForExistence(timeout: 10))
 
     // The project menu starts the root's run, even though the workroom was selected.
@@ -126,7 +134,7 @@ final class RunStatusUITests: XCTestCase {
     let app = launchedApp(runCommand: "trap : INT; while true; do sleep 1; done")
     XCTAssertTrue(app.buttons["runCommand.run"].waitForExistence(timeout: 15))
     let row = app.buttons.matching(identifier: "sidebar.workroom.uitest-room").firstMatch
-    if !row.exists { app.buttons["toolbar.toggleSidebar"].click() }
+    showProjectsView(app)
     XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
     // The row's identifier propagates to its children, overriding the nested button's own id.
     let control = app.descendants(matching: .any).matching(

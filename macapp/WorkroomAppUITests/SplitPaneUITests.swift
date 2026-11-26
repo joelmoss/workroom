@@ -247,6 +247,7 @@ final class SplitPaneUITests: XCTestCase {
     try openWorkroom(app)
     assertCount(titlebars(app), reaches: 1)
 
+    app.showProjectsView()
     let selected = app.descendants(matching: .any)
       .matching(identifier: "sidebar.workroom.uitest-room").firstMatch
     XCTAssertTrue(selected.waitForExistence(timeout: 10))

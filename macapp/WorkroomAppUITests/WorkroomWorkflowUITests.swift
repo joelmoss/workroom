@@ -107,6 +107,8 @@ final class WorkroomWorkflowUITests: XCTestCase {
     // Run commands require daemon sessions (#522); fixture mode otherwise has no daemon.
     let app = launchedApp(liveDaemon: true)
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    // The project tree is the sidebar's Projects view.
+    app.showProjectsView()
     let project = app.descendants(matching: .any)
       .matching(identifier: "sidebar.project.UITestProject").firstMatch
     let workroom = app.descendants(matching: .any)
@@ -283,12 +285,17 @@ final class WorkroomWorkflowUITests: XCTestCase {
     let app = launchedApp(fixture: false, extraArgs: ["-WorkroomUITestOnboarding", "hide"])
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "app did not reach foreground")
     XCTAssertGreaterThan(app.windows.count, 0, "expected a main window")
+    // The sidebar's Projects tab (whose view's "+" adds a project, ADR 0083) or the empty state's
+    // Add Project, with no sidebar.
     let addProject = app.descendants(matching: .any)
-      .matching(NSPredicate(format: "identifier IN %@", ["AddProject", "EmptyStateAddProject"]))
+      .matching(
+        NSPredicate(
+          format: "identifier IN %@", ["sidebar.view.projects", "EmptyStateAddProject"])
+      )
       .firstMatch
     XCTAssertTrue(
       addProject.waitForExistence(timeout: 5),
-      "an Add Project control should always be present (sidebar or empty state)")
+      "a way to add a project should always be present (sidebar or empty state)")
   }
 
   /// The workroom tab-bar chips (title bar), for tests exercising more than one workroom.

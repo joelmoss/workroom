@@ -1,7 +1,8 @@
 import XCTest
 
-/// The sidebar's Open section (#819, ADR 0082), through the real window: its heading replaces the
-/// Terminals one, its rows select the targets and tabs they stand for, and its "+" opens anything.
+/// The sidebar's Open view (#819, ADR 0082, ADR 0083), through the real window: a window opens on
+/// it, with no Terminals heading, its rows select the targets and tabs they stand for, and the
+/// switcher's "+" opens anything from it.
 /// Wiring only; the rows' content, order, fold and drag rules are `OpenSectionTests`' and the
 /// store's. Fixture only, never a real project or config. Run in the VM: `make app-uitest-vm`.
 final class OpenSectionUITests: XCTestCase {
@@ -55,12 +56,16 @@ final class OpenSectionUITests: XCTestCase {
       }.map(\.identifier))
   }
 
-  /// The heading is "Open", and there is no Terminals heading any more.
-  func testTheOpenHeadingReplacesTheTerminalsHeading() {
+  /// A window opens on the Open view, with its rows, and there is no Terminals heading any more.
+  func testAWindowOpensOnTheOpenView() {
     let app = launchedApp()
 
-    XCTAssertTrue(element(app, "sidebar.open").waitForExistence(timeout: 15), "the Open heading")
-    XCTAssertTrue(element(app, "sidebar.projects").exists, "the Projects heading stays")
+    XCTAssertTrue(
+      element(app, "sidebar.view.open").waitForExistence(timeout: 15), "the switcher's Open tab")
+    XCTAssertTrue(element(app, "sidebar.view.projects").exists, "and its Projects tab")
+    XCTAssertTrue(
+      element(app, "sidebar.open.workroom.\(standalone[0])").waitForExistence(timeout: 5),
+      "the Open view's rows")
     XCTAssertFalse(element(app, "sidebar.terminals").exists, "no Terminals heading")
   }
 
@@ -102,11 +107,11 @@ final class OpenSectionUITests: XCTestCase {
     XCTAssertNotEqual(chips[0], chips[1], "each row selected its own tab in the strip")
   }
 
-  /// The heading's "+" menu opens anything.
+  /// The switcher's "+" menu opens anything, in the Open view.
   func testThePlusMenuOffersOpenWorkroomNewTerminalAndNewGroup() {
     let app = launchedApp()
-    let plus = element(app, "sidebar.open.add")
-    XCTAssertTrue(plus.waitForExistence(timeout: 15), "the Open heading's \"+\"")
+    let plus = element(app, "sidebar.add")
+    XCTAssertTrue(plus.waitForExistence(timeout: 15), "the switcher's \"+\"")
 
     plus.click()
     for title in ["Open Workroom…", "New Terminal", "New Terminal Group…"] {

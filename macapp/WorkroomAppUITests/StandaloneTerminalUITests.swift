@@ -42,15 +42,11 @@ final class StandaloneTerminalUITests: XCTestCase {
   func testStandaloneTerminalsHaveRowsAndTitleBarTabsAndOptionCommandTOpensAnother() {
     let app = launchedApp()
 
-    XCTAssertTrue(element(app, "sidebar.open").waitForExistence(timeout: 15))
+    XCTAssertTrue(element(app, "sidebar.view.open").waitForExistence(timeout: 15))
     for id in seeded {
       XCTAssertTrue(element(app, "sidebar.open.workroom.\(id)").waitForExistence(timeout: 5), id)
       XCTAssertTrue(element(app, "workroom.tab.\(id)").exists, "\(id)'s title-bar tab")
     }
-    // The section is above the projects.
-    let firstRow = element(app, "sidebar.open.workroom.\(seeded[0])")
-    let project = elements(app, prefix: "sidebar.project.").firstMatch
-    if project.exists { XCTAssertLessThan(firstRow.frame.minY, project.frame.minY) }
 
     app.typeKey("t", modifierFlags: [.command, .option])
 
@@ -60,8 +56,8 @@ final class StandaloneTerminalUITests: XCTestCase {
     XCTAssertTrue(
       waitForCount(elements(app, prefix: "workroom.tab.standalone:"), 3), "and its tab")
 
-    // Folding the section hides its rows, not its tabs.
-    element(app, "sidebar.open").click()
+    // The Projects view hides the Open rows, not their tabs.
+    app.showProjectsView()
     XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.open.workroom.standalone:"), 0))
     XCTAssertEqual(elements(app, prefix: "workroom.tab.standalone:").count, 3)
   }
@@ -107,8 +103,8 @@ final class StandaloneTerminalUITests: XCTestCase {
     let close = element(app, "sidebar.open.close.\(seeded[0])")
     XCTAssertTrue(close.waitForExistence(timeout: 5), "the row's close button")
     XCTAssertEqual(
-      close.frame.midX, element(app, "sidebar.open.add").frame.midX, accuracy: 0.5,
-      "in the heading's \"+\" column")
+      close.frame.midX, element(app, "sidebar.add").frame.midX, accuracy: 0.5,
+      "in the switcher's \"+\" column")
 
     close.click()
     // An Open row's ✕ asks first, as the title bar's Close does.
