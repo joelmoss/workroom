@@ -742,6 +742,38 @@ fn a_refusal_that_cannot_be_kept_still_refuses() {
 /// Value: protects=a hand-off keeps an image's rows, with no pixels in the table (#551);
 /// fails_when=adopt stops reading the pixels from the pty; why_new=no adoption test had an
 /// image; seam=none; no_claim=a real exec, which tests/hand_off.rs covers without images
+/// Value: protects=a hand-off's next program tells the app the resume record the old one held,
+/// whole, from its first snapshot (#824): the boot is carried, so the app trusts its null, and a
+/// record the program status lost would wipe every tab's saved record on every app update;
+/// fails_when=`adopt` stops copying the carried record into the program status; why_new=the
+/// record's carrying is tested in `resume`, not that the app still hears it; seam=none
+#[cfg(feature = "terminal-state")]
+#[test]
+fn an_adopted_session_publishes_the_resume_record_it_carried() {
+    let store = SessionStore::new();
+    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    let e = env();
+    let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+    let frozen = FrozenSession {
+        resume: Some(crate::terminal::resume::Carried::for_test("a-token", 0)),
+        ..frozen_with(id(11), b"")
+    };
+    store.adopt(pty, frozen).expect("adopt");
+    let (_, event) = store
+        .program_status_events()
+        .into_iter()
+        .find(|(session, _)| *session == id(11))
+        .expect("the adopted session");
+    let event: serde_json::Value = serde_json::from_slice(&event).unwrap();
+    assert_eq!(
+        event["resume"]["argv"],
+        serde_json::json!(["claude", "--resume", "a-session"]),
+        "{event}"
+    );
+    assert_eq!(event["resume"]["cwd"], "/work", "{event}");
+    store.kill_all();
+}
+
 #[cfg(feature = "terminal-state")]
 #[test]
 fn adopting_takes_the_pixels_from_the_pty_before_the_screen() {

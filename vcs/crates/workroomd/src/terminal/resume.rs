@@ -263,7 +263,9 @@ impl Carried {
                     offset,
                     record: Some(Record {
                         owner,
-                        ancestors: vec![owner],
+                        // The session's first process itself: no parents up to itself, as
+                        // `check_owner` finds for it.
+                        ancestors: Vec::new(),
                         argv: vec!["claude".into(), "--resume".into(), "a-session".into()],
                         reported_cwd: Some("/work".into()),
                         owner_cwd: None,
