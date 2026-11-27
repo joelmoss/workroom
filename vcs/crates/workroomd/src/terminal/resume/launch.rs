@@ -99,7 +99,8 @@ pub const APP_FILE_VARIABLE: &str = "WORKROOM_SESSION_RESUME";
 /// The variable a resuming session's shell finds its launch file in, which its hook takes out of
 /// the environment at once (module doc).
 pub(crate) const FILE_VARIABLE: &str = "WORKROOM_RESUME_FILE";
-/// The variable it finds the helper in: the daemon's own binary.
+/// The variable it finds the helper in: the `workroom` link in the daemon's bin folder, which a
+/// hand-off re-points, or the daemon's own binary without one (`dispatch::resume_helper`).
 pub(crate) const HELPER_VARIABLE: &str = "WORKROOM_RESUME_HELPER";
 
 /// How soon after it started a resumed program that exits with an error says it could not be
@@ -383,8 +384,8 @@ pub(crate) struct Prepared {
 
 /// How a session starts that resumes `launch`: its `invocation` (the session's own, finished,
 /// which `hooked` says runs Workroom's hook, `bin_path::hooked`) told of a launch file written to
-/// `dir` for session `id`, with `helper` the daemon's own binary; `live` says which sessions run,
-/// whose files are left alone. An error, and nothing written, when it can't: the session then
+/// `dir` for session `id`, with `helper` the daemon's binary for it to run; `live` says which
+/// sessions run, whose files are left alone. An error, and nothing written, when it can't: the session then
 /// starts as it would have.
 pub(crate) fn prepare(
     invocation: &Invocation,

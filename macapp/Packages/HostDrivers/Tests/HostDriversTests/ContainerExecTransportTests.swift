@@ -151,9 +151,9 @@ final class ContainerExecTransportTests: XCTestCase {
 
   /// A restored pane's resume record (#826) reaches its in-container client by a file copied in
   /// over a separate `exec`'s stdin, never a command line: `0600` in a `0700` folder beside the
-  /// daemon's socket, replacing one an earlier copy left for the same session, with this Mac's
-  /// file removed; the client is handed its path. Without a record it is handed none. The stub
-  /// runtime runs each `exec`'s command here, as the container would.
+  /// daemon's socket, which the copy made and so marked as its own, with this Mac's file removed;
+  /// the client is handed its path. Without a record it is handed none. The stub runtime runs each
+  /// `exec`'s command here, as the container would.
   func testAPanesResumeRecordIsCopiedInOverStdinAndHandedToItsClient() throws {
     let runtime = try stubRuntime(
       "while [ \"$1\" != workroom-abc ]; do shift; done; shift; exec \"$@\"")
@@ -173,10 +173,6 @@ final class ContainerExecTransportTests: XCTestCase {
     let session = UUID()
     let id = session.uuidString.lowercased()
     let folder = run.appendingPathComponent("resume-launch")
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    let left = folder.appendingPathComponent(
-      "resume-\(id)-\(String(repeating: "0", count: 32)).json")
-    try Data("{}".utf8).write(to: left)
     let mac = directory.appendingPathComponent("mac")
     try FileManager.default.createDirectory(at: mac, withIntermediateDirectories: true)
     let name = "resume-\(id)-\(String(repeating: "a", count: 32)).json"
@@ -207,17 +203,198 @@ final class ContainerExecTransportTests: XCTestCase {
     XCTAssertTrue(seen.contains("RESUME=\(staged.path)"), seen)
     XCTAssertTrue(seen.contains("s3cr3t"), seen)
     XCTAssertFalse(FileManager.default.fileExists(atPath: record.path), "the Mac's file goes")
-    XCTAssertFalse(FileManager.default.fileExists(atPath: left.path), "the earlier copy goes")
-    let mode = { (path: String) in
-      ((try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions] as? Int) ?? 0
-    }
     XCTAssertEqual(mode(staged.path), 0o600)
     XCTAssertEqual(mode(folder.path), 0o700)
+    let marker = folder.appendingPathComponent(ContainerExecTransport.resumeMarker)
+    XCTAssertEqual(mode(marker.path), 0o600, "the copy that made the folder marked it")
+    XCTAssertEqual(
+      try String(contentsOf: marker, encoding: .utf8),
+      "Workroom made this folder for its resume launch files (ADR 0082), and removes only those.\n",
+      "the app's and the daemon's marker, word for word")
     // Only the copy's own exec read the record, on stdin: no command line named its words.
     XCTAssertFalse(try asked.joined(separator: " ").contains("s3cr3t"))
 
     try FileManager.default.removeItem(at: staged)
     XCTAssertTrue(try attach(nil).contains("RESUME=\n"), "no record, none handed over")
+  }
+
+  private func mode(_ path: String) -> Int {
+    ((try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions] as? Int) ?? 0
+  }
+
+  /// A launch file's name, as `ResumeLaunchFile.name` makes one, for `session`.
+  private func launchName(_ session: UUID, _ digit: Character) -> String {
+    "resume-\(session.uuidString.lowercased())-\(String(repeating: digit, count: 32)).json"
+  }
+
+  /// Runs `stageResume` for `session` as the container's `sh` does, its record on stdin and its
+  /// file's name as `$1`: the script alone, without an attach around it. Its exit status.
+  @discardableResult
+  private func stage(
+    _ session: UUID, named name: String, socket: URL, path: String = "/usr/bin:/bin"
+  ) throws -> Int32 {
+    let input = directory.appendingPathComponent("record-\(UUID().uuidString)")
+    try Data(#"{"argv":["claude"],"cwd":"/w","reportedAt":1}"#.utf8).write(to: input)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = [
+      "-c", ContainerExecTransport.stageResume(session: session, socket: socket.path), "stage",
+      name,
+    ]
+    process.environment = ["PATH": path]
+    process.standardInput = try FileHandle(forReadingFrom: input)
+    try process.run()
+    process.waitUntilExit()
+    return process.terminationStatus
+  }
+
+  /// Sets `url`'s modification time `minutes` ago, without following a link.
+  private func age(_ url: URL, minutes: Double) {
+    var times = [timeval](repeating: timeval(), count: 2)
+    let then = Date().timeIntervalSince1970 - minutes * 60
+    times[0] = timeval(tv_sec: Int(then), tv_usec: 0)
+    times[1] = times[0]
+    XCTAssertEqual(lutimes(url.path, times), 0, url.path)
+  }
+
+  /// A copy into a folder it made itself (#826) removes the launch files an attach that never
+  /// started left there, any session's, once they are an hour old, and nothing else: not another
+  /// attach's fresh record, not a name the app never makes, and not a link or a FIFO with a launch
+  /// file's name, which stay unread and unfollowed. fails_when=the sweep stops checking the age,
+  /// the name or the file's type; why_new=#832's second review (a fresh record of another attach
+  /// was deleted).
+  func testACopyRemovesOnlyHourOldLaunchFilesInAFolderItMade() throws {
+    let run = directory.appendingPathComponent("run")
+    let socket = run.appendingPathComponent("workroomd.sock")
+    let folder = run.appendingPathComponent("resume-launch")
+    let session = UUID()
+    let other = UUID()
+    XCTAssertEqual(try stage(session, named: launchName(session, "1"), socket: socket), 0)
+    let file = { (name: String) in folder.appendingPathComponent(name) }
+    let old = [file(launchName(session, "2")), file(launchName(other, "3"))]
+    let fresh = file(launchName(other, "4"))
+    let notOurs = file("resume-\(session.uuidString.lowercased())-notes.json")
+    let upper = file("resume-\(session.uuidString)-\(String(repeating: "5", count: 32)).json")
+    for url in old + [fresh, notOurs, upper] { try Data("{}".utf8).write(to: url) }
+    let outside = directory.appendingPathComponent("outside.json")
+    try Data("keep".utf8).write(to: outside)
+    let link = file(launchName(other, "6"))
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+    let fifo = file(launchName(other, "7"))
+    XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+    for url in old + [notOurs, upper, link, fifo, outside] { age(url, minutes: 62) }
+    age(fresh, minutes: 59)
+
+    XCTAssertEqual(try stage(session, named: launchName(session, "8"), socket: socket), 0)
+
+    let exists = { (url: URL) in (try? url.checkResourceIsReachable()) == true || Self.isLink(url) }
+    for url in old { XCTAssertFalse(exists(url), "an hour-old launch file goes: \(url.path)") }
+    for url in [fresh, notOurs, upper, link, fifo, outside, file(launchName(session, "1"))] {
+      XCTAssertTrue(exists(url), "stays: \(url.lastPathComponent)")
+    }
+    XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "keep")
+    XCTAssertTrue(exists(file(launchName(session, "8"))), "the new record is written")
+  }
+
+  /// An image with no `find` still takes the record (#826), in a folder made and marked as ever,
+  /// and sweeps nothing. fails_when=making or checking the folder needs `find`; why_new=#832's
+  /// second review round.
+  func testAnImageWithoutFindStillTakesTheRecordAndSweepsNothing() throws {
+    let tools = directory.appendingPathComponent("tools")
+    try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+    for tool in ["id", "mkdir", "chmod", "cat", "rm"] {
+      let found = try XCTUnwrap(
+        ["/bin", "/usr/bin"].map { "\($0)/\(tool)" }
+          .first { FileManager.default.isExecutableFile(atPath: $0) }, tool)
+      try FileManager.default.createSymbolicLink(
+        at: tools.appendingPathComponent(tool), withDestinationURL: URL(fileURLWithPath: found))
+    }
+    let run = directory.appendingPathComponent("run")
+    let socket = run.appendingPathComponent("workroomd.sock")
+    let folder = run.appendingPathComponent("resume-launch")
+    let session = UUID()
+    let first = try stage(
+      session, named: launchName(session, "1"), socket: socket, path: tools.path)
+    XCTAssertEqual(first, 0)
+    let left = folder.appendingPathComponent(launchName(session, "2"))
+    try Data("{}".utf8).write(to: left)
+    age(left, minutes: 62)
+
+    XCTAssertEqual(
+      try stage(session, named: launchName(session, "3"), socket: socket, path: tools.path), 0)
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: left.path), "no find, no sweep")
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent(launchName(session, "3")).path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: folder.appendingPathComponent(ContainerExecTransport.resumeMarker).path))
+    XCTAssertEqual(mode(folder.path), 0o700)
+  }
+
+  private static func isLink(_ url: URL) -> Bool {
+    (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
+  }
+
+  /// A folder the copy did not make (#826), whether found there unmarked or with a marker that is
+  /// a link, holds other contents or another type, is never swept, though it still takes the
+  /// record and is made `0700`; one that is itself a link is refused, and nothing is written.
+  /// fails_when=a folder found already there is swept, or a forged marker counts;
+  /// why_new=#832's second review (a folder `mkdir -p` accepted was swept).
+  func testAFolderTheCopyDidNotMakeIsNeverSwept() throws {
+    let session = UUID()
+    let markerText =
+      "Workroom made this folder for its resume launch files (ADR 0082), and removes only those.\n"
+    let real = directory.appendingPathComponent("real-marker")
+    try Data(markerText.utf8).write(to: real)
+    let forgeries: [(String, (URL) throws -> Void)] = [
+      ("unmarked", { _ in }),
+      ("a link", { try FileManager.default.createSymbolicLink(at: $0, withDestinationURL: real) }),
+      ("other contents", { try Data("Workroom made this folder\n".utf8).write(to: $0) }),
+      ("its text without the newline", { try Data(markerText.dropLast().utf8).write(to: $0) }),
+      (
+        "a folder",
+        { try FileManager.default.createDirectory(at: $0, withIntermediateDirectories: false) }
+      ),
+    ]
+    for (index, (label, forge)) in forgeries.enumerated() {
+      let run = directory.appendingPathComponent("run\(index)")
+      let folder = run.appendingPathComponent("resume-launch")
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+      try forge(folder.appendingPathComponent(ContainerExecTransport.resumeMarker))
+      let left = folder.appendingPathComponent(launchName(session, "0"))
+      try Data("{}".utf8).write(to: left)
+      age(left, minutes: 62)
+
+      let socket = run.appendingPathComponent("workroomd.sock")
+      XCTAssertEqual(try stage(session, named: launchName(session, "a"), socket: socket), 0, label)
+
+      XCTAssertTrue(FileManager.default.fileExists(atPath: left.path), "\(label): nothing swept")
+      XCTAssertTrue(
+        FileManager.default.fileExists(
+          atPath: folder.appendingPathComponent(launchName(session, "a")).path), label)
+      XCTAssertEqual(mode(folder.path), 0o700, label)
+      if index == 0 {
+        XCTAssertFalse(
+          FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent(ContainerExecTransport.resumeMarker).path),
+          "a folder found already there is never marked")
+      }
+    }
+
+    let run = directory.appendingPathComponent("linked")
+    let elsewhere = directory.appendingPathComponent("elsewhere")
+    try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(
+      at: run.appendingPathComponent("resume-launch"), withDestinationURL: elsewhere)
+    XCTAssertNotEqual(
+      try stage(
+        session, named: launchName(session, "b"),
+        socket: run.appendingPathComponent("workroomd.sock")), 0)
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path), [])
   }
 
   /// The wait itself, in a shell: none without a hook or once it is done; with a hook not done, it

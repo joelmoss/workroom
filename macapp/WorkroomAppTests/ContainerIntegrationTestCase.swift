@@ -342,12 +342,15 @@ class ContainerIntegrationTestCase: XCTestCase {
     XCTAssertTrue(seen.contains("ended when its host restarted"), seen)
     XCTAssertFalse(seen.contains("SHOULD-NOT-RUN"), seen)
     XCTAssertFalse(FileManager.default.fileExists(atPath: file), "this Mac's copy goes")
+    // The folder holds only its marker, which the copy that made it wrote, once the client
+    // claimed the copy.
     let (_, left) = try await driver.exec(
-      "test -d /run/workroom/resume-launch && ls -A /run/workroom/resume-launch | wc -l", on: host
+      "cd /run/workroom/resume-launch && test -f .workroom-resume-launch-folder && ls -A | wc -l",
+      on: host
     ).communicate(nil, timeout: 20)
     XCTAssertEqual(
-      left.trimmingCharacters(in: .whitespacesAndNewlines), "0",
-      "the container's client claimed the copy")
+      left.trimmingCharacters(in: .whitespacesAndNewlines), "1",
+      "the container's client claimed the copy, in a folder the copy made and marked")
     try await driver.destroy(host)
   }
 
