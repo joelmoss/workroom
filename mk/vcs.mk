@@ -9,6 +9,12 @@ VCS_RUST := 1.100.0
 vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (Docker, Podman or container on macOS; WR_LINT_RUNTIME= picks one)
 	bash vcs/scripts/lint-linux.sh "$(VCS_RUST)"
 
+# vcs-test in the same Linux container, as this user: CI's Linux tests, and the Linux-only paths
+# (bash 5, /proc) a Mac never runs. Not root, unlike a stock container, so the tests that skip under
+# root (a root daemon accepts no resume reports) run. Not in pre-push: CI runs it.
+vcs-test-linux: ## Run vcs-test inside Linux as this user (VCS_TEST_FLAGS=; Docker, Podman or container on macOS)
+	VCS_TEST_FLAGS='$(VCS_TEST_FLAGS)' bash vcs/scripts/lint-linux.sh "$(VCS_RUST)" vcs-test
+
 vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and without terminal-state
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" && \
 	rustup which --toolchain $(VCS_RUST) cargo-fmt >/dev/null && \
@@ -32,12 +38,13 @@ VCS_TEST_FLAGS ?=
 # The feature build gets its own target dir (one extra full build the first time, cached after):
 # in the shared one the feature flip rebuilt workroomd in place on every run, 286s against 109s
 # (measured 2026-10-18). Not concurrently, as CI's two jobs run: on one machine the doubled load
-# failed tests that wait a fixed time for a shell or checker (2 of 6 runs, 0 of 3 serially).
+# failed tests that wait a fixed time for a shell or checker (2 of 6 runs, 0 of 3 serially). It sits
+# under CARGO_TARGET_DIR when one is set (vcs-test-linux's container, whose checkout is read-only).
 vcs-test: ## Test the Rust workspace, then workroomd with terminal-state, as CI does (VCS_TEST_FLAGS=)
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo test --manifest-path vcs/Cargo.toml $(VCS_TEST_FLAGS) && \
-	CARGO_TARGET_DIR=vcs/target/terminal-state WORKROOMD_HAS_TERMINAL_STATE=1 \
+	CARGO_TARGET_DIR="$${CARGO_TARGET_DIR:-vcs/target}/terminal-state" WORKROOMD_HAS_TERMINAL_STATE=1 \
 	  cargo test --manifest-path vcs/Cargo.toml -p workroom --features terminal-state $(VCS_TEST_FLAGS)
 
 # The CLI's black-box contract suite (vcs/crates/workroomd/tests/commands_contract.rs, #669), run
