@@ -587,6 +587,36 @@ impl SessionStore {
         pending
     }
 
+    /// Clears each resume record whose owner has been gone for `resume::EXIT_GRACE` while its
+    /// session's shell runs on (ADR 0082, #823), looking at `now`; `screens::tick` runs it every
+    /// `screens::INTERVAL`. Each session's resume lock is taken on its own, with the map released,
+    /// as `described` takes it. Whether a session still has a record to look at again.
+    pub fn watch_resume_owners(&self, now: Instant) -> bool {
+        let resumes: Vec<(SessionId, crate::terminal::resume::SharedResume)> = {
+            let sessions = lock_or_recover(&self.sessions);
+            sessions
+                .values()
+                .map(|session| (session.id, Arc::clone(&session.resume)))
+                .collect()
+        };
+        let mut watching = false;
+        for (id, resume) in resumes {
+            let watched = crate::terminal::resume::watch_owners(
+                &resume,
+                now,
+                crate::terminal::process::identity,
+            );
+            watching |= watched.watching;
+            for program in watched.cleared {
+                crate::note!(
+                    "session {}: {program} exited, so its resume record is cleared",
+                    id.to_hyphenated()
+                );
+            }
+        }
+        watching
+    }
+
     /// Every live session's `status` event, in id order, for a new subscriber's snapshot. Each is
     /// read under its own shadow lock, never the store's.
     pub fn program_status_events(&self) -> Vec<(SessionId, Vec<u8>)> {

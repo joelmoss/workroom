@@ -492,7 +492,8 @@ pub struct TakenScreen {
 ///       │  ├─ Waiter.state  a wait starting: the screen and the shadow's state it starts from
 ///       │  └─ Transfer      a client's image queues: `send_images` taking the next chunk
 ///       ├─ resume           per session: a read feeding it reports, the freeze carrying it;
-///       │                   `described` takes it alone, with the map released
+///       │                   `described` and the screens tick's owner check
+///       │                   (`watch_resume_owners`) take it alone, with the map released
 ///       ├─ Transfer         a read stopping a client's transfer
 ///       ├─ Waiter.state     a wait starting on a session whose reader has just ended
 ///       ├─ encoders        the image encoders' sender: `attach` starting a transfer

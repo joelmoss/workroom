@@ -943,7 +943,8 @@ pub fn session_schema() -> Value {
                                 Protocol (OSC 7577), about how to start it again should the \
                                 session be lost: its resume record. Never the command's \
                                 arguments, which can hold secrets. Null when no program has \
-                                reported one.",
+                                reported one, or once its program has cleared it or has \
+                                exited, after a 2 s grace, while the session runs on.",
                 "required": ["program", "cwd", "reported_at"],
                 "properties": {
                     "program": {

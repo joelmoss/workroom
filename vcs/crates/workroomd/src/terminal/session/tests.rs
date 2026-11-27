@@ -3076,3 +3076,96 @@ fn a_report_from_a_sessions_shell_is_its_resume_record() {
     assert!(recorded.cwd.is_some(), "the shell's own folder");
     assert!(other.is_none(), "a session given no token keeps no record");
 }
+
+/// A program under a session's shell that reports how to resume it, then exits while the shell
+/// runs on, has its record cleared once it has been gone for the exit grace, and not before
+/// (#823). Closing the tab, a kill, then leaves nothing of the session to show. The grace is run
+/// on given times; only the program's report and exit are waited for.
+#[test]
+fn a_record_clears_once_its_owner_has_exited_for_the_grace_while_the_shell_stays() {
+    use crate::terminal::resume::EXIT_GRACE;
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
+    let scratch = crate::commands::Scratch::in_temp("wr-resume-owner");
+    let release = scratch.join("release");
+    // The owner, a child of the shell: it writes its pid beside `$1`, reports `vim` as itself
+    // (signed as the test above signs), and exits once `$1` exists, or after about 10 s.
+    let owner = concat!(
+        r#"echo $$ > "$1.pid"; body="pid=$$:time=$(date +%s):argv=dmlt"; "#,
+        r#"mac=$({ printf '%s:%s' "$body" "$OSC7577_TOKEN" | sha256sum 2>/dev/null "#,
+        r#"|| printf '%s:%s' "$body" "$OSC7577_TOKEN" | shasum -a 256; } | cut -d' ' -f1); "#,
+        r#"printf '\033]7577;%s:mac=%s\007' "$body" "$mac"; "#,
+        r#"i=0; while [ ! -e "$1" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done"#,
+    );
+    let args = [
+        OsString::from("-c"),
+        OsString::from(r#"sh -c "$1" owner "$2"; sleep 20"#),
+        OsString::from("shell"),
+        OsString::from(owner),
+        release.clone().into_os_string(),
+    ];
+    let mut e = env();
+    e.push((
+        OsString::from(crate::terminal::resume::TOKEN_VARIABLE),
+        OsString::from("a-test-token-0123456789"),
+    ));
+    let store = SessionStore::new();
+    store
+        .create(SessionSpec {
+            interactive: true,
+            ..spec(id(72), &args, &e)
+        })
+        .expect("create");
+    let listed = || {
+        store
+            .described()
+            .into_iter()
+            .find(|session| session.info.id == id(72))
+    };
+    let resume = || listed().and_then(|session| session.resume);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while resume().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        resume().is_some(),
+        "the owner's report became the record within 5 s"
+    );
+    let t0 = Instant::now();
+    assert!(store.watch_resume_owners(t0), "a running owner is watched");
+    assert!(resume().is_some(), "a running owner keeps its record");
+
+    let pid: u32 = std::fs::read_to_string(release.with_extension("pid"))
+        .expect("the owner's pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    std::fs::write(&release, b"").expect("release the owner");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while crate::terminal::process::identity(pid).is_some() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        crate::terminal::process::identity(pid).is_none(),
+        "the owner exited within 5 s of its release"
+    );
+    assert!(store.watch_resume_owners(t0), "its grace starts");
+    let almost = t0 + EXIT_GRACE - Duration::from_millis(1);
+    assert!(store.watch_resume_owners(almost));
+    assert!(resume().is_some(), "within the grace the record stays");
+    assert!(
+        !store.watch_resume_owners(t0 + EXIT_GRACE),
+        "nothing left to watch"
+    );
+    let shown = listed();
+    store.kill(id(72));
+    let shown = shown.expect("the shell runs on");
+    assert!(shown.resume.is_none(), "the record cleared after the grace");
+    assert!(
+        listed().is_none(),
+        "a closed tab's session, and its record, are gone"
+    );
+}
