@@ -257,10 +257,11 @@ fn refresh_when_replaced() {
 /// started, resolved, which at start is still there. Never `/proc/self/exe` itself: a link to it
 /// would run whatever process followed it.
 fn own_file() -> Option<PathBuf> {
+    let path = crate::daemon::own_copy::own_path().ok()?;
     let path = if cfg!(target_os = "linux") {
-        fs::read_link("/proc/self/exe").ok()?
+        path
     } else {
-        fs::canonicalize(std::env::current_exe().ok()?).ok()?
+        fs::canonicalize(path).ok()?
     };
     fs::metadata(&path)
         .is_ok_and(|meta| meta.is_file())

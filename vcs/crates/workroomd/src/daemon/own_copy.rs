@@ -130,6 +130,26 @@ pub fn binary() -> io::Result<PathBuf> {
     pick(kept.as_deref(), handoff::own_binary)
 }
 
+/// `binary` by a path any process can run, for one that runs it by path (a resuming shell's
+/// helper): Linux's `/proc/self/exe` would name whichever process followed it, so this is the file
+/// it links to. The daemon's own children (`run_invocation`) can take `binary`: it execs them.
+pub fn binary_path() -> io::Result<PathBuf> {
+    let kept = lock_or_recover(&KEPT)
+        .as_ref()
+        .map(|kept| kept.path.clone());
+    pick(kept.as_deref(), own_path)
+}
+
+/// This program's file by its real path: on Linux the file `/proc/self/exe` links to, wherever an
+/// install renamed it (with ` (deleted)` once it is gone); elsewhere its path as started.
+pub(crate) fn own_path() -> io::Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        fs::read_link("/proc/self/exe")
+    } else {
+        std::env::current_exe()
+    }
+}
+
 /// This daemon's copy, while it is still there.
 pub(crate) fn kept() -> Option<PathBuf> {
     lock_or_recover(&KEPT)
