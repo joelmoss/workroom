@@ -446,6 +446,19 @@ final class SSHHostIntegrationTests: XCTestCase {
         to: driver.hostID, session: session, workingDirectory: driver.home, restored: false))
     pane.type("echo BEFORE-RE\"\"START\n")
     XCTAssertTrue(pane.read(until: "BEFORE-RESTART").contains("BEFORE-RESTART"))
+    // Its screen kept first, as a session that ended with its host leaves it: a daemon resumes
+    // only such a one, never one with no record, which a kill would have removed.
+    let screen = "\(driver.stateDirectory)/daemon/screens/\(session.uuidString.lowercased()).vt"
+    var written = false
+    for _ in 0..<100 where !written {
+      written =
+        try await onHost(
+          fixture,
+          "if grep -q BEFORE-RESTART \(PosixShell.quoted(screen)); then echo yes; else echo no; fi"
+        ) == "yes"
+      if !written { try await Task.sleep(for: .milliseconds(200)) }
+    }
+    XCTAssertTrue(written, "the daemon never kept the terminal's screen")
     pane.dropLink()
     try await onHost(fixture, "kill -9 \(firstPID)")
     _ = try await ensure(driver, daemon: fixture.daemon, resources: resources)
