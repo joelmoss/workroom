@@ -351,7 +351,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
     XCTAssertTrue(waitFor { devTerminals() == 2 }, "and is Dev's")
   }
 
-  // MARK: Into another group's place in the Open view (#819)
+  // MARK: Into another group's place in the Open Tabs view (#819)
 
   /// The ids of the tab rows `sid`'s Open row lists under it, top to bottom.
   private func tabRowIDs(_ app: XCUIApplication, of sid: String) -> [String] {
@@ -403,7 +403,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
       "between Ops's two: \(tabRowIDs(app, of: ops))")
   }
 
-  /// Value: protects=a pane tab dragged from the strip into the Open view lifts its own Open row
+  /// Value: protects=a pane tab dragged from the strip into the Open Tabs view lifts its own Open row
   /// and, let go between another group's terminals, lands there as that row's drag would (#819
   /// owner request); fails_when=a strip drag shows the line, or lands at the group's end;
   /// why_new=#819; seam=the real strip drag over the Open list; no_claim=the ghost's look
@@ -427,7 +427,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
       "between Ops's two: \(tabRowIDs(app, of: ops))")
   }
 
-  /// The workroom rows of the Open view, top to bottom.
+  /// The workroom rows of the Open Tabs view, top to bottom.
   private func openRowOrder(_ app: XCUIApplication) -> [String] {
     var seen = Set<String>()
     return app.descendants(matching: .any).matching(
@@ -437,7 +437,7 @@ final class UnifiedTerminalDragUITests: XCTestCase {
       .filter { seen.insert($0).inserted }
   }
 
-  /// Value: protects=a title-bar tab dragged into the Open view lifts its Open row and, let go
+  /// Value: protects=a title-bar tab dragged into the Open Tabs view lifts its Open row and, let go
   /// between two rows (the last row's lower edge, never onto it), reorders there, the title bar
   /// following (#819 owner request); fails_when=it joins the row, does nothing, or only the title
   /// bar's own reorder runs; why_new=#819; seam=the real title-bar drag over the Open list;

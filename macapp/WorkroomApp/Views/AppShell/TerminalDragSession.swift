@@ -137,7 +137,7 @@ final class TerminalDragSession {
   }
 
   /// Whether `source`'s drag from `surface` is a Projects-tree terminal row's (`.terminal` from the
-  /// sidebar), whose drag is the row's own gesture. It draws no ghost, as before the Open section
+  /// sidebar), whose drag is the row's own gesture. It draws no ghost, as before the Open Tabs view
   /// (an Open row's carries its own while it is lifted, `hitMap` set, #819), and never springs
   /// the sidebar's other view (ADR 0083): its gesture would end with the row's List as the view
   /// switches. An Open row's survives that (`OpenRowDrag` follows it).
@@ -491,7 +491,7 @@ extension AppStore {
     return marked
   }
 
-  /// Whether `zone` is a group's row folded in the Open section: no tab rows under it take its
+  /// Whether `zone` is a group's row folded in the Open Tabs view: no tab rows under it take its
   /// lower edge's drops (#819). A terminal's drag takes them on the row; an Open row's reorders.
   func isFoldedGroup(_ zone: PaneDropZone) -> Bool {
     guard case .target(let sid) = zone, case .terminalGroup = sid else { return false }

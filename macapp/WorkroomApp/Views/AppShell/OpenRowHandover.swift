@@ -11,7 +11,7 @@ extension OpenRowLift {
   /// The workrooms whose tabs tab `tab` of `owner` can join, of `rows`: each that shows tabs and
   /// takes it.
   static func joinable(
-    _ tab: TerminalTab.ID, of owner: SidebarID, rows: [OpenSectionRow], store: AppStore
+    _ tab: TerminalTab.ID, of owner: SidebarID, rows: [OpenTabsRow], store: AppStore
   ) -> Set<SidebarID> {
     Set(
       rows.filter { $0.sid != owner && $0.canFold }.map(\.sid).filter {
@@ -59,7 +59,7 @@ extension OpenRowLift {
   /// pane's title bar) is its tab row, a title-bar tab its workroom's row. Nil for any other.
   nonisolated static func item(
     for source: TerminalDragSource, from surface: TerminalDragSession.Surface
-  ) -> OpenSectionItem? {
+  ) -> OpenTabsItem? {
     switch (source, surface) {
     case (.terminal(let tab, let owner), .paneTabs): return .tab(tab, in: owner)
     case (.entry(let sid), .titleBar), (.entry(let sid), .groupTitleBar): return .workroom(sid)
@@ -81,7 +81,7 @@ extension OpenRowLift {
       let (_, shown) = Self.listRow(.target(item.owner), in: store), shown.contains(screen)
     else { return }
     // With the tab it lifts, under its workroom although that is folded.
-    let rows = store.openSectionRows(showing: item)
+    let rows = store.openTabsRows(showing: item)
     guard let row = rows.first(where: { $0.sid == item.owner }) else { return }
     let measured = SidebarOpenList.items(of: rows)
     let items = SidebarOpenList.items(of: rows, showing: item)

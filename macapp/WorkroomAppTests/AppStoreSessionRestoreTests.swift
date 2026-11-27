@@ -346,8 +346,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertEqual(store.expandedTerminalTargets, [.workroom(project: "/p", name: "one")])
   }
 
-  /// The Open section's hand-unfolded rows come back for the targets that do (#819).
-  func testOpenSectionFoldsAreRestoredForTargetsThatCameBack() {
+  /// The Open Tabs view's hand-unfolded rows come back for the targets that do (#819).
+  func testOpenTabsFoldsAreRestoredForTargetsThatCameBack() {
     let projects = [project("/p", workrooms: ["one", "two"])]
     let session = WindowSession(
       windowKey: UUID().uuidString, isKey: true, selectedTargetID: "wr|/p|two",
@@ -363,7 +363,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
 
     XCTAssertEqual(store.unfoldedOpenTargets, [.workroom(project: "/p", name: "one")])
     XCTAssertEqual(
-      store.openSectionRows().first { $0.sid == .workroom(project: "/p", name: "one") }?.isFolded,
+      store.openTabsRows().first { $0.sid == .workroom(project: "/p", name: "one") }?.isFolded,
       false)
   }
 
@@ -392,7 +392,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     }
 
     XCTAssertEqual(
-      restored(folded: "wr|/p|two").openSectionRows().first { $0.sid == two }?.isFolded, true)
+      restored(folded: "wr|/p|two").openTabsRows().first { $0.sid == two }?.isFolded, true)
     XCTAssertNil(
       restored(folded: "wr|/p|one").foldedSelectedOpenTarget, "not the selection, so not folded")
   }

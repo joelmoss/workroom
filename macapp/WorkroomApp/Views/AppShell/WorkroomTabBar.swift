@@ -251,7 +251,7 @@ struct WorkroomTabBar: View {
               let outcome = store.terminalDrag.ended(at: NSEvent.mouseLocation)
               endTerminalDrag()
               if outcome == .landedInOpenList {
-                // Let go in the Open view's gap (#819), it lands there: the tab stays in its slot
+                // Let go in the Open Tabs view's gap (#819), it lands there: the tab stays in its slot
                 // till the new order comes.
                 settleIndex = index
                 settle(tab.sid, hidden: false)
@@ -554,12 +554,12 @@ private struct WorkroomTabChip: View {
     return false
   }
 
-  /// Its names, glyph and close name, shared with its Open section row (#819).
+  /// Its names, glyph and close name, shared with its Open Tabs view row (#819).
   private var presentation: WorkroomTabPresentation {
     store.workroomTabPresentation(sid: sid, target: target)
   }
 
-  /// Its state marks, shared with its Open section row (#819).
+  /// Its state marks, shared with its Open Tabs view row (#819).
   private var marks: WorkroomTabMarks { store.workroomTabMarks(sid: sid, target: target) }
 
   /// A root's branch (nil for a workroom), reusing the sidebar's root presentation.

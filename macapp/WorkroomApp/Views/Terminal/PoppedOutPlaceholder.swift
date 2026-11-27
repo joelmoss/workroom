@@ -67,7 +67,7 @@ struct PoppedOutPlaceholder: View {
 }
 
 /// A popped-out tab's mark, before its title wherever the tab is listed: its strip chip, its
-/// title-bar tab and its Open view row (issue #172). Its title goes secondary beside it.
+/// title-bar tab and its Open Tabs view row (issue #172). Its title goes secondary beside it.
 struct PoppedOutMark: View {
   /// The glyph's point size, matching the glyphs it sits among.
   var size: CGFloat = 10

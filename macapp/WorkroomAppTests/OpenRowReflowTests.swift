@@ -16,7 +16,7 @@ final class OpenRowReflowTests: XCTestCase {
   private let c = UUID()
 
   /// one (folded), two with tabs a, b and c, three.
-  private var items: [OpenSectionItem] {
+  private var items: [OpenTabsItem] {
     [
       .workroom(one), .workroom(two), .tab(a, in: two), .tab(b, in: two), .tab(c, in: two),
       .workroom(three),
@@ -294,7 +294,7 @@ final class OpenRowReflowTests: XCTestCase {
   private let e = UUID()
 
   /// one with tabs d and e, two with tabs a, b and c, three (no tabs).
-  private var twoBlocks: [OpenSectionItem] {
+  private var twoBlocks: [OpenTabsItem] {
     [
       .workroom(one), .tab(d, in: one), .tab(e, in: one), .workroom(two), .tab(a, in: two),
       .tab(b, in: two), .tab(c, in: two), .workroom(three),
@@ -405,9 +405,9 @@ final class OpenRowReflowTests: XCTestCase {
   /// Value: protects=a tab lifted from outside the list whose workroom is folded has a placeholder
   /// slot under that row, and the drop zones, measured with no placeholder, are hit on the rows as
   /// they show; fails_when=a join below the placeholder lands a row off; why_new=#819 owner
-  /// report (a strip tab dragged into the Open view); seam=OpenRowReflow.measured
+  /// report (a strip tab dragged into the Open Tabs view); seam=OpenRowReflow.measured
   func testAPlaceholderTabIsHitAsTheListWasMeasured() throws {
-    let measured: [OpenSectionItem] = [
+    let measured: [OpenTabsItem] = [
       .workroom(one), .workroom(two), .tab(a, in: two), .tab(b, in: two), .tab(c, in: two),
       .workroom(three),
     ]

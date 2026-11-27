@@ -4,7 +4,7 @@ import SwiftUI
 /// A run tab's run-state icon: green play while running, a warning spinner while stopping, dim play
 /// once it exits, and a red octagon if it failed (#7, #79). Failure is carried by both the glyph
 /// and the colour, so it survives red/green colourblindness. One spec for the pane tab strip's chip
-/// and the tab's Open section row (#819), so the two can't drift. Its slot keeps one size across
+/// and the tab's Open Tabs view row (#819), so the two can't drift. Its slot keeps one size across
 /// states.
 struct RunStateIcon: View {
   let state: TabRunState

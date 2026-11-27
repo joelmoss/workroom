@@ -8,7 +8,7 @@
   /// kind of row in every state its marks can take, for looking at, not for asserting on
   /// (`make app-sidebar-gallery`). Projects, roots, workrooms, a create's own row and terminal rows
   /// in the Projects section; every workroom tab they open, standalone terminals and groups among
-  /// them, in the Open section (#819), its rows unfolded where the tree's are expanded.
+  /// them, in the Open Tabs view (#819), its rows unfolded where the tree's are expanded.
   ///
   /// Everything is seeded as model state: no program runs, no run command starts and no host is
   /// reached. Only the selected workroom's terminal mounts, and it is a plain idle one. The table

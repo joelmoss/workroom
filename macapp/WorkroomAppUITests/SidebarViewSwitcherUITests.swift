@@ -1,7 +1,7 @@
 import XCTest
 
 /// The sidebar's view switcher (ADR 0083): one bar at the top of the sidebar whose tabs show the
-/// Open view or the Projects view, one at a time, and whose "+" acts on the view shown. Fixture
+/// Open Tabs view or the Projects view, one at a time, and whose "+" acts on the view shown. Fixture
 /// only, never a real project or config.
 final class SidebarViewSwitcherUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
@@ -20,7 +20,7 @@ final class SidebarViewSwitcherUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: id).firstMatch
   }
 
-  /// The Open view's first workroom row (the fixture's workroom tab).
+  /// The Open Tabs view's first workroom row (the fixture's workroom tab).
   private func openRow(_ app: XCUIApplication) -> XCUIElement {
     app.descendants(matching: .any).matching(
       NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.open.workroom.")
@@ -33,7 +33,7 @@ final class SidebarViewSwitcherUITests: XCTestCase {
     return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
   }
 
-  /// A window opens on the Open view; the Projects tab shows the project tree in its place and
+  /// A window opens on the Open Tabs view; the Projects tab shows the project tree in its place and
   /// the Open tab brings the Open rows back, the switcher above both.
   func testTheTabsSwitchBetweenOpenAndProjects() {
     let app = launchedApp()
@@ -44,13 +44,13 @@ final class SidebarViewSwitcherUITests: XCTestCase {
     XCTAssertLessThan(open.frame.minX, projects.frame.minX, "Open first")
     let row = openRow(app)
     let project = element(app, "sidebar.project.UITestProject")
-    XCTAssertTrue(row.waitForExistence(timeout: 6), "a new window shows the Open view")
+    XCTAssertTrue(row.waitForExistence(timeout: 6), "a new window shows the Open Tabs view")
     XCTAssertFalse(project.exists, "and not the project tree")
     XCTAssertGreaterThan(row.frame.minY, open.frame.maxY - 1, "under the switcher")
 
     projects.click()
     XCTAssertTrue(project.waitForExistence(timeout: 6), "the Projects tab shows the tree")
-    XCTAssertTrue(waitGone(row), "in the Open view's place")
+    XCTAssertTrue(waitGone(row), "in the Open Tabs view's place")
     XCTAssertGreaterThan(project.frame.minY, projects.frame.maxY - 1, "under the switcher")
     XCTAssertTrue(open.isHittable, "the switcher stays")
 

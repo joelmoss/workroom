@@ -3,13 +3,13 @@ import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
-/// One List row of the Open section (#819): a workroom tab's own row, or one of its tabs under it.
-enum OpenSectionItem: Hashable {
+/// One List row of the Open Tabs view (#819): a workroom tab's own row, or one of its tabs under it.
+enum OpenTabsItem: Hashable {
   case workroom(SidebarID)
   case tab(TerminalTab.ID, in: SidebarID)
 }
 
-/// The switcher's "+" in the Open view (ADR 0083): a new terminal or terminal group, each item with
+/// The switcher's "+" in the Open Tabs view (ADR 0083): a new terminal or terminal group, each item with
 /// its shortcut. Opening a workroom is ⌘O's (File ▸ Open Workroom…).
 struct SidebarOpenAddMenu: View {
   let store: AppStore
@@ -36,8 +36,8 @@ struct SidebarOpenAddMenu: View {
   }
 }
 
-/// The sidebar's Open view (#819, ADR 0082, ADR 0083): this
-/// window's workroom tabs in title-bar order (`AppStore.openSectionRows`), each unfolding to its
+/// The sidebar's Open Tabs view (#819, ADR 0082, ADR 0083): this
+/// window's workroom tabs in title-bar order (`AppStore.openTabsRows`), each unfolding to its
 /// tabs in strip order. It keeps nothing of its own: every row reads the model and calls the
 /// store, so the section, the title bar and the strip never disagree, and a row a drag lifts is
 /// `OpenRowLift`'s until it lands. Its own `List`, so it scrolls on its own and keeps the selected
@@ -66,21 +66,21 @@ struct SidebarOpenList: View, Equatable {
   /// The List's rows, top to bottom: each workroom tab's, then its tabs' while it is unfolded.
   /// `showing`: a tab lifted from outside the list, under its workroom although that is folded
   /// (its placeholder).
-  static func items(of rows: [OpenSectionRow], showing: OpenSectionItem? = nil)
-    -> [OpenSectionItem]
+  static func items(of rows: [OpenTabsRow], showing: OpenTabsItem? = nil)
+    -> [OpenTabsItem]
   {
     entries(of: rows, showing: showing).map(\.id)
   }
 
   /// One List row: a workroom tab's own (`tab` nil), or one of its tabs.
   struct Entry: Identifiable {
-    let id: OpenSectionItem
-    let row: OpenSectionRow
-    let tab: OpenSectionTabRow?
+    let id: OpenTabsItem
+    let row: OpenTabsRow
+    let tab: OpenTabsTabRow?
   }
 
   /// `items(of:)`'s rows with what each draws.
-  static func entries(of rows: [OpenSectionRow], showing: OpenSectionItem? = nil) -> [Entry] {
+  static func entries(of rows: [OpenTabsRow], showing: OpenTabsItem? = nil) -> [Entry] {
     rows.flatMap { row -> [Entry] in
       let tabs = row.tabs.filter { tab in
         !row.isFolded || showing == .tab(tab.tab.id, in: row.sid)
@@ -112,7 +112,7 @@ struct SidebarOpenList: View, Equatable {
   }
 
   /// Whether `id` is the row `reflow` lifted: it, or its tab moved into another workroom.
-  static func isLifted(_ id: OpenSectionItem, in reflow: OpenRowReflow?) -> Bool {
+  static func isLifted(_ id: OpenTabsItem, in reflow: OpenRowReflow?) -> Bool {
     guard let reflow else { return false }
     if id == reflow.dragged { return true }
     guard case .tab(let tab, _) = id, case .tab(let lifted, _) = reflow.dragged else {
@@ -124,7 +124,7 @@ struct SidebarOpenList: View, Equatable {
   var body: some View {
     // Read here, so the list re-runs only when the gap moves, never as the pointer moves alone.
     let reflow = OpenRowLift.shared.reflow(for: store)
-    let rows = store.openSectionRows(showing: reflow?.dragged)
+    let rows = store.openTabsRows(showing: reflow?.dragged)
     let entries = Self.shown(Self.entries(of: rows, showing: reflow?.dragged), in: reflow)
     let shownIDs = entries.map(\.id)
     // The model's order, which a lift starts from: what the list shows while nothing is lifted.
@@ -164,7 +164,7 @@ struct SidebarOpenList: View, Equatable {
   private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.2) }
 
   /// The row the selection is on: the focused tab's, or its workroom's while folded.
-  static func scrollTarget(of rows: [OpenSectionRow]) -> OpenSectionItem? {
+  static func scrollTarget(of rows: [OpenTabsRow]) -> OpenTabsItem? {
     guard let row = rows.first(where: \.isSelected) else { return nil }
     if !row.isFolded, let tab = row.tabs.first(where: \.isFocused) {
       return .tab(tab.tab.id, in: row.sid)
@@ -197,10 +197,10 @@ struct SidebarOpenList: View, Equatable {
 
   /// A workroom tab's row. `lifted`: a drag has lifted it, and its slot is the gap the ghost
   /// lands in (`OpenRowLift`), so it shows nothing.
-  private func workroomRow(_ row: OpenSectionRow, items: [OpenSectionItem], lifted: Bool)
+  private func workroomRow(_ row: OpenTabsRow, items: [OpenTabsItem], lifted: Bool)
     -> some View
   {
-    let item = OpenSectionItem.workroom(row.sid)
+    let item = OpenTabsItem.workroom(row.sid)
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenWorkroomRow(row: row.model, hovered: hovered, store: store).equatable()
         .opacity(lifted ? 0 : 1)
@@ -226,9 +226,9 @@ struct SidebarOpenList: View, Equatable {
 
   /// One of a workroom's tabs' rows. `lifted`: as a workroom row's.
   private func tabRow(
-    _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem], lifted: Bool
+    _ tab: OpenTabsTabRow, in row: OpenTabsRow, items: [OpenTabsItem], lifted: Bool
   ) -> some View {
-    let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
+    let item = OpenTabsItem.tab(tab.tab.id, in: row.sid)
     return SidebarHoverRegion(openItem: item) { hovered in
       SidebarOpenTabRow(row: tab.model, tab: tab.tab, hovered: hovered, store: store).equatable()
         .opacity(lifted ? 0 : 1)
@@ -254,7 +254,7 @@ struct SidebarOpenList: View, Equatable {
   /// the row's own gesture, so it reports from the press and `OpenRowDrag` decides when it is a
   /// drag (`OpenRowDrag.threshold`).
   private func followedDrag(
-    _ item: OpenSectionItem, onMove: @escaping (OpenRowDrag.Report) -> Void,
+    _ item: OpenTabsItem, onMove: @escaping (OpenRowDrag.Report) -> Void,
     onEnd: @escaping (OpenRowDrag.Report) -> Void, onCancel: @escaping () -> Void
   ) -> some Gesture {
     DragGesture(minimumDistance: 0, coordinateSpace: .global)
@@ -272,7 +272,7 @@ struct SidebarOpenList: View, Equatable {
   /// workrooms too (`OpenRowReflow.leavesWorkroom`). Returns whether it lifted the row here, its
   /// ghost already at `report`; else the drag's ghost, if any, has still to follow it.
   private func lift(
-    _ item: OpenSectionItem, zone: PaneDropZone, items: [OpenSectionItem],
+    _ item: OpenTabsItem, zone: PaneDropZone, items: [OpenTabsItem],
     report: OpenRowDrag.Report, row: some View, leavesWorkroom: () -> Bool = { false },
     joinable: () -> Set<SidebarID> = { [] }
   ) -> Bool {
@@ -300,8 +300,8 @@ struct SidebarOpenList: View, Equatable {
   /// workroom split (`SidebarDragPlumbing`), out of the window into another or a new one
   /// (`WorkroomWindowDrag`), else a reorder of the workroom tabs, its gap opening under the
   /// pointer as it moves (`OpenRowLift`).
-  private func workroomDrag(_ row: OpenSectionRow, items: [OpenSectionItem]) -> some Gesture {
-    let item = OpenSectionItem.workroom(row.sid)
+  private func workroomDrag(_ row: OpenTabsRow, items: [OpenTabsItem]) -> some Gesture {
+    let item = OpenTabsItem.workroom(row.sid)
     let lift = OpenRowLift.shared
     return followedDrag(item) { [store, drag] report in
       let lifted = self.lift(
@@ -352,9 +352,9 @@ struct SidebarOpenList: View, Equatable {
   /// standalone terminal, a standalone terminal between
   /// workrooms, its gap opening under the pointer as it moves (`OpenRowLift`, `OpenRowReflow`).
   private func tabDrag(
-    _ tab: OpenSectionTabRow, in row: OpenSectionRow, items: [OpenSectionItem]
+    _ tab: OpenTabsTabRow, in row: OpenTabsRow, items: [OpenTabsItem]
   ) -> some Gesture {
-    let item = OpenSectionItem.tab(tab.tab.id, in: row.sid)
+    let item = OpenTabsItem.tab(tab.tab.id, in: row.sid)
     let panes = store.terminals
     let lift = OpenRowLift.shared
     let clearPreview = { panes.contentDrop(for: tab.target.id).preview = nil }
@@ -365,7 +365,7 @@ struct SidebarOpenList: View, Equatable {
         leavesWorkroom: { store.canMoveOpenTabToStandalone(tab.tab.id, in: row.sid) },
         joinable: {
           OpenRowLift.joinable(
-            tab.tab.id, of: row.sid, rows: store.openSectionRows(showing: item), store: store)
+            tab.tab.id, of: row.sid, rows: store.openTabsRows(showing: item), store: store)
         })
       if !lifted { lift.follow(report) }
       if isDragOutsideWindow(report.location) {
@@ -417,7 +417,7 @@ struct SidebarOpenList: View, Equatable {
 
   /// Previews a drop of `tab` into its workroom's panes while they are on screen and under the
   /// pointer, as its strip chip does. Returns whether it is over them.
-  private func dragTab(_ tab: OpenSectionTabRow, overContentAt global: CGPoint) -> Bool {
+  private func dragTab(_ tab: OpenTabsTabRow, overContentAt global: CGPoint) -> Bool {
     let panes = store.terminals
     guard store.onScreenTarget(forID: tab.target.id) != nil else {
       panes.contentDrop(for: tab.target.id).preview = nil
@@ -443,14 +443,14 @@ struct SidebarOpenRowBackground: View {
   }
 }
 
-/// A workroom tab's row in the Open section: what its title-bar chip shows (glyph tinted by VCS
+/// A workroom tab's row in the Open Tabs view: what its title-bar chip shows (glyph tinted by VCS
 /// state, unavailable warning, waiting glyph, unread-accented title, run mark, busy spinner), a
 /// disclosure chevron in the glyph's slot on hover, and a hover ✕ that asks as the chip's does.
 /// Its menu is the chip's, a standalone terminal's with Move to… and Pop Out too
 /// (`WorkroomMenuModel.Style.openRow`). A standalone terminal's or group's name edits in place,
 /// from Rename… on its menu or its title-bar chip (`SidebarInlineRename`).
 struct SidebarOpenWorkroomRow: View, Equatable {
-  let row: OpenSectionWorkroomRowModel
+  let row: OpenTabsWorkroomRowModel
   let hovered: Bool
   let store: AppStore
   @Environment(\.themeTokens) private var tokens
@@ -458,7 +458,7 @@ struct SidebarOpenWorkroomRow: View, Equatable {
   @State private var draft = ""
 
   /// It redraws only when what it draws changes: the list rebuilds every row from
-  /// `openSectionRows()` whenever any of them changes, as one agent starting or stopping does.
+  /// `openTabsRows()` whenever any of them changes, as one agent starting or stopping does.
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.store === rhs.store && lhs.hovered == rhs.hovered && lhs.row == rhs.row
   }
@@ -649,12 +649,12 @@ struct SidebarOpenWorkroomRow: View, Equatable {
   }
 }
 
-/// One tab's row under its workroom in the Open section: what its strip chip shows (tool logo or
+/// One tab's row under its workroom in the Open Tabs view: what its strip chip shows (tool logo or
 /// glyph, ✦ badge, title in italics while a preview, unread dot, waiting or finished glyph, busy
 /// spinner or run state), a hover ✕ that closes it as the chip's does, and the chip's menu. A
 /// second click on a preview's row keeps it, as on the chip.
 struct SidebarOpenTabRow: View, Equatable {
-  let row: OpenSectionTabRowModel
+  let row: OpenTabsTabRowModel
   /// What its title is read from, and its menu's tab. Outside the model, which compares
   /// `row.title` in its place.
   let tab: TerminalTab

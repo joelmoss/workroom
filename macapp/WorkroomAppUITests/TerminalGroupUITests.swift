@@ -59,7 +59,7 @@ final class TerminalGroupUITests: XCTestCase {
     let terminals = elements(app, prefix: "sidebar.open.tab.")
     XCTAssertTrue(waitForRows(terminals, 2), "its terminals under it")
     // (Its hover-only chevron is not drivable: `.onHover` is not, in XCUITest; folding is the
-    // store's, `OpenSectionTests`.)
+    // store's, `OpenTabsTests`.)
     XCTAssertTrue(row.staticTexts["Ops"].firstMatch.exists, "the group's name on its row")
 
     // Clicking its title-bar tab shows the group: ⌘T then opens a third terminal in it.

@@ -1,7 +1,7 @@
 import XCTest
 
 extension XCUIApplication {
-  /// How many tab rows the Open section lists under `sid`'s workroom row (#819), 0 while the row
+  /// How many tab rows the Open Tabs view lists under `sid`'s workroom row (#819), 0 while the row
   /// is gone. Only the selected row unfolds by default, so a row showing none has its title-bar
   /// tab clicked to select, and so unfold, it: poll this (`XCTNSPredicateExpectation`) and the
   /// next poll counts its rows. Counted between the row and the next workroom row below it.
@@ -30,12 +30,12 @@ extension XCUIApplication {
   }
 
   /// Shows the sidebar's Projects view through its switcher's tab (ADR 0083), as a click does: a
-  /// window opens on the Open view, and the project tree's rows are in the Projects view.
+  /// window opens on the Open Tabs view, and the project tree's rows are in the Projects view.
   func showProjectsView(file: StaticString = #filePath, line: UInt = #line) {
     showSidebarView("projects", file: file, line: line)
   }
 
-  /// Shows the sidebar's Open view through its switcher's tab.
+  /// Shows the sidebar's Open Tabs view through its switcher's tab.
   func showOpenView(file: StaticString = #filePath, line: UInt = #line) {
     showSidebarView("open", file: file, line: line)
   }

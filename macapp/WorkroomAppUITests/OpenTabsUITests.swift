@@ -1,11 +1,11 @@
 import XCTest
 
-/// The sidebar's Open view (#819, ADR 0082, ADR 0083), through the real window: a window opens on
+/// The sidebar's Open Tabs view (#819, ADR 0082, ADR 0083), through the real window: a window opens on
 /// it, with no Terminals heading, its rows select the targets and tabs they stand for and reorder
 /// by drag, and the switcher's "+" makes a terminal or a group from it.
-/// Wiring only; the rows' content, order, fold and drag rules are `OpenSectionTests`' and the
+/// Wiring only; the rows' content, order, fold and drag rules are `OpenTabsTests`' and the
 /// store's. Fixture only, never a real project or config. Run in the VM: `make app-uitest-vm`.
-final class OpenSectionUITests: XCTestCase {
+final class OpenTabsUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
   /// The fixture's fixed ids (`UITestFixture.standaloneTerminalIDs`, `.terminalGroupID`).
@@ -56,7 +56,7 @@ final class OpenSectionUITests: XCTestCase {
       }.map(\.identifier))
   }
 
-  /// A window opens on the Open view, with its rows, and there is no Terminals heading any more.
+  /// A window opens on the Open Tabs view, with its rows, and there is no Terminals heading any more.
   func testAWindowOpensOnTheOpenView() {
     let app = launchedApp()
 
@@ -65,7 +65,7 @@ final class OpenSectionUITests: XCTestCase {
     XCTAssertTrue(element(app, "sidebar.view.projects").exists, "and its Projects tab")
     XCTAssertTrue(
       element(app, "sidebar.open.workroom.\(standalone[0])").waitForExistence(timeout: 5),
-      "the Open view's rows")
+      "the Open Tabs view's rows")
     XCTAssertFalse(element(app, "sidebar.terminals").exists, "no Terminals heading")
   }
 
@@ -129,7 +129,7 @@ final class OpenSectionUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(
       element(app, "sidebar.open.workroom.\(group)").waitForExistence(timeout: 15),
-      "the Open view's rows")
+      "the Open Tabs view's rows")
     XCTAssertTrue(
       poll { self.workroomRowOrder(app).count >= 3 }, "the fixture's terminals, group and more")
     let before = workroomRowOrder(app)
@@ -155,7 +155,7 @@ final class OpenSectionUITests: XCTestCase {
   /// A group's terminal row, dragged out of the group to the upper quarter of another top-level
   /// row (between rows, never onto it) and let go, becomes a standalone terminal with a row of its
   /// own there, just above that row, and the named group stays (#819 owner report). Where the gap
-  /// goes on the way is `OpenRowReflowTests`'; the store's move is `OpenSectionDropTests`'.
+  /// goes on the way is `OpenRowReflowTests`'; the store's move is `OpenTabsDropTests`'.
   func testDraggingAGroupsTerminalRowBetweenRowsMakesAStandaloneThere() {
     let app = launchedApp()
     let groupRowID = "sidebar.open.workroom.\(group)"
@@ -196,7 +196,7 @@ final class OpenSectionUITests: XCTestCase {
     XCTAssertTrue(landed, "a standalone row at \(landsAt) of \(before): \(workroomRowOrder(app))")
   }
 
-  /// The switcher's "+" menu makes a terminal or a group, in the Open view; opening a workroom is
+  /// The switcher's "+" menu makes a terminal or a group, in the Open Tabs view; opening a workroom is
   /// ⌘O's.
   func testThePlusMenuOffersNewTerminalAndNewGroup() {
     let app = launchedApp()

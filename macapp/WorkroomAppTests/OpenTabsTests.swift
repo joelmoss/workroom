@@ -5,11 +5,11 @@ import XCTest
 
 @testable import Workroom
 
-/// The sidebar's Open section's rows (#819): the window's workroom tabs as the title bar shows
+/// The sidebar's Open Tabs view's rows (#819): the window's workroom tabs as the title bar shows
 /// them, each with its tabs as its strip shows them, plus the section's own fold state. Written in
 /// the style of `StandaloneNavigationTests`.
 @MainActor
-final class OpenSectionTests: XCTestCase {
+final class OpenTabsTests: XCTestCase {
   private let projects = ProjectStore()
   private let section = TerminalsSection()
   private let one = SidebarID.workroom(project: "/p", name: "one")
@@ -63,8 +63,8 @@ final class OpenSectionTests: XCTestCase {
     return target
   }
 
-  private func row(_ sid: SidebarID, in store: AppStore) throws -> OpenSectionRow {
-    try XCTUnwrap(store.openSectionRows().first { $0.sid == sid }, "\(sid) has a row")
+  private func row(_ sid: SidebarID, in store: AppStore) throws -> OpenTabsRow {
+    try XCTUnwrap(store.openTabsRows().first { $0.sid == sid }, "\(sid) has a row")
   }
 
   /// Value: protects=an Open row's "+" opening a terminal in that workroom, selected, and doing
@@ -81,9 +81,9 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertEqual(store.selectedTargetID, one, "the row's workroom is selected")
     XCTAssertEqual(store.terminals.tabCount(forTargetID: first.id), 2, "with a new terminal")
 
-    let rows = store.openSectionRows().count
+    let rows = store.openTabsRows().count
     store.newTerminalInOpenRow(standalone)
-    XCTAssertEqual(store.openSectionRows().count, rows, "a standalone terminal's row has no +")
+    XCTAssertEqual(store.openTabsRows().count, rows, "a standalone terminal's row has no +")
     XCTAssertEqual(store.selectedTargetID, one)
   }
 
@@ -97,7 +97,7 @@ final class OpenSectionTests: XCTestCase {
     let group = try XCTUnwrap(store.newTerminalGroup(named: "Ops"))
     try open(two, in: store)
 
-    let rows = store.openSectionRows().map(\.sid)
+    let rows = store.openTabsRows().map(\.sid)
     XCTAssertEqual(Set(rows), [one, two, standalone, group])
     XCTAssertEqual(rows, store.displayedWorkroomTargets().map(\.sid))
   }
@@ -106,7 +106,7 @@ final class OpenSectionTests: XCTestCase {
     let store = makeStore()
     try open(one, in: store)
     try open(two, in: store)
-    XCTAssertEqual(store.openSectionRows().map(\.sid), [one, two])
+    XCTAssertEqual(store.openTabsRows().map(\.sid), [one, two])
 
     // From the section: the title bar follows.
     XCTAssertTrue(store.moveWorkroomTab(two, toIndex: 0))
@@ -114,7 +114,7 @@ final class OpenSectionTests: XCTestCase {
 
     // From the title bar's order: the section follows.
     store.workroomTabOrder = [one.targetID!, two.targetID!]
-    XCTAssertEqual(store.openSectionRows().map(\.sid), [one, two])
+    XCTAssertEqual(store.openTabsRows().map(\.sid), [one, two])
   }
 
   func testAWorkroomTabThatClosesLeavesTheSection() throws {
@@ -126,7 +126,7 @@ final class OpenSectionTests: XCTestCase {
       store.terminals.closeTab(tab.id, for: target)
     }
 
-    XCTAssertEqual(store.openSectionRows().map(\.sid), [two])
+    XCTAssertEqual(store.openTabsRows().map(\.sid), [two])
   }
 
   func testAGroupLeavesWhenItsLastTabCloses() throws {
@@ -140,7 +140,7 @@ final class OpenSectionTests: XCTestCase {
       store.terminals.closeTab(tab.id, for: target)
     }
 
-    XCTAssertFalse(store.openSectionRows().contains { $0.sid == group })
+    XCTAssertFalse(store.openTabsRows().contains { $0.sid == group })
     XCTAssertNotNil(section.group(group.targetID!), "the group itself stays")
   }
 
@@ -151,7 +151,7 @@ final class OpenSectionTests: XCTestCase {
     store.lifecycle.register(run)
 
     let creation = SidebarID.creation(project: "/p", id: run.id)
-    XCTAssertEqual(store.openSectionRows().map(\.sid), [creation])
+    XCTAssertEqual(store.openTabsRows().map(\.sid), [creation])
     XCTAssertNil(try row(creation, in: store).model.presentation.closeName)
   }
 
@@ -244,7 +244,7 @@ final class OpenSectionTests: XCTestCase {
 
   /// Value: protects=a folded row builds no tab rows, which it would only throw away, and only a
   /// lifted tab's placeholder is built under it; fails_when=every tab of every
-  /// row is built, folded or not; seam=AppStore.openSectionRows(showing:); no_claim=the list's
+  /// row is built, folded or not; seam=AppStore.openTabsRows(showing:); no_claim=the list's
   /// passes (SidebarInvalidationTests)
   func testAFoldedRowBuildsOnlyALiftedTabsRow() throws {
     let store = makeStore()
@@ -260,7 +260,7 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertTrue(folded.tabs.isEmpty, "it builds none of them")
 
     let lifted = try XCTUnwrap(
-      store.openSectionRows(showing: .tab(tabs[1], in: one)).first { $0.sid == one })
+      store.openTabsRows(showing: .tab(tabs[1], in: one)).first { $0.sid == one })
     XCTAssertEqual(lifted.tabs.map(\.id), [tabs[1]], "only the lifted tab's placeholder")
   }
 
@@ -299,7 +299,7 @@ final class OpenSectionTests: XCTestCase {
     let second = makeStore()
     try open(two, in: second)
 
-    XCTAssertEqual(second.openSectionRows().map(\.sid), [two])
+    XCTAssertEqual(second.openTabsRows().map(\.sid), [two])
     XCTAssertTrue(second.unfoldedOpenTargets.isEmpty)
   }
 
@@ -364,17 +364,17 @@ final class OpenSectionTests: XCTestCase {
   /// are left out, and nothing open lists no row (the view shows its New Terminal link).
   func testTheListListsTheRowsItShows() throws {
     let store = makeStore()
-    XCTAssertTrue(SidebarOpenList.items(of: store.openSectionRows()).isEmpty, "nothing open")
+    XCTAssertTrue(SidebarOpenList.items(of: store.openTabsRows()).isEmpty, "nothing open")
     try open(one, in: store)
     let target = try XCTUnwrap(store.target(for: one))
     store.terminals.addTab(for: target)
     try open(two, in: store)
 
     XCTAssertEqual(
-      SidebarOpenList.items(of: store.openSectionRows()).count, 3, "one folded; two and its tab")
+      SidebarOpenList.items(of: store.openTabsRows()).count, 3, "one folded; two and its tab")
     store.setOpenRow(one, folded: false)
     XCTAssertEqual(
-      SidebarOpenList.items(of: store.openSectionRows()).count, 5, "one's two tabs too")
+      SidebarOpenList.items(of: store.openTabsRows()).count, 5, "one's two tabs too")
   }
 
   /// The selection scrolls into view: its focused tab's row, or its own row once folded.
@@ -386,9 +386,9 @@ final class OpenSectionTests: XCTestCase {
     let focused = try XCTUnwrap(store.terminals.activeTab(for: target)?.id)
 
     XCTAssertEqual(
-      SidebarOpenList.scrollTarget(of: store.openSectionRows()), .tab(focused, in: one))
+      SidebarOpenList.scrollTarget(of: store.openTabsRows()), .tab(focused, in: one))
     store.setOpenRow(one, folded: true)
-    XCTAssertEqual(SidebarOpenList.scrollTarget(of: store.openSectionRows()), .workroom(one))
+    XCTAssertEqual(SidebarOpenList.scrollTarget(of: store.openTabsRows()), .workroom(one))
   }
 
   // MARK: Actions

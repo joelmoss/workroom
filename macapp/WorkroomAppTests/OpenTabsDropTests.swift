@@ -4,12 +4,12 @@ import XCTest
 
 @testable import Workroom
 
-/// The Open view's group management (#819 stories 43, 48–51): the drops its switcher tab and rows
+/// The Open Tabs view's group management (#819 stories 43, 48–51): the drops its switcher tab and rows
 /// take, read back as the rows the view shows. Each test drives the source and zone the
 /// view's controls send (the Open tab's `.standalone`, a workroom row's `.target`, a row's
 /// drag as `.entry`); the whole rule matrix is `TerminalDropTests`'.
 @MainActor
-final class OpenSectionDropTests: XCTestCase {
+final class OpenTabsDropTests: XCTestCase {
   private let projects = ProjectStore()
   private let section = TerminalsSection()
   private let registry = WindowRegistry()
@@ -41,7 +41,7 @@ final class OpenSectionDropTests: XCTestCase {
 
   private var rows: [SidebarID] { section.entries.map(\.sidebarID) }
 
-  private func openRows(_ store: AppStore) -> [SidebarID] { store.openSectionRows().map(\.sid) }
+  private func openRows(_ store: AppStore) -> [SidebarID] { store.openTabsRows().map(\.sid) }
 
   private func tabs(_ store: AppStore, _ sid: SidebarID) -> [TerminalTab.ID] {
     store.target(for: sid).map { store.terminals.tabs(for: $0).map(\.id) } ?? []
@@ -76,7 +76,7 @@ final class OpenSectionDropTests: XCTestCase {
 
   /// Value: protects=a terminal tab let go on the Open heading becomes a standalone terminal with
   /// a row of its own in the section (story 48); fails_when=the heading refuses it or no row shows;
-  /// why_new=#819 moved the heading; seam=AppStore.dropTerminals + openSectionRows;
+  /// why_new=#819 moved the heading; seam=AppStore.dropTerminals + openTabsRows;
   /// no_claim=the pointer (UI tests)
   func testATabLetGoOnTheOpenHeadingBecomesAStandaloneRow() async throws {
     let store = makeStore()
@@ -99,7 +99,7 @@ final class OpenSectionDropTests: XCTestCase {
 
   /// Value: protects=a standalone terminal's row let go on another's forms one group row in their
   /// place (story 49); fails_when=either row stays or the group lacks a terminal; why_new=#819;
-  /// seam=AppStore.dropTerminals + openSectionRows; no_claim=the pointer
+  /// seam=AppStore.dropTerminals + openTabsRows; no_claim=the pointer
   func testAStandaloneRowLetGoOnAnotherFormsAGroupRow() async throws {
     let store = makeStore()
     let (a, aTab) = try standalone(store)
@@ -118,7 +118,7 @@ final class OpenSectionDropTests: XCTestCase {
 
   /// Value: protects=a standalone terminal's row let go on a group's row joins the group, and its
   /// own row leaves (story 50); fails_when=it is refused, stays, or lands elsewhere; why_new=#819;
-  /// seam=AppStore.dropTerminals + openSectionRows; no_claim=the pointer
+  /// seam=AppStore.dropTerminals + openTabsRows; no_claim=the pointer
   func testAStandaloneRowLetGoOnAGroupRowJoinsIt() async throws {
     let store = makeStore()
     let ops = try group(store, "Ops")
@@ -131,13 +131,13 @@ final class OpenSectionDropTests: XCTestCase {
     XCTAssertTrue(dropped)
     XCTAssertEqual(openRows(store), [ops])
     store.setOpenRow(ops, folded: false)
-    let row = try XCTUnwrap(store.openSectionRows().first)
+    let row = try XCTUnwrap(store.openTabsRows().first)
     XCTAssertEqual(row.tabs.last?.tab.id, aTab, "at the group's end")
   }
 
   // MARK: Highlighting
 
-  /// Value: protects=a group row's drop band follows the Open section's fold, not the retired
+  /// Value: protects=a group row's drop band follows the Open Tabs view's fold, not the retired
   /// Terminals list's: folded (no tab rows under it), it takes drops on its lower edge too;
   /// unfolded, that edge is its first tab row's (story 51); fails_when=the band reads
   /// `TerminalGroup.isFolded`; why_new=#819; seam=AppStore.isFoldedGroup; no_claim=the pointer
@@ -149,11 +149,11 @@ final class OpenSectionDropTests: XCTestCase {
 
     section.setFolded(id, false)
     XCTAssertTrue(store.isOpenRowFolded(ops))
-    XCTAssertTrue(store.isFoldedGroup(.target(ops)), "folded in the Open section")
+    XCTAssertTrue(store.isFoldedGroup(.target(ops)), "folded in the Open Tabs view")
 
     section.setFolded(id, true)
     store.setOpenRow(ops, folded: false)
-    XCTAssertFalse(store.isFoldedGroup(.target(ops)), "unfolded in the Open section")
+    XCTAssertFalse(store.isFoldedGroup(.target(ops)), "unfolded in the Open Tabs view")
   }
 
   // MARK: A tab row let go between workroom rows
@@ -174,12 +174,12 @@ final class OpenSectionDropTests: XCTestCase {
   }
 
   /// Value: protects=a group's terminal row let go between two other workroom rows becomes a
-  /// standalone terminal there, in the window's workroom tab order the Open view and title bar
+  /// standalone terminal there, in the window's workroom tab order the Open Tabs view and title bar
   /// share, with its shell kept and selected, and its named group keeps the rest; a workroom's
   /// terminal goes the same way, and a standalone terminal's own never does; fails_when=it lands
   /// at the end or in the Terminals section's order only, restarts, or the group goes;
-  /// why_new=#819 owner report; seam=AppStore.moveOpenTabToStandalone + openSectionRows;
-  /// no_claim=the pointer (OpenRowReflowTests, OpenSectionUITests)
+  /// why_new=#819 owner report; seam=AppStore.moveOpenTabToStandalone + openTabsRows;
+  /// no_claim=the pointer (OpenRowReflowTests, OpenTabsUITests)
   func testATerminalRowLetGoBetweenWorkroomRowsBecomesAStandaloneThere() async throws {
     let store = makeStore()
     let ops = try group(store, "Ops")
@@ -221,7 +221,7 @@ final class OpenSectionDropTests: XCTestCase {
   /// move dissolves that group into the standalone terminal it leaves behind; a named group's last
   /// terminal let go between rows takes the emptied group's place; fails_when=either lands at the
   /// end, or a group outlives its rules; why_new=#819 owner report;
-  /// seam=AppStore.moveOpenTabToStandalone + openSectionRows; no_claim=the pointer
+  /// seam=AppStore.moveOpenTabToStandalone + openTabsRows; no_claim=the pointer
   func testATerminalLetGoBesideItsOwnGroupLandsThereAsTheGroupFollowsItsRules() async throws {
     let store = makeStore()
     let (a, _) = try standalone(store)
@@ -263,8 +263,8 @@ final class OpenSectionDropTests: XCTestCase {
   /// the gap there joins that group at the gap's place in its tab order, between two of its
   /// terminals or after its last, keeping its shell; the group takes it, which the lift learns
   /// from the store's own drop rule; fails_when=it lands at the group's end, a terminal off, or
-  /// restarts; why_new=#819 owner report; seam=OpenRowReflow (from openSectionRows) +
-  /// AppStore.moveOpenTab(_:of:into:before:); no_claim=the pointer (OpenSectionUITests)
+  /// restarts; why_new=#819 owner report; seam=OpenRowReflow (from openTabsRows) +
+  /// AppStore.moveOpenTab(_:of:into:before:); no_claim=the pointer (OpenTabsUITests)
   func testATerminalLetGoAmongAnotherGroupsTerminalsLandsThere() async throws {
     let store = makeStore()
     let ops = try group(store, "Ops", count: 2)
@@ -276,7 +276,7 @@ final class OpenSectionDropTests: XCTestCase {
     let devTabs = tabs(store, dev)
     let moving = opsTabs[0]
     let shell = session(store, moving, in: ops)
-    let rows = store.openSectionRows()
+    let rows = store.openTabsRows()
     let items = SidebarOpenList.items(of: rows)
     let joinable = OpenRowLift.joinable(moving, of: ops, rows: rows, store: store)
     XCTAssertEqual(joinable, [dev])
@@ -308,27 +308,27 @@ final class OpenSectionDropTests: XCTestCase {
 
   /// Value: protects=a tab lifted from outside the Open list (a strip tab) whose workroom row is
   /// folded is listed under it as its placeholder, and only while it is lifted; fails_when=a
-  /// strip drag into the Open view has no row to lift, or a folded row shows its tabs;
+  /// strip drag into the Open Tabs view has no row to lift, or a folded row shows its tabs;
   /// why_new=#819 owner report; seam=SidebarOpenList.items(of:showing:)
   func testAFoldedWorkroomsLiftedTabIsListedUnderIt() throws {
     let store = makeStore()
     let ops = try group(store, "Ops", count: 2)
     store.setOpenRow(ops, folded: true)
     let opsTabs = tabs(store, ops)
-    let rows = store.openSectionRows()
+    let rows = store.openTabsRows()
     XCTAssertEqual(SidebarOpenList.items(of: rows), [.workroom(ops)])
     // Built with the lifted tab, as the lift builds them.
-    let lifted = OpenSectionItem.tab(opsTabs[1], in: ops)
+    let lifted = OpenTabsItem.tab(opsTabs[1], in: ops)
     XCTAssertEqual(
-      SidebarOpenList.items(of: store.openSectionRows(showing: lifted), showing: lifted),
+      SidebarOpenList.items(of: store.openTabsRows(showing: lifted), showing: lifted),
       [.workroom(ops), lifted])
   }
 
   // MARK: The Quick Terminal
 
-  /// Value: protects=the Quick Terminal's group has no pinned-first place in the Open section: it
+  /// Value: protects=the Quick Terminal's group has no pinned-first place in the Open Tabs view: it
   /// is listed only as the title bar lists it (story 43); fails_when=it is pinned first, or the rows stop following the title bar's order;
-  /// why_new=#819; seam=AppStore.openSectionRows; no_claim=the panel (QuickTerminalGroupTests)
+  /// why_new=#819; seam=AppStore.openTabsRows; no_claim=the panel (QuickTerminalGroupTests)
   func testTheQuickTerminalGroupIsOrderedLikeAnyOtherWorkroomTab() throws {
     let panel = makeQuickTerminalHost(
       notifications: registry.notifications, service: service(), section: section)

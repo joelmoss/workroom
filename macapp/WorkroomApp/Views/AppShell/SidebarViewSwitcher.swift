@@ -2,7 +2,7 @@ import AppKit
 import DesignSystem
 import SwiftUI
 
-/// The bar at the top of the sidebar that picks the one view it shows (ADR 0083): the Open view, a
+/// The bar at the top of the sidebar that picks the one view it shows (ADR 0083): the Open Tabs view, a
 /// terminal glyph, then the Projects view, by name, each underlined in the accent while shown, with
 /// an accent dot while the other is shown and something in it waits on the user. The trailing "+"
 /// acts on the view shown: in Open it opens anything (`SidebarOpenAddMenu`), in Projects it adds a
@@ -70,7 +70,7 @@ struct SidebarViewSwitcher: View {
   }
 }
 
-/// One of the switcher's tabs: the Open view's terminal glyph or the Projects view's name, primary
+/// One of the switcher's tabs: the Open Tabs view's terminal glyph or the Projects view's name, primary
 /// and semibold over the accent underline while shown, secondary and medium while not.
 private struct SidebarViewTab: View {
   let view: SidebarView

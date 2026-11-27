@@ -70,7 +70,7 @@ struct WorkroomMenuModel: Equatable {
     /// The inspector header's actions, in Apple's order: no run, Close or split items, and the
     /// destructive one last, apart.
     case inspectorHeader
-    /// The sidebar Open section's workroom row (#819): the chip's items, a group's led by its old
+    /// The sidebar Open Tabs view's workroom row (#819): the chip's items, a group's led by its old
     /// Terminals row's Expand or Collapse, and a standalone terminal's with that row's Move to… and
     /// Pop Out in place of Move to New Window.
     case openRow
