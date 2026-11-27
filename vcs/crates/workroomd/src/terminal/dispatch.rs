@@ -545,7 +545,7 @@ pub(crate) fn launch<T>(
         .map(OsString::from);
     let cwd = resumed_cwd.as_deref().or(cwd);
     // The file its shell starts from, which `exec` replacing the shell changes
-    // (`resume::Pending::declines`).
+    // (`resume::Decline::stands`).
     let shell = record
         .as_ref()
         .and_then(|_| crate::terminal::process::image_of(Path::new(&invocation.program)));

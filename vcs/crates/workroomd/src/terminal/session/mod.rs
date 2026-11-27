@@ -521,9 +521,11 @@ pub struct TakenScreen {
 ///       ├─ resume           per session: a read feeding it reports, the freeze carrying it, and
 ///       │                   the screens tick reading the record a cleared owner left (#824),
 ///       │                   each released before the shadow is taken to put the record in the
-///       │                   status; `described` and the tick's owner check
-///       │                   (`watch_resume_owners`) take it alone, with the map released, and
-///       │                   `list` (`Session::info`) under the map with the attachment lock
+///       │                   status, and a read whose prompt count changed telling it of the
+///       │                   prompt once the shadow is released; `described` and the tick's owner
+///       │                   check (`resume::watch_owners`) take it alone, with the map released,
+///       │                   and `list` (`Session::info`) and the tick's look at each session
+///       │                   (`watch_resume_owners`) under the map with the attachment lock
 ///       │                   released, as `foreground` takes it alone (`foreground_named`)
 ///       ├─ Transfer         a read stopping a client's transfer
 ///       ├─ Waiter.state     a wait starting on a session whose reader has just ended
