@@ -57,13 +57,17 @@
 //! **Whose files these are.** A launch folder is made by this code alone, `0700`, beside the
 //! daemon's socket (`dir_beside`) or in the app's own support folder, and a file in it is this
 //! code's when its name is `resume-<session id>-<32 hex>.json` (`is_launch_name`), with `.claim`
-//! after it once claimed. Nothing else writes such a name there. A file left behind (its pane
-//! closed before its shell got as far as its first prompt) is removed by the daemon at a fresh
-//! start, when no session it made can still be waiting for one, and at any later launch once it is
-//! an hour old and its session (the id in its name) no longer runs: a running session's shell may
-//! still be starting. So never one a helper could still claim. Only regular files are removed,
-//! judged by `symlink_metadata`, so a link or a FIFO with such a name is left. A session that
-//! could not be made after its file was written removes that one path (`discard`).
+//! after it once claimed. Nothing else writes such a name there. The proof that a folder is this
+//! code's is its marker (`MARKER`), which only the call that made the folder writes, new: a
+//! folder found already there (another build's, or a user's of the same name) never gets one, so
+//! nothing in it is ever swept, though launch files are still written there. In a marked folder,
+//! a file left behind (its pane closed before its shell got as far as its first prompt) is removed
+//! by the daemon at a fresh start, when no session it made can still be waiting for one, and at
+//! any later launch once it is an hour old and its session (the id in its name) no longer runs: a
+//! running session's shell may still be starting. So never one a helper could still claim. Only
+//! regular files are removed, judged by `symlink_metadata`, so a link or a FIFO with such a name
+//! is left, and the marker itself is checked so too. A session that could not be made after its
+//! file was written removes that one path (`discard`).
 //!
 //! The claim and the literal `execv` are ported from herdr-core (herdrdev/herdr-core#429,
 //! `crates/herdr-core/src/resume/launch.rs` and `crates/herdr-core/src/platform/unix_resume.rs`
@@ -170,6 +174,66 @@ fn is_private_dir(dir: &Path) -> bool {
         .is_ok_and(|meta| meta.is_dir() && meta.uid() == euid() && meta.mode() & 0o077 == 0)
 }
 
+/// The file a launch folder holds when this code made it (`launch_dir`), and only then: its proof
+/// that the launch files in it are this code's to remove (`sweep`). The app's folder holds the same
+/// one (`ResumeLaunchFile.marker` in the app).
+pub(crate) const MARKER: &str = ".workroom-resume-launch-folder";
+/// What `MARKER` holds, which nothing else writes.
+const MARKER_CONTENTS: &[u8] =
+    b"Workroom made this folder for its resume launch files (ADR 0082), and removes only those.\n";
+
+/// Makes `dir` a private launch folder (`util::private_dir`). One this call makes is given
+/// `MARKER`, made new (`O_EXCL`) at `0600`; one that was already there never is, since a folder
+/// someone else made must not become this code's to sweep. A folder whose marker could not be
+/// written still takes launch files: it is only never swept.
+fn launch_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Some(parent) = dir.parent() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    let made = match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error),
+    };
+    private_dir(dir)?;
+    if made {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(dir.join(MARKER))
+            .and_then(|mut file| file.write_all(MARKER_CONTENTS));
+    }
+    Ok(())
+}
+
+/// Whether `dir` holds `MARKER` as `launch_dir` writes it: a regular file this user owns, judged
+/// without following a link, holding `MARKER_CONTENTS`.
+fn is_marked(dir: &Path) -> bool {
+    let path = dir.join(MARKER);
+    let regular = std::fs::symlink_metadata(&path).is_ok_and(|meta| {
+        meta.is_file() && meta.uid() == euid() && meta.len() == MARKER_CONTENTS.len() as u64
+    });
+    if !regular {
+        return false;
+    }
+    let mut contents = Vec::new();
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&path)
+        .and_then(|file| {
+            file.take(MARKER_CONTENTS.len() as u64 + 1)
+                .read_to_end(&mut contents)
+        })
+        .is_ok_and(|_| contents == MARKER_CONTENTS)
+}
+
 /// A new launch file's name for session `id`: `resume-<id>-<32 hex>.<extension>`.
 fn launch_name(id: SessionId, extension: &str) -> io::Result<String> {
     let nonce = crate::util::random_hex(16)
@@ -218,7 +282,7 @@ fn write_new(dir: &Path, id: SessionId, extension: &str, contents: &[u8]) -> io:
 /// Writes `launch` as session `id`'s launch file in `dir`, made private first: the app's file for
 /// the relay (its tests write it here too), or the daemon's for its helper.
 pub fn write_launch(dir: &Path, id: SessionId, launch: &Launch) -> io::Result<PathBuf> {
-    private_dir(dir)?;
+    launch_dir(dir)?;
     write_new(dir, id, "json", &serde_json::to_vec(launch)?)
 }
 
@@ -273,9 +337,10 @@ pub fn claim_launch(path: &Path, id: Option<SessionId>) -> io::Result<Launch> {
 
 /// Removes the launch files in `dir` (`is_launch_name`, claimed or not) older than `older_than`,
 /// or every one with `None`, but never one of a session `live` says runs: its shell may still be
-/// starting, however long that takes. Only regular files, judged without following a link.
+/// starting, however long that takes. Only regular files, judged without following a link, and
+/// only in a folder this code made, which holds its `MARKER`: nothing in any other is touched.
 pub(crate) fn sweep(dir: &Path, older_than: Option<Duration>, live: impl Fn(SessionId) -> bool) {
-    if !is_private_dir(dir) {
+    if !is_private_dir(dir) || !is_marked(dir) {
         return;
     }
     let now = SystemTime::now();
@@ -345,7 +410,7 @@ pub(crate) fn prepare(
     if !Path::new(&launch.cwd).is_dir() {
         return Err(io::ErrorKind::NotFound.into());
     }
-    private_dir(dir)?;
+    launch_dir(dir)?;
     sweep(dir, Some(ABANDONED), live);
     let file = write_launch(dir, id, launch)?;
     let mut invocation = invocation.clone();
@@ -631,9 +696,29 @@ fn wait_for(child: libc::pid_t) -> i32 {
 }
 
 /// Goes to `launch`'s folder and finds its command, its first word looked up on PATH when it is a
-/// bare name.
+/// bare name (`find_command`).
 fn command(launch: &Launch) -> io::Result<Command> {
     std::env::set_current_dir(&launch.cwd)?;
+    let path = find_command(
+        &launch.argv[0],
+        std::env::var_os("PATH").as_deref(),
+        Path::new(&launch.cwd),
+    )
+    .ok_or(io::ErrorKind::NotFound)?;
+    let words = launch
+        .argv
+        .iter()
+        .map(|word| std::ffi::CString::new(word.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    Ok(Command { path, words })
+}
+
+/// The executable `name` runs, as the shell that ran it in `cwd` would find it: itself when it is
+/// an absolute path, else the first executable regular file named so in `path`'s folders, in
+/// their order. A relative folder (`./bin`, `node_modules/.bin`) is `cwd`'s, and an empty one is
+/// `cwd` itself, as POSIX has a shell read them in the folder it runs in.
+fn find_command(name: &str, path: Option<&OsStr>, cwd: &Path) -> Option<std::ffi::CString> {
     let executable = |path: &Path| -> Option<std::ffi::CString> {
         if !path.is_file() {
             return None;
@@ -642,24 +727,11 @@ fn command(launch: &Launch) -> io::Result<Command> {
         // SAFETY: `path` is a NUL-terminated string that outlives the call.
         (unsafe { libc::access(path.as_ptr(), libc::X_OK) } == 0).then_some(path)
     };
-    let name = Path::new(&launch.argv[0]);
-    let found = if name.is_absolute() {
-        executable(name)
-    } else {
-        std::env::var_os("PATH").and_then(|path| {
-            std::env::split_paths(&path)
-                .filter(|dir| dir.is_absolute())
-                .find_map(|dir| executable(&dir.join(name)))
-        })
-    };
-    let path = found.ok_or(io::ErrorKind::NotFound)?;
-    let words = launch
-        .argv
-        .iter()
-        .map(|word| std::ffi::CString::new(word.as_bytes()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    Ok(Command { path, words })
+    let name = Path::new(name);
+    if name.is_absolute() {
+        return executable(name);
+    }
+    std::env::split_paths(path?).find_map(|dir| executable(&cwd.join(dir).join(name)))
 }
 
 #[cfg(test)]

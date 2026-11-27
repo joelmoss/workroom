@@ -354,6 +354,53 @@ final class SavedLayoutStoreTests: XCTestCase {
     XCTAssertFalse(ResumeLaunchFile.isLaunchName("resume-\(session.uuidString)-0.json"))
   }
 
+  /// Value: protects=a sweep removing files only from a folder this code proved it made: one
+  /// whose marker the write that made it wrote; fails_when=a sweep removes a launch-named file
+  /// from a folder that was already there, or whose marker is a link, or a folder found already
+  /// there gets a marker; why_new=#832 review (a sweep judged files by name, owner and age
+  /// alone); seam=the folder
+  func testAResumeLaunchSweepRunsOnlyInAFolderThisCodeMade() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-sweep-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let record = ResumeRecord(argv: ["claude"], cwd: "/", reportedAt: 7, boot: "b")
+    let write = { (directory: URL) in
+      try XCTUnwrap(
+        ResumeLaunchFile.write(record, for: UUID(), savedFolder: "/", in: directory))
+    }
+    let exists = { (path: String) in FileManager.default.fileExists(atPath: path) }
+
+    let marked = root.appendingPathComponent("marked")
+    let old = try write(marked)
+    let marker = marked.appendingPathComponent(ResumeLaunchFile.marker)
+    XCTAssertTrue(ResumeLaunchFile.isMarked(marked), "the write that made it marked it")
+    let attributes = try FileManager.default.attributesOfItem(atPath: marker.path)
+    XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    ResumeLaunchFile.sweep(marked, olderThan: 0)
+    XCTAssertFalse(exists(old), "an old launch file in a marked folder")
+    XCTAssertTrue(exists(marker.path), "the marker is no launch file")
+
+    // A folder that was there before this code looked, as a user's or another build's would be.
+    let found = root.appendingPathComponent("found")
+    try FileManager.default.createDirectory(
+      at: found, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    let kept = try write(found)
+    XCTAssertFalse(ResumeLaunchFile.isMarked(found), "a folder found already there")
+    ResumeLaunchFile.sweep(found, olderThan: 0)
+    XCTAssertTrue(exists(kept), "nothing in an unmarked folder is swept")
+
+    let linked = root.appendingPathComponent("linked")
+    try FileManager.default.createDirectory(
+      at: linked, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    try FileManager.default.createSymbolicLink(
+      at: linked.appendingPathComponent(ResumeLaunchFile.marker), withDestinationURL: marker)
+    let behindLink = try write(linked)
+    XCTAssertFalse(ResumeLaunchFile.isMarked(linked))
+    ResumeLaunchFile.sweep(linked, olderThan: 0)
+    XCTAssertTrue(exists(behindLink), "a marker that is a link proves nothing")
+  }
+
   /// Value: protects=a record that names no folder resuming in the pane's saved one (ADR 0082),
   /// and none when that is gone too; fails_when=a record with no `cwd` is dropped, or written
   /// for a folder that isn't there; why_new=new (#825 review); seam=the folder

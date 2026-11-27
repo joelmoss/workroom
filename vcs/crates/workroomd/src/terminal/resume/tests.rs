@@ -997,6 +997,83 @@ fn a_carried_state_reads_and_writes_the_shipped_tables_shape() {
     );
 }
 
+/// A hand-off of `s`: its state as the table's JSON, read back and adopted by the next program.
+fn handed_off(s: &Resume) -> Resume {
+    let json = serde_json::to_string(&s.carried()).unwrap();
+    Resume::adopted(serde_json::from_str(&json).expect("the table's state decodes"))
+}
+
+/// Value: protects=a restored shell still waiting for its resume's helper (a startup passphrase)
+/// when another Mac or build hands its host's daemon off going on as it would have: the app still
+/// told the record it was started to resume, so it keeps it; its launch file the session's; the
+/// helper's late report saying it started; and its deadline and hook carried from the session's
+/// start; fails_when=a hand-off drops the waiting resume, restarts its deadline, forgets its
+/// hook, or tells the app no record; why_new=#832 review (a pending resume was lost at a
+/// hand-off); seam=the table's JSON and the injected instant
+#[test]
+fn a_hand_off_carries_a_resume_that_waits_for_its_helper() {
+    let shell = crate::terminal::process::image_of(&std::env::current_exe().unwrap());
+    let seeded = Whole {
+        reported_at_ms: 1_795_543_200_000,
+        ..resumed_record()
+    };
+    let seeded_parts = |whole: Option<Whole>| whole.map(|w| (w.argv, w.cwd, w.reported_at_ms));
+    let mut s = state();
+    s.resuming(&seeded, launch_file(), shell);
+    // As if it started waiting 29 s before the hand-off.
+    if let Some(Resuming::Waiting(waiting)) = s.resuming.as_mut() {
+        waiting.since = Instant::now() - Duration::from_secs(29);
+    }
+    let adopted = handed_off(&s);
+    assert_eq!(adopted.waiting_file(), Some(launch_file()));
+    assert_eq!(
+        seeded_parts(adopted.shown()),
+        seeded_parts(Some(seeded.clone())),
+        "the app keeps the record"
+    );
+    assert_eq!(adopted.whole(), None, "nothing has reported it yet");
+    assert_eq!(adopted.carried.waiting, None, "taken out as it was adopted");
+    let waiting = adopted.waiting().expect("it still waits");
+    assert_eq!(waiting.shell, shell);
+    assert_eq!(waiting.program, "claude");
+    let now = Instant::now();
+    let mut unhooked = adopted.clone();
+    assert_eq!(unhooked.decide(Event::Tick(now)), Some(Decision::Wait));
+    assert_eq!(
+        declined(unhooked.decide(Event::Tick(now + Duration::from_secs(2)))),
+        Some(launch_file()),
+        "its deadline counts from the session's start, not the hand-off"
+    );
+
+    let mut started = handed_off(&s);
+    assert_eq!(
+        helper_reports(&mut started, 1, now),
+        Outcome::ResumeStarted {
+            program: "claude".into()
+        },
+        "a late helper still starts it"
+    );
+    assert_eq!(started.waiting_file(), None);
+    assert_eq!(
+        handed_off(&started).waiting_file(),
+        None,
+        "a started resume waits no more"
+    );
+
+    shell_says(&mut s, 1, "clear=1:workroomhook=1", Instant::now());
+    let mut hooked = handed_off(&s);
+    let decision = hooked.decide(Event::Tick(Instant::now() + DECLINE_AFTER));
+    assert!(
+        matches!(&decision, Some(Decision::Decline(decline)) if decline.why == Why::ExecReplaced),
+        "its hook loaded, so only exec declines it: {decision:?}"
+    );
+    assert_eq!(declined(decision), None);
+
+    let json = serde_json::to_value(s.carried()).unwrap();
+    assert_eq!(json["waiting"]["hooked"], true, "{json}");
+    assert!(json["waiting"]["waited_ms"].as_u64().unwrap() >= 29_000);
+}
+
 /// Value: protects=the daemon's log naming why a report did not count in the words it always has;
 /// fails_when=a reason's name changes or two reasons swap; why_new=the reasons became one enum;
 /// seam=none

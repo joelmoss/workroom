@@ -18,6 +18,17 @@ use std::time::Duration;
 use common::{ClientReader, Workspace, attach_with_env, start_daemon, wait_for};
 use serde_json::{Value, json};
 
+/// How many launch files the daemon's launch folder `dir` holds (`resume-…`), apart from the
+/// marker it made the folder with: none when there is no folder.
+fn launch_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("resume-"))
+            .count()
+    })
+}
+
 /// Writes the app's launch file for `session` (as `PersistentSessionService` does): `0600`, in a
 /// `0700` folder. Its name and its JSON are the shared fixture's (`testdata/resume-launch`, which
 /// the app's `SavedLayoutStoreTests` checks is what its writer writes), with this test's session
@@ -273,7 +284,7 @@ fn resumes_as_its_shells_first_job(shell: &str) {
     );
     assert!(!file.exists(), "the relay claimed the app's file");
     let launches = socket.with_extension("resume");
-    let left = || std::fs::read_dir(&launches).map_or(0, |dir| dir.count());
+    let left = || launch_files(&launches);
     assert_eq!(left(), 0, "the helper claimed the daemon's file");
     if common::has_terminal_state() {
         assert!(
@@ -412,7 +423,7 @@ fn fails_at_once_or_is_declined(shell: &str) {
     }
     let launches = socket.with_extension("resume");
     assert_eq!(
-        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        launch_files(&launches),
         0,
         "a declined resume writes no launch file"
     );
@@ -544,7 +555,7 @@ fn a_session_with_resume_off_never_resumes_from_a_record_it_is_sent() {
     let seen = client.read_until("RAN-ANYWAY", Duration::from_secs(3));
     assert!(!seen.contains("RAN-ANYWAY"), "{shell}: {seen}");
     assert_eq!(
-        std::fs::read_dir(socket.with_extension("resume")).map_or(0, |dir| dir.count()),
+        launch_files(&socket.with_extension("resume")),
         0,
         "{shell}: no launch file was written"
     );
@@ -624,7 +635,7 @@ fn declined_once_execd_away(shell: &str) {
     assert!(!seen.contains("SHOULD-NOT-RUN"), "{shell}: {seen}");
     let launches = socket.with_extension("resume");
     assert_eq!(
-        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        launch_files(&launches),
         0,
         "{shell}: its launch file was claimed"
     );
@@ -667,7 +678,7 @@ fn kept_past_the_first_prompt(shell: &str) {
     )
     .unwrap();
     let launches = socket.with_extension("resume");
-    let left = || std::fs::read_dir(&launches).map_or(0, |dir| dir.count());
+    let left = || launch_files(&launches);
 
     let session = "ae5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e15";
     let file = app_launch_file(
@@ -1123,7 +1134,7 @@ fn ended_here_never_resumes(shell: &str, remote: bool) {
     );
     let launches = socket.with_extension("resume");
     assert_eq!(
-        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        launch_files(&launches),
         0,
         "{side}: a declined resume writes no launch file"
     );
@@ -1190,7 +1201,7 @@ fn the_losing_create_of_two_resumes_attaches_and_discards_its_file() {
     );
     let launches = socket.with_extension("resume");
     assert_eq!(
-        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        launch_files(&launches),
         0,
         "the winner's helper claimed its file and the loser discarded its own"
     );

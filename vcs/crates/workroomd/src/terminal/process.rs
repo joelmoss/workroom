@@ -261,8 +261,9 @@ pub fn identity(pid: u32) -> Option<Identity> {
 
 /// An executable file by device and inode: the same file however a path names it (a symlink,
 /// Homebrew's `bin`, `/bin` merged into `/usr/bin`). What a resume compares to tell that `exec`
-/// replaced a session's shell (`crate::terminal::resume`, #825).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// replaced a session's shell (`crate::terminal::resume`, #825). A hand-off carries a waiting
+/// resume's (`resume::Carried`), so its fields' names are the table's format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Image {
     device: u64,
     inode: u64,

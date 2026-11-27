@@ -1,18 +1,33 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
-/// A new private folder for one test, removed with everything in it when dropped.
+/// A new launch folder for one test, made as the daemon makes its own (`launch_dir`), so marked,
+/// and removed with everything in it when dropped.
 struct Dir(PathBuf);
 
 impl Dir {
     fn new(name: &str) -> Dir {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = Dir::unmade(name);
+        launch_dir(&dir.0).unwrap();
+        dir
+    }
+
+    /// Its path, with nothing made there yet.
+    fn unmade(name: &str) -> Dir {
+        Dir(std::env::temp_dir().join(format!(
             "wr-resume-launch-{name}-{}-{}",
             std::process::id(),
             launch_name(SESSION, "x").unwrap()
-        ));
-        private_dir(&dir).unwrap();
-        Dir(dir)
+        )))
+    }
+
+    /// How many entries it holds besides its marker.
+    fn entries(&self) -> usize {
+        std::fs::read_dir(&self.0)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name() != MARKER)
+            .count()
     }
 }
 
@@ -47,11 +62,7 @@ fn a_launch_file_is_claimed_once_by_its_own_session_and_then_gone() {
     );
     assert_eq!(claim_launch(&path, Some(SESSION)).unwrap(), launch());
     assert!(claim_launch(&path, Some(SESSION)).is_err(), "claimed twice");
-    assert_eq!(
-        std::fs::read_dir(&dir.0).unwrap().count(),
-        0,
-        "nothing left"
-    );
+    assert_eq!(dir.entries(), 0, "nothing left");
 }
 
 /// Value: protects=the helper reading only a file this code wrote for this user; fails_when=a
@@ -124,6 +135,123 @@ fn a_sweep_removes_only_launch_files_and_not_new_ones_when_told_an_age() {
     assert!(!fresh.exists() && !claimed.exists());
     assert!(other.exists(), "not a launch file");
     assert!(std::fs::symlink_metadata(&link).is_ok(), "a link is left");
+}
+
+/// Value: protects=a sweep removing files only from a folder this code proved it made: one whose
+/// marker the call that made it wrote; fails_when=a sweep removes a launch-named file from a folder
+/// that was already there, or whose marker is a link, a FIFO or another file, or a folder found
+/// already there gets a marker; why_new=#832 review (a sweep judged files by name, owner and age
+/// alone); seam=none
+#[test]
+fn a_sweep_runs_only_in_a_folder_this_code_made() {
+    let marked = Dir::new("marked");
+    let meta = std::fs::symlink_metadata(marked.0.join(MARKER)).unwrap();
+    assert!(meta.is_file() && meta.mode() & 0o777 == 0o600, "its marker");
+    assert_eq!(
+        std::fs::read(marked.0.join(MARKER)).unwrap(),
+        MARKER_CONTENTS
+    );
+    let old = write_launch(&marked.0, SESSION, &launch()).unwrap();
+    sweep(&marked.0, Some(Duration::ZERO), |_| false);
+    assert!(!old.exists(), "an old launch file in a marked folder");
+    assert!(
+        marked.0.join(MARKER).exists(),
+        "the marker is no launch file"
+    );
+
+    // A folder that was there before this code looked, as a user's or another build's would be.
+    let found = Dir::unmade("found");
+    private_dir(&found.0).unwrap();
+    let file = write_launch(&found.0, SESSION, &launch()).unwrap();
+    assert!(
+        std::fs::symlink_metadata(found.0.join(MARKER)).is_err(),
+        "a folder found already there is never marked"
+    );
+    sweep(&found.0, None, |_| false);
+    assert!(file.exists(), "nothing in an unmarked folder is swept");
+
+    let other = Dir::new("other");
+    let linked = Dir::unmade("linked");
+    private_dir(&linked.0).unwrap();
+    std::os::unix::fs::symlink(other.0.join(MARKER), linked.0.join(MARKER)).unwrap();
+    let file = write_launch(&linked.0, SESSION, &launch()).unwrap();
+    sweep(&linked.0, None, |_| false);
+    assert!(file.exists(), "a marker that is a link proves nothing");
+
+    let fifo = Dir::unmade("fifo");
+    private_dir(&fifo.0).unwrap();
+    let path = std::ffi::CString::new(fifo.0.join(MARKER).as_os_str().as_bytes()).unwrap();
+    // SAFETY: `path` is a NUL-terminated string that outlives the call.
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let file = write_launch(&fifo.0, SESSION, &launch()).unwrap();
+    sweep(&fifo.0, None, |_| false);
+    assert!(file.exists(), "a marker that is a FIFO proves nothing");
+
+    let forged = Dir::unmade("forged");
+    private_dir(&forged.0).unwrap();
+    std::fs::write(forged.0.join(MARKER), b"something else\n").unwrap();
+    let file = write_launch(&forged.0, SESSION, &launch()).unwrap();
+    sweep(&forged.0, None, |_| false);
+    assert!(file.exists(), "a marker with other contents proves nothing");
+}
+
+/// An executable file at `path`, made with its folders.
+fn executable(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Value: protects=a resumed command being the one its shell would run in the record's folder:
+/// a relative PATH entry (`./bin`, `node_modules/.bin`) or an empty one (the folder itself) read
+/// in that folder, in PATH's order; fails_when=a relative or empty entry is skipped, so another
+/// program of the same name runs, or it is read in another folder; why_new=#832 review (relative
+/// entries were skipped); seam=PATH and the folder as arguments
+#[test]
+fn a_command_is_found_on_path_as_its_shell_would_in_its_folder() {
+    let dir = Dir::new("path");
+    let (cwd, global) = (dir.0.join("project"), dir.0.join("global"));
+    for folder in [
+        "project/bin",
+        "project/node_modules/.bin",
+        "project",
+        "global",
+    ] {
+        executable(&dir.0.join(folder).join("tool"));
+    }
+    let found = |path: &str| {
+        let found = find_command("tool", Some(OsStr::new(path)), &cwd).expect("found");
+        PathBuf::from(OsStr::from_bytes(found.as_bytes()))
+    };
+    let global_path = global.to_str().unwrap();
+    assert_eq!(
+        found(&format!("./bin:{global_path}")),
+        cwd.join("./bin/tool")
+    );
+    assert_eq!(
+        found(&format!("node_modules/.bin:{global_path}")),
+        cwd.join("node_modules/.bin/tool")
+    );
+    assert_eq!(
+        found(&format!("{global_path}:./bin")),
+        global.join("tool"),
+        "in PATH's order"
+    );
+    assert_eq!(
+        found(&format!(":{global_path}")),
+        cwd.join("tool"),
+        "an empty entry is the folder itself"
+    );
+    assert_eq!(found(&format!("{global_path}::")), global.join("tool"));
+    assert!(find_command("tool", Some(OsStr::new("missing")), &cwd).is_none());
+    assert!(find_command("tool", None, &cwd).is_none(), "no PATH");
+    let absolute = global.join("tool");
+    assert_eq!(
+        find_command(absolute.to_str().unwrap(), Some(OsStr::new("bin")), &cwd)
+            .map(|found| PathBuf::from(OsStr::from_bytes(found.as_bytes()))),
+        Some(absolute),
+        "an absolute command is itself"
+    );
 }
 
 #[test]
@@ -228,7 +356,7 @@ fn a_resuming_session_is_its_own_shell_told_of_its_file_by_path() {
         .err()
         .expect("no hook, no resume");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+    assert_eq!(dir.entries(), 0);
 }
 
 /// Value: protects=a session that could not be made removing the launch file it wrote and no
@@ -271,13 +399,9 @@ fn a_record_whose_folder_is_gone_is_not_prepared() {
         .err()
         .expect("a gone folder, no resume");
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+    assert_eq!(dir.entries(), 0);
     prepare(&shell, true, &launch(), &dir.0, SESSION, helper, |_| false).unwrap();
-    assert_eq!(
-        std::fs::read_dir(&dir.0).unwrap().count(),
-        1,
-        "one launch file, and nothing else"
-    );
+    assert_eq!(dir.entries(), 1, "one launch file, and nothing else");
 }
 
 #[test]

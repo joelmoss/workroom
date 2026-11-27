@@ -774,6 +774,58 @@ fn an_adopted_session_publishes_the_resume_record_it_carried() {
     store.kill_all();
 }
 
+/// Value: protects=a restored shell still waiting for its resume's helper (a startup passphrase)
+/// at a hand-off keeping the record it was seeded with in its status, from the next program's
+/// first snapshot, and its launch file: the boot is carried, so the app trusts a null and would
+/// drop the tab's saved record; fails_when=`adopt` restores only a reported record, or the next
+/// program forgets the waiting resume; why_new=#832 review (a pending resume was lost at a
+/// hand-off); seam=none
+#[cfg(feature = "terminal-state")]
+#[test]
+fn an_adopted_session_still_waiting_for_its_resume_keeps_its_seeded_record() {
+    let store = SessionStore::new();
+    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    let e = env();
+    let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+    let seeded = crate::terminal::resume::Whole {
+        argv: vec!["claude".into(), "--resume".into(), "waiting".into()],
+        cwd: Some("/w".into()),
+        reported_at_ms: 1_795_543_200_000,
+    };
+    let file = "/private/launch/resume-file.json";
+    let frozen = FrozenSession {
+        resume: Some(crate::terminal::resume::Carried::waiting_for_test(
+            "a-token", &seeded, file,
+        )),
+        ..frozen_with(id(12), b"")
+    };
+    store.adopt(pty, frozen).expect("adopt");
+    let (_, event) = store
+        .program_status_events()
+        .into_iter()
+        .find(|(session, _)| *session == id(12))
+        .expect("the adopted session");
+    let event: serde_json::Value = serde_json::from_slice(&event).unwrap();
+    assert_eq!(
+        event["resume"]["argv"],
+        serde_json::json!(["claude", "--resume", "waiting"]),
+        "{event}"
+    );
+    assert_eq!(event["resume"]["cwd"], "/w", "{event}");
+    let resume = lock_or_recover(&store.sessions)
+        .get(&id(12))
+        .map(|session| Arc::clone(&session.resume))
+        .expect("the session");
+    assert_eq!(
+        lock_or_recover(&resume)
+            .as_ref()
+            .and_then(crate::terminal::resume::Resume::waiting_file),
+        Some(std::path::PathBuf::from(file)),
+        "it still waits for its helper"
+    );
+    store.kill_all();
+}
+
 #[cfg(feature = "terminal-state")]
 #[test]
 fn adopting_takes_the_pixels_from_the_pty_before_the_screen() {

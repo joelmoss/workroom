@@ -39,8 +39,9 @@
 //! in it, each an `Event` of one resume lifecycle (`Resuming::decide`); launching is `launch`'s;
 //! the reasons a report does not count are one `Reason`, and the owner check returns it;
 //! `Word` is `OwnerSlot`, and the state a hand-off carries is `Carried` itself, its JSON
-//! unchanged; the token is `token`'s; and there is no rapid-loss guard, since a program that fails at once exits, which
-//! clears its record.
+//! unchanged but for a resume that waits for its helper, which it carries too (`CarriedWaiting`);
+//! the token is `token`'s; and there is no rapid-loss guard, since a program that fails at once
+//! exits, which clears its record.
 
 pub mod launch;
 mod owners;
@@ -240,12 +241,15 @@ enum Resuming {
 }
 
 /// A resume whose helper has not yet reported the record, whose command and folder these are,
-/// from the launch file `file` this daemon wrote for it at `since`.
+/// from the launch file `file` this daemon (or the one before it, for a hand-off) wrote for it at
+/// `since`.
 #[derive(Clone)]
 struct Waiting {
     program: String,
     argv: Vec<String>,
     cwd: Option<String>,
+    /// When the record was reported, as the session's status gives it until the helper reports.
+    reported_at_ms: u64,
     file: std::path::PathBuf,
     since: Instant,
     /// Whether the shell said its Workroom hook loaded (`Event::HookLoaded`).
@@ -259,6 +263,66 @@ struct Waiting {
 enum Hook {
     Unhooked,
     Hooked,
+}
+
+/// A waiting resume as a hand-off carries it (`Carried::waiting`), so the next program goes on
+/// waiting, declining or starting it as this one would have: `Waiting`, with how long it had
+/// waited in place of its `Instant`, which means nothing to another process, so `DECLINE_AFTER`
+/// still counts from the session's start.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CarriedWaiting {
+    argv: Vec<String>,
+    cwd: Option<String>,
+    reported_at_ms: u64,
+    /// Its launch file's path. A table is JSON, so a path that is not UTF-8 is not carried, and
+    /// nor is its resume: the next program then resumes nothing, as one before this field did.
+    file: String,
+    waited_ms: u64,
+    hooked: bool,
+    shell: Option<Image>,
+}
+
+impl std::fmt::Debug for CarriedWaiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The arguments can hold secrets: only the program is printed.
+        write!(f, "CarriedWaiting({})", program_name(&self.argv))
+    }
+}
+
+impl Waiting {
+    /// What a hand-off at `now` carries of it; `None` for a launch file whose path is not UTF-8.
+    fn carried(&self, now: Instant) -> Option<CarriedWaiting> {
+        Some(CarriedWaiting {
+            argv: self.argv.clone(),
+            cwd: self.cwd.clone(),
+            reported_at_ms: self.reported_at_ms,
+            file: self.file.to_str()?.to_string(),
+            waited_ms: u64::try_from(now.saturating_duration_since(self.since).as_millis())
+                .unwrap_or(u64::MAX),
+            hooked: self.hook == Hook::Hooked,
+            shell: self.shell,
+        })
+    }
+
+    /// The resume a hand-off carried, adopted at `now`: it has waited as long as it had.
+    fn adopted(carried: CarriedWaiting, now: Instant) -> Waiting {
+        Waiting {
+            program: program_name(&carried.argv),
+            argv: carried.argv,
+            cwd: carried.cwd,
+            reported_at_ms: carried.reported_at_ms,
+            file: carried.file.into(),
+            since: now
+                .checked_sub(Duration::from_millis(carried.waited_ms))
+                .unwrap_or(now),
+            hook: if carried.hooked {
+                Hook::Hooked
+            } else {
+                Hook::Unhooked
+            },
+            shell: carried.shell,
+        }
+    }
 }
 
 /// What happens to a session's resume (#825), as `Resume::decide` reads it.
@@ -563,7 +627,9 @@ pub(crate) struct Resume {
     stream: Stream,
     /// The record this session was started to resume (#825), until its program has ended or been
     /// running for long: its failure is said only within `launch::FAILED_WITHIN` of its start.
-    /// Not carried by a hand-off, which outlasts that.
+    /// A hand-off carries it while it waits for its helper (`Carried::waiting`), which can be
+    /// minutes (a startup passphrase); once started it is not carried, as its failure window is
+    /// seconds and its helper and program are carried in `Carried::launched`.
     resuming: Option<Resuming>,
 }
 
@@ -595,6 +661,13 @@ pub struct Carried {
     /// table this field predates.
     #[serde(default)]
     launched: Option<Launched>,
+    /// The resume this session was started for, while its helper has not reported
+    /// (`Resume::carried`): set only in the state a hand-off carries, and taken out again as the
+    /// next program adopts it (`Resume::adopted`), so a live session's is always `None`. Absent
+    /// from a table this field predates, and from one with no resume waiting, so such a table's
+    /// JSON is as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    waiting: Option<CarriedWaiting>,
 }
 
 impl std::fmt::Debug for Carried {
@@ -636,7 +709,17 @@ impl Carried {
             )]),
             offset,
             launched: None,
+            waiting: None,
         }
+    }
+
+    /// What a hand-off carries of a session with `token` started to resume `record` from the
+    /// launch file `file`, whose helper has not reported, for tests outside this module.
+    #[cfg(feature = "terminal-state")]
+    pub(crate) fn waiting_for_test(token: &str, record: &Whole, file: &str) -> Carried {
+        let mut resume = Resume::with_token(token.into(), 501);
+        resume.resuming(record, file.into(), None);
+        resume.carried()
     }
 }
 
@@ -663,6 +746,7 @@ impl Resume {
             slots: BTreeMap::new(),
             offset: 0,
             launched: None,
+            waiting: None,
         })
     }
 
@@ -679,6 +763,7 @@ impl Resume {
             program: program_name(&record.argv),
             argv: record.argv.clone(),
             cwd: record.cwd.clone(),
+            reported_at_ms: record.reported_at_ms,
             file,
             since: Instant::now(),
             hook: Hook::Unhooked,
@@ -916,17 +1001,43 @@ impl Resume {
         })
     }
 
-    /// What a hand-off carries of this state.
-    pub(crate) fn carried(&self) -> Carried {
-        self.carried.clone()
+    /// The record the session's status gives the app: its own (`whole`), else, while a resume
+    /// waits for its helper, the record it was started to resume, which the status was seeded
+    /// with (`SessionStore::resuming`), so the app keeps it. What a hand-off's next program
+    /// restores (`program_status::Store::restore_resume`).
+    pub(crate) fn shown(&self) -> Option<Whole> {
+        self.whole().or_else(|| {
+            self.waiting().map(|waiting| Whole {
+                argv: waiting.argv.clone(),
+                cwd: waiting.cwd.clone(),
+                reported_at_ms: waiting.reported_at_ms,
+            })
+        })
     }
 
-    /// The state a hand-off carried, going on from where its stream stopped, outside any report.
-    pub(crate) fn adopted(carried: Carried) -> Resume {
+    /// What a hand-off carries of this state: with a resume that waits for its helper, as long as
+    /// it has waited (`CarriedWaiting`).
+    pub(crate) fn carried(&self) -> Carried {
+        Carried {
+            waiting: self
+                .waiting()
+                .and_then(|waiting| waiting.carried(Instant::now())),
+            ..self.carried.clone()
+        }
+    }
+
+    /// The state a hand-off carried, going on from where its stream stopped, outside any report,
+    /// and waiting for a resume's helper as the program before did, from the same start.
+    pub(crate) fn adopted(mut carried: Carried) -> Resume {
+        let now = Instant::now();
+        let resuming = carried
+            .waiting
+            .take()
+            .map(|waiting| Resuming::Waiting(Waiting::adopted(waiting, now)));
         Resume {
             carried,
             stream: Stream::default(),
-            resuming: None,
+            resuming,
         }
     }
 }

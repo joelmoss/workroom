@@ -10,13 +10,25 @@ import Foundation
 /// **Whose files these are.** The folder is made by this code alone, `0700`, beside the daemon's
 /// socket (`directory`), apart from the daemon's own launch folder. A file in it is this code's
 /// when its name is `resume-<session id>-<32 hex>.json`, which `isLaunchName` checks as the relay
-/// does. One no relay claimed (its pane never started) is removed at a later write once it is an
-/// hour old, which no relay waits; only regular files, judged without following a link.
+/// does. The proof that the folder is this code's is its `marker`, which only the write that made
+/// the folder writes, new: a folder found already there (another build's, or a user's of the
+/// same name) never gets one, so nothing in it is ever swept, though files are still written
+/// there. In a marked folder, one no relay claimed (its pane never started) is removed at a later
+/// write once it is an hour old, which no relay waits; only regular files, judged without
+/// following a link, as the marker is.
 enum ResumeLaunchFile {
   /// The variable the relay reads the file's path from (`resume::launch::APP_FILE_VARIABLE`).
   static let variable = "WORKROOM_SESSION_RESUME"
   /// How old an unclaimed file must be before a later write removes it.
   static let abandoned: TimeInterval = 60 * 60
+  /// The file the folder holds when this code made it, and only then: its proof that the launch
+  /// files in it are this code's to remove (`sweep`). The daemon's own folder holds the same one
+  /// (`resume::launch::MARKER`).
+  static let marker = ".workroom-resume-launch-folder"
+  /// What `marker` holds, which nothing else writes.
+  static let markerContents = Data(
+    "Workroom made this folder for its resume launch files (ADR 0082), and removes only those.\n"
+      .utf8)
 
   /// The folder beside the daemon socket at `socketPath`.
   static func directory(socketPath: String) -> URL {
@@ -85,20 +97,52 @@ enum ResumeLaunchFile {
       && nonce.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
   }
 
-  /// Makes `directory` this user's alone: `0700` when new; an existing one must be a real folder
-  /// this user owns, which is then tightened.
+  /// Makes `directory` this user's alone: `0700` when new, and given its `marker`; an existing one
+  /// must be a real folder this user owns, which is then tightened, and is never marked.
   private static func makePrivate(_ directory: URL) -> Bool {
     let path = directory.path
-    if mkdir(path, 0o700) != 0, errno != EEXIST { return false }
+    let made = mkdir(path, 0o700) == 0
+    if !made, errno != EEXIST { return false }
     var info = stat()
     guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid()
     else { return false }
-    return info.st_mode & 0o077 == 0 || chmod(path, 0o700) == 0
+    guard info.st_mode & 0o077 == 0 || chmod(path, 0o700) == 0 else { return false }
+    if made { writeMarker(in: directory) }
+    return true
   }
 
-  /// Removes the files `name(for:)` made in `directory` that are at least `age` old.
+  /// Writes `marker` into the folder this code just made: new (`O_EXCL`), `0600`. A folder whose
+  /// marker could not be written still takes launch files: it is only never swept.
+  private static func writeMarker(in directory: URL) {
+    let path = directory.appendingPathComponent(marker).path
+    let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { return }
+    let written = markerContents.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+    close(fd)
+    if written != markerContents.count { unlink(path) }
+  }
+
+  /// Whether `directory` holds `marker` as `makePrivate` writes it: a regular file this user
+  /// owns, judged without following a link, holding `markerContents`.
+  static func isMarked(_ directory: URL) -> Bool {
+    let path = directory.appendingPathComponent(marker).path
+    var info = stat()
+    guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
+      info.st_size == markerContents.count
+    else { return false }
+    let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    var bytes = [UInt8](repeating: 0, count: markerContents.count + 1)
+    let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+    return count == markerContents.count && Data(bytes.prefix(count)) == markerContents
+  }
+
+  /// Removes the files `name(for:)` made in `directory` that are at least `age` old, in a folder
+  /// this code made (`isMarked`) alone: nothing in any other is touched.
   static func sweep(_ directory: URL, olderThan age: TimeInterval) {
-    guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+    guard isMarked(directory),
+      let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
     else { return }
     let now = Date().timeIntervalSince1970
     for name in names where isLaunchName(name) {
