@@ -189,15 +189,14 @@ final class PaneSessionAttachment {
     // resume does: it is what the pane runs now, and the record would resume over it once the
     // setting is on again.
     endResume()
+    forgetsRecordAfter = nil
     var resumeFile: String?
     let resumes = service.programResumeIsOn()
     let resumeRecord = resumes ? tabResume() : nil
     if !isRunSession, service.willReplaceRestoredSession(sessionID, wasRestored: isRestored) {
-      if !resumes, tabResume() != nil {
-        // Not while the surface is being made, which this is asked during.
-        let forget = forgetTabResume
-        Task { @MainActor in forget() }
-      }
+      // Once its new daemon says it has the session (`sessionHeard`): until then the app may
+      // still hold what the gone daemon last said of it, which the record would be read back from.
+      if !resumes, let record = tabResume() { forgetsRecordAfter = record.boot }
       if let record = resumeRecord,
         let file = service.writeResumeLaunch(
           record, for: sessionID, savedFolder: workingDirectory)
@@ -285,10 +284,20 @@ final class PaneSessionAttachment {
   /// and the offer stays, saying nothing: it is inert, and a word from the old daemon heard after
   /// the relaunch can't cancel the new one's. A daemon's hand-off keeps its numbering.
   func sessionHeard(boot: String?) {
+    // A new shell made while resume was off (#827) forgets its record once a daemon other than
+    // the record's has the session: the gone one's last word would hand the record back.
+    if let recorded = forgetsRecordAfter, let boot, boot != recorded {
+      forgetsRecordAfter = nil
+      forgetTabResume()
+    }
     guard case .offered(let program, let offered) = resumeState, let boot, boot != offered
     else { return }
     awaitResume(of: program)
   }
+
+  /// The boot of the record this pane forgets once another daemon has its session (#827): set when
+  /// it was given a new shell with resume off.
+  private var forgetsRecordAfter: String?
 
   /// The pane's session's daemon said something of it, and nothing yet of its resume (#825): the
   /// fallback wait starts, once.
@@ -415,6 +424,7 @@ final class PaneSessionAttachment {
     pendingReconnect?.cancel()
     pendingReconnect = nil
     endResume()
+    forgetsRecordAfter = nil
     if let remoteLinkObserver {
       NotificationCenter.default.removeObserver(remoteLinkObserver)
       self.remoteLinkObserver = nil
