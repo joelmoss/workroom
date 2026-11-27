@@ -36,18 +36,19 @@ final class ProgramStatusWireTests: XCTestCase {
   /// that predates records, says nothing of one.
   func testResumeIsNoneWhenNullAndUnknownWhenAbsent() throws {
     let none = try ProgramStatusEvent.decode(fixture("status-run")).event
-    guard case .status(_, _, _, _, _, _, let resume, let failed, let started) = none else {
+    guard case .status(_, _, _, _, _, _, let resume, let failed, let started, let declined) = none
+    else {
       return XCTFail()
     }
     XCTAssertFalse(failed, "sent only once true")
     XCTAssertFalse(started, "sent only once true")
+    XCTAssertFalse(declined, "sent only once true")
     XCTAssertEqual(resume, ProgramResumeReport.none)
     let older =
       #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":false,"records":[]}"#
     guard
-      case .status(_, _, _, _, _, _, let absent, _, let notStarted) = try ProgramStatusEvent.decode(
-        Data(older.utf8)
-      ).event
+      case .status(_, _, _, _, _, _, let absent, _, let notStarted, _) =
+        try ProgramStatusEvent.decode(Data(older.utf8)).event
     else { return XCTFail() }
     XCTAssertEqual(absent, .unknown)
     XCTAssertFalse(notStarted, "a daemon that predates it never says a resume started")
@@ -59,11 +60,34 @@ final class ProgramStatusWireTests: XCTestCase {
     let failed =
       #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":2,"reporting":false,"records":[],"resume":null,"resumeFailed":true}"#
     guard
-      case .status(_, _, _, _, _, _, let resume, let resumeFailed, _) =
+      case .status(_, _, _, _, _, _, let resume, let resumeFailed, _, _) =
         try ProgramStatusEvent.decode(Data(failed.utf8)).event
     else { return XCTFail() }
     XCTAssertTrue(resumeFailed)
     XCTAssertEqual(resume, ProgramResumeReport.none)
+  }
+
+  /// A resume the daemon declined (#825) says so with `resumeDeclined`, sent only once true, with
+  /// the record it seeded gone; one this build can't read as a boolean costs that field alone.
+  func testResumeDeclinedIsReadWhenSent() throws {
+    let declined =
+      #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":2,"reporting":false,"records":[],"resume":null,"resumeDeclined":true}"#
+    guard
+      case .status(_, _, _, _, _, _, let resume, let failed, let started, let resumeDeclined) =
+        try ProgramStatusEvent.decode(Data(declined.utf8)).event
+    else { return XCTFail() }
+    XCTAssertTrue(resumeDeclined)
+    XCTAssertFalse(started)
+    XCTAssertFalse(failed)
+    XCTAssertEqual(resume, ProgramResumeReport.none)
+    let odd = declined.replacingOccurrences(
+      of: #""resumeDeclined":true"#, with: #""resumeDeclined":"yes""#)
+    guard
+      case .status(_, _, _, _, _, _, _, _, _, let unread) = try ProgramStatusEvent.decode(
+        Data(odd.utf8)
+      ).event
+    else { return XCTFail() }
+    XCTAssertFalse(unread)
   }
 
   /// A resumed program that really started (#825) says so with `resumeStarted`; one this build
@@ -72,7 +96,7 @@ final class ProgramStatusWireTests: XCTestCase {
     let started =
       #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":2,"reporting":false,"records":[],"resume":null,"resumeStarted":true}"#
     guard
-      case .status(_, _, _, _, _, _, _, let failed, let resumeStarted) =
+      case .status(_, _, _, _, _, _, _, let failed, let resumeStarted, _) =
         try ProgramStatusEvent.decode(Data(started.utf8)).event
     else { return XCTFail() }
     XCTAssertTrue(resumeStarted)
@@ -80,7 +104,7 @@ final class ProgramStatusWireTests: XCTestCase {
     let odd = started.replacingOccurrences(
       of: #""resumeStarted":true"#, with: #""resumeStarted":1"#)
     guard
-      case .status(_, _, _, _, _, _, _, _, let unread) = try ProgramStatusEvent.decode(
+      case .status(_, _, _, _, _, _, _, _, let unread, _) = try ProgramStatusEvent.decode(
         Data(odd.utf8)
       ).event
     else { return XCTFail() }
@@ -100,7 +124,7 @@ final class ProgramStatusWireTests: XCTestCase {
             id: "shell command", state: .error, message: "npm test", exitCode: 1)
         ], resume: .none))
     let program = try ProgramStatusEvent.decode(fixture("status")).event
-    guard case .status(_, _, _, _, let records, _, _, _, _) = program else { return XCTFail() }
+    guard case .status(_, _, _, _, let records, _, _, _, _, _) = program else { return XCTFail() }
     XCTAssertNil(records.first?.exitCode)
   }
 
@@ -112,7 +136,7 @@ final class ProgramStatusWireTests: XCTestCase {
         boot: boot, session: session, revision: 1, reporting: false, records: [],
         run: "exited 3", resume: .none))
     let shell = try ProgramStatusEvent.decode(fixture("status")).event
-    guard case .status(_, _, _, _, _, let run, _, _, _) = shell else { return XCTFail() }
+    guard case .status(_, _, _, _, _, let run, _, _, _, _) = shell else { return XCTFail() }
     XCTAssertNil(run)
   }
 
@@ -137,7 +161,7 @@ final class ProgramStatusWireTests: XCTestCase {
       """
     let decoded = try ProgramStatusEvent.decode(Data(json.utf8))
     XCTAssertEqual(decoded.droppedRecords, 3)
-    guard case .status(_, _, _, _, let records, _, _, _, _) = decoded.event else {
+    guard case .status(_, _, _, _, let records, _, _, _, _, _) = decoded.event else {
       return XCTFail("\(String(describing: decoded.event))")
     }
     XCTAssertEqual(records.map(\.id), ["a"])
@@ -159,7 +183,7 @@ final class ProgramStatusWireTests: XCTestCase {
       #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":true,"records":[\#(many)]}"#
     XCTAssertGreaterThan(big.utf8.count, 1_000_000)
     let decoded = try ProgramStatusEvent.decode(Data(big.utf8))
-    guard case .status(_, _, _, _, let records, _, _, _, _) = decoded.event else {
+    guard case .status(_, _, _, _, let records, _, _, _, _, _) = decoded.event else {
       return XCTFail()
     }
     XCTAssertEqual(records.count, 1_000, "a large but valid event still decodes")

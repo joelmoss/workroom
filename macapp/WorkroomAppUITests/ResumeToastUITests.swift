@@ -52,4 +52,18 @@ final class ResumeToastUITests: XCTestCase {
       "the pane's toast says the program couldn't be resumed")
     XCTAssertFalse(toast(app, "Resumed Claude Code").exists, "the failure replaced it")
   }
+
+  /// Value: protects=a pane whose resume the daemon declined (its shell never ran Workroom's hook)
+  /// saying at once that it got a new terminal, and never "Resumed"; fails_when=the binding stops
+  /// passing `resumeDeclined` to the pane, the pane waits out its fallback instead, or it says
+  /// "Resumed"; why_new=#825's second review (`resumeDeclined`); seam=`-WorkroomUITestResume
+  /// declined`
+  func testAPaneWhoseResumeWasDeclinedSaysItGotANewTerminal() {
+    let app = launchedApp(resume: "declined")
+    XCTAssertTrue(
+      toast(app, "This terminal was previously ended, so we created a new one for you.")
+        .waitForExistence(timeout: 15),
+      "the pane's toast says it got a new terminal, well inside the fallback's 45 s")
+    XCTAssertFalse(toast(app, "Resumed Claude Code").exists)
+  }
 }

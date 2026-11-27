@@ -350,7 +350,7 @@ class ProviderParityTestCase: XCTestCase {
     let runs = Calls<String>()
     let session = UUID()
     let availability = try await connection.subscribeProgramStatus { event in
-      if case .status(_, let reported, _, _, _, let run?, _, _, _) = event, reported == session {
+      if case .status(_, let reported, _, _, _, let run?, _, _, _, _) = event, reported == session {
         runs.add(run)
       }
     }

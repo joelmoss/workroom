@@ -220,6 +220,35 @@ final class ProgramStatusBindingTests: XCTestCase {
     binding.forgetResume(tab: tab, target: target)
     XCTAssertEqual(tabs.state(tab)?.resume?.argv, reported.argv, "the daemon's own is kept")
   }
+
+  /// Value: protects=a resume the daemon declined (#825) leaving the tab no record to retry at the
+  /// next restart: the record it seeded the new session with goes with its `resumeDeclined`
+  /// event, and forgetting finds none to keep; fails_when=the seeded record survives the decline,
+  /// or forgetting adopts it again; why_new=#825's second review (a declined resume never forgot
+  /// its record); seam=a seeded monitor
+  func testADeclinedResumeLeavesTheTabNoRecord() {
+    let tabs = FakePaneTabs()
+    let service = isolatedPaneSessionService()
+    let binding = ProgramStatusBinding(access: tabs.access, sessionService: { service })
+    let monitor = ProgramStatusMonitor()
+    binding.monitor = monitor
+    binding.follow(.local)
+    let session = UUID()
+    let tab = tabs.add(to: target, sessionID: session)
+    tabs.access.mutate(tab, target) {
+      $0.resume = ResumeRecord(
+        argv: ["claude", "--resume", "a"], cwd: "/w", reportedAt: 1, boot: "old")
+    }
+    let seeded = ProgramResumeRecord(argv: ["claude", "--resume", "a"], cwd: "/w", reportedAt: 1)
+    monitor.seed(session, records: [], boot: "new", resume: .record(seeded))
+    XCTAssertEqual(tabs.state(tab)?.resume?.boot, "new", "the session was seeded with it")
+
+    monitor.seed(session, records: [], boot: "new", resume: .none, resumeDeclined: true)
+    XCTAssertTrue(monitor.resumeDeclined(for: session))
+    XCTAssertNil(tabs.state(tab)?.resume, "the decline took the seeded record")
+    binding.forgetResume(tab: tab, target: target)
+    XCTAssertNil(tabs.state(tab)?.resume)
+  }
 }
 
 @MainActor

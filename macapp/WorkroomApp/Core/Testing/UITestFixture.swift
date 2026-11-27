@@ -516,20 +516,26 @@ import WorkroomVCS
       terminals.select(tabs[0].id, for: target)
     }
 
-    /// `-WorkroomUITestResume started|failed` (#825): the fixture workroom's first terminal resumes
-    /// Claude Code as a restored pane whose session was gone does, and its daemon says the program
-    /// started (the pane says "Resumed Claude Code") or, for `failed`, then that it exited with an
-    /// error at once ("Couldn't resume Claude Code"). No daemon is involved: the status goes
-    /// straight into the monitor.
-    static var resume: String? {
-      text("WorkroomUITestResume").flatMap { ["started", "failed"].contains($0) ? $0 : nil }
+    /// `-WorkroomUITestResume started|failed|declined` (#825): the fixture workroom's first
+    /// terminal resumes Claude Code as a restored pane whose session was gone does, and its daemon
+    /// says the program started (the pane says "Resumed Claude Code"), or, for `failed`, then that
+    /// it exited with an error at once ("Couldn't resume Claude Code"), or, for `declined`, that it
+    /// declined the resume (the pane says it got a new terminal). No daemon is involved: the
+    /// status goes straight into the monitor.
+    static var resume: ProgramStatusBinding.FixtureResume? {
+      switch text("WorkroomUITestResume") {
+      case "started": .started
+      case "failed": .failed
+      case "declined": .declined
+      default: nil
+      }
     }
 
     @MainActor
     static func seedResume(in terminals: TerminalPanes, target: TerminalTarget) {
       guard let resume, let tab = terminals.tabs(for: target).first else { return }
       terminals.seedResumeForFixture(
-        tab: tab.id, target: target.id, program: "Claude Code", failed: resume == "failed")
+        tab: tab.id, target: target.id, program: "Claude Code", outcome: resume)
     }
 
     /// When set (`-WorkroomUITestTypingMarker 1`, #696), the fixture workroom opens two terminals with

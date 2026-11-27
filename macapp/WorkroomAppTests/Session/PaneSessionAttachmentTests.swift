@@ -489,18 +489,50 @@ final class PaneSessionAttachmentTests: XCTestCase {
       failed.notices, [PaneNoticeToast.sessionReplaced, "Couldn't resume Claude Code"])
   }
 
-  /// Value: protects=the wait running out by itself; fails_when=the timer is never scheduled, or
-  /// fires after a start; why_new=new (#825 review); seam=a short wait, waited on for 3 s+
+  /// Value: protects=a resume the daemon declined (#825: its shell never ran Workroom's hook)
+  /// saying at once that the pane got a new shell and forgetting the record, once, with no wait,
+  /// and a decline never undoing a resume that started or failed; fails_when=the pane waits out
+  /// its fallback instead, keeps the record, says it twice, or a decline after a start toasts;
+  /// why_new=#825's second review (`resumeDeclined`); seam=the service's launch folder
+  func testAResumeTheDaemonDeclinedSaysSoAtOnceAndForgetsItsRecord() throws {
+    let (pane, forgets) = goneSessionPanes()
+    let (declined, toasts) = pane(claude)
+    XCTAssertNotNil(declined.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    declined.sessionReported()
+    declined.resumeDeclined()
+    declined.resumeDeclined()
+    declined.resumeUnconfirmed()
+    XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced])
+    XCTAssertEqual(forgets(), 1, "a declined resume forgets its record")
+
+    let (started, said) = pane(claude)
+    XCTAssertNotNil(started.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    started.resumeStarted()
+    started.resumeDeclined()
+    XCTAssertEqual(said.notices, ["Resumed Claude Code"], "a started resume is never declined")
+    XCTAssertEqual(forgets(), 1)
+  }
+
+  /// Value: protects=the fallback wait starting only once the session's daemon has said anything
+  /// of it, not at launch (#825: hidden tabs restored together on a cold disk start their login
+  /// shells slowly), and running out by itself from there; fails_when=the timer starts at launch,
+  /// is never scheduled, or fires after a start; why_new=#825's second review (the wait's clock);
+  /// seam=a short wait, waited on for 3 s+
   func testTheConfirmationWaitRunsOutOnItsOwn() throws {
     let (pane, _) = goneSessionPanes()
+    let (silent, unheard) = pane(claude)
+    silent.resumeConfirmationWait = 0.05
+    XCTAssertNotNil(silent.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
     let (unconfirmed, toasts) = pane(claude)
     unconfirmed.resumeConfirmationWait = 0.05
     XCTAssertNotNil(
       unconfirmed.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    unconfirmed.sessionReported()
     let (confirmed, quiet) = pane(claude)
     confirmed.resumeConfirmationWait = 0.05
     XCTAssertNotNil(
       confirmed.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    confirmed.sessionReported()
     confirmed.resumeStarted()
     let declined = expectation(description: "the wait ran out")
     let deadline = Date().addingTimeInterval(5)
@@ -515,6 +547,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
     wait(for: [declined], timeout: 6)
     XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced], "the unconfirmed resume")
     XCTAssertEqual(quiet.notices, ["Resumed Claude Code"], "a started one's wait was cancelled")
+    XCTAssertEqual(unheard.notices, [], "no wait before the daemon has said anything")
   }
 
   /// A tab's surface attaches through the service its window holds, whichever factory made the
