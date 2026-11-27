@@ -72,7 +72,7 @@ final class ClaudeResumeHook: ObservableObject {
 
   /// What reconciling `host` does, from the wanted state and whether its hook may be there.
   nonisolated static func hostPolicy(
-    for host: HostID, on: Bool = Defaults[.resumePrograms],
+    for host: HostID, on: Bool = ProgramResume.isOn,
     marked: [String] = Defaults[.claudeResumeHookHosts]
   ) -> DaemonBootstrap.WorkroomSkillPolicy {
     on ? .install : marked.contains(WorkroomSkill.key(host)) ? .remove : .leave

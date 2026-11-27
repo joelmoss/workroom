@@ -474,13 +474,22 @@ fn a_fifo_or_folder_in_place_of_the_settings_file_is_never_opened() {
 /// The hook's command does nothing, and succeeds, outside a Workroom pane.
 #[test]
 fn the_hooks_command_does_nothing_outside_a_workroom_pane() {
-    let output = std::process::Command::new("/bin/sh")
-        .args(["-c", COMMAND])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    // No token, then a token but no `workroom` anywhere (no bin folder, none on PATH).
+    for token in [None, Some("a-token")] {
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", COMMAND])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin");
+        if let Some(token) = token {
+            command.env("OSC7577_TOKEN", token);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{token:?}");
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "{token:?}: {output:?}"
+        );
+    }
     assert!(COMMAND.ends_with(MARKER));
 }

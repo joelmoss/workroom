@@ -412,7 +412,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
     guard try onHost(fixture, "test -e ~/.claude && echo yes || echo no") == "no" else {
       throw XCTSkip("the fixture's home already has ~/.claude")
     }
-    let theirs = #"{"model":"opus","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}"#
+    let theirs =
+      #"{"model":"opus","hooks":{"SessionStart":"#
+      + #"[{"hooks":[{"type":"command","command":"echo mine"}]}]}}"#
     try onHost(fixture, "mkdir ~/.claude && printf '%s' '\(theirs)' > ~/.claude/settings.json")
     defer {
       _ = try? onHost(
