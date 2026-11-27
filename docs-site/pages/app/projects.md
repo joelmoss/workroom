@@ -29,7 +29,7 @@ The sidebar sits flat against the window's edge, with a thin line between it and
 
 ### The Open Tabs view {nightly}
 
-The **Open Tabs** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
+The **Open Tabs** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room, or when you have hidden them: right-click the title bar and choose **Show Tabs**. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
 
 - **Select.** Click a row to select it, or one of its tabs to show that tab. Selecting a workroom unfolds it. Fold it by hand, with the arrow that takes the place of its icon when you hover the row, and it stays folded until you next select it.
 - **What's highlighted.** Only the row that has the keyboard: the focused tab's row, or the selected workroom's own row while it shows no tab rows.

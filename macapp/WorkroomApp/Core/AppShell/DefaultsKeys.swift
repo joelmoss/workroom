@@ -213,6 +213,14 @@ extension Defaults.Keys {
   /// the active terminal read instantly in a split; off keeps every pane at full contrast.
   static let dimUnfocusedPanes = Key<Bool>("dimUnfocusedPanes", default: true, suite: .app)
 
+  /// Whether the window's title bar shows its tabs (one per workroom, standalone terminal or group
+  /// with a terminal). On by default. Off leaves the open-workroom and new-workroom buttons where a
+  /// window with no tabs has them; the sidebar's Open Tabs view still lists what is open, and the
+  /// workroom-tab shortcuts still switch in the same order. Shown as "Show tabs in the title bar" in
+  /// Settings and as "Show Tabs" in the title bar's right-click menu
+  /// (`TitlebarContextMenu`); app-wide, so every window follows it live.
+  static let showTitleBarTabs = Key<Bool>("showTitleBarTabs", default: true, suite: .app)
+
   /// Re-even a split's dividers whenever a pane is added to or removed from it (issue #126). On by
   /// default: a third pane otherwise lands at a quarter width, and removing one leaves the survivors
   /// budgeted for a pane that's gone. Only dividers along the axis of the pane that joined or left

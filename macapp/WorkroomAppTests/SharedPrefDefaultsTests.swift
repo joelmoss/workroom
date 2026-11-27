@@ -53,7 +53,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private var keys: [String] {
     [
       sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey,
-      dimArgKey, dimKey, autoEvenArgKey, "autoResizeSplitsEvenly",
+      dimArgKey, dimKey, autoEvenArgKey, "autoResizeSplitsEvenly", "showTitleBarTabs",
     ]
   }
   private var saved: [String: Any?] = [:]
@@ -314,6 +314,16 @@ final class SharedPrefDefaultsTests: XCTestCase {
     UITestFixture.applyFixtureDefaults(active: true)
 
     XCTAssertTrue(Defaults[.dimUnfocusedPanes])
+  }
+
+  /// Hidden title-bar tabs persist too, and every test that reads a tab would break on a launch
+  /// after one that hid them (`TitleBarTabsVisibilityUITests`, or a developer's own choice).
+  func testFixtureModeShowsTitleBarTabsOverAPersistedOff() {
+    Defaults[.showTitleBarTabs] = false
+
+    UITestFixture.applyFixtureDefaults(active: true)
+
+    XCTAssertTrue(Defaults[.showTitleBarTabs])
   }
 
   /// `-WorkroomUITestDimUnfocusedPanes 0` opts a test out of dimming. The value arrives as a STRING,

@@ -1452,6 +1452,9 @@ import WorkroomVCS
       // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
       // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
       Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
+      // Title-bar tabs, for the same reason: hidden once (from the title bar's right-click menu), they'd stay hidden
+      // for every later launch, and every test that reads or drags a tab would fail.
+      Defaults[.showTitleBarTabs] = true
       // Program resume (#827), for the same reason: a test that turns it off and fails would leave
       // every later launch's restored panes as new shells.
       if !keepsResumePrograms { Defaults[.resumePrograms] = true }

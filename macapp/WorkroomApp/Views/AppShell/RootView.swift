@@ -102,8 +102,9 @@ struct RootView: View {
     // project existing, without which they hide). (It also
     // hosts the provisional "Creating…" chip before any tab resolves — issue #116.) With an empty
     // run the bar is just those two buttons over the draggable title bar.
+    // With "Show tabs in the title bar" off, the bar hides them itself (`WorkroomTabBar.tabs`).
     WorkroomTabBar(
-      tabs: store.displayedWorkroomTargets(), selectedID: store.selectedTargetID,
+      openTabs: store.displayedWorkroomTargets(), selectedID: store.selectedTargetID,
       onSelect: { store.selectWorkroomTab($0) },
       chipPaneDrag: $workroomChipDrag,
       localize: { workroomChipLocal($0) },

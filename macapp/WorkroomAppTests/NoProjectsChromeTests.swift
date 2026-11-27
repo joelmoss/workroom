@@ -68,7 +68,7 @@ final class NoProjectsChromeTests: XCTestCase {
     let root = HStack(spacing: 0) {
       LeadingTitlebarBar()
       WorkroomTabBar(
-        tabs: [], selectedID: nil, onSelect: { _ in }, chipPaneDrag: .constant(nil),
+        openTabs: [], selectedID: nil, onSelect: { _ in }, chipPaneDrag: .constant(nil),
         localize: { _ in nil }, dropTarget: { _ in nil })
       ActivityBar()
     }
