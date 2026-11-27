@@ -263,6 +263,15 @@ final class RemotePaneLinksTests: XCTestCase {
       files: ["a.rb": Data("a\n".utf8), "b.rb": Data("b\n".utf8)])
   }
 
+  /// #788: a remote pane can't check a wrapped-path join on this Mac, so the click hands the host
+  /// every join in order, and the word the user clicked opens when the longer join is no file there.
+  func testARemoteClickFallsBackToTheClickedWordWhenTheJoinIsNoFileOnTheHost() async {
+    let links = RemotePaneLinks(access: FakePaneTabs().access) { _, _ in }
+    links.remoteFiles = { self.hostFiles($0) }
+    let found = await links.remoteFile(["a.rbtoday,", "a.rb"], cwd: nil, target: target)
+    XCTAssertEqual(found, .init(path: "a.rb", line: nil, column: nil))
+  }
+
   /// Value: protects=a ⌘-click whose pane closed while the host answered opens nothing (#254);
   /// fails_when=the answer stops checking that the pane is still held; why_new=the click is
   /// owned by `RemotePaneLinks` now; seam=the host's answer held on a gate.
@@ -277,7 +286,7 @@ final class RemotePaneLinksTests: XCTestCase {
     }
     let tab = tabs.add(to: target.id, sessionID: UUID())
 
-    links.open("a.rb", tab: tab, target: target)
+    links.open(["a.rb"], tab: tab, target: target)
     tabs.remove(tab)
     await gate.open()
     try await waitForLateAnswers(keeping: links)
@@ -293,7 +302,7 @@ final class RemotePaneLinksTests: XCTestCase {
     links.remoteFiles = { self.hostFiles($0) }
     let tab = tabs.add(to: target.id, sessionID: UUID())
 
-    links.open("a.rb", tab: tab, target: target)
+    links.open(["a.rb"], tab: tab, target: target)
     try await waitFor(tries: 200) { !opened.isEmpty }
 
     XCTAssertEqual(opened, ["a.rb"])
@@ -315,8 +324,8 @@ final class RemotePaneLinksTests: XCTestCase {
     }
     let tab = tabs.add(to: target.id, sessionID: UUID())
 
-    links.open("a.rb", tab: tab, target: target)
-    links.open("b.rb", tab: tab, target: target)
+    links.open(["a.rb"], tab: tab, target: target)
+    links.open(["b.rb"], tab: tab, target: target)
     try await waitFor(tries: 200) { !opened.isEmpty }
     await gate.open()
     try await waitForLateAnswers(keeping: links)
