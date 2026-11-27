@@ -329,7 +329,10 @@ const ATTACH_ENTRIES: &[(&str, &str)] = &[
          makes a restored pane's gone session again: the session's login shell runs it. A remote \
          pane sends it with its first attach, `CREATE=0` too: a gone session is then made again \
          with it, once however many clients ask, unless it is a run session or the daemon runs as \
-         root, which are refused as before.",
+         root, which are refused as before. Only a session that ended with its daemon or host is \
+         made again: never one that ended under this daemon, killed or exited, nor, on a daemon \
+         that keeps screens (`serve --screens`), one whose last screen it didn't keep. Such an \
+         attach is answered as one with no record.",
     ),
     (
         "RESUME_CWD",

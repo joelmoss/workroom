@@ -61,6 +61,7 @@ A terminal whose program said how to start itself again, such as Claude Code thr
 
 - The terminal resumes on the host, as a terminal session there like any other. If you show the same workroom on two Macs, the program starts once, and both Macs show it.
 - A terminal reconnecting to a session that is still running carries on as before, and says nothing.
+- Only a host restart, or a crash of the host's Workroom daemon, brings a program back. A terminal that was stopped while this Mac was away, such as one closed on another Mac, or whose shell exited, says it ended, as before.
 - A host Workroom has never set up, or one made again from scratch, has nothing to resume, so its terminals still say they ended.
 - Programs never resume on a host whose Workroom daemon runs as root, such as a container whose image has no other user. Its terminals say they ended, as before.
 - A hidden tab of a remote workroom resumes when you open it, as it reconnects then.

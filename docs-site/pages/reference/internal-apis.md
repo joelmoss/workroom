@@ -85,7 +85,7 @@ The Terminal and Control services carry frames: one byte of kind, a big-endian `
 | `HOST` | `1`: build the session from the host's own environment and account (a remote pane). |
 | `CLIENT` | The client's kind, `pane`, `app` or `cli`, as `sessions --clients` reports it. |
 | `HOSTNAME` | The machine the client is on: for a pane, the Mac showing it. |
-| `RESUME_ARG` | One word of the tab's resume record's command, in order, sent only with the attach that makes a restored pane's gone session again: the session's login shell runs it. A remote pane sends it with its first attach, `CREATE=0` too: a gone session is then made again with it, once however many clients ask, unless it is a run session or the daemon runs as root, which are refused as before. |
+| `RESUME_ARG` | One word of the tab's resume record's command, in order, sent only with the attach that makes a restored pane's gone session again: the session's login shell runs it. A remote pane sends it with its first attach, `CREATE=0` too: a gone session is then made again with it, once however many clients ask, unless it is a run session or the daemon runs as root, which are refused as before. Only a session that ended with its daemon or host is made again: never one that ended under this daemon, killed or exited, nor, on a daemon that keeps screens (`serve --screens`), one whose last screen it didn't keep. Such an attach is answered as one with no record. |
 | `RESUME_CWD` | The folder the resume record's command runs in; a folder that is gone means no resume. |
 | `RESUME_AT` | When the resume record was reported, in milliseconds since the Unix epoch. |
 | `ENV:NAME` | One variable for the session's environment, the client's own, not the daemon's. |

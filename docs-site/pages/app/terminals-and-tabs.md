@@ -170,6 +170,7 @@ When you reopen Workroom, visible panes reconnect immediately. Hidden terminal t
 
 A restart of your Mac, or a crash of the background helper, ends every terminal's shell. When you open Workroom again, a terminal whose program said how to start itself again gets that program back, in the folder it was in, instead of an empty shell, so a coding agent that reports itself carries on its conversation. Once the program has started, the terminal says **Resumed Claude Code**, or **Resumed** and the program's name for any other.
 
+- Only a restart or a crash brings a program back. A terminal that was stopped, or whose shell exited, while the background helper kept running opens a new shell, and Workroom forgets the program.
 - When you quit the resumed program, the terminal stays open at a shell prompt in that folder.
 - The resumed program runs as a job of the terminal's shell, as if you had typed it: ⌃Z suspends it to the prompt, and `fg` brings it back. Its command line never goes into your shell's history.
 - If the program can't start, or exits with an error within 5 seconds of starting, the terminal says **Couldn't resume** and the program's name, and leaves you at a shell prompt. Workroom then forgets the program, so it doesn't try again after the next restart.
