@@ -625,6 +625,42 @@ final class PaneSessionAttachmentTests: XCTestCase {
     }
   }
 
+  /// Value: protects=the launch file a restored remote pane wrote for its tab's record, which holds
+  /// the record's arguments, going at once when its host's attach can't be built and the pane runs
+  /// only a notice that says so (#826): no relay runs to claim it; fails_when=the file stays until
+  /// a later write's hour-old sweep, or the notice is handed its path; why_new=#826's review;
+  /// seam=the service's launch folder
+  func testARemotePaneWhoseAttachCantBeBuiltRemovesItsLaunchFile() throws {
+    let folder = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-stranded-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+    service.resumeLaunchDirectory = folder
+    // A driver that knows no host, so its attach throws.
+    let driver = ContainerHostDriver(hosts: [:], directory: folder.appendingPathComponent("hosts"))
+    let session = UUID()
+    service.registerRemoteSession(
+      session, on: .remote(UUID()), via: driver, workingDirectory: "/home/w")
+    let pane = attachment()
+    pane.tabSessionID = { session }
+    pane.tabResume = {
+      ResumeRecord(argv: ["claude", "--resume", "a"], cwd: "/home/w", reportedAt: 1, boot: "b")
+    }
+    pane.isRestored = true
+
+    let launch = try XCTUnwrap(
+      pane.launch(workingDirectory: "/home/w", runCommand: nil, isRunSession: false))
+    XCTAssertTrue(launch.command.contains("Could not reach this terminal"), launch.command)
+    XCTAssertNil(launch.environment.first { $0.key == ResumeLaunchFile.variable })
+    var isDirectory: ObjCBool = false
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
+      "the launch wrote its file before its attach failed")
+    let left = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+      .filter(ResumeLaunchFile.isLaunchName)
+    XCTAssertEqual(left, [], "no relay claims it, so the launch removed its own file")
+    XCTAssertNil(pane.resumeState)
+  }
+
   /// A tab's surface attaches through the service its window holds, whichever factory made the
   /// surface.
   func testATabsSurfaceAttachesThroughItsWindowsService() throws {

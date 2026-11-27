@@ -692,6 +692,21 @@ final class PersistentSessionService {
   func attachCommand(
     forSession sessionID: UUID, restored: Bool = false, by pane: UUID? = nil
   ) -> String? {
+    attach(forSession: sessionID, restored: restored, by: pane)?.command
+  }
+
+  /// What a pane runs for `sessionID` (`attachCommand`), and whether it is a relay to the session.
+  struct PaneAttach: Equatable {
+    let command: String
+    /// False for a remote pane whose host's attach couldn't be built: its command only says so,
+    /// and no relay runs to claim a resume launch file handed to it (#826).
+    let reachesSession: Bool
+  }
+
+  /// `attachCommand`, saying whether the command is a relay to the session.
+  func attach(
+    forSession sessionID: UUID, restored: Bool = false, by pane: UUID? = nil
+  ) -> PaneAttach? {
     if let remote = remoteSessions[sessionID] {
       // A pane here holds it again, however its attach goes: no longer one this Mac let go.
       if pane != nil { releasedRemote.removeValue(forKey: sessionID) }
@@ -699,7 +714,7 @@ final class PersistentSessionService {
         let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
           restored: restored, metadata: remote.metadata, runCommand: remote.runCommand)
-        guard let pane else { return command }
+        guard let pane else { return PaneAttach(command: command, reachesSession: true) }
         attachedRemote[sessionID, default: []].insert(pane)
         // A pane attaching connects a host with no service connection, so its badge is heard and a
         // container workroom's git credential relay, which rides that connection, is there for the
@@ -714,9 +729,10 @@ final class PersistentSessionService {
         // A host whose daemon is too old for this attach, which the app couldn't update yet: the
         // pane says so when its attach drops, rather than that the host can't be reached.
         if let notice = waitingNotice(host) {
-          return SSHTransport.withRetryNotice(notice, command)
+          return PaneAttach(
+            command: SSHTransport.withRetryNotice(notice, command), reachesSession: true)
         }
-        return command
+        return PaneAttach(command: command, reachesSession: true)
       } catch {
         logger.error(
           "no attach command for remote session \(sessionID.uuidString, privacy: .public): \(error)"
@@ -725,9 +741,11 @@ final class PersistentSessionService {
         // reads as the remote workroom's. A pane that says why it could not reach the host is
         // honest; one on the wrong machine is not.
         let notice = "Could not reach this terminal's host: \(error.localizedDescription)"
-        return "/bin/sh -c "
-          + SSHTransport.shellQuoted(
-            "printf '%s\\n' " + SSHTransport.shellQuoted(notice))
+        return PaneAttach(
+          command: "/bin/sh -c "
+            + SSHTransport.shellQuoted(
+              "printf '%s\\n' " + SSHTransport.shellQuoted(notice)),
+          reachesSession: false)
       }
     }
     // Nil owner ⇒ nil command ⇒ the caller opens a plain shell rather than guessing a helper.
@@ -746,7 +764,9 @@ final class PersistentSessionService {
     let command = path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
     // A restored id the daemon no longer holds is refused rather than silently created; the relay
     // then says the session ended and creates a new one under the same id (`attach.rs`, #459).
-    return restored && owner == .daemon ? command + " --no-create" : command
+    return PaneAttach(
+      command: restored && owner == .daemon ? command + " --no-create" : command,
+      reachesSession: true)
   }
 
   /// `runCommand` makes the session a run session (#522): the daemon runs it under the run
