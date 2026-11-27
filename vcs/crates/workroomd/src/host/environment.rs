@@ -251,11 +251,10 @@ pub(crate) fn probe_until(
     Ok(parsed)
 }
 
-/// A marker no rc file prints by accident: 32 random hex digits.
+/// A marker no rc file prints by accident: 32 random hex digits, or 32 zeros should the system's
+/// randomness fail.
 fn marker() -> String {
-    let mut bytes = [0u8; 16];
-    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::util::random_hex(16).unwrap_or_else(|| "0".repeat(32))
 }
 
 /// The `env -0` payload between the first marker and the next one, split into variables. Anchored

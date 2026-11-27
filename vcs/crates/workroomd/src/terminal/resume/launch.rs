@@ -87,6 +87,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::terminal::session::SessionId;
 use crate::terminal::shell::{Invocation, shell_name};
+use crate::util::euid;
 
 /// The variable the app names its launch file in, for the relay (`WORKROOM_SESSION_RESUME`).
 pub const APP_FILE_VARIABLE: &str = "WORKROOM_SESSION_RESUME";
@@ -172,7 +173,7 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
         Err(e) => return Err(e),
     }
     let meta = std::fs::symlink_metadata(dir)?;
-    if !meta.is_dir() || meta.uid() != uid() {
+    if !meta.is_dir() || meta.uid() != euid() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     if meta.mode() & 0o077 != 0 {
@@ -184,20 +185,13 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
 /// Whether `dir` is a real folder this user owns that no one else can enter.
 fn is_private_dir(dir: &Path) -> bool {
     std::fs::symlink_metadata(dir)
-        .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid() && meta.mode() & 0o077 == 0)
-}
-
-fn uid() -> u32 {
-    // SAFETY: no preconditions.
-    unsafe { libc::geteuid() }
+        .is_ok_and(|meta| meta.is_dir() && meta.uid() == euid() && meta.mode() & 0o077 == 0)
 }
 
 /// A new launch file's name for session `id`: `resume-<id>-<32 hex>.<extension>`.
 fn launch_name(id: SessionId, extension: &str) -> io::Result<String> {
-    let mut bytes = [0u8; 16];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
-        .map_err(|_| io::Error::other("the system's randomness failed"))?;
-    let nonce: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let nonce = crate::util::random_hex(16)
+        .ok_or_else(|| io::Error::other("the system's randomness failed"))?;
     Ok(format!("resume-{}-{nonce}.{extension}", id.to_hyphenated()))
 }
 
@@ -266,7 +260,7 @@ pub(crate) fn claim(path: &Path, id: Option<SessionId>) -> io::Result<Vec<u8>> {
     let read = || -> io::Result<Vec<u8>> {
         let meta = std::fs::symlink_metadata(&claimed)?;
         if !meta.is_file()
-            || meta.uid() != uid()
+            || meta.uid() != euid()
             || meta.nlink() != 1
             || meta.mode() & 0o077 != 0
             || meta.len() > MAX_FILE
@@ -322,7 +316,7 @@ pub(crate) fn sweep(dir: &Path, older_than: Option<Duration>, live: impl Fn(Sess
                 .and_then(|at| now.duration_since(at).ok())
                 .is_some_and(|elapsed| elapsed >= age)
         });
-        if meta.is_file() && meta.uid() == uid() && old {
+        if meta.is_file() && meta.uid() == euid() && old {
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -397,7 +391,7 @@ pub(crate) fn discard(file: &Path, id: SessionId) {
         .is_some_and(|name| is_launch_name(name, Some(id)));
     let ours = named
         && file.parent().is_some_and(is_private_dir)
-        && std::fs::symlink_metadata(file).is_ok_and(|meta| meta.is_file() && meta.uid() == uid());
+        && std::fs::symlink_metadata(file).is_ok_and(|meta| meta.is_file() && meta.uid() == euid());
     if ours {
         let _ = std::fs::remove_file(file);
     }
@@ -408,10 +402,7 @@ pub(crate) fn discard(file: &Path, id: SessionId) {
 /// is reported.
 fn report(pid: u32, fields: &str) -> Option<Vec<u8>> {
     let token = std::env::var(super::TOKEN_VARIABLE).ok()?;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let now = crate::util::unix_seconds()?;
     Some(signed(&token, pid, now, fields))
 }
 

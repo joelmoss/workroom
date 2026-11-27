@@ -83,7 +83,7 @@ fn passwd_shell() -> Option<String> {
     // in `buffer`, which outlives their use below.
     let rc = unsafe {
         libc::getpwuid_r(
-            libc::geteuid(),
+            crate::util::euid(),
             &mut entry,
             buffer.as_mut_ptr(),
             buffer.len(),

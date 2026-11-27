@@ -118,11 +118,34 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
 /// The SHA-256 of `bytes`, in lowercase hex: a script's approval (`trusted_scripts`) and a release
 /// archive's checksum are both written this way.
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+}
+
+/// `count` bytes from the system's randomness, in lowercase hex (two digits a byte), or `None`
+/// when that randomness fails: a caller decides whether to go on without it.
+pub(crate) fn random_hex(count: usize) -> Option<String> {
+    let mut bytes = vec![0u8; count];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).ok()?;
+    Some(hex(&bytes))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Whole seconds since the Unix epoch, or `None` on a clock set before it: a caller decides what
+/// such a clock means.
+pub(crate) fn unix_seconds() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_secs())
+}
+
+/// This process's effective user id.
+pub(crate) fn euid() -> u32 {
+    // SAFETY: geteuid takes nothing and cannot fail.
+    unsafe { libc::geteuid() }
 }
 
 /// Call before every `fork` this crate makes, so the child is not killed before it can exec.
