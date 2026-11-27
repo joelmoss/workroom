@@ -383,7 +383,8 @@ fn fails_at_once_or_is_declined(shell: &str) {
             }),
             "{first}"
         );
-        assert_eq!(first["resumeStarted"], true, "{first}");
+        // Not `resumeStarted`: a program this quick can be gone before its start report is read,
+        // and the app takes a failure without a start (#825).
         assert!(first["resume"].is_null(), "cleared at once: {first}");
     }
     // Worked out by the shell, so the typed line's echo can't pass for it.
