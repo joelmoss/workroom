@@ -184,7 +184,7 @@ A restart of your Mac, or a crash of the background helper, ends every terminal'
 - A run tab doesn't resume: it comes back stopped, and ⌘R starts it again.
 - To turn it off, turn off **Resume programs after a restart** in [Settings ▸ Terminal](settings.md#resume-programs-after-a-restart).
 
-A program says how to resume over the Program Resume Protocol (OSC 7577). Claude Code says so through a hook Workroom adds to its settings: see [Coding agents](coding-agents.md#carry-on-a-claude-code-conversation-after-a-restart). This works in terminals on this Mac, and in a remote workroom's terminals after their host restarts: see [Reconnecting](../remote/reconnecting.md#programs-that-resume-after-the-host-restarts).
+A program says how to resume over the Program Resume Protocol (OSC 7577). Claude Code says so through a hook Workroom adds to its settings: see [Coding agents](coding-agents.md#carry-on-a-claude-code-conversation-after-a-restart). To make a program or script of your own resume, see [Make your own program resume after a restart](../guides/make-your-program-resume.md). This works in terminals on this Mac, and in a remote workroom's terminals after their host restarts: see [Reconnecting](../remote/reconnecting.md#programs-that-resume-after-the-host-restarts).
 
 ### Who is attached to a terminal {nightly}
 
