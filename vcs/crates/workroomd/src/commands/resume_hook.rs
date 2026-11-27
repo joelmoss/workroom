@@ -323,10 +323,10 @@ fn is_ours(handler: &Value) -> bool {
 
 /// The settings' `hooks.SessionStart`, made when `make` and it isn't there; an error when
 /// `hooks` or it is something Claude wouldn't read as hooks.
-fn session_start<'a>(
-    settings: &'a mut Map<String, Value>,
+fn session_start(
+    settings: &mut Map<String, Value>,
     make: bool,
-) -> Result<Option<&'a mut Vec<Value>>, String> {
+) -> Result<Option<&mut Vec<Value>>, String> {
     if !make && !settings.contains_key("hooks") {
         return Ok(None);
     }

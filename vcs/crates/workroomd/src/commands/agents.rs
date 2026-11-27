@@ -34,6 +34,7 @@ pub(super) const NOT_TERMINAL_API: &[&str] = &[
     "host",
     "include-archive",
     "list",
+    "resume-hook",
     "skill",
     "trust",
     "untrust",

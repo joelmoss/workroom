@@ -129,6 +129,14 @@ extension Defaults.Keys {
   /// is gone runs again the program its record names. On by default. Read only through
   /// `ProgramResume`, the one place the app asks it.
   static let resumePrograms = Key<Bool>("resumePrograms", default: true, suite: .app)
+  /// The hosts (`WorkroomSkill.key`) Claude Code's resume hook (#828) may be on: each is marked as
+  /// an install is about to start there, and unmarked once a removal there went through with
+  /// `resumePrograms` off (`ClaudeResumeHook`).
+  static let claudeResumeHookHosts = Key<[String]>(
+    "claudeResumeHookHosts", default: [], suite: .app)
+  /// Whether Claude Code's resume hook may be on this Mac, by the same rule.
+  static let claudeResumeHookOnMac = Key<Bool>(
+    "claudeResumeHookOnMac", default: false, suite: .app)
 
   /// The terminal's font and cursor (Settings ▸ Terminal), written into the generated
   /// `ghostty.conf` by `TerminalTypography.configLines`. Each default writes no line.

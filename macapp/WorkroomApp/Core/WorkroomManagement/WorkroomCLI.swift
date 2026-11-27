@@ -416,6 +416,18 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     return try decode(WorkroomSkillReport.self, from: result)
   }
 
+  /// Installs, or removes, Claude Code's resume hook (#828) in each Claude profile under `home`
+  /// (`workroom resume-hook`), saying what became of each profile's `settings.json`. `variables`
+  /// are the only `CLAUDE_CONFIG_DIR` it sees: the app's own is never passed on.
+  func claudeResumeHook(install: Bool, home: String, variables: [String: String]) async throws
+    -> ClaudeResumeHookReport
+  {
+    let result = try await run(
+      ["resume-hook", install ? "install" : "remove", "--json"], timeout: 30,
+      home: SkillHome(path: home, variables: variables))
+    return try decode(ClaudeResumeHookReport.self, from: result)
+  }
+
   /// Registers a remote workroom the app is about to make (#253) under a new name, with
   /// `descriptor` as its host descriptor and `hostPath` its checkout on the host. Nothing is made on
   /// this Mac.

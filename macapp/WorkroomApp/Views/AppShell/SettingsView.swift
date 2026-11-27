@@ -874,7 +874,8 @@ private struct TerminalSettingsPane: View {
 
   private static let resumeProgramsHelp =
     "When your Mac restarts or a terminal's session ends, programs that support it, such as "
-    + "Claude Code and Codex, come back where they were."
+    + "Claude Code and Codex, come back where they were. Claude Code does so through a hook "
+    + "Workroom adds to its settings."
 
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
@@ -883,6 +884,8 @@ private struct TerminalSettingsPane: View {
   @Default(.terminalReportsGhostty) private var reportsGhostty
   // ADR 0082, #827: `ProgramResume` is where the rest of the app reads it.
   @Default(.resumePrograms) private var resumePrograms
+  // A Claude profile whose settings Claude Code's resume hook (#828) couldn't go into.
+  @ObservedObject private var claudeResumeHook = ClaudeResumeHook.shared
   // The detached sessions "Stop Detached Terminals" found; non-nil presents its alert.
   @State private var detachedToStop: [UUID]?
 
@@ -960,6 +963,20 @@ private struct TerminalSettingsPane: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("settings.control.resumeProgramsCaption")
+          if let notice = claudeResumeHook.notice {
+            Label {
+              Text(notice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+              Image(systemName: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+            .help(notice)
+            .accessibilityIdentifier("settings.control.resumeProgramsNotice")
+          }
         }
 
         Picker("Open file paths in", selection: $pathEditor) {

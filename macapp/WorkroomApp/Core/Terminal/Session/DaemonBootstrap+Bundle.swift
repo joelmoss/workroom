@@ -9,12 +9,14 @@ import WorkroomDomain
 extension DaemonBootstrap {
   /// The bootstrap, then the connection: the one way to a remote host's services. Once connected,
   /// the host gets Settings ▸ AI Agents' Workroom skill setting (`WorkroomSkill.hostPolicy`),
-  /// unless `workroomSkill` says otherwise, and the setting hears how it went.
+  /// unless `workroomSkill` says otherwise, and the setting hears how it went; so does Settings ▸
+  /// Terminal's Claude Code resume hook (`ClaudeResumeHook.hostPolicy`, #828), unless
+  /// `resumeHook` says otherwise.
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
-    workroomSkill: WorkroomSkillPolicy? = nil
+    workroomSkill: WorkroomSkillPolicy? = nil, resumeHook: WorkroomSkillPolicy? = nil
   ) async throws -> DaemonClient {
     try await connect(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
@@ -22,6 +24,10 @@ extension DaemonBootstrap {
       workroomSkill: workroomSkill ?? WorkroomSkill.beginHostSync(for: host),
       onWorkroomSkill: { policy, result in
         WorkroomSkill.hostSynced(host, policy: policy, result: result)
+      },
+      resumeHook: resumeHook ?? ClaudeResumeHook.beginHostSync(for: host),
+      onResumeHook: { policy, result in
+        ClaudeResumeHook.hostSynced(host, policy: policy, result: result)
       })
   }
 

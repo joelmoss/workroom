@@ -155,6 +155,39 @@ final class DaemonBootstrapTests: XCTestCase {
       driver.commands[1], "'\(binary)' 'skill' 'remove' '--login-environment' '--json'")
   }
 
+  /// Claude Code's resume hook (#828) on a host: installed and removed by the host's own binary,
+  /// with the host's login environment, each profile's state read from `profiles`; left alone,
+  /// nothing runs; a daemon from before `resume-hook` is reported, not thrown.
+  func testTheResumeHookIsSyncedByTheHostsOwnBinary() async throws {
+    let binary = DaemonInstall.binary(besideSocket: socket)
+    let answer = StubDriver.Answer(
+      output: "Welcome to the host\n{\"ok\":true,\"schema_version\":1,\"cli_version\":\"dev\","
+        + "\"command\":\"resume-hook install\",\"profiles\":[{\"agent\":\"claude\","
+        + "\"path\":\"/h/.claude/settings.json\",\"state\":\"installed\"}]}\n")
+    var driver = StubDriver([answer])
+    var result = await DaemonBootstrap.syncResumeHook(
+      .install, host: host, driver: driver, socket: socket)
+    XCTAssertEqual(result?.summary, "claude installed")
+    XCTAssertEqual(
+      driver.commands, ["'\(binary)' 'resume-hook' 'install' '--login-environment' '--json'"])
+
+    driver = StubDriver([answer])
+    result = await DaemonBootstrap.syncResumeHook(
+      .remove, host: host, driver: driver, socket: socket)
+    XCTAssertEqual(
+      driver.commands, ["'\(binary)' 'resume-hook' 'remove' '--login-environment' '--json'"])
+
+    driver = StubDriver([])
+    result = await DaemonBootstrap.syncResumeHook(
+      .leave, host: host, driver: driver, socket: socket)
+    XCTAssertNil(result)
+    XCTAssertEqual(driver.commands, [])
+
+    XCTAssertEqual(
+      DaemonBootstrap.resumeHookOutcome(status: 1, output: "Error: unknown command"),
+      .failed("Error: unknown command"))
+  }
+
   /// `connect` never waits on the skill: it connects, then syncs it in a task of its own and says
   /// how it went. The stub's stream refuses, so a sync that ran first would show as a command
   /// before the failure.
