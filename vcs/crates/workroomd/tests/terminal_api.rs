@@ -1242,6 +1242,90 @@ fn a_shells_resume_report_is_its_record_in_the_listing() {
     );
 }
 
+/// A shell whose app turned "Resume programs after a restart" off (#827) gets no resume token, so
+/// the report the test above signs makes no record. A mark printed after it is the control that
+/// the daemon read past it.
+#[test]
+fn a_shell_whose_app_turned_resume_off_has_no_token_and_makes_no_record() {
+    let workspace = Workspace::new("api-resume-off");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = attach_with_env(
+        &socket,
+        SHELL,
+        &[],
+        &[
+            ("WORKROOM_SESSION_TITLE", "server"),
+            ("WORKROOM_SESSION_WORKROOM", "wr-1"),
+            ("WORKROOM_SESSION_CWD", workspace.dir.to_str().unwrap()),
+            ("WORKROOM_SESSION_PROGRAM_RESUME", "off"),
+        ],
+    );
+    listing_until(&socket, |listing| listing.len() == 1);
+    let token = shell_output(
+        &mut shell,
+        &workspace.dir,
+        "token",
+        r#"printf '[%s]' "${OSC7577_TOKEN-none}""#,
+    );
+    assert_eq!(token, "[none]", "a shell with resume off has no token");
+    type_line(
+        &mut shell,
+        r#"body="pid=$$:time=$(date +%s):argv=bnZpbQ==,LVM=,L3NlY3JldC9zZXNzaW9uLnZpbQ=="; mac=$({ printf '%s:%s' "$body" "$OSC7577_TOKEN" | sha256sum 2>/dev/null || printf '%s:%s' "$body" "$OSC7577_TOKEN" | shasum -a 256; } | cut -d' ' -f1); printf '\033]7577;%s:mac=%s\007' "$body" "$mac""#,
+    );
+    // The control: the daemon reads a session's output for reports before it sends it on, so a
+    // mark printed after the report reaching this client means the report was read.
+    let mut screen = common::ClientReader::new(&mut shell);
+    type_line(&mut shell, r"printf '%s-%s\n' report read");
+    let seen = screen.read_until("report-read", Duration::from_secs(30));
+    assert!(
+        seen.contains("report-read"),
+        "the mark never came: {seen:?}"
+    );
+    let listing = sessions(&socket);
+    assert!(
+        listing[0]["resume"].is_null(),
+        "no record: {}",
+        listing[0]["resume"]
+    );
+
+    // A session `workroom new` opens from it is made as it was, resume off included.
+    let (code, envelope) = from_pane(&mut shell, &workspace.dir, "new.json", "new");
+    assert_eq!(code, 0, "{envelope}");
+    let id = envelope["session"]["id"].as_str().unwrap().to_string();
+    let said = run_in(
+        &socket,
+        &id,
+        &workspace.dir,
+        "new-token",
+        r#"printf '[%s]' "${OSC7577_TOKEN-none}""#,
+    );
+    assert_eq!(
+        said, "[none]",
+        "a session opened from it has no token either"
+    );
+
+    // The control: one opened from a pane with resume on has its own, unless the daemon runs as
+    // root, which gives none (ADR 0082).
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let mut on = open(&socket, OTHER, "on", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 3);
+    let (code, envelope) = from_pane(&mut on, &workspace.dir, "new-on.json", "new");
+    assert_eq!(code, 0, "{envelope}");
+    let id = envelope["session"]["id"].as_str().unwrap().to_string();
+    let said = run_in(
+        &socket,
+        &id,
+        &workspace.dir,
+        "new-on-token",
+        r#"printf '[%s]' "${OSC7577_TOKEN-none}""#,
+    );
+    assert_eq!(said.len(), 34, "a token of 32 hex digits: {said}");
+}
+
 /// libghostty's screen format has no title, so a hand-off carries it apart; without that, the
 /// next program would list the session untitled until its program set the title again.
 #[test]

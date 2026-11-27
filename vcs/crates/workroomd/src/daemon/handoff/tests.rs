@@ -53,6 +53,8 @@ fn a_table_survives_encoding() {
                     resources: "/Applications/W.app/Contents/Resources/ghostty".into(),
                     run_shell: Some("/bin/zsh".into()),
                     commands: None,
+                    // Its app turned resume off (#827), so a `session.new` from it gets no token.
+                    resume_off: true,
                 }),
                 // Its resume state (ADR 0082), token and stream offset included (version 6).
                 resume: Some(crate::terminal::resume::Carried::for_test(
@@ -79,6 +81,21 @@ fn a_table_survives_encoding() {
         Table::decode(&table.encode()).map_err(|e| e.to_string()),
         Ok(table)
     );
+}
+
+/// A recipe an older program wrote says nothing of resume (#827): it reads back as on, as that
+/// session's resume was.
+#[test]
+fn an_older_recipe_reads_as_resume_on() {
+    let recipe = crate::terminal::session::Recipe {
+        shell: "/bin/zsh".into(),
+        ..Default::default()
+    };
+    let mut json = recipe.to_json();
+    json.as_object_mut().unwrap().remove("resume_off");
+    let read = crate::terminal::session::Recipe::from_json(&json).expect("a recipe");
+    assert!(!read.resume_off);
+    assert_eq!(read, recipe);
 }
 
 /// The terminal API's events cross a version 4 table after the sessions (#687), and one that

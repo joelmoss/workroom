@@ -55,6 +55,22 @@ use protocol::{Action, Ignored, Stream};
 /// The environment variable a session's token is in.
 pub(crate) const TOKEN_VARIABLE: &str = "OSC7577_TOKEN";
 
+/// What an attach that creates a session sets, to `OFF`, when the app's "Resume programs after a
+/// restart" is off (#827): that session gets no token, so it accepts no reports, and the attach's
+/// record, if any, is not run. Per session, not the daemon's: the daemon is shared by every Mac
+/// and app build. Absent is on, as for an older app or a `workroom attach` someone typed.
+pub const SETTING_VARIABLE: &str = "WORKROOM_SESSION_PROGRAM_RESUME";
+
+/// `SETTING_VARIABLE`'s value that turns resume off.
+pub const OFF: &str = "off";
+
+/// Whether an attach's environment leaves its session's programs able to resume
+/// (`SETTING_VARIABLE`): any value but `OFF` is on.
+pub fn turned_on(env: &[(OsString, OsString)]) -> bool {
+    !env.iter()
+        .any(|(key, value)| key == SETTING_VARIABLE && value == OFF)
+}
+
 /// How long a record's owner must stay gone, while its session's shell runs on, before the record
 /// clears. At logout or shutdown a program can exit just before its session does, and the spec
 /// would have that record kept; it says a second or two is enough.
@@ -941,10 +957,15 @@ pub(crate) fn new_token() -> Option<String> {
 }
 
 /// Gives a new session's environment its own token, or none, in place of any it was forwarded:
-/// a token from the pane an attach client was typed in belongs to that pane (ADR 0082).
-pub(crate) fn give_token(environment: &mut Vec<(OsString, OsString)>, interactive: bool) {
+/// a token from the pane an attach client was typed in belongs to that pane (ADR 0082). None for
+/// a session that isn't `interactive`, or whose app turned resume off (`resumes`, #827).
+pub(crate) fn give_token(
+    environment: &mut Vec<(OsString, OsString)>,
+    interactive: bool,
+    resumes: bool,
+) {
     environment.retain(|(key, _)| key != TOKEN_VARIABLE);
-    if !interactive {
+    if !interactive || !resumes {
         return;
     }
     match new_token() {

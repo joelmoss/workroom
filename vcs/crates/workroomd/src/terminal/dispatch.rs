@@ -233,6 +233,8 @@ pub(crate) fn dispatch(
                 // the client's terminal and locale (`host_session`, ADR 0074).
                 // A Mac pane's PATH has the app's own CLI already (`WorkroomCLI.panePath`); a host
                 // pane's gets the daemon's folder when there is no bin folder (`bin_path`).
+                // Its app's "Resume programs after a restart" (#827), from the variables it sent.
+                let resume_off = !crate::terminal::resume::turned_on(&request.env);
                 let recipe = if request.host_environment {
                     let host = sessions
                         .hooks()
@@ -244,6 +246,7 @@ pub(crate) fn dispatch(
                         shell: host.shell,
                         resources: host.resources,
                         commands: host.commands,
+                        resume_off,
                     }
                 } else {
                     Recipe {
@@ -264,6 +267,7 @@ pub(crate) fn dispatch(
                             .into_owned(),
                         run_shell: request.shell.clone(),
                         commands: None,
+                        resume_off,
                     }
                 };
                 let created = launch(
@@ -479,8 +483,13 @@ pub(crate) fn launch<T>(
     }
     identify(&mut invocation.environment, id, sessions.socket());
     // Its own resume token (ADR 0082), only for an interactive shell: a run or a one-off command
-    // never resumes, and keeps no token another pane forwarded.
-    crate::terminal::resume::give_token(&mut invocation.environment, invocation.interactive);
+    // never resumes, and keeps no token another pane forwarded. Nor does a shell whose app turned
+    // resume off (#827), which so accepts no reports.
+    crate::terminal::resume::give_token(
+        &mut invocation.environment,
+        invocation.interactive,
+        !recipe.resume_off,
+    );
     // The daemon's bin folder first on its PATH (#695): its link and hooks made again first,
     // should something have taken them.
     crate::daemon::bin_dir::ensure();

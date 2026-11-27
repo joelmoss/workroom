@@ -449,6 +449,7 @@ fn fallback_recipe(sessions: &SessionStore) -> Recipe {
         shell: host.shell,
         resources: host.resources,
         commands: host.commands,
+        resume_off: false,
     }
 }
 

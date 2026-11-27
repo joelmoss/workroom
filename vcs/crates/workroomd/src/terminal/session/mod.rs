@@ -627,6 +627,10 @@ pub struct Recipe {
     /// The shell a run session's supervisor runs its command in (`dispatch::run_invocation`).
     pub run_shell: Option<OsString>,
     pub commands: Option<PathBuf>,
+    /// The app that made the session turned resume off (`resume::SETTING_VARIABLE`, #827), so
+    /// neither it nor a session `session.new` builds from it gets a resume token. Off by default,
+    /// so a recipe that says nothing of it (the fallback, an older hand-off's) resumes.
+    pub resume_off: bool,
 }
 
 /// One text of a recipe as a hand-off table carries it: a string, or its bytes when it is no
@@ -667,6 +671,7 @@ impl Recipe {
             "resources": self.resources,
             "run_shell": self.run_shell.as_deref().map(text_json),
             "commands": self.commands.as_deref().map(|path| text_json(path.as_os_str())),
+            "resume_off": self.resume_off,
         })
     }
 
@@ -687,6 +692,8 @@ impl Recipe {
             resources: value["resources"].as_str()?.to_string(),
             run_shell: optional("run_shell")?,
             commands: optional("commands")?.map(PathBuf::from),
+            // Missing from a table an older program wrote: on, as it was.
+            resume_off: value["resume_off"].as_bool().unwrap_or(false),
         })
     }
 }

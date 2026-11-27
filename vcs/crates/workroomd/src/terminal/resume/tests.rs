@@ -483,13 +483,21 @@ fn a_new_shell_gets_its_own_token_in_place_of_a_forwarded_one() {
             .collect::<Vec<_>>()
     };
     let mut command = forwarded();
-    give_token(&mut command, false);
+    give_token(&mut command, false, true);
     assert!(
         tokens(&command).is_empty(),
         "a run or one-off command gets none"
     );
+    // A shell whose app turned resume off (#827): none, and not the forwarded one either.
+    let mut off = forwarded();
+    give_token(&mut off, true, false);
+    assert!(tokens(&off).is_empty(), "a shell with resume off gets none");
+    assert!(
+        Resume::for_session(&off).is_none(),
+        "so it accepts no reports"
+    );
     let mut shell = forwarded();
-    give_token(&mut shell, true);
+    give_token(&mut shell, true, true);
     let given = tokens(&shell);
     // A daemon running as root gives none (as a Linux CI container may).
     if daemon_user().is_some() {
@@ -501,6 +509,15 @@ fn a_new_shell_gets_its_own_token_in_place_of_a_forwarded_one() {
     } else {
         assert!(given.is_empty());
     }
+}
+
+#[test]
+fn only_off_turns_resume_off() {
+    let env = |value: &str| vec![(OsString::from(SETTING_VARIABLE), OsString::from(value))];
+    assert!(turned_on(&[]), "absent is on: an older app, a typed attach");
+    assert!(!turned_on(&env(OFF)));
+    assert!(turned_on(&env("on")));
+    assert!(turned_on(&env("")));
 }
 
 /// The record a session is started to resume in these tests.
