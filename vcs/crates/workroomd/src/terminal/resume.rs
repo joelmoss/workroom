@@ -1,7 +1,8 @@
 //! Program resume (ADR 0082): what a session's programs have reported, over the Program Resume
 //! Protocol (OSC 7577, <https://www.superlogical.com/rex/docs/build/program-resume>), about how
-//! to start them again, kept per session as its **resume record**. Nothing here starts anything:
-//! a pane whose session is gone resumes from the record the app saved (#825).
+//! to start them again, kept per session as its **resume record**. A pane whose session is gone
+//! resumes from the record the app saved, which the daemon runs in the new session (`launch`,
+//! #825).
 //!
 //! **Who may report.** Every interactive session gets its own random token in `OSC7577_TOKEN`
 //! when it starts. A report counts only when its `mac` is made with that token, its `time` is
@@ -32,9 +33,12 @@
 //! starts it again rather than carrying it; an owner that can't be read counts as gone, since
 //! `process::identity` doesn't tell that from an exit; a record is never cleared while the
 //! session's own shell is gone, which stands in for herdr's check that the terminal is healthy;
-//! each record that clears is returned for the daemon's log; and launching and the rapid-loss
-//! guard are not here (#825).
+//! each record that clears is returned for the daemon's log; a resumed program's exit, which
+//! `launch::run_shell` reports, can say it failed to resume (`exited`); launching is `launch`'s;
+//! and there is no rapid-loss guard, since a program that fails at once exits, which clears its
+//! record.
 
+pub mod launch;
 mod protocol;
 
 use std::collections::BTreeMap;
@@ -151,6 +155,12 @@ pub(crate) enum Outcome {
         reason: &'static str,
         program: Option<String>,
     },
+    /// The program this session resumed (#825) exited with an error within
+    /// `launch::FAILED_WITHIN` of the session starting: it could not be resumed.
+    ResumeFailed {
+        program: String,
+        status: i32,
+    },
 }
 
 /// What one look at a record's owner did (`Resume::check_exit`).
@@ -204,6 +214,9 @@ pub(crate) struct Resume {
     root: Option<Owner>,
     words: BTreeMap<u32, Word>,
     stream: Stream,
+    /// The program this session was started to resume (#825), and when: its failure is said only
+    /// within `launch::FAILED_WITHIN`. Not carried by a hand-off, which outlasts that.
+    resuming: Option<(String, Instant)>,
 }
 
 impl std::fmt::Debug for Resume {
@@ -301,6 +314,27 @@ impl Resume {
             root: None,
             words: BTreeMap::new(),
             stream: Stream::default(),
+            resuming: None,
+        }
+    }
+
+    /// This session was started at `at` to resume `program` (#825).
+    pub(crate) fn resuming(&mut self, program: String, at: Instant) {
+        self.resuming = Some((program, at));
+    }
+
+    /// What a resumed program's exit with `status`, said at `at`, means: its failure to resume
+    /// when it failed within `launch::FAILED_WITHIN` of the session starting, said once; else a
+    /// plain clear.
+    fn exited(&mut self, status: i32, at: Instant) -> Outcome {
+        match self.resuming.take() {
+            Some((program, started))
+                if launch::failed(status)
+                    && at.saturating_duration_since(started) < launch::FAILED_WITHIN =>
+            {
+                Outcome::ResumeFailed { program, status }
+            }
+            _ => Outcome::Cleared,
         }
     }
 
@@ -328,15 +362,26 @@ impl Resume {
             return Vec::new();
         }
         let now = unix_now();
+        let at = Instant::now();
         let (root, uid) = (self.root, self.uid);
         reports
             .into_iter()
             .map(|(offset, body)| {
-                self.apply(offset, &body, now, |pid| {
+                let outcome = self.apply(offset, &body, now, |pid| {
                     check_owner(root, uid, pid, crate::terminal::process::identity)
-                })
+                });
+                self.after(outcome, &body, at)
             })
             .collect()
+    }
+
+    /// What an applied report did, once a resumed program's exit (`protocol::workroom_exit`) in a
+    /// clear it made is read at `at`.
+    fn after(&mut self, outcome: Outcome, body: &[u8], at: Instant) -> Outcome {
+        match (&outcome, protocol::workroom_exit(body)) {
+            (Outcome::Cleared, Some(status)) => self.exited(status, at),
+            _ => outcome,
+        }
     }
 
     /// Applies one report body found at `offset`, checking its owner with `find_owner`.
@@ -534,6 +579,7 @@ impl Resume {
             root: carried.root,
             words: carried.words,
             stream: Stream::at(carried.offset),
+            resuming: None,
         }
     }
 }

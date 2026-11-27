@@ -587,6 +587,35 @@ impl SessionStore {
         pending
     }
 
+    /// Session `id` was just started to resume `record` (#825): its status carries the record from
+    /// its first event, so the app keeps it until the program reports itself in the new session,
+    /// and its resume state knows what it resumes, and since when. The locks are taken in the
+    /// reader's order, with the map released.
+    pub(crate) fn resuming(&self, id: SessionId, record: crate::terminal::resume::Whole) {
+        let Some((resume, attached, shadow)) = lock_or_recover(&self.sessions)
+            .get(&id)
+            .map(|session| {
+                (
+                    Arc::clone(&session.resume),
+                    Arc::clone(&session.attached),
+                    Arc::clone(&session.shadow),
+                )
+            })
+        else {
+            return;
+        };
+        let _held = lock_or_recover(&attached);
+        if let Some(state) = lock_or_recover(&resume).as_mut() {
+            state.resuming(
+                crate::terminal::resume::program_name(&record.argv),
+                Instant::now(),
+            );
+        }
+        if let Some(status) = lock_or_recover(&shadow).status() {
+            status.set_resume(Some(record));
+        }
+    }
+
     /// Clears each resume record whose owner has been gone for `resume::EXIT_GRACE` while its
     /// session's shell runs on (ADR 0082, #823), looking at `now`; `screens::tick` runs it every
     /// `screens::INTERVAL`. Each session's resume lock is taken on its own, with the map released,

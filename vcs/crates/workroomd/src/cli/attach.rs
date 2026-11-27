@@ -224,6 +224,36 @@ fn declared(
     (Some(kind), hostname)
 }
 
+/// The resume record the app left for this pane (#825), in the file `WORKROOM_SESSION_RESUME`
+/// names, claimed for `session` (`resume::launch::claim_launch`), which removes it: the record's
+/// arguments can hold secrets, so they never travel in a variable, which a process listing would
+/// show. The variable goes from `env`, the session's environment, either way. `None` for no file,
+/// or one that isn't this pane's or a record a report could make.
+fn take_resume(
+    env: &mut Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    session: Option<wr_protocol::terminal::SessionId>,
+) -> Option<wr_protocol::terminal::ResumeRequest> {
+    use crate::terminal::resume::launch;
+    let path = env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == launch::APP_FILE_VARIABLE)
+        .map(|(_, value)| PathBuf::from(value))?;
+    env.retain(|(key, _)| key != launch::APP_FILE_VARIABLE);
+    let session = session?;
+    match launch::claim_launch(&path, Some(session)) {
+        Ok(record) => Some(wr_protocol::terminal::ResumeRequest {
+            argv: record.argv,
+            cwd: record.cwd,
+            reported_at_ms: record.reported_at_ms,
+        }),
+        Err(error) => {
+            eprintln!("workroomd: this terminal's program can't be resumed: {error}\r");
+            None
+        }
+    }
+}
+
 /// The attach request this process's environment makes (`AttachRequest::from_vars`): the
 /// variables `PersistentSessionService.launchEnvironment` sets, and the environment the child is
 /// given.
@@ -272,6 +302,10 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     let mut request = request_from_env();
     // `--no-create`: attach only if the session exists (see `AttachRequest::existing_only`).
     request.existing_only = args.iter().any(|arg| arg == "--no-create");
+    // The tab's resume record (#825), sent only if the session is gone and made again: claimed
+    // now, whatever happens next, so its file never outlives this pane's start.
+    let resume = take_resume(&mut request.env, request.id)
+        .filter(|_| invoked_by_the_app && dialed.is_none() && request.existing_only);
     // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and a
     // daemon started here would be the idle-exit kind a remote host must not have, racing the
     // supervised one for the socket (#228). It also changes what a lost daemon connection means:
@@ -461,6 +495,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                 replaced = true;
                 attach = encode(&AttachRequest {
                     existing_only: false,
+                    resume: resume.clone(),
                     ..request.clone()
                 });
             }

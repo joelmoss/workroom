@@ -130,6 +130,8 @@ pub fn run_serve(
             // A table left by a program that died before it could read one (see `handoff`)
             // holds the screens of sessions that are gone.
             let _ = std::fs::remove_file(handoff::table_path(&socket));
+            // And a session that is gone can't be resuming: its launch files are left over (#825).
+            crate::terminal::resume::launch::sweep_at_start(&socket);
             match serve::bind(&socket) {
                 Ok(listener) => {
                     crate::note!("serving {} ({BUILD})", socket.display());

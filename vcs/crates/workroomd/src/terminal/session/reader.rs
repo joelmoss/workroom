@@ -12,6 +12,7 @@ use super::terminate::{sweep_run_session, terminate};
 use super::{Attached, Hooks, Session, SessionId, SessionStore, TERMINATING, exit_code};
 use crate::terminal::images;
 use crate::terminal::pty::Pty;
+use crate::terminal::resume::Outcome;
 use crate::terminal::shadow::Shadow;
 use crate::util::{lock_or_recover, recover};
 use wr_protocol::frame::{Frame, FrameKind};
@@ -112,8 +113,7 @@ fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hooks: &Hooks) {
 
 /// Logs what one resume report did (ADR 0082), naming the program and never its arguments, which
 /// can hold secrets.
-fn note_resume(id: SessionId, outcome: crate::terminal::resume::Outcome) {
-    use crate::terminal::resume::Outcome;
+fn note_resume(id: SessionId, outcome: Outcome) {
     let id = id.to_hyphenated();
     match outcome {
         Outcome::Accepted { program } => {
@@ -128,6 +128,9 @@ fn note_resume(id: SessionId, outcome: crate::terminal::resume::Outcome) {
             }
             None => crate::note!("session {id}: a resume report was not accepted ({reason})"),
         },
+        Outcome::ResumeFailed { program, status } => {
+            crate::note!("session {id}: {program} couldn't be resumed: it exited {status} at once");
+        }
     }
 }
 
@@ -234,12 +237,19 @@ pub(super) fn read_session(
                             record = Some(state.whole());
                         }
                     }
+                    // A resumed program that failed at once (#825): the app's toast says so.
+                    let failed = resumed
+                        .iter()
+                        .any(|outcome| matches!(outcome, Outcome::ResumeFailed { .. }));
                     let disturbed = {
                         let mut shadow = lock_or_recover(&shadow);
                         if let Some(record) = record
                             && let Some(status) = shadow.status()
                         {
                             status.set_resume(record);
+                            if failed {
+                                status.set_resume_failed();
+                            }
                         }
                         shadow
                             .watch_for_transfers(held.clients.iter().any(|c| c.transfer.is_some()));

@@ -561,6 +561,7 @@ pub fn create(call: &Call) -> Result<Value, ApiError> {
             columns,
             rows,
             metadata,
+            resume: None,
         },
         Ok,
     );

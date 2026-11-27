@@ -6,8 +6,8 @@
 //! `0cb50d57832f3ebb69157ce7f023fbbc520181a8`), Licensed under the Apache License, Version 2.0
 //! (`LICENSE` beside this file). Changed from the original for Workroom: SHA-256 and base64 come
 //! from this crate's `util` instead of herdr-core's; the reasons a report is ignored are returned
-//! (`Ignored`) so the daemon can log them; Windows path rules are dropped; and the tests moved to
-//! `protocol/tests.rs`.
+//! (`Ignored`) so the daemon can log them; Windows path rules are dropped; the tests moved to
+//! `protocol/tests.rs`; and `workroom_exit` reads Workroom's own key.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -200,6 +200,13 @@ pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Result<Report,
         time,
         action: std::str::from_utf8(body).ok().and_then(parse),
     })
+}
+
+/// The status a resumed program exited with, in an authenticated `clear=1` report's Workroom key
+/// `workroomexit` (`launch::run_shell`, #825). Unknown lowercase keys are the spec's to ignore,
+/// so any other terminal reads the report as a plain clear.
+pub(super) fn workroom_exit(body: &[u8]) -> Option<i32> {
+    envelope(body, b"workroomexit=").and_then(number)
 }
 
 /// Standard base64, padding optional. `None` for anything outside the alphabet or an impossible

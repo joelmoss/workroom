@@ -63,6 +63,12 @@ fn usage() -> &'static str {
         what a run session's pty runs: the run supervisor around <command> in the login shell,
         writing its state (running, stopped, exited <code>) to <path>; USR1 restarts the command,
         USR2 stops it and keeps the pane, TERM stops it and exits
+  workroomd resume-launch <file>
+        what a resuming session's login shell runs first (#825): claims <file>, a launch file the
+        daemon wrote, and becomes the program it names, in its folder
+  workroomd resume-shell <status> <file> <shell>
+        what that shell then becomes: the session's own shell, from <file>, after saying a
+        program that exited <status> at once could not be resumed
   workroomd protocol
         print the protocol version this build speaks
 "
@@ -116,6 +122,8 @@ fn main() -> ExitCode {
         Some("credential") => cli::credential::run_credential(&args),
         Some("run-script") => cli::run_script::run_run_script(&args),
         Some("run-supervisor") => cli::run_supervisor::run_run_supervisor(&args),
+        Some("resume-launch") => cli::resume_launch(&args),
+        Some("resume-shell") => cli::resume_shell(&args),
         Some("handoff-check") => cli::hand_off::run_handoff_check(&args),
         _ => {
             eprint!("{}", usage());
