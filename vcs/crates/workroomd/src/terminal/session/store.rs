@@ -642,22 +642,24 @@ impl SessionStore {
     }
 
     /// Session `id` was just started to resume `record` (#825) from the launch file `file` this
-    /// daemon wrote: its status carries the record from its first event, published now, so the
-    /// app keeps it until the program reports itself in the new session, and its resume state
-    /// knows what it resumes, whose helper's report says it started. The locks are taken in the
-    /// reader's order, with the map released.
+    /// daemon wrote, its shell from the file `shell` when known (`Pending::declines`): its status
+    /// carries the record from its first event, published now, so the app keeps it until the
+    /// program reports itself in the new session, and its resume state knows what it resumes,
+    /// whose helper's report says it started. The locks are taken in the reader's order, with the
+    /// map released.
     pub(crate) fn resuming(
         &self,
         id: SessionId,
         record: crate::terminal::resume::Whole,
         file: std::path::PathBuf,
+        shell: Option<crate::terminal::process::Image>,
     ) {
         let Some((resume, attached, shadow)) = self.resume_parts(id) else {
             return;
         };
         self.publish_held(id, &attached, &shadow, || {
             if let Some(state) = lock_or_recover(&resume).as_mut() {
-                state.resuming(&record, file);
+                state.resuming(&record, file, shell);
             }
             |status: &mut Store| status.set_resume(Some(record))
         });
@@ -761,14 +763,14 @@ impl SessionStore {
     }
 
     /// Declines each resume whose helper has not reported within `resume::DECLINE_AFTER`, from a
-    /// shell that never said Workroom's hook loaded in it (#825, `decline_resume`), and clears each resume record whose owner has been gone for
+    /// shell that never said Workroom's hook loaded in it or that `exec` replaced (#825,
+    /// `decline_resume`), and clears each resume record whose owner has been gone for
     /// `resume::EXIT_GRACE` while its session's shell runs on (ADR 0082, #823), looking at `now`;
-    /// `screens::tick` runs it every
-    /// `screens::INTERVAL`. Each session's resume lock is taken on its own, with the map released,
-    /// as `described` takes it. A session whose record cleared publishes its status (#824), with
-    /// the record read again under its attachment lock, as its reader reads it, so a report fed
-    /// meanwhile is never overwritten by the record before it. Whether a session still has a
-    /// record to look at again.
+    /// `screens::tick` runs it every `screens::INTERVAL`. Each session's resume lock is taken on
+    /// its own, with the map released, as `described` takes it. A session whose record cleared
+    /// publishes its status (#824), with the record read again under its attachment lock, as its
+    /// reader reads it, so a report fed meanwhile is never overwritten by the record before it.
+    /// Whether a session still has a record to look at again.
     pub fn watch_resume_owners(&self, now: Instant) -> bool {
         use crate::terminal::resume::SharedResume;
         type Parts = (
@@ -795,19 +797,29 @@ impl SessionStore {
         for (id, resume, attached, shadow) in resumes {
             // A resume whose helper has not reported, from a shell that never said Workroom's
             // hook loaded in it, is looked at again on every tick, and declined once it has
-            // waited `DECLINE_AFTER` (#825). One whose hook loaded waits for its helper with no
-            // deadline (`Resume::unhooked_file`), so it owes no look.
-            let (waiting, overdue) = lock_or_recover(&resume)
-                .as_ref()
-                .map_or((false, None), |state| {
-                    (state.unhooked_file().is_some(), state.overdue(now))
-                });
-            let declined = overdue.is_some_and(|file| {
-                self.decline_resume(
+            // waited `DECLINE_AFTER` (#825). One whose hook loaded is looked at until then, and
+            // declined there, or at any later tick something else wakes, only once `exec` has
+            // replaced its shell (`Pending::declines`): it owes no look after its deadline. The
+            // processes are read with the resume lock released.
+            let (waiting, overdue) =
+                lock_or_recover(&resume)
+                    .as_ref()
+                    .map_or((false, None), |state| {
+                        let overdue = state.overdue(now);
+                        let waiting = state
+                            .pending()
+                            .is_some_and(|pending| !pending.hooked || overdue.is_none());
+                        (waiting, overdue)
+                    });
+            let declined = overdue.is_some_and(|pending| {
+                pending.declines(
+                    crate::terminal::process::image,
+                    crate::terminal::process::identity,
+                ) && self.decline_resume(
                     id,
-                    &file,
+                    &pending.file,
                     (&resume, &attached, &shadow),
-                    "its shell never loaded Workroom's hook, and its helper never reported",
+                    pending.why(false),
                 )
             });
             watching |= waiting && !declined;

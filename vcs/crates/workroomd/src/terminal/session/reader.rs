@@ -225,10 +225,12 @@ pub(super) fn read_session(
         // the locks are released.
         // A resume (#825) whose helper had not reported by the end of a read that brought the
         // shell's prompt (OSC 133) is declined once the locks are released, when the shell never
-        // said Workroom's hook loaded in it (`Resume::unhooked_file`): the hook runs the helper
+        // said Workroom's hook loaded in it (`Resume::pending`): the hook runs the helper
         // before the first prompt is drawn, so a prompt first from such a shell means it never
         // ran. A shell whose hook loaded can print a prompt mark before it runs (an instant
-        // prompt), so it is waited for.
+        // prompt), so it is waited for, unless `exec` replaced it (`exec fish` in a `.zshrc`),
+        // which its first process is read for then, with every lock released
+        // (`Pending::declines`).
         let (read, clients, answer, published, waiting, resumed, declined) = {
             let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
@@ -256,7 +258,7 @@ pub(super) fn read_session(
                         {
                             record = Some(state.whole());
                         }
-                        unreported = state.unhooked_file();
+                        unreported = state.pending();
                     }
                     // A resumed program that started, or failed at once (#825): the app's toast
                     // says so.
@@ -345,13 +347,17 @@ pub(super) fn read_session(
             hooks.status_changed(id, published);
         }
         // After the read's own status, whose revision is older.
-        if let (Some(file), Some(resume)) = (declined, &resume) {
+        if let (Some(pending), Some(resume)) = (declined, &resume)
+            && pending.declines(
+                crate::terminal::process::image,
+                crate::terminal::process::identity,
+            )
+        {
             sessions.decline_resume(
                 id,
-                &file,
+                &pending.file,
                 (resume, &attached, &shadow),
-                "its shell's first prompt came before its helper reported, so it ran no \
-                 Workroom hook",
+                pending.why(true),
             );
         }
 

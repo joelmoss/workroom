@@ -49,7 +49,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::terminal::process::Identity;
+use crate::terminal::process::{Identity, Image};
 use protocol::{Action, Ignored, Stream};
 
 /// The environment variable a session's token is in.
@@ -185,7 +185,8 @@ pub(crate) enum Outcome {
         status: i32,
     },
     /// The session's shell said, as Workroom's hook loaded in it (`launch::run_hook`), that the
-    /// hook runs there: a resume it waits for is not declined at a prompt or a deadline.
+    /// hook runs there: a resume it waits for is not declined at a prompt or a deadline, unless
+    /// `exec` replaced the shell (`Pending::declines`).
     HookLoaded,
 }
 
@@ -194,7 +195,8 @@ pub(crate) enum Outcome {
 enum Resuming {
     /// Its helper has not yet reported the record, whose command and folder these are, from the
     /// launch file `file` this daemon wrote for it at `since`. `hooked` once the shell said its
-    /// Workroom hook loaded (`Outcome::HookLoaded`).
+    /// Workroom hook loaded (`Outcome::HookLoaded`). `shell` is the file the session's shell was
+    /// started from, when it is known (`process::image_of`).
     Waiting {
         program: String,
         argv: Vec<String>,
@@ -202,6 +204,7 @@ enum Resuming {
         file: std::path::PathBuf,
         since: Instant,
         hooked: bool,
+        shell: Option<Image>,
     },
     /// Its helper's report was accepted at `at`: the program started then.
     Started { program: String, at: Instant },
@@ -210,13 +213,71 @@ enum Resuming {
 /// How long after its session started a resume whose helper has not reported is declined
 /// (`Resume::overdue`), when its shell never said Workroom's hook loaded in it: for a shell that
 /// skipped the hook and whose prompt sends no OSC 133, which would decline it at once
-/// (`Resume::unhooked_file`). A shell whose hook loaded is never declined this way, however long
-/// its startup files take (an `ssh-add` passphrase answered minutes later). Long enough for a
-/// login shell on a cold disk after a reboot, with every restored pane's shell starting at once
-/// (oh-my-zsh and nvm can take 10 s there), before it reaches the hook; a hook that loads later
-/// than this finds its file claimed and starts nothing, so the outcome is the one the app was told
-/// either way.
+/// (`Resume::pending`). A shell whose hook loaded is declined this way only once `exec` has
+/// replaced it (`Pending::declines`), never however long its startup files take (an `ssh-add`
+/// passphrase answered minutes later). Long enough for a login shell on a cold disk after a
+/// reboot, with every restored pane's shell starting at once (oh-my-zsh and nvm can take 10 s
+/// there), before it reaches the hook; a hook that loads later than this finds its file claimed
+/// and starts nothing, so the outcome is the one the app was told either way.
 pub(crate) const DECLINE_AFTER: Duration = Duration::from_secs(30);
+
+/// A resume whose helper has not reported (#825), as a decline at its shell's first prompt or at
+/// `DECLINE_AFTER` reads it (`Resume::pending`, `Resume::overdue`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Pending {
+    /// Its launch file: the one path a decline claims (`launch::claim`).
+    pub file: std::path::PathBuf,
+    /// Whether its shell said Workroom's hook loaded in it.
+    pub hooked: bool,
+    /// The session's first process and the file its shell was started from, when both are known.
+    root: Option<Owner>,
+    shell: Option<Image>,
+}
+
+impl Pending {
+    /// Whether it is declined now, with `image` (`process::image`) and `lookup`
+    /// (`process::identity`) for the session's first process: at once when its shell never said
+    /// Workroom's hook loaded, as such a shell skipped it. One whose hook loaded only on proof that
+    /// `exec` replaced the shell before the hook could run (a `.zshrc` that ends in `exec tmux` or
+    /// `exec fish`): the first process runs a file now, read, that is not the one its shell was
+    /// started from, and is still that process, by pid and start time, once the file was read. A
+    /// pid is not reused before its process is reaped, which only the session's end does, and no
+    /// later process has its start time, so the file read was that process's. `exec` keeps both,
+    /// and nothing but `exec` changes what a process runs. Anything unknown or unread declines
+    /// nothing: the resume waits, as one whose hook loaded always did.
+    pub(crate) fn declines(
+        &self,
+        image: impl Fn(u32) -> Option<Image>,
+        lookup: impl Fn(u32) -> Option<Identity>,
+    ) -> bool {
+        if !self.hooked {
+            return true;
+        }
+        let (Some(root), Some(shell)) = (self.root, self.shell) else {
+            return false;
+        };
+        image(root.pid).is_some_and(|now| now != shell)
+            && lookup(root.pid).map(Owner::from) == Some(root)
+    }
+
+    /// Why it is declined, for the daemon's log, at the shell's first prompt (`at_prompt`) or at
+    /// `DECLINE_AFTER`.
+    pub(crate) fn why(&self, at_prompt: bool) -> &'static str {
+        match (self.hooked, at_prompt) {
+            (true, _) => {
+                "its shell loaded Workroom's hook, then exec replaced the shell before its \
+                 helper ran"
+            }
+            (false, true) => {
+                "its shell's first prompt came before its helper reported, so it ran no \
+                 Workroom hook"
+            }
+            (false, false) => {
+                "its shell never loaded Workroom's hook, and its helper never reported"
+            }
+        }
+    }
+}
 
 /// The resumed program and its helper, by pid and start time, once the program's report was
 /// accepted (#825): the shell made the helper its job's process group leader, so the pty's
@@ -393,8 +454,14 @@ impl Resume {
     }
 
     /// This session was started to resume `record` (#825), which its helper will report, from the
-    /// launch file this daemon wrote at `file`.
-    pub(crate) fn resuming(&mut self, record: &Whole, file: std::path::PathBuf) {
+    /// launch file this daemon wrote at `file`, its shell started from the file `shell` when that
+    /// is known (`process::image_of`).
+    pub(crate) fn resuming(
+        &mut self,
+        record: &Whole,
+        file: std::path::PathBuf,
+        shell: Option<Image>,
+    ) {
         self.resuming = Some(Resuming::Waiting {
             program: program_name(&record.argv),
             argv: record.argv.clone(),
@@ -402,6 +469,7 @@ impl Resume {
             file,
             since: Instant::now(),
             hooked: false,
+            shell,
         });
     }
 
@@ -414,41 +482,48 @@ impl Resume {
         }
     }
 
-    /// `waiting_file`, while the shell has not said Workroom's hook loaded in it: only such a
-    /// resume is declined at the shell's first prompt or at `DECLINE_AFTER`. Once the hook loaded,
-    /// a prompt before it ran (Powerlevel10k's instant prompt prints one from the top of
-    /// `.zshrc`) or a startup file that waits (a passphrase) is no sign it won't run, so the
-    /// resume waits for the helper for as long as the session lives. A hook that loads and then
-    /// never reaches the first prompt (a `.zshrc` that ends in `exec fish`, or that resets
-    /// `precmd_functions`) is the accepted cost: nothing declines it, so the app keeps the record
-    /// and tries it again at each restart, its own fallback saying each time that the pane got a
-    /// new shell.
-    pub(crate) fn unhooked_file(&self) -> Option<std::path::PathBuf> {
+    /// The resume whose helper has not reported, as the shell's first prompt or `DECLINE_AFTER`
+    /// declines it (`Pending::declines`). While the shell has not said Workroom's hook loaded in
+    /// it, it is declined there. Once the hook loaded, a prompt before it ran (Powerlevel10k's
+    /// instant prompt prints one from the top of `.zshrc`) or a startup file that waits (a
+    /// passphrase) is no sign it won't run, so the resume waits for the helper for as long as the
+    /// session lives, unless `exec` replaced the shell (a `.zshrc` that ends in `exec tmux` or
+    /// `exec fish`). A hook that loads and then never reaches the first prompt in the shell it
+    /// was started as (a `.zshrc` that resets `precmd_functions`, or `exec`s the same shell again)
+    /// is the accepted cost: nothing declines it, so the app keeps the record and tries it again
+    /// at each restart, its own fallback saying each time that the pane got a new shell.
+    pub(crate) fn pending(&self) -> Option<Pending> {
         match &self.resuming {
             Some(Resuming::Waiting {
                 file,
-                hooked: false,
+                hooked,
+                shell,
                 ..
-            }) => Some(file.clone()),
+            }) => Some(Pending {
+                file: file.clone(),
+                hooked: *hooked,
+                root: self.root,
+                shell: *shell,
+            }),
             _ => None,
         }
     }
 
-    /// `unhooked_file`, once it has waited `DECLINE_AFTER` at `now`.
-    pub(crate) fn overdue(&self, now: Instant) -> Option<std::path::PathBuf> {
+    /// `pending`, once it has waited `DECLINE_AFTER` at `now`.
+    pub(crate) fn overdue(&self, now: Instant) -> Option<Pending> {
         match &self.resuming {
-            Some(Resuming::Waiting {
-                file,
-                since,
-                hooked: false,
-                ..
-            }) if now.saturating_duration_since(*since) >= DECLINE_AFTER => Some(file.clone()),
+            Some(Resuming::Waiting { since, .. })
+                if now.saturating_duration_since(*since) >= DECLINE_AFTER =>
+            {
+                self.pending()
+            }
             _ => None,
         }
     }
 
     /// The session's shell said Workroom's hook loaded in it (`Outcome::HookLoaded`): a resume it
-    /// waits for is no longer declined at a prompt or a deadline (`unhooked_file`).
+    /// waits for is no longer declined at a prompt or a deadline, unless `exec` replaced the shell
+    /// (`Pending::declines`).
     fn hook_loaded(&mut self) -> Outcome {
         if let Some(Resuming::Waiting { hooked, .. }) = &mut self.resuming {
             *hooked = true;

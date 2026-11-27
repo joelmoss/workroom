@@ -324,3 +324,26 @@ fn basename_never_returns_an_empty_name() {
     // answer and still satisfies the invariant above.
     assert_eq!(basename("/usr/bin/"), Some("bin"));
 }
+
+/// Value: protects=a process's image being the file it runs, whatever path names it, and not a
+/// file it doesn't, so a resume can tell `exec` replaced its shell (#825); fails_when=the image
+/// is read from a path or name rather than the file, or two files compare equal;
+/// why_new=new (#825, `exec tmux` in a `.zshrc`); seam=none
+#[test]
+fn a_process_image_is_the_file_it_runs() {
+    let exe = std::env::current_exe().expect("this test's binary");
+    let mine = image(std::process::id()).expect("this process's image");
+    assert_eq!(Some(mine), image_of(&exe));
+    let linked = std::env::temp_dir().join(format!("wr-image-link-{}", std::process::id()));
+    let _ = std::fs::remove_file(&linked);
+    std::os::unix::fs::symlink(&exe, &linked).expect("a link to it");
+    assert_eq!(image_of(&linked), Some(mine), "a link names the same file");
+    let _ = std::fs::remove_file(&linked);
+    assert_ne!(image_of(Path::new("/bin/sh")), Some(mine), "another file");
+    assert_eq!(
+        image_of(Path::new("sh")),
+        None,
+        "a relative path names no one file"
+    );
+    assert_eq!(image(0), None);
+}
