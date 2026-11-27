@@ -557,7 +557,14 @@ fn resumed(
         .socket()
         .ok_or_else(|| std::io::Error::other("this daemon serves no socket"))
         .and_then(|socket| {
+            // The shell runs the helper by path, so it must name this program's file from any
+            // process: Linux's fallback, `/proc/self/exe`, would name the shell itself.
             let helper = crate::daemon::own_copy::binary()?;
+            let helper = if helper == std::path::Path::new("/proc/self/exe") {
+                std::fs::read_link(&helper)?
+            } else {
+                helper
+            };
             launch::prepare(
                 invocation,
                 crate::terminal::bin_path::hooked(invocation, crate::daemon::bin_dir::folders()),
