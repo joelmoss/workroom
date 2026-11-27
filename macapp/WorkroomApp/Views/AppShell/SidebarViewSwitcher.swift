@@ -57,7 +57,10 @@ struct SidebarViewSwitcher: View {
   @ViewBuilder private func addButton(for view: SidebarView) -> some View {
     switch view {
     case .open:
-      SidebarOpenAddMenu(store: store)
+      HStack(spacing: 0) {
+        SidebarOpenHeaderControls(store: store)
+        SidebarOpenAddMenu(store: store)
+      }
     case .projects:
       // Through the store's request flag, so the sheet (re-homed to RootView, issue #23 OV1)
       // presents as File ▸ New Project…'s does.

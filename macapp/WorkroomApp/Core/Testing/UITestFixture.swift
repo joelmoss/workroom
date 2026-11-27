@@ -1417,6 +1417,9 @@ import WorkroomVCS
       // `DiffViewer.sideBySideMinWidth` (700) even at the fixture's otherwise-deterministic window width.
       Defaults[.sidebarWidth] = 270
       Defaults[.inspectorWidth] = 300
+      // The Open Tabs view's grouping, which persists too: a test that picks another would leave
+      // every later one's rows grouped by it.
+      Defaults[.openTabsGrouping] = .workroom
       // Every section expanded, equal heights. Not optional book-keeping: collapse state decides whether
       // a section's BODY renders at all (a collapsed section keeps only its header), and it's global +
       // persisted, so without this a test inherits whichever sections the developer — or the last UI test

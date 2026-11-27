@@ -583,6 +583,8 @@ struct WindowSession: Codable, Hashable, Sendable {
   /// `AppStore.foldedSelectedOpenTarget` — the selected target, when its Open row was folded by
   /// hand (#819 story 70).
   var foldedSelectedTarget: String?
+  /// `AppStore.foldedOpenProjects` — which projects' groups in the Open Tabs view are folded.
+  var foldedOpenProjects: [String]?
   /// `AppStore.sidebarView` — the view the sidebar's switcher shows (ADR 0083), as its raw value;
   /// written only when it isn't the default, Open.
   var sidebarView: String?
@@ -592,7 +594,7 @@ struct WindowSession: Codable, Hashable, Sendable {
     selectedTargetID: String? = nil, targets: [TargetSession] = [],
     workroomSplits: [LayoutNode<String>] = [], expandedTargets: [String]? = nil,
     unfoldedOpenTargets: [String]? = nil, foldedSelectedTarget: String? = nil,
-    sidebarView: String? = nil
+    foldedOpenProjects: [String]? = nil, sidebarView: String? = nil
   ) {
     self.windowKey = windowKey
     self.frame = frame
@@ -603,6 +605,7 @@ struct WindowSession: Codable, Hashable, Sendable {
     self.expandedTargets = expandedTargets
     self.unfoldedOpenTargets = unfoldedOpenTargets
     self.foldedSelectedTarget = foldedSelectedTarget
+    self.foldedOpenProjects = foldedOpenProjects
     self.sidebarView = sidebarView
   }
 }
@@ -766,6 +769,9 @@ extension WindowSession {
     }
     window.foldedSelectedTarget = foldedSelectedTarget.map {
       String($0.prefix(SessionLimits.maxStringLength))
+    }
+    window.foldedOpenProjects = foldedOpenProjects.map { folded in
+      Array(Set(folded)).sorted().map { String($0.prefix(SessionLimits.maxStringLength)) }
     }
     window.sidebarView = sidebarView.map { String($0.prefix(SessionLimits.maxStringLength)) }
     return window

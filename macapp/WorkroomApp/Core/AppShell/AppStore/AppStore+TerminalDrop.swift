@@ -41,6 +41,9 @@ enum TerminalDrop: Equatable {
 extension AppStore {
   /// What `source` let go over `zone` does in this window, or nil when it is refused.
   func terminalDrop(_ source: TerminalDragSource, on zone: PaneDropZone) -> TerminalDrop? {
+    // A project's header in the Open Tabs view, marked only so a drag can find its row: nothing
+    // lands on it.
+    if case .target(.project) = zone { return nil }
     switch source {
     case .terminal(let tab, let owner):
       return terminalDrop(tab, of: owner, on: zone)

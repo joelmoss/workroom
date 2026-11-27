@@ -27,6 +27,14 @@ extension OpenRowLift {
   func landInGap(at screen: CGPoint, in store: AppStore) -> Bool {
     guard let reflow = reflow(for: store), isOverList(screen) else { return false }
     switch reflow.dragged {
+    case .workroom where reflow.shape != nil, .project:
+      // Grouped: its block's title-bar tabs, or its workroom's beside a sibling.
+      guard let move = reflow.titleBarMove else {
+        cancel()
+        return true
+      }
+      store.moveWorkroomTabs(move.moving, to: move.place)
+      settle()
     case .workroom(let sid):
       guard let index = reflow.movedIndex else {
         cancel()
@@ -55,6 +63,15 @@ extension OpenRowLift {
 
   // MARK: A drag from outside the list
 
+  /// The zone that marks `item`'s own row: a tab's, or a project's header.
+  nonisolated static func zone(of item: OpenTabsItem) -> PaneDropZone {
+    switch item {
+    case .workroom(let sid): .target(sid)
+    case .tab(let tab, let owner): .terminalRow(tab, in: owner)
+    case .project(let path): .target(.project(path))
+    }
+  }
+
   /// The Open row `source`'s drag from `surface` stands for: a pane's tab (a strip's tab or a
   /// pane's title bar) is its tab row, a title-bar tab its workroom's row. Nil for any other.
   nonisolated static func item(
@@ -78,13 +95,21 @@ extension OpenRowLift {
     guard reflow == nil, store.sidebarView == .open, let window = store.hostWindow,
       let item = Self.item(for: source, from: surface),
       // Cheap first, as this runs on every move of the drag: over the list at all.
-      let (_, shown) = Self.listRow(.target(item.owner), in: store), shown.contains(screen)
+      let (_, shown) = Self.listRow(.target(item.owner), in: store)
+        ?? Self.listRow(Self.zone(of: item), in: store)
+        ?? AppStore.projectPath(of: item.owner).flatMap({
+          Self.listRow(.target(.project($0)), in: store)
+        }),
+      shown.contains(screen)
     else { return }
-    // With the tab it lifts, under its workroom although that is folded.
-    let rows = store.openTabsRows(showing: item)
+    // With the tab it lifts, under its workroom or project although that is folded.
+    let layout = store.openTabsLayout(showing: item)
+    let rows = layout.rows
     guard let row = rows.first(where: { $0.sid == item.owner }) else { return }
-    let measured = SidebarOpenList.items(of: rows)
-    let items = SidebarOpenList.items(of: rows, showing: item)
+    let measured = SidebarOpenList.items(of: store.openTabsLayout(grouping: layout.grouping))
+    let items = SidebarOpenList.items(of: layout, showing: item)
+    let shape = SidebarOpenList.shape(
+      of: layout, titleBar: store.displayedWorkroomTargets().map(\.sid), showing: item)
     let zone: PaneDropZone
     let content: AnyView
     let leaves: Bool
@@ -97,18 +122,30 @@ extension OpenRowLift {
       (leaves, joinable) = (false, [])
     case .tab(let tab, let owner):
       guard let tabRow = row.tabs.first(where: { $0.tab.id == tab }) else { return }
-      // Measured on its own row, or its folded workroom's (`OpenRowReflow.anchor`).
-      zone = measured.contains(item) ? .terminalRow(tab, in: owner) : .target(owner)
+      // Measured on its own row, or its folded workroom's, or its folded project's header
+      // (`OpenRowReflow.anchor`).
+      zone =
+        if measured.contains(item) {
+          .terminalRow(tab, in: owner)
+        } else if measured.contains(.workroom(owner)) {
+          .target(owner)
+        } else if let path = AppStore.projectPath(of: owner) {
+          .target(.project(path))
+        } else {
+          .target(owner)
+        }
       content = SidebarOpenList.ghost(
         of: SidebarOpenTabRow(row: tabRow.model, tab: tabRow.tab, hovered: false, store: store),
         store: store)
       leaves = store.canMoveOpenTabToStandalone(tab, in: owner)
       joinable = Self.joinable(tab, of: owner, rows: rows, store: store)
+    case .project:
+      return
     }
     guard let (rowRect, list) = Self.listRow(zone, in: store), list.contains(screen),
       let reflow = OpenRowReflow(
         items: items, dragged: item, leavesWorkroom: leaves, joinable: joinable,
-        measured: measured)
+        measured: measured, shape: shape)
     else { return }
     // Held by its middle, where the pointer came onto the list.
     start(

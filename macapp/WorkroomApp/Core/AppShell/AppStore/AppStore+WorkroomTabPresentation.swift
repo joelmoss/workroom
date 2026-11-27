@@ -85,6 +85,14 @@ struct WorkroomTabPresentation: Equatable {
 
   /// The full, untruncated title.
   var fullTitle: String { WorkroomLabel(project: primaryLabel, workroom: workroomName).full }
+
+  /// It under its project's header in the Open Tabs view, which names the project: the
+  /// workroom's name alone.
+  var underItsProject: WorkroomTabPresentation {
+    WorkroomTabPresentation(
+      glyph: glyph, primaryLabel: workroomName ?? primaryLabel, workroomName: nil,
+      standaloneTitle: standaloneTitle, isPoppedOut: isPoppedOut, closeName: closeName)
+  }
 }
 
 /// A workroom tab's state marks.

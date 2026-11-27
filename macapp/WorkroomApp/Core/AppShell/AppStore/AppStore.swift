@@ -218,6 +218,8 @@ final class AppStore: ObservableObject {
     if selectedTargetID != oldValue {
       // Selecting a target unfolds its Open Tabs view row (#819).
       foldedSelectedOpenTarget = nil
+      // And its project's group.
+      if let path = Self.projectPath(of: selectedTargetID) { foldedOpenProjects.remove(path) }
       // Opening a container workroom starts its container if it was stopped (#309).
       let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
       RemoteHosts.shared.reachability.select(selected, in: ObjectIdentifier(self))
@@ -428,6 +430,12 @@ final class AppStore: ObservableObject {
   /// session, with the selection it folds (story 70).
   var foldedSelectedOpenTarget: TerminalTarget.ID? {
     didSet { if foldedSelectedOpenTarget != oldValue { markSessionDirty() } }
+  }
+  /// Project paths whose group in the Open Tabs view's project groupings is folded. Every other
+  /// project's is unfolded, and selecting one of its targets unfolds it. Persisted with the
+  /// session, like `unfoldedOpenTargets`.
+  var foldedOpenProjects: Set<String> = [] {
+    didSet { if foldedOpenProjects != oldValue { markSessionDirty() } }
   }
   /// Which view the sidebar shows under its switcher (ADR 0083): Open in a new window. This
   /// window's own, persisted with its session as the Open rows' folds are.
