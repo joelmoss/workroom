@@ -371,7 +371,7 @@ final class OpenTabsGroupingTests: XCTestCase {
   }
 
   /// Value: protects=a workroom row under its project's header reorders among its project's
-  /// workrooms, its title-bar tab moving beside the sibling it lands by (owner, 2026-11-27);
+  /// workrooms, its project's title-bar tabs reordered in the slots they hold (owner, 2026-11-27);
   /// fails_when=it leaves its project or lands a row off; seam=OpenRowReflow +
   /// AppStore.moveWorkroomTabs.
   func testANestedWorkroomRowReordersAmongItsProjectsWorkrooms() throws {
@@ -384,13 +384,54 @@ final class OpenTabsGroupingTests: XCTestCase {
 
     try point(&reflow, at: .workroom(one), 0.3)
     let move = try XCTUnwrap(reflow.titleBarMove)
-    XCTAssertEqual(move.moving, [two])
-    XCTAssertEqual(move.place, .before(one))
+    XCTAssertEqual(move.moving, [two, one])
+    XCTAssertEqual(move.place, .inTheirSlots)
     XCTAssertTrue(store.moveWorkroomTabs(move.moving, to: move.place))
 
-    XCTAssertEqual(store.displayedWorkroomTargets().map(\.sid), [two, one, other])
+    XCTAssertEqual(store.displayedWorkroomTargets().map(\.sid), [two, other, one])
     let rows = items(.projectWorkroom, in: store).filter(\.isWorkroom)
     XCTAssertEqual(rows, [.workroom(two), .workroom(one), .workroom(other)])
+  }
+
+  /// Value: protects=reordering a project's first workroom under its header keeps the header where
+  /// it was, the list landing as its gap showed, although another project's tab is between its
+  /// workrooms in the title bar (Codex review, PR #837); fails_when=the header moves below the
+  /// other project's; seam=OpenRowReflow + AppStore.moveWorkroomTabs.
+  func testANestedReorderKeepsItsProjectInPlace() throws {
+    let store = makeStore()
+    try open(one, in: store)
+    try open(other, in: store)
+    try open(two, in: store)
+    order([one, other, two], in: store)
+    var reflow = try lift(.workroom(one), in: .projectWorkroom, store: store)
+
+    try point(&reflow, at: .workroom(two), 0.7)
+    let shown = reflow.order
+    let move = try XCTUnwrap(reflow.titleBarMove)
+    XCTAssertTrue(store.moveWorkroomTabs(move.moving, to: move.place))
+
+    XCTAssertEqual(store.displayedWorkroomTargets().map(\.sid), [two, other, one])
+    XCTAssertEqual(items(.projectWorkroom, in: store), shown, "the list as the gap showed it")
+  }
+
+  /// Value: protects=in Project › Workroom a tab dragged over a folded workroom's row under its
+  /// header is onto that row, so let go there it joins that workroom, as grouped by workroom
+  /// (Codex review, PR #837); fails_when=the row takes no drop and the drag cancels;
+  /// seam=OpenRowReflow.liftedY.
+  func testATabOverAFoldedNestedWorkroomIsOntoIt() throws {
+    let store = makeStore()
+    try open(two, tabs: 2, in: store)
+    let oneTabs = try open(one, tabs: 2, in: store)
+    order([one, two], in: store)
+    let reflow = try lift(.tab(oneTabs[0], in: one), in: .projectWorkroom, store: store)
+    XCTAssertFalse(reflow.order.contains { $0.isTab && $0.owner == two }, "two is folded")
+
+    let slot = try XCTUnwrap(reflow.order.firstIndex(of: .workroom(two)))
+    let was = try XCTUnwrap(reflow.measured.firstIndex(of: .workroom(two)))
+    let y = (CGFloat(slot) + 0.5) * pitch
+    XCTAssertEqual(
+      reflow.liftedY(for: y, pitch: pitch), (CGFloat(was) + 0.5) * pitch,
+      "its middle is onto its row as the drag measured it")
   }
 
   /// Value: protects=in Project a tab let go over another workroom's tab's lower half joins that

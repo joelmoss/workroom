@@ -145,13 +145,22 @@ extension AppStore {
   }
 
   /// Move workroom tabs `sids` together, in their title-bar order, to `place` in the title bar, as
-  /// a grouped Open list's reorder does (`OpenRowReflow.titleBarMove`). Returns whether the order
-  /// changed.
+  /// a grouped Open list's reorder does (`OpenRowReflow.titleBarMove`); `.inTheirSlots` puts them,
+  /// in `sids`' order, in the slots they hold. Returns whether the order changed.
   @discardableResult
   func moveWorkroomTabs(_ sids: [SidebarID], to place: OpenRowReflow.TitleBarPlace) -> Bool {
     let current = displayedWorkroomTargets().map(\.sid)
     let moving = current.filter(Set(sids).contains)
     guard !moving.isEmpty else { return false }
+    if place == .inTheirSlots {
+      // `sids`, in their order, into the slots they hold.
+      let order = sids.filter(moving.contains)
+      var next = order.makeIterator()
+      let reordered = current.map { moving.contains($0) ? next.next() ?? $0 : $0 }
+      guard reordered != current else { return false }
+      workroomTabOrder = reordered.compactMap(\.targetID)
+      return true
+    }
     var rest = current.filter { !moving.contains($0) }
     let at: Int
     switch place {
@@ -161,7 +170,7 @@ extension AppStore {
     case .after(let sid):
       guard let index = rest.firstIndex(of: sid) else { return false }
       at = index + 1
-    case .end:
+    case .end, .inTheirSlots:
       at = rest.count
     }
     rest.insert(contentsOf: moving, at: at)
