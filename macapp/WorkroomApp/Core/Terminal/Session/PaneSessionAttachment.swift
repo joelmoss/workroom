@@ -66,7 +66,7 @@ final class PaneSessionAttachment {
     /// A remote pane's record handed to its client (#826), which sends it with its first attach:
     /// only the host knows whether the session is gone. Its daemon numbering the session other
     /// than `boot`, the record's, says it made the session again (a host restart), which then
-    /// awaits its start as a local one does; the same says it was live, and nothing happens.
+    /// awaits its start as a local one does; the same says it was live, and it stays as it is.
     case offered(program: String, boot: String)
     /// Handed to the relay; nothing has said yet whether it started.
     case awaiting(program: String)
@@ -262,14 +262,12 @@ final class PaneSessionAttachment {
   /// daemon made the session again with the record: one numbering its sessions other than the
   /// record's daemon did is a new daemon, after a host restart, whose session this pane's attach
   /// made, so the pane awaits its start; the record's own daemon held it live, so nothing resumed
-  /// and the pane says nothing. A daemon's hand-off keeps its numbering.
+  /// and the offer stays, saying nothing: it is inert, and a word from the old daemon heard after
+  /// the relaunch can't cancel the new one's. A daemon's hand-off keeps its numbering.
   func sessionHeard(boot: String?) {
-    guard case .offered(let program, let offered) = resumeState, let boot else { return }
-    if boot == offered {
-      endResume()
-    } else {
-      awaitResume(of: program)
-    }
+    guard case .offered(let program, let offered) = resumeState, let boot, boot != offered
+    else { return }
+    awaitResume(of: program)
   }
 
   /// The pane's session's daemon said something of it, and nothing yet of its resume (#825): the
