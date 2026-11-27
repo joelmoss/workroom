@@ -259,9 +259,9 @@ The strip along the bottom of a window about the whole app, such as every coding
 A chip in a window's title bar for one target that has terminals open in that window; choosing it selects that target.
 _Avoid_: Tab (alone), chip
 
-**Open view**:
+**Open Tabs view**:
 The sidebar's list of the workroom tabs open in this window, in the title bar's order, each unfolding to its tabs. It shows exactly what the title bar and the tab strip show, so a standalone terminal or terminal group is in it only while it has tabs. The sidebar's switcher shows it or the Projects view, one at a time, and each window keeps which (ADR 0083).
-_Avoid_: Open section (before ADR 0083), Terminals section (retired)
+_Avoid_: Open view or Open alone (reads as a verb), Open section (before ADR 0083), Terminals section (retired). Code keeps `open` and `OpenSection` in its names.
 
 **Projects view**:
 The sidebar's tree of every project, its root and workrooms and their terminals: the other view the sidebar's switcher shows.

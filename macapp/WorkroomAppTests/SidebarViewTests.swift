@@ -64,7 +64,7 @@ final class SidebarViewTests: XCTestCase {
     XCTAssertEqual(SidebarView.allCases, [.open, .projects], "Open first, then Projects")
     XCTAssertEqual(SidebarView.open.identifier, "sidebar.view.open")
     XCTAssertEqual(SidebarView.projects.identifier, "sidebar.view.projects")
-    XCTAssertEqual(SidebarView.open.title, "Open")
+    XCTAssertEqual(SidebarView.open.title, "Open Tabs")
     XCTAssertEqual(SidebarView.projects.title, "Projects")
   }
 

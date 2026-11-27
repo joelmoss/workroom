@@ -283,7 +283,7 @@ struct WorkroomCommands: Commands {
       .disabled(!workroomCommandEnabled(hasRunTerminal))
   }
 
-  /// View ▸ Sidebar's Open or Projects: checked while the sidebar shows `view`. Choosing it,
+  /// View ▸ Sidebar's Open Tabs or Projects: checked while the sidebar shows `view`. Choosing it,
   /// checked or not, shows that view and a hidden sidebar: it is a pick, never an un-pick.
   private func sidebarViewBinding(_ view: SidebarView, shown: SidebarView?) -> Binding<Bool> {
     Binding(

@@ -15,21 +15,21 @@ Right-click a project row for **New Workroom**, **Project Settings…** and **De
 
 To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>). Nightly only: it's **View ▸ Sidebar ▸ Show Sidebar**.
 
-### Open and Projects {nightly}
+### Open Tabs and Projects {nightly}
 
-The sidebar shows one of two views at a time. The bar at its top switches between them: the terminal icon is the **Open** view, and the four-squares icon is **Projects**, the project tree. Hover either for its name. The view you're on is underlined. A new window starts on **Open**, and each window remembers its view when you relaunch. **View ▸ Sidebar ▸ Open** (<kbd>⌃⌘T</kbd>) and **View ▸ Sidebar ▸ Projects** (<kbd>⌃⌘P</kbd>) switch too, and show the sidebar if it's hidden. The one showing is checked.
+The sidebar shows one of two views at a time. The bar at its top switches between them: the terminal icon is the **Open Tabs** view, and the four-squares icon is **Projects**, the project tree. Hover either for its name. The view you're on is underlined. A new window starts on **Open Tabs**, and each window remembers its view when you relaunch. **View ▸ Sidebar ▸ Open Tabs** (<kbd>⌃⌘T</kbd>) and **View ▸ Sidebar ▸ Projects** (<kbd>⌃⌘P</kbd>) switch too, and show the sidebar if it's hidden. The one showing is checked.
 
 A dot in the accent colour after the other view's tab means something there needs you: a workroom with unread notifications, or a terminal waiting for you.
 
-The **+** at the end of the bar works on the view you're on. In **Open** it opens a menu: **New Terminal** (<kbd>⌥⌘T</kbd>) and **New Terminal Group…**; to open a workroom, press <kbd>⌘O</kbd> (**File ▸ Open Workroom…**). In **Projects** it adds a project.
+The **+** at the end of the bar works on the view you're on. In **Open Tabs** it opens a menu: **New Terminal** (<kbd>⌥⌘T</kbd>) and **New Terminal Group…**; to open a workroom, press <kbd>⌘O</kbd> (**File ▸ Open Workroom…**). In **Projects** it adds a project.
 
-While you drag a terminal or a tab, rest it on the other view's tab for a moment to switch to that view, then drop it on a row there. Let a terminal go on the **Open** tab to make it a standalone terminal.
+While you drag a terminal or a tab, rest it on the other view's tab for a moment to switch to that view, then drop it on a row there. Let a terminal go on the **Open Tabs** view's tab to make it a standalone terminal.
 
 The sidebar sits flat against the window's edge, with a thin line between it and the workroom. When you hide it and hover the sidebar button to reveal it, it floats over the workroom as a card, with the same bar and views.
 
-### The Open view {nightly}
+### The Open Tabs view {nightly}
 
-The **Open** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
+The **Open Tabs** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
 
 - **Select.** Click a row to select it, or one of its tabs to show that tab. Selecting a workroom unfolds it. Fold it by hand, with the arrow that takes the place of its icon when you hover the row, and it stays folded until you next select it.
 - **What's highlighted.** Only the row that has the keyboard: the focused tab's row, or the selected workroom's own row while it shows no tab rows.
@@ -43,7 +43,7 @@ The tabs in the title bar are unchanged.
 
 ### The Projects view {nightly}
 
-The **Projects** view is the project tree described above. With no projects yet, while the **Open** view lists standalone terminals, it says **No projects yet** and offers **Add Project…**.
+The **Projects** view is the project tree described above. With no projects yet, while the **Open Tabs** view lists standalone terminals, it says **No projects yet** and offers **Add Project…**.
 
 ## Add a project
 
