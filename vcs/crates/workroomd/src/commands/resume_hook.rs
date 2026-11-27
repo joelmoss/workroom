@@ -56,8 +56,11 @@ use crate::terminal::process;
 pub(super) const MARKER: &str = "# workroom-resume-hook";
 
 /// The hook's command, in every profile and from every build alike. Claude runs it with `sh -c`.
-pub(super) const COMMAND: &str = "[ -n \"$OSC7577_TOKEN\" ] && [ -x \"$WORKROOM_BIN_DIR/workroom\" ] \
-     && \"$WORKROOM_BIN_DIR/workroom\" resume-hook report >/dev/null 2>&1; true # workroom-resume-hook";
+/// The pane's daemon's own `workroom`, else the one on PATH, for a daemon that could make no bin
+/// folder (`terminal::bin_path`); nothing it says reaches Claude, and it always succeeds.
+pub(super) const COMMAND: &str = "[ -n \"$OSC7577_TOKEN\" ] && { w=\"$WORKROOM_BIN_DIR/workroom\"; \
+     [ -x \"$w\" ] || w=workroom; \"$w\" resume-hook report; } >/dev/null 2>&1; \
+     true # workroom-resume-hook";
 
 /// How long the hook may take, in seconds, as Claude reads a handler's `timeout`: longer than the
 /// report's own bound.
