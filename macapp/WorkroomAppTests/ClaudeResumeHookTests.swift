@@ -140,11 +140,12 @@ final class ClaudeResumeHookTests: XCTestCase {
     ])
     let setting = Setting()
     setting.on = false
-    let hook = ClaudeResumeHook(home: "/tmp/resume-hook-home", isOn: { setting.on }) {
-      install, _, variables in
-      calls.record(install, variables)
-      return calls.installs.count == 2 ? failing : ClaudeResumeHookReport(profiles: [])
-    }
+    let hook = ClaudeResumeHook(
+      home: "/tmp/resume-hook-home", isOn: { setting.on },
+      runner: { install, _, variables in
+        calls.record(install, variables)
+        return calls.installs.count == 2 ? failing : ClaudeResumeHookReport(profiles: [])
+      })
     XCTAssertNil(hook.reconcile(), "never on: nothing of Workroom's to remove")
     setting.on = true
     await hook.reconcile()?.value
@@ -169,9 +170,8 @@ final class ClaudeResumeHookTests: XCTestCase {
 
     let setting = Setting()
     setting.on = false
-    let hook = ClaudeResumeHook(home: nil, isOn: { setting.on }) { _, _, _ in
-      ClaudeResumeHookReport(profiles: [])
-    }
+    let hook = ClaudeResumeHook(
+      home: nil, isOn: { setting.on }, runner: { _, _, _ in ClaudeResumeHookReport(profiles: []) })
     Defaults[.claudeResumeHookHosts] = [key]
     hook.recordHost(
       host, policy: .remove,

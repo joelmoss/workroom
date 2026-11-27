@@ -401,6 +401,49 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertNil(outcome.workroomSkill, "the probe found no skill, so nothing ran")
   }
 
+  /// Claude Code's resume hook on a real host (#828), written by this build's Linux binary into
+  /// the host user's `~/.claude/settings.json` beside a hook of the user's own: installed while
+  /// the setting is on, and removed once it's off, leaving the user's hook and settings as they
+  /// were.
+  func testClaudesResumeHookIsAddedToTheHostsSettingsAndRemovedAgain() async throws {
+    let fixture = try fixture()
+    // This test makes `~/.claude` itself, and so only on a home that has none, and takes away
+    // only what it made at the end.
+    guard try onHost(fixture, "test -e ~/.claude && echo yes || echo no") == "no" else {
+      throw XCTSkip("the fixture's home already has ~/.claude")
+    }
+    let theirs = #"{"model":"opus","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}"#
+    try onHost(fixture, "mkdir ~/.claude && printf '%s' '\(theirs)' > ~/.claude/settings.json")
+    defer {
+      _ = try? onHost(
+        fixture,
+        "rm -f ~/.claude/settings.json ~/.local/state/workroom/resume-hook.json; rmdir ~/.claude")
+    }
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    _ = try await DaemonBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+      daemon: { _ in fixture.daemon }, handOff: true)
+    func sync(_ policy: DaemonBootstrap.WorkroomSkillPolicy) async -> String? {
+      await DaemonBootstrap.syncResumeHook(
+        policy, host: .remote(id), driver: driver, socket: fixture.host.daemonSocket)?.summary
+    }
+    let ours = "grep -c workroom-resume-hook ~/.claude/settings.json || true"
+
+    let installed = await sync(.install)
+    XCTAssertEqual(installed, "claude installed")
+    XCTAssertEqual(try onHost(fixture, ours), "1")
+    XCTAssertEqual(try onHost(fixture, "grep -c 'echo mine' ~/.claude/settings.json"), "1")
+    let again = await sync(.install)
+    XCTAssertEqual(again, "claude current")
+
+    let removed = await sync(.remove)
+    XCTAssertEqual(removed, "claude removed")
+    XCTAssertEqual(try onHost(fixture, ours), "0")
+    XCTAssertEqual(try onHost(fixture, "grep -c 'echo mine' ~/.claude/settings.json"), "1")
+    XCTAssertEqual(try onHost(fixture, "grep -c opus ~/.claude/settings.json"), "1")
+  }
+
   /// Connecting again with the same build pushes nothing: the probe finds the file, and the
   /// running daemon answers that it is current. Self-contained, whatever an earlier test left
   /// running: the first `ensure` gets the host to this build, the second is the one measured.
