@@ -139,8 +139,8 @@ final class TerminalCodingAgentUITests: XCTestCase {
     XCTAssertTrue(investigate.waitForExistence(timeout: 5))
     investigate.click()
 
-    // Investigate opens a new focused tab (titled "Run" until claude reports its own title, same
-    // as any run tab) seeded with the diagnosis.
+    // Investigate opens a new focused tab (named by its agent and the failed command until the
+    // agent reports its own title) seeded with the diagnosis.
     let newSurface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
       .element(boundBy: 0)
     XCTAssertTrue(newSurface.waitForExistence(timeout: 10), "Investigate opens a new terminal pane")

@@ -875,7 +875,8 @@ struct SidebarTerminalRow: View, Equatable {
         // Outermost: the tooltip schedules its own repaint, so the labels stay on the row itself.
         .modifier(
           SidebarTerminalTooltip(
-            title: title, indicator: model.indicator, rollup: model.programStatus,
+            title: content.fullTitle(title), indicator: model.indicator,
+            rollup: model.programStatus,
             hasSession: model.hasSession, hostID: model.target.hostID)
         )
     }

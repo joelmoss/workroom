@@ -725,7 +725,7 @@ struct SidebarOpenTabRow: View, Equatable {
       view
         .accessibilityLabel(accessibilityLabel(title))
         .accessibilityIdentifier("sidebar.open.tab.\(tab.id)")
-        .help(title)
+        .help(tab.content.fullTitle(title))
     }
   }
 

@@ -941,6 +941,23 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.runCommand.investigateTabs[tab.id], t.id)
   }
 
+  /// An Investigate tab is named by its agent with the failed command faded after it, not by its
+  /// command line; the tooltip shows the whole command line, prompt and all.
+  func testAnInvestigateTabIsNamedByItsAgentAndTheFailedCommand() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let bannerState = investigateBanner(t)
+
+    let tab = store.runCommand.startInvestigate(
+      bannerState: bannerState, target: t, surface: nil, codingAgentSetting: "claude")
+
+    XCTAssertEqual(
+      tab.content.titleParts, TerminalTitle(name: "claude", folder: "npm test", isCommand: true))
+    XCTAssertEqual(
+      tab.content.fullTitle(tab.content.title),
+      CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: .claude))
+  }
+
   /// The "Investigate with" setting picks the agent the Investigate tab runs.
   func testStartInvestigateRunsTheChosenAgent() {
     let store = makeStore([project("/a", workrooms: ["main"])])
@@ -2038,6 +2055,60 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(store.runCommand.restoredRuns.contains(t.id))
     XCTAssertEqual(store.terminals.view(forTab: tab, inTarget: t.id)?.isRunSession, true)
     XCTAssertEqual(captured.last, "bin/dev", "a run session of the project's command")
+  }
+
+  /// A run tab is named by its command on one line, cut at its end, and its session is labelled
+  /// with that name; the tooltip shows the command as written.
+  func testARunTabIsNamedByItsCommand() throws {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let tab = store.terminals.addRunTab(
+      for: t, command: "  bundle exec\n  foreman start ", cwd: t.path, focus: false,
+      runSession: true)
+    guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
+    XCTAssertEqual(tab.content.title, "bundle exec foreman start")
+    XCTAssertTrue(tab.content.titleParts.isCommand, "cut at its end")
+    XCTAssertEqual(state.sessionLabel, "bundle exec foreman start")
+    XCTAssertEqual(
+      tab.content.fullTitle(tab.content.title), "bundle exec\n  foreman start")
+    XCTAssertEqual(tab.content.accessibilityKey, "Run", "UI tests still find the chip")
+
+    let blank = store.terminals.addRunTab(
+      for: t, command: "  ", cwd: t.path, focus: false, runSession: true)
+    XCTAssertEqual(blank.content.title, "Run", "a blank command keeps the name Run")
+  }
+
+  /// A run tab saves the command it was started with and comes back named by it, even once the
+  /// project's run command has changed; one saved before that was kept is named by the project's.
+  func testARestoredRunTabIsNamedByTheCommandItWasStartedWith() throws {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    let run = store.terminals.addRunTab(
+      for: t, command: "bin/dev", cwd: t.path, focus: false, runSession: true)
+    let saved = try XCTUnwrap(TabSession(key: "r", tab: run))
+    XCTAssertEqual(saved.terminal?.runCommand, "bin/dev")
+    XCTAssertEqual(saved.terminal?.defaultTitle, "Run", "what older builds read is unchanged")
+
+    store.runCommands.setRunConfig(
+      RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    func restored(_ payload: TerminalPayload) throws -> TerminalTab {
+      let other = makeStore([project("/a", workrooms: ["main"])])
+      let t = target(other, "/a", "main")
+      other.terminals.restore(
+        TargetSession(
+          targetID: t.id.encoded,
+          tabs: [TabSession(key: "r", kind: TabSession.terminalKind, terminal: payload)]),
+        for: t)
+      return try XCTUnwrap(other.terminals.tabs(for: t).first)
+    }
+    var payload = try XCTUnwrap(saved.terminal)
+    payload.sessionID = UUID().uuidString
+    XCTAssertEqual(try restored(payload).content.title, "bin/dev", "what it was started with")
+    XCTAssertEqual(captured.last, "npm run dev", "its surface is still given the project's")
+
+    payload.runCommand = nil
+    XCTAssertEqual(try restored(payload).content.title, "npm run dev", "the project's, unsaved")
   }
 
   /// On a second Mac, Run shows the run already going on the workroom's host (D7): only a run

@@ -274,7 +274,7 @@ struct PaneTitleBar: View {
             .lineLimit(1)
             .truncationMode(title.truncation)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .help(help(text))
+            .help(help(content.fullTitle(text)))
           }
         }
       trailing(collapsed: collapsed)

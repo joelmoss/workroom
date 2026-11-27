@@ -474,4 +474,18 @@ final class SessionLabelsTests: XCTestCase {
     XCTAssertNil(state("dev server").sessionLabel)
     XCTAssertEqual(state("dev server").userTitle(forLabel: "dev server"), "dev server")
   }
+
+  /// A run tab named by its command labels its session with the command; that label, and the
+  /// "Run" every run session was labelled before, name it nothing, so neither pins as a rename.
+  func testARunTabsLabelIsItsCommand() {
+    var state = TerminalState(
+      defaultTitle: "Run", launch: .runSession, launchDirectory: "/tmp",
+      commandName: CommandName(command: "npm run dev"))
+    XCTAssertEqual(state.sessionLabel, "npm run dev")
+    XCTAssertNil(state.userTitle(forLabel: "npm run dev"), "the name it shows unnamed")
+    XCTAssertNil(state.userTitle(forLabel: "Run"), "an older build's label for it")
+    XCTAssertEqual(state.userTitle(forLabel: "web"), "web")
+    state.userTitle = "web"
+    XCTAssertEqual(state.sessionLabel, "web")
+  }
 }

@@ -30,6 +30,8 @@ extension View {
 /// faded, in that style's second level. A caller sets both levels with `.foregroundStyle(_:_:)`.
 /// The program truncates only when it is alone too wide; the folder gives way first and is cut in
 /// the middle, so the end of its path stays. Any other title is one `Text`, as the caller styles it.
+/// A command a tab runs (`TerminalTitle.isCommand`) is cut at its end instead, whatever the caller
+/// asks, so its program and first arguments stay.
 ///
 /// A tab passes `folderFont` to draw the folder a size smaller than the program, on the program's
 /// baseline. Without it (the sidebar, the pane title bar) both parts take the caller's one font.
@@ -38,10 +40,19 @@ struct TerminalTitleLabel: View {
   var folderFont: Font? = nil
 
   var body: some View {
+    if title.isCommand {
+      label.truncationMode(.tail)
+    } else {
+      label
+    }
+  }
+
+  @ViewBuilder private var label: some View {
     if let folder = title.folder {
       HStack(alignment: .firstTextBaseline, spacing: 0) {
         Text(title.name).layoutPriority(1)
-        folderText(" " + folder).foregroundStyle(.secondary).truncationMode(.middle)
+        folderText(" " + folder).foregroundStyle(.secondary)
+          .truncationMode(title.isCommand ? .tail : .middle)
       }
       // One element for VoiceOver, read as the title in plain text ("zsh ~/dev/workroom").
       .accessibilityElement(children: .ignore)
