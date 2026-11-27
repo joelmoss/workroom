@@ -342,3 +342,23 @@ fn an_oversized_peer_frame_is_not_taken() {
     ]);
     assert_eq!(peer, None);
 }
+
+/// A resuming shell is handed the daemon's bin-folder link as its helper, which every hand-off
+/// re-points, not this build's copy, which the next daemon build's sweep removes; a daemon with no
+/// bin folder names its own file. fails_when=the helper goes back to `own_copy::binary_path` with a
+/// bin folder; why_new=#832's second review (a shell waiting on a passphrase across a hand-off).
+#[test]
+fn a_resuming_shells_helper_is_the_bin_folders_link() {
+    let folders = crate::daemon::bin_dir::Folders {
+        bin: PathBuf::from("/run/wr/workroomd.bin/path"),
+        hooks: Some(PathBuf::from("/run/wr/workroomd.bin/shell")),
+    };
+    assert_eq!(
+        resume_helper(Some(&folders)).unwrap(),
+        PathBuf::from("/run/wr/workroomd.bin/path/workroom")
+    );
+    assert_eq!(
+        resume_helper(None).unwrap(),
+        crate::daemon::own_copy::binary_path().unwrap()
+    );
+}

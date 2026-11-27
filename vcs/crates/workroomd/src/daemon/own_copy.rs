@@ -131,8 +131,10 @@ pub fn binary() -> io::Result<PathBuf> {
 }
 
 /// `binary` by a path any process can run, for one that runs it by path (a resuming shell's
-/// helper): Linux's `/proc/self/exe` would name whichever process followed it, so this is the file
-/// it links to. The daemon's own children (`run_invocation`) can take `binary`: it execs them.
+/// helper, from a daemon with no bin folder, `dispatch::resume_helper`; one with a bin folder
+/// names its link, which outlives this build's copy across a hand-off): Linux's `/proc/self/exe`
+/// would name whichever process followed it, so this is the file it links to. The daemon's own
+/// children (`run_invocation`) can take `binary`: it execs them.
 pub fn binary_path() -> io::Result<PathBuf> {
     let kept = lock_or_recover(&KEPT)
         .as_ref()

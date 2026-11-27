@@ -630,9 +630,7 @@ fn resumed(
         .socket()
         .ok_or_else(|| std::io::Error::other("this daemon serves no socket"))
         .and_then(|socket| {
-            // The shell runs the helper by path, so it must name this program's file from any
-            // process.
-            let helper = crate::daemon::own_copy::binary_path()?;
+            let helper = resume_helper(crate::daemon::bin_dir::folders())?;
             launch::prepare(
                 invocation,
                 crate::terminal::bin_path::hooked(invocation, crate::daemon::bin_dir::folders()),
@@ -662,6 +660,21 @@ fn resumed(
             );
             None
         }
+    }
+}
+
+/// The helper a resuming session's shell runs by path (`resume::launch::HELPER_VARIABLE`): the
+/// `workroom` link in the daemon's bin folder (`bin_dir`), which every hand-off re-points at a
+/// build of its own, so a shell still waiting to run it (a startup file asking for a passphrase)
+/// when another daemon build takes over runs that one, not a copy whose daemon is gone and whose
+/// file the next daemon removed (`own_copy::keep_now`'s sweep). That daemon, which carries the
+/// waiting resume on (`Carried`'s `waiting`), is a build with `resume-launch` too. A daemon with
+/// no bin folder (none serving a socket, or one whose folder could not be made) names its own file
+/// instead, by a path any process can run (`own_copy::binary_path`).
+fn resume_helper(folders: Option<&crate::daemon::bin_dir::Folders>) -> std::io::Result<PathBuf> {
+    match folders {
+        Some(folders) => Ok(folders.bin.join(crate::daemon::bin_dir::LINK)),
+        None => crate::daemon::own_copy::binary_path(),
     }
 }
 

@@ -121,26 +121,72 @@ public enum ContainerExecTransport {
   }
 
   /// The folder in the container a pane's resume record is copied into (#826), as this Mac's is
-  /// beside its own daemon's socket (`ResumeLaunchFile.directory`): only this code writes it.
+  /// beside its own daemon's socket (`ResumeLaunchFile.directory`). Only `stageResume` writes
+  /// launch files there, and it sweeps only a folder it made, by its `resumeMarker`.
   static func resumeFolder(besideSocket socket: String) -> String {
     (socket as NSString).deletingLastPathComponent + "/resume-launch"
   }
+
+  /// The file `resumeFolder` holds when `stageResume` made it, and only then: its proof that the
+  /// launch files in it are this code's to remove. The app's and the daemon's launch folders hold
+  /// the same one, with the same contents (`ResumeLaunchFile.marker`, `resume::launch::MARKER`).
+  static let resumeMarker = ".workroom-resume-launch-folder"
+  /// What `resumeMarker` holds, which nothing else writes, without its final newline.
+  static let resumeMarkerText =
+    "Workroom made this folder for its resume launch files (ADR 0082), and removes only those."
+
+  /// How old, in minutes, an unclaimed launch file in a marked `resumeFolder` must be before a
+  /// later copy removes it, as the app's own (`ResumeLaunchFile.abandoned`): no attach waits that
+  /// long, so another attach's fresh record is never touched. `find -mmin +60`, which GNU's,
+  /// BSD's and busybox's `find` all hold true from an hour on.
+  static let resumeAbandonedMinutes = 60
+
+  /// A `case` pattern for the names `ResumeLaunchFile.name` makes, any session's:
+  /// `resume-<session id, lowercase and hyphenated>-<32 hex>.json`, as `isLaunchName` checks.
+  static let resumeLaunchNamePattern: String = {
+    let hex = "[0123456789abcdef]"
+    let run = { (count: Int) in String(repeating: hex, count: count) }
+    return "resume-\(run(8))-\(run(4))-\(run(4))-\(run(4))-\(run(12))-\(run(32)).json"
+  }()
 
   /// What the container's `sh` runs, as the remote user, to copy in a remote pane's resume record
   /// (#826), its bytes on stdin and its file's name (`ResumeLaunchFile.name`) as `$1`: into a new
   /// `0600` file in the `0700` `resumeFolder`, where the pane's attach finds it (`stagedResume`),
   /// whose client claims and removes it. The record's arguments can hold secrets, so they never
-  /// travel on a command line, which a process listing shows. First, this session's files a copy
-  /// left that no attach claimed (an attach that never started), which only this code names so:
-  /// regular files alone, judged without following a link.
+  /// travel on a command line, which a process listing shows.
+  ///
+  /// **Whose files these are**, by the rule the app's and the daemon's launch folders follow. The
+  /// folder is made by a plain `mkdir`, which fails when it is already there, and only the copy
+  /// whose `mkdir` made it writes `resumeMarker` in it, new (`set -C`) and `0600`. A folder found
+  /// already there must be a real one this user owns (a link is refused, and `chmod` refuses one of
+  /// another user's), and is never marked: one another build or the user made takes launch files
+  /// but is never swept. In a marked folder (its marker a regular file this user owns, not a link,
+  /// holding `resumeMarkerText`), launch files of any session (`resumeLaunchNamePattern`) are
+  /// removed once they are at least `resumeAbandonedMinutes` old: an attach that never started
+  /// left them, and none is waited for that long. Each is judged by `find -prune`, which follows no
+  /// link, so only a regular file this user owns is removed; a link or a FIFO with such a name
+  /// stays. A `find` that fails, or an image with none, removes nothing, and the record is still
+  /// copied in.
   static func stageResume(session: UUID, socket: String) -> String {
     let folder = resumeFolder(besideSocket: socket)
+    let parent = (folder as NSString).deletingLastPathComponent
     let mine = "resume-\(session.uuidString.lowercased())-"
+    let own = { (path: String, type: String, test: String) in
+      "test -n \"$(find \"\(path)\" -prune -type \(type) -user \"$u\"\(test) 2>/dev/null)\""
+    }
     return "dir=\(PosixShell.quoted(folder)); case $1 in \(mine)*.json) ;; *) exit 1;; esac; "
-      + "umask 077; mkdir -p \"$dir\" && test -d \"$dir\" && ! test -L \"$dir\" "
-      + "&& chmod 700 \"$dir\" || exit 1; "
-      + "for f in \"$dir\"/\(mine)*.json; do test -f \"$f\" && ! test -L \"$f\" && rm -f \"$f\"; "
-      + "done; cat > \"$dir/$1\""
+      + "umask 077; u=$(id -u) || exit 1; m=\"$dir\"/\(resumeMarker); "
+      + "t=\(PosixShell.quoted(resumeMarkerText)); "
+      + "mkdir -p \(PosixShell.quoted(parent)) || exit 1; "
+      + "if mkdir \"$dir\" 2>/dev/null; then made=1; else made=; fi; "
+      + "test -d \"$dir\" && ! test -L \"$dir\" && chmod 700 \"$dir\" || exit 1; "
+      + "if test -n \"$made\"; then (set -C; printf '%s\\n' \"$t\" > \"$m\") 2>/dev/null; fi; "
+      + "if " + own("$m", "f", " -size -1024c")
+      + " && test \"$(cat \"$m\"; echo x)\" = \"$(printf '%s\\nx' \"$t\")\"; then "
+      + "for f in \"$dir\"/resume-*.json; do case ${f##*/} in \(resumeLaunchNamePattern)) ;; "
+      + "*) continue;; esac; "
+      + own("$f", "f", " -mmin +\(resumeAbandonedMinutes)") + " && rm -f \"$f\"; done; fi; "
+      + "(set -C; cat > \"$dir/$1\")"
   }
 
   /// The in-container half of a pane's attach that hands its client the record `stageResume`
