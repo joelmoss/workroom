@@ -487,12 +487,15 @@ pub struct TakenScreen {
 ///    ├─ Runs.wake           `signal_run` (`Hooks::run_signalled`)
 ///    └─ attached            per session: `list` (`Session::info`), the end of `attach`, the freeze
 ///       ├─ shadow           per session: `attach`'s repaint, `apply_size`, `send_images`,
-///       │                   `send_probes`, a read, a wait starting (`add_waiter`)
+///       │                   `send_probes`, a read, a wait starting (`add_waiter`), the screens
+///       │                   tick publishing a cleared resume record (`watch_resume_owners`)
 ///       │  ├─ Hub.boot      a status event built under it (a read, `change_program_status`)
 ///       │  ├─ Waiter.state  a wait starting: the screen and the shadow's state it starts from
 ///       │  └─ Transfer      a client's image queues: `send_images` taking the next chunk
-///       ├─ resume           per session: a read feeding it reports, the freeze carrying it;
-///       │                   `described` and the screens tick's owner check
+///       ├─ resume           per session: a read feeding it reports, the freeze carrying it, and
+///       │                   the screens tick reading the record a cleared owner left (#824),
+///       │                   each released before the shadow is taken to put the record in the
+///       │                   status; `described` and the tick's owner check
 ///       │                   (`watch_resume_owners`) take it alone, with the map released
 ///       ├─ Transfer         a read stopping a client's transfer
 ///       ├─ Waiter.state     a wait starting on a session whose reader has just ended

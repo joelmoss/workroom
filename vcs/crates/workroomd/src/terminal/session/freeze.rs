@@ -233,14 +233,19 @@ impl SessionStore {
         // A hand-off keeps the processes, so whoever owns the pty now sent any report in `screen`.
         // The screen is the old program's paint, not the program's output: it asks nothing.
         let _ = shadow.write_from_pty(&screen, || pty.foreground_pgid());
-        // After the screen, whose prompt marks would otherwise end the run they describe.
+        let resume = resume.map(crate::terminal::resume::Resume::adopted);
+        // After the screen, whose prompt marks would otherwise end the run they describe. With
+        // the resume record the hand-off carried in its resume state (#824).
         if let Some(status) = shadow.status() {
             *status = program_status;
+            status.restore_resume(
+                resume
+                    .as_ref()
+                    .and_then(crate::terminal::resume::Resume::whole),
+            );
         }
         let session = Session {
-            resume: Arc::new(Mutex::new(
-                resume.map(crate::terminal::resume::Resume::adopted),
-            )),
+            resume: Arc::new(Mutex::new(resume)),
             id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(shadow)),

@@ -590,28 +590,68 @@ impl SessionStore {
     /// Clears each resume record whose owner has been gone for `resume::EXIT_GRACE` while its
     /// session's shell runs on (ADR 0082, #823), looking at `now`; `screens::tick` runs it every
     /// `screens::INTERVAL`. Each session's resume lock is taken on its own, with the map released,
-    /// as `described` takes it. Whether a session still has a record to look at again.
+    /// as `described` takes it. A session whose record cleared publishes its status (#824), with
+    /// the record read again under its attachment lock, as its reader reads it, so a report fed
+    /// meanwhile is never overwritten by the record before it. Whether a session still has a
+    /// record to look at again.
     pub fn watch_resume_owners(&self, now: Instant) -> bool {
-        let resumes: Vec<(SessionId, crate::terminal::resume::SharedResume)> = {
+        use crate::terminal::resume::SharedResume;
+        type Parts = (
+            SessionId,
+            SharedResume,
+            Arc<Mutex<Attached>>,
+            Arc<Mutex<Shadow>>,
+        );
+        let resumes: Vec<Parts> = {
             let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
-                .map(|session| (session.id, Arc::clone(&session.resume)))
+                .map(|session| {
+                    (
+                        session.id,
+                        Arc::clone(&session.resume),
+                        Arc::clone(&session.attached),
+                        Arc::clone(&session.shadow),
+                    )
+                })
                 .collect()
         };
         let mut watching = false;
-        for (id, resume) in resumes {
+        for (id, resume, attached, shadow) in resumes {
             let watched = crate::terminal::resume::watch_owners(
                 &resume,
                 now,
                 crate::terminal::process::identity,
             );
             watching |= watched.watching;
-            for program in watched.cleared {
+            if watched.cleared.is_empty() {
+                continue;
+            }
+            for program in &watched.cleared {
                 crate::note!(
                     "session {}: {program} exited, so its resume record is cleared",
                     id.to_hyphenated()
                 );
+            }
+            let published = {
+                let _held = lock_or_recover(&attached);
+                let record = lock_or_recover(&resume)
+                    .as_ref()
+                    .and_then(crate::terminal::resume::Resume::whole);
+                let mut shadow = lock_or_recover(&shadow);
+                shadow.status().and_then(|status| {
+                    status.set_resume(record);
+                    let blocked = status.commit()?;
+                    Some(super::hooks::Published::of(
+                        status,
+                        self.hooks.boot(),
+                        id,
+                        blocked,
+                    ))
+                })
+            };
+            if let Some(published) = published {
+                self.hooks.status_changed(id, published);
             }
         }
         watching

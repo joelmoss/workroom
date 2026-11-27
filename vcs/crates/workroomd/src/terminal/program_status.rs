@@ -24,6 +24,13 @@
 //! A session also keeps one **command result** (#473): how its shell's last long command ended,
 //! from OSC 133 rather than from the program. It is sent as one more record, with an `exitCode`
 //! no program's record has, so an app that predates it shows a plain finished or failed mark.
+//!
+//! Each `status` event also carries the session's **resume record** whole (ADR 0082, #824), its
+//! command with the arguments, which the app saves in the tab's saved-layout entry. This service
+//! is the app's alone, so it is the one place the arguments go: the terminal API lists a record
+//! without them. The record is copied into the [`Store`] from the session's resume state as a
+//! report changes it or its owner's exit clears it (`Store::set_resume`), and published as any
+//! change is.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -241,6 +248,12 @@ pub struct Store {
     /// kept none. Never published: no status event says it.
     #[serde(default)]
     shell_marks: bool,
+    /// The session's resume record whole (ADR 0082, #824), copied here from its resume state
+    /// (`set_resume`) so its status event carries it to the app, which saves it in the tab's
+    /// saved-layout entry. Never carried: a hand-off carries the resume state itself, and the
+    /// next program copies it again (`restore_resume`).
+    #[serde(skip)]
+    resume: Option<crate::terminal::resume::Whole>,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
     #[serde(skip)]
     dirty: bool,
@@ -572,6 +585,21 @@ impl Store {
         }
     }
 
+    /// The session's resume record is now `resume` (#824): published when it changed. Nothing
+    /// else touches it, so the app's Clear status, a reset and the program's exit leave it.
+    pub fn set_resume(&mut self, resume: Option<crate::terminal::resume::Whole>) {
+        if self.resume != resume {
+            self.resume = resume;
+            self.dirty = true;
+        }
+    }
+
+    /// A hand-off's next program has the record its resume state carried (#824), unpublished:
+    /// the app already has it, and a new subscriber's snapshot carries it.
+    pub fn restore_resume(&mut self, resume: Option<crate::terminal::resume::Whole>) {
+        self.resume = resume;
+    }
+
     /// Takes the changes since the last commit as one revision. `Some(blocked)` when there is one
     /// to publish, `blocked` when a record entered blocked, which skips the throttle.
     pub fn commit(&mut self) -> Option<bool> {
@@ -632,6 +660,11 @@ impl Store {
             reporting: self.reporting.is_some(),
             records,
             run: self.run.as_deref(),
+            resume: self.resume.as_ref().map(|resume| WireResume {
+                argv: &resume.argv,
+                cwd: resume.cwd.as_deref(),
+                reported_at: resume.reported_at_ms,
+            }),
         })
         .expect("a status event serializes")
     }
@@ -750,6 +783,21 @@ struct StatusEvent<'a> {
     /// ignores it.
     #[serde(skip_serializing_if = "Option::is_none")]
     run: Option<&'a str>,
+    /// The session's resume record (#824), null for none: always sent, so the app can tell a
+    /// record cleared from a daemon that predates them, which sends no `resume` at all. An app
+    /// that predates it ignores it.
+    resume: Option<WireResume<'a>>,
+}
+
+/// A resume record on the wire (#824): the command whole, for the app to save. Only here, on the
+/// app's own service: the terminal API lists a record without its arguments.
+#[derive(Serialize)]
+struct WireResume<'a> {
+    argv: &'a [String],
+    cwd: Option<&'a str>,
+    /// Milliseconds since the Unix epoch.
+    #[serde(rename = "reportedAt")]
+    reported_at: u64,
 }
 
 #[derive(Serialize)]

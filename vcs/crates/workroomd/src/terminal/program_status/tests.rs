@@ -52,6 +52,12 @@ fn events_match_the_shared_fixtures() {
         },
         10,
     );
+    // The resume record whole (#824), the app's alone.
+    store.set_resume(Some(crate::terminal::resume::Whole {
+        argv: vec!["claude".into(), "--resume".into(), "a-session".into()],
+        cwd: Some("/work".into()),
+        reported_at_ms: 1_795_543_200_000,
+    }));
     assert_eq!(store.commit(), Some(true));
     let event = store.event(uuid(BOOT), uuid(SESSION));
     assert_eq!(String::from_utf8(event).unwrap(), fixture("status"));

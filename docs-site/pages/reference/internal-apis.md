@@ -183,6 +183,7 @@ A session's records, as they are now: one per session in the snapshot that follo
 | `reporting` | Whether a program run in the session is reporting now, until its prompt, a reset or its end. |
 | `records` | Its records, each as the next table says. |
 | `run` | Only on a run session: what its supervisor last wrote, such as `running` or `exited 3`. |
+| `resume` | The session's resume record whole, as the next-but-one table says, or null for none. The app saves it in the tab's saved-layout entry. A daemon that predates resume records leaves it out, which says nothing about the tab's record. |
 
 ### ProgramStatus `status` records
 
@@ -200,6 +201,16 @@ One record of a `status` event's `records`: what one program said through OSC 75
 | `episode` | Which time this record blocked, counted across the session; 0 until it first does. |
 | `notify` | Whether the app may alert for it. |
 | `exitCode` | Only on the shell command's record: the command's exit code. |
+
+### ProgramStatus `status` resume
+
+A `status` event's `resume`: how the session's program last said, over OSC 7577, it should be started again (ADR 0082). Only here: its arguments can hold secrets, so the terminal API lists a record without them.
+
+| Field | What it says |
+| ----- | ------------ |
+| `argv` | The command, as the program reported it. |
+| `cwd` | Where it starts: the folder it reported, else its own when it reported; null when neither is known. |
+| `reportedAt` | When it reported, in milliseconds since the Unix epoch. |
 
 ### ProgramStatus `snapshot-complete`
 

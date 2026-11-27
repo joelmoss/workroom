@@ -150,6 +150,11 @@ impl Layouts {
             .mode(0o600)
             .open(&temporary)
             .map_err(failed)?;
+        // A layout's tabs carry their resume records, whose arguments can hold secrets (#824): the
+        // file is the user's alone, even when a temporary file left by a crash had another mode,
+        // which `mode` does not change. The rename replaces the layout, so its mode goes too.
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(failed)?;
         let mut bytes = Vec::with_capacity(HEADER + blob.len());
         bytes.extend_from_slice(MAGIC);
         bytes.push(VERSION);

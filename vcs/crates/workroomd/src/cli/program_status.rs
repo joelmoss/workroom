@@ -70,6 +70,12 @@ pub fn run_program_status(args: &[String]) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
             } else if value["event"] == "status" {
+                let mut value = value;
+                // A resume record's arguments can hold secrets (#824), and this output gets pasted
+                // into bug reports: the app alone is told them.
+                if let Some(resume) = value.get_mut("resume").and_then(Value::as_object_mut) {
+                    resume.remove("argv");
+                }
                 sessions.push(value);
             } else if value["event"] == "snapshot-complete" {
                 print(as_json, &result.unwrap_or_default(), &sessions);

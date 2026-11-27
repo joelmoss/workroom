@@ -115,6 +115,26 @@ pub struct Recorded {
     pub reported_at_ms: u64,
 }
 
+/// A session's resume record whole, as the app saves it in the tab's saved-layout entry (#824):
+/// the command with its arguments, which can hold secrets, so only the app's own ProgramStatus
+/// service carries it (`program_status::Store::set_resume`), never the terminal API.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Whole {
+    /// The command, as reported.
+    pub argv: Vec<String>,
+    /// Where it starts: the folder it reported, else its own when it reported.
+    pub cwd: Option<String>,
+    /// When it reported, in milliseconds since the Unix epoch.
+    pub reported_at_ms: u64,
+}
+
+impl std::fmt::Debug for Whole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The arguments can hold secrets: only the program is printed.
+        write!(f, "Whole({})", program_name(&self.argv))
+    }
+}
+
 /// A session's resume state as its `Session` and reader share it: `None` for a session given no
 /// token.
 pub(crate) type SharedResume = std::sync::Arc<std::sync::Mutex<Option<Resume>>>;
@@ -474,8 +494,17 @@ impl Resume {
 
     /// The session's resume record, as the terminal API shows it.
     pub(crate) fn recorded(&self) -> Option<Recorded> {
-        self.choice().map(|record| Recorded {
-            program: program_name(&record.argv),
+        self.whole().map(|whole| Recorded {
+            program: program_name(&whole.argv),
+            cwd: whole.cwd,
+            reported_at_ms: whole.reported_at_ms,
+        })
+    }
+
+    /// The session's resume record whole, arguments and all, for the app alone (#824).
+    pub(crate) fn whole(&self) -> Option<Whole> {
+        self.choice().map(|record| Whole {
+            argv: record.argv.clone(),
             cwd: record
                 .reported_cwd
                 .clone()

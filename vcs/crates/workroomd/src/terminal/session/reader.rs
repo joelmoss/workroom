@@ -223,13 +223,24 @@ pub(super) fn read_session(
             let mut resumed = Vec::new();
             let clients = match read {
                 Ok(n) if n > 0 => {
+                    // The record as the reports left it, copied out under the resume lock and put
+                    // in the status under the shadow's, which the write below commits (#824).
+                    let mut record = None;
                     if let Some(resume) = &resume
                         && let Some(state) = lock_or_recover(resume).as_mut()
                     {
                         resumed = state.feed(&buffer[..n]);
+                        if !resumed.is_empty() {
+                            record = Some(state.whole());
+                        }
                     }
                     let disturbed = {
                         let mut shadow = lock_or_recover(&shadow);
+                        if let Some(record) = record
+                            && let Some(status) = shadow.status()
+                        {
+                            status.set_resume(record);
+                        }
                         shadow
                             .watch_for_transfers(held.clients.iter().any(|c| c.transfer.is_some()));
                         let (replies, changed) =

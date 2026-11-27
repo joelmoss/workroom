@@ -729,4 +729,82 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
         assert_eq!(exited["records"], json!([]), "Claude clears on exit");
         store.kill_all();
     }
+
+    /// Value: protects=the app hears a session's resume record whole, arguments and all, on its
+    /// own service as the record is accepted, and again as it clears when its owner has exited, so
+    /// it can save it in the tab's saved-layout entry (#824); fails_when=a record change stops
+    /// publishing a status event, from a read or from the owner watch, or the event leaves out
+    /// the arguments; why_new=the record's rules are tested in `resume`, not that the app hears
+    /// them; seam=none
+    #[test]
+    fn a_resume_record_reaches_the_app_as_it_is_accepted_and_as_it_clears() {
+        // SAFETY: no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+            return;
+        }
+        let store = SessionStore::new();
+        let mut client = Client::connect(&store);
+        client.request(json!({"version": 1, "method": "subscribe"}));
+        client.events_until(|e| e["event"] == "snapshot-complete");
+
+        // A child of the shell reports `vim -S /state/s.vim` as its own pid, signed with the
+        // session's token (`sha256sum` on Linux, `shasum` on macOS), and then exits while the
+        // shell runs on.
+        let report = r#"body="pid=$$:time=$(date +%s):argv=dmlt,LVM=,L3N0YXRlL3Mudmlt"; mac=$({ printf '%s:%s' "$body" "$OSC7577_TOKEN" | sha256sum 2>/dev/null || printf '%s:%s' "$body" "$OSC7577_TOKEN" | shasum -a 256; } | cut -d' ' -f1); printf '\033]7577;%s:mac=%s\007' "$body" "$mac"; sleep 1"#;
+        let args = [
+            OsString::from("-c"),
+            OsString::from(r#"sh -c "$REPORT"; echo owner-gone; sleep 30"#),
+        ];
+        let env = [
+            (OsString::from("TERM"), OsString::from("xterm-256color")),
+            (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+            (OsString::from("REPORT"), OsString::from(report)),
+            (
+                OsString::from("OSC7577_TOKEN"),
+                OsString::from("a-test-token-0123456789"),
+            ),
+        ];
+        store
+            .create(SessionSpec {
+                id: id(1),
+                program: OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &env,
+                cwd: None,
+                columns: 80,
+                rows: 24,
+                metadata: &[],
+                interactive: true,
+            })
+            .expect("create");
+        let session = id(1).to_hyphenated();
+
+        let accepted = client
+            .events_until(|e| e["session"] == session.as_str() && !e["resume"].is_null())
+            .pop()
+            .unwrap();
+        assert_eq!(
+            accepted["resume"]["argv"],
+            json!(["vim", "-S", "/state/s.vim"]),
+            "{accepted}"
+        );
+        assert!(
+            accepted["resume"]["reportedAt"].as_u64().unwrap() > 1_700_000_000_000,
+            "{accepted}"
+        );
+
+        wait_until(|| text(&store, id(1)), |text| text.contains("owner-gone"));
+        // The owner is found gone, then is still gone once its grace has passed.
+        let now = Instant::now();
+        store.watch_resume_owners(now);
+        store.watch_resume_owners(now + Duration::from_secs(3));
+        let cleared = client
+            .events_until(|e| e["session"] == session.as_str() && e["resume"].is_null())
+            .pop()
+            .unwrap();
+        assert_eq!(cleared["resume"], Value::Null, "{cleared}");
+        store.kill_all();
+    }
 }
