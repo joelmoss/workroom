@@ -258,7 +258,7 @@ fn an_npm_claudes_argv_counts_only_when_it_is_provably_whole() {
     assert_eq!(found(&whole, None), Err("unproven"));
     // argv saying an interpreter that the executable isn't, or the reverse.
     assert_eq!(
-        found(&["claude", "--model", "opus"], Some("/usr/bin/nodejs")),
+        found(&["claude", "--model", "opus"], Some(NODE)),
         Err("unproven")
     );
     assert_eq!(found(&whole, Some(NATIVE)), Err("unproven"));
