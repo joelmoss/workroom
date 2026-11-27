@@ -208,7 +208,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .goToPullRequest: "Go to Pull Request"
     case .changeDraft: "Ready for Review / Convert to Draft"
     case .projects: "Show Sidebar"
-    case .showOpenView: "Sidebar: Terminals"
+    case .showOpenView: "Sidebar: Open"
     case .showProjectsView: "Sidebar: Projects"
     case .inspector: "Show Inspector"
     case .details: "Details"
@@ -427,8 +427,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .changeDraft: ["Ready for Review", "Convert to Draft"]
     case .toggleLightDark: ["Light Mode", "Dark Mode"]
     // View ▸ Sidebar's items: their labels say which submenu they are in.
-    case .showOpenView: ["Terminals"]
-    case .showProjectsView: ["Projects"]
+    case .showOpenView: [SidebarView.open.title]
+    case .showProjectsView: [SidebarView.projects.title]
     case .openInEditor: ExternalEditor.allTitles
     // The app menu names it after the app: Workroom, Workroom Dev or Workroom Nightly.
     case .showHideWorkroom: ["Show/Hide \(Self.appName)"]

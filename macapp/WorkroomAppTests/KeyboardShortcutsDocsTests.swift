@@ -51,7 +51,9 @@ final class KeyboardShortcutsDocsTests: XCTestCase {
         current = String(line.dropFirst(3))
         sections[current!, default: []] = []
       } else if let current, line.hasPrefix("|"), line.hasSuffix("</kbd> |") {
-        sections[current, default: []].insert(line)
+        // A row new since the stable release carries a Nightly note (docs-site/README.md).
+        sections[current, default: []].insert(
+          line.replacingOccurrences(of: " (Nightly only)", with: ""))
       }
     }
     return sections

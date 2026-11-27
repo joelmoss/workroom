@@ -766,7 +766,6 @@ struct SidebarOpenTabRow: View, Equatable {
     parts += ProgramStatusPresentation.accessibilityParts(
       indicator: indicator, rollup: row.programStatus)
     if row.hasUnread { parts.append("unread activity") }
-    if row.isVisibleInSplit { parts.append("on screen in a split") }
     return parts.joined(separator: ", ")
   }
 }

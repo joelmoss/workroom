@@ -143,7 +143,7 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     XCTAssertTrue(view.menuItems["Theme…"].isEnabled, "a window-level View item stays enabled")
     // View ▸ Sidebar and View ▸ Inspector are submenus: each opens on hover.
     view.menuItems["Sidebar"].hover()
-    for title in ["Show Sidebar", "Terminals", "Projects"] {
+    for title in ["Show Sidebar", "Open", "Projects"] {
       XCTAssertTrue(view.menuItems[title].waitForExistence(timeout: 5), "View ▸ Sidebar ▸ \(title)")
       XCTAssertFalse(
         view.menuItems[title].isEnabled, "View ▸ Sidebar ▸ \(title) is enabled with no projects")

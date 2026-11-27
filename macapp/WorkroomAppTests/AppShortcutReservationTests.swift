@@ -102,7 +102,7 @@ final class AppShortcutReservationTests: XCTestCase {
     XCTAssertFalse(reserved("x", [.command, .control]), "only S, O, T and P are ours on ⌃⌘")
   }
 
-  /// ⌃⌘T and ⌃⌘P show the sidebar's Terminals and Projects views (View ▸ Sidebar), so a focused
+  /// ⌃⌘T and ⌃⌘P show the sidebar's Open and Projects views (View ▸ Sidebar), so a focused
   /// TUI can't eat them, as ⌃⌘S, Show Sidebar, beside them.
   func testControlCommandTAndPAreReservedForTheSidebarsViews() {
     XCTAssertTrue(reserved("t", [.command, .control]))
