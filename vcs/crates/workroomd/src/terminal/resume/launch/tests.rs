@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 
 /// A new private folder for one test, removed with everything in it when dropped.
 struct Dir(PathBuf);

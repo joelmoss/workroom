@@ -185,6 +185,31 @@ pub(crate) fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// Makes `dir` this user's alone, if it is not already: made `0700` when new, with any folder
+/// missing above it, and an existing one must be a real folder (not a link to one) this user owns,
+/// which is then set to `0700`. A resume launch file, a screen record or a layout is the user's
+/// alone, even when something else made its folder first.
+pub(crate) fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    match std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+    {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() || meta.uid() != euid() {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    if meta.mode() & 0o7777 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Call before every `fork` this crate makes, so the child is not killed before it can exec.
 ///
 /// On macOS, `fork` runs libSystem's child handlers, and libnotify's (`_notify_fork_child`) takes
