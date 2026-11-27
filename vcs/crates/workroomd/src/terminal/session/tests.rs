@@ -2419,7 +2419,7 @@ fn attaching_an_unknown_session_is_an_error() {
 }
 
 /// Value: protects=a resume record making a session again only when it ended with its daemon or
-/// host, never one that ended under this store: killed (a tab another Mac closed, an agent's
+/// host, never one that ended under this store: killed (a tab another Mac closed, a terminal API
 /// `session.kill`), killed while absent, killed with every other, or exited on its own; and, where
 /// screens are kept, only one whose record the store kept; fails_when=any of those ends is left
 /// unnoted, or a kept-screens store resumes an id with no record; why_new=#826's review: a killed

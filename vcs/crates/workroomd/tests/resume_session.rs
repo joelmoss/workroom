@@ -195,6 +195,23 @@ fn status(socket: &Path, session: &str) -> Value {
         .unwrap_or_default()
 }
 
+/// Waits up to 10 s for the daemon to list `session` with `program` in its foreground (by the name
+/// the daemon resolves, so the resumed program's own and not its helper's), or, with `holds`
+/// false, with it no longer there: a job-control step has landed once the foreground has moved.
+fn wait_for_foreground(socket: &Path, session: &str, program: &str, holds: bool) {
+    let in_front = || list_sessions_line(socket, session).contains(program) == holds;
+    assert!(
+        common::wait_for(Duration::from_secs(10), in_front),
+        "{program} {} the foreground: {}",
+        if holds { "never took" } else { "never left" },
+        list_sessions_line(socket, session)
+    );
+}
+
+/// How long an absence check gives what it waits not to see: a second run's line, or a program
+/// that must not start. The repo's floor for a wait (`CODING_STANDARDS.md`, "Time budgets").
+const ABSENT_FOR: Duration = Duration::from_secs(3);
+
 fn is_root() -> bool {
     // SAFETY: no preconditions.
     unsafe { libc::geteuid() == 0 }
@@ -271,9 +288,13 @@ fn resumes_as_its_shells_first_job(shell: &str) {
     }
 
     // ^Z: the program stops, and the shell's prompt takes the next line, in the folder as the
-    // record names it.
+    // record names it. Each step waits for the daemon to see the foreground move, rather than a
+    // guessed settle: a line typed before the shell has the terminal back would go to the
+    // program's `read`.
+    let name = program.file_name().unwrap().to_str().unwrap();
+    wait_for_foreground(&socket, session, name, true);
     type_into(&mut client, "\x1a");
-    std::thread::sleep(Duration::from_millis(500));
+    wait_for_foreground(&socket, session, name, false);
     type_into(&mut client, "echo \"STOPPED-$((40+2)) IN=$(pwd)\"\n");
     let here = format!("STOPPED-42 IN={}", folder.display());
     let stopped = reader
@@ -284,7 +305,7 @@ fn resumes_as_its_shells_first_job(shell: &str) {
         "^Z leaves {shell}'s prompt in the program's folder: {stopped}"
     );
     type_into(&mut client, "fg\n");
-    std::thread::sleep(Duration::from_millis(500));
+    wait_for_foreground(&socket, session, name, true);
     type_into(&mut client, "back\n");
     reader.read_until("PROGRAM-DONE back", Duration::from_secs(10));
     let login = format!("SHELL-IS=-{}", shell.rsplit('/').next().unwrap());
@@ -919,7 +940,8 @@ fn resumes_on_its_first_remote_attach(shell: &str) {
         !first.exists() && !second.exists(),
         "each relay claimed its file"
     );
-    std::thread::sleep(Duration::from_millis(500));
+    // Time for a second run to write its line, were there one.
+    std::thread::sleep(ABSENT_FOR);
     assert_eq!(
         std::fs::read_to_string(&runs)
             .unwrap_or_default()
@@ -942,11 +964,13 @@ fn resumes_on_its_first_remote_attach(shell: &str) {
     );
     let (mut again, mut seen) = restore_with(&socket, resumed, shell, &home, Some(&live), REMOTE);
     type_into(&mut again, "\n");
-    std::thread::sleep(Duration::from_millis(1000));
-    assert!(!live.exists(), "the relay claimed it");
+    assert!(
+        common::wait_for(Duration::from_secs(10), || !live.exists()),
+        "the relay claimed it"
+    );
     assert!(
         !seen
-            .read_until("SHOULD-NOT-RUN", Duration::from_secs(1))
+            .read_until("SHOULD-NOT-RUN", ABSENT_FOR)
             .contains("SHOULD-NOT-RUN"),
         "a live session ran a record"
     );
@@ -1091,7 +1115,8 @@ fn ended_here_never_resumes(shell: &str, remote: bool) {
         }
         assert!(!file.exists(), "{side}: the relay claimed the app's file");
     }
-    std::thread::sleep(Duration::from_millis(500));
+    // Time for a refused record's program to start, were it run.
+    std::thread::sleep(ABSENT_FOR);
     assert!(
         !runs.exists(),
         "{side}: a session ended under its daemon resumed its program"
@@ -1153,7 +1178,8 @@ fn the_losing_create_of_two_resumes_attaches_and_discards_its_file() {
             "the {which} shows the program: {seen}"
         );
     }
-    std::thread::sleep(Duration::from_millis(500));
+    // Time for the losing create's program to write its line, were it run too.
+    std::thread::sleep(ABSENT_FOR);
     assert_eq!(
         std::fs::read_to_string(&runs)
             .unwrap_or_default()

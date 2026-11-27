@@ -180,7 +180,7 @@ A restart of your Mac, or a crash of the background helper, ends every terminal'
 - If the program didn't say which folder it was in, it resumes in the terminal's last folder.
 - If the folder the program was in is gone, the terminal opens a new shell, as it does for a program that never said how to resume.
 - Programs resume in zsh and bash. In any other shell, such as fish, and in macOS's own `/bin/bash`, the terminal says it's a new terminal, and Workroom forgets the program.
-- Hidden terminal tabs resume as they reconnect, so their marks in the sidebar come back without opening each tab.
+- Hidden terminal tabs resume as they reconnect, so their marks in the sidebar come back without opening each tab. A remote workroom's hidden tab that you haven't opened since its host restarted waits until you open it, so restoring doesn't wake a sleeping box or start a stopped container. See [Reconnecting](../remote/reconnecting.md).
 - A run tab doesn't resume: it comes back stopped, and ⌘R starts it again.
 - To turn it off, turn off **Resume programs after a restart** in [Settings ▸ Terminal](settings.md#resume-programs-after-a-restart).
 
