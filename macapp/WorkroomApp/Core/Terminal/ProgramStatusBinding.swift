@@ -94,7 +94,8 @@ final class ProgramStatusBinding {
     }
   }
 
-  /// Puts the monitor's rollup on every tab of `terminals` attached to `sessions`.
+  /// Puts the monitor's rollup, and its resume record (#824), on every tab of `terminals`
+  /// attached to `sessions`.
   private func applyProgramStatus(
     _ sessions: Set<UUID>,
     to terminals: [(target: TerminalTarget.ID, tab: TerminalTab.ID, state: TerminalState)]
@@ -102,23 +103,58 @@ final class ProgramStatusBinding {
     for (targetID, tabID, state) in terminals {
       guard let sessionID = state.sessionID, sessions.contains(sessionID) else { continue }
       let rollup = monitor.rollup(for: sessionID)
-      guard rollup != state.programStatus else { continue }
+      let resume = resume(of: sessionID, keeping: state.resume)
+      guard rollup != state.programStatus || resume != state.resume else { continue }
       if access.surface(tabID)?.isEffectivelyFocused == true, rollup?.done != nil,
         state.programStatus?.done == nil
       {
         watchedDone.insert(tabID)
       }
-      access.mutate(tabID, targetID) { $0.programStatus = rollup }
+      access.mutate(tabID, targetID) {
+        $0.programStatus = rollup
+        $0.resume = resume
+      }
     }
   }
 
   /// A tab pointed at another session (Detached sessions > Active tab) shows that session's
   /// status at once, not the old one's until the new session next changes.
   func refreshProgramStatus(tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID) {
-    guard let sessionID = access.state(tabID, targetID)?.sessionID else { return }
+    guard let state = access.state(tabID, targetID), let sessionID = state.sessionID else {
+      return
+    }
     watchedDone.remove(tabID)
     let rollup = monitor.rollup(for: sessionID)
-    access.mutate(tabID, targetID) { $0.programStatus = rollup }
+    let resume = resume(of: sessionID, keeping: state.resume)
+    access.mutate(tabID, targetID) {
+      $0.programStatus = rollup
+      $0.resume = resume
+    }
+  }
+
+  /// The resume record a tab attached to `sessionID` saves (#824), given what it holds now: what
+  /// the session's daemon last said of it, or `current` while it says nothing of the session (not
+  /// heard of yet, ended, or its daemon or host gone), so a session that ends never takes it.
+  func resume(of sessionID: UUID, keeping current: ResumeRecord?) -> ResumeRecord? {
+    guard let said = monitor.resume(for: sessionID) else { return current }
+    return Self.resume(current, after: said.report, boot: said.boot)
+  }
+
+  /// `current` once a daemon numbering its sessions `boot` has said `report` of its session's
+  /// resume record. A record replaces it. No record clears it only from the daemon that told it:
+  /// a daemon that started over (a reboot, a crash, a host restart) has a new shell under the
+  /// same id, which has nothing to resume yet, and the pane still has the record it left. One
+  /// that says nothing (a daemon that predates records) leaves it.
+  nonisolated static func resume(
+    _ current: ResumeRecord?, after report: ProgramResumeReport, boot: String
+  ) -> ResumeRecord? {
+    switch report {
+    case .unknown: return current
+    case .none: return current?.boot == boot ? nil : current
+    case .record(let record):
+      return ResumeRecord(
+        argv: record.argv, cwd: record.cwd, reportedAt: record.reportedAt, boot: boot)
+    }
   }
 
   /// Focus moving into a pane marks its finished and failed records seen; a finish watched while

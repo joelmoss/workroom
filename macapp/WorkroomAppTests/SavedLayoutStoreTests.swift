@@ -45,6 +45,46 @@ final class SavedLayoutStoreTests: XCTestCase {
 
   // MARK: Round trip
 
+  /// Value: protects=a terminal's resume record comes back from session.json whole, and a tab
+  /// saved before records were saved still loads (#824); fails_when=the payload stops encoding the
+  /// record, or a field of it is renamed; why_new=the record is what a gone session resumes from;
+  /// seam=none
+  func testATerminalsResumeRecordRoundTrips() throws {
+    let record = ResumeRecord(
+      argv: ["claude", "--resume", "a-session"], cwd: "/p/calm-otter",
+      reportedAt: 1_795_543_200_000, boot: "6f1c2e0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b")
+    var file = makeFile()
+    file.windows[0].targets[0].tabs[0].terminal?.resume = record
+    SavedLayoutStore(url: url).writeSynchronously(file)
+
+    guard case .restored(let read, _) = SavedLayoutStore(url: url).read() else {
+      return XCTFail("expected a restored session")
+    }
+    XCTAssertEqual(read.windows[0].targets[0].tabs[0].terminal?.resume, record)
+    let older = Data(#"{"defaultTitle":"Terminal 1","cwd":"/p"}"#.utf8)
+    XCTAssertNil(try JSONDecoder().decode(TerminalPayload.self, from: older).resume)
+  }
+
+  /// Value: protects=session.json, whose tabs carry resume records' arguments, is its user's alone,
+  /// and one an older build left readable is tightened at the next save (#824); fails_when=a write
+  /// takes the umask's mode, or keeps an existing file's; why_new=nothing checked the mode;
+  /// seam=none
+  func testTheFileIsReadableByItsUserAlone() throws {
+    let store = SavedLayoutStore(url: url)
+    let mode = { () throws -> Int in
+      let attributes = try FileManager.default.attributesOfItem(atPath: self.url.path)
+      return try XCTUnwrap(attributes[.posixPermissions] as? NSNumber).intValue & 0o777
+    }
+    XCTAssertTrue(store.writeSynchronously(makeFile()))
+    XCTAssertEqual(try mode(), 0o600)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+    XCTAssertTrue(store.writeSynchronously(makeFile(windowKey: "W2")))
+    XCTAssertEqual(try mode(), 0o600, "an existing file's mode is tightened")
+    let leftovers = try FileManager.default.contentsOfDirectory(
+      atPath: url.deletingLastPathComponent().path)
+    XCTAssertEqual(leftovers, ["session.json"], "no temporary file is left behind")
+  }
+
   func testWriteThenReadRoundTrips() throws {
     let store = SavedLayoutStore(url: url)
     store.writeSynchronously(makeFile())

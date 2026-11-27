@@ -25,6 +25,8 @@ enum TerminalSessionAttachment {
     if state.sessionID != sessionID {
       state.userTitle = nil
       state.syncedLabel = nil
+      // The old session's resume record goes with it (#824); the new one's comes from its daemon.
+      state.resume = nil
       view.attachment.metadata = target.sessionMetadata(title: state.sessionLabel)
     }
     // A remote workroom's session from its host's list is attached on that host, as a new tab's

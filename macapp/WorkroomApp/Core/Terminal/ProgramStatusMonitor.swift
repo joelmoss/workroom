@@ -56,14 +56,16 @@ struct ProgramStatusSession: Equatable {
   /// A run session's state as its supervisor last wrote it (#522): `running <pid>`, `stopped`,
   /// `exited <code>`. Nil for a shell.
   var run: String? = nil
+  /// Its resume record (#824), which its tab saves in the saved layout (`ProgramStatusBinding`).
+  var resume: ProgramResumeReport = .unknown
   /// When this app first saw each waiting request, by (record id, episode).
   var blockedSince: [String: Date] = [:]
 
-  /// Whether the two differ in anything an indicator or notification reads: `progress` alone is
-  /// never shown, so a change only to it is not published.
+  /// Whether the two differ in anything an indicator, a notification or the saved layout reads:
+  /// `progress` alone is never shown, so a change only to it is not published.
   func differsVisibly(from other: ProgramStatusSession) -> Bool {
     reporting != other.reporting || boot != other.boot || run != other.run
-      || records.map(Self.visible) != other.records.map(Self.visible)
+      || resume != other.resume || records.map(Self.visible) != other.records.map(Self.visible)
   }
 
   /// What is shown of a record: a working or idle one's text is not (Claude Code sends a new
@@ -228,12 +230,14 @@ final class ProgramStatusMonitor: ObservableObject {
   /// Puts `session`'s records in with no daemon: the UI-test fixture's seam (`UITestFixture`).
   func seed(
     _ session: UUID, host: HostID = .local, reporting: Bool = true,
-    records: [ProgramStatusRecord], stale: Bool = false, boot: String = "fixture"
+    records: [ProgramStatusRecord], stale: Bool = false, boot: String = "fixture",
+    resume: ProgramResumeReport = .unknown
   ) {
     hosts[host] = stale ? .stale : .live
     _ = store(
       ProgramStatusSession(
-        host: host, boot: boot, revision: 1, reporting: reporting, records: records),
+        host: host, boot: boot, revision: 1, reporting: reporting, records: records,
+        resume: resume),
       for: session)
     notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
   }
@@ -246,6 +250,12 @@ final class ProgramStatusMonitor: ObservableObject {
   /// A run session's state as its supervisor last wrote it (#522), or nil for a session this
   /// monitor has no run state for.
   func run(for session: UUID) -> String? { sessions[session]?.run }
+
+  /// What `session`'s daemon, numbering its sessions as `boot`, last said of its resume record
+  /// (#824); nil while it says nothing of the session: not heard of yet, ended, or its host gone.
+  func resume(for session: UUID) -> (boot: String, report: ProgramResumeReport)? {
+    sessions[session].map { ($0.boot, $0.resume) }
+  }
 
   /// Whether the host's daemon has told this monitor about `session` and not said it ended.
   func hasSession(_ session: UUID) -> Bool { sessions[session] != nil }
@@ -305,12 +315,13 @@ final class ProgramStatusMonitor: ObservableObject {
             if case .lost = event { break }
             if inSnapshot,
               case .status(
-                let boot, let session, let revision, let reporting, let records, let run) =
+                let boot, let session, let revision, let reporting, let records, let run,
+                let resume) =
                 event
             {
               pending[session] = ProgramStatusSession(
                 host: host, boot: boot, revision: revision, reporting: reporting, records: records,
-                run: run)
+                run: run, resume: resume)
               continue
             }
             if inSnapshot, case .snapshotComplete = event {
@@ -392,10 +403,11 @@ final class ProgramStatusMonitor: ObservableObject {
 
   private func apply(_ event: ProgramStatusEvent, host: HostID) {
     switch event {
-    case .status(let boot, let session, let revision, let reporting, let records, let run):
+    case .status(
+      let boot, let session, let revision, let reporting, let records, let run, let resume):
       let new = ProgramStatusSession(
         host: host, boot: boot, revision: revision, reporting: reporting, records: records,
-        run: run)
+        run: run, resume: resume)
       if store(new, for: session) {
         notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
       }
