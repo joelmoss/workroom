@@ -897,3 +897,86 @@ fn a_carried_state_from_a_table_without_launched_decodes() {
     assert_eq!(older, carried);
     assert_eq!(older.launched, None);
 }
+
+/// A hand-off table's resume state as version 6 writes it: one owner with a record, one whose
+/// rejected report left it none, and the resumed program's helper. Written by the build this
+/// test was added in, before its state was restructured.
+const CARRIED_V6: &str = concat!(
+    r#"{"token":"private-token","uid":501,"root":{"pid":4242,"start":1},"#,
+    r#""words":{"4242":{"time":1795543200,"offset":7,"record":{"owner":{"pid":4242,"start":1},"#,
+    r#""ancestors":[],"argv":["claude","--resume","a-session"],"reported_cwd":"/work","#,
+    r#""owner_cwd":null,"reported_at":1795543200}},"#,
+    r#""4343":{"time":1795543100,"offset":3,"record":null}},"#,
+    r#""offset":7,"launched":{"helper":{"pid":4200,"start":2},"program":{"pid":4242,"start":1}}}"#
+);
+
+/// The same table from a build before `launched`: no such key.
+const CARRIED_BEFORE_LAUNCHED: &str = concat!(
+    r#"{"token":"private-token","uid":501,"root":{"pid":4242,"start":1},"#,
+    r#""words":{"4242":{"time":1795543200,"offset":7,"record":{"owner":{"pid":4242,"start":1},"#,
+    r#""ancestors":[],"argv":["claude","--resume","a-session"],"reported_cwd":"/work","#,
+    r#""owner_cwd":null,"reported_at":1795543200}}},"offset":7}"#
+);
+
+/// Value: protects=the hand-off table's resume state (version 6) reading and writing exactly as
+/// the shipped build does, field names, order and defaults alike, so a hand-off to or from it
+/// keeps every session's token, records and stream position; fails_when=a field is renamed,
+/// reordered, dropped or stops defaulting; why_new=the resume state's restructure (one persisted
+/// struct); seam=none
+#[test]
+fn a_carried_state_reads_and_writes_the_shipped_tables_shape() {
+    let carried: Carried = serde_json::from_str(CARRIED_V6).expect("today's table decodes");
+    assert_eq!(serde_json::to_string(&carried).unwrap(), CARRIED_V6);
+    let adopted = Resume::adopted(carried);
+    assert_eq!(adopted.token(), TOKEN);
+    assert_eq!(
+        adopted
+            .whole()
+            .map(|whole| (whole.argv, whole.cwd, whole.reported_at_ms)),
+        Some((
+            vec!["claude".into(), "--resume".into(), "a-session".into()],
+            Some("/work".into()),
+            1_795_543_200_000,
+        ))
+    );
+    let shared: SharedResume = Arc::new(Mutex::new(Some(adopted)));
+    let table = [process(4200, 2, 1, UID), process(4242, 1, 4200, UID)];
+    let lookup = |pid| table.iter().copied().find(|p| p.pid == pid);
+    assert_eq!(foreground_process(&shared, 4200, lookup), 4242, "launched");
+
+    let older: Carried =
+        serde_json::from_str(CARRIED_BEFORE_LAUNCHED).expect("an older table decodes");
+    assert_eq!(older, Carried::for_test(TOKEN, 7));
+    let written = serde_json::to_string(&older).unwrap();
+    assert_eq!(
+        written,
+        CARRIED_BEFORE_LAUNCHED.replace(r#""offset":7}"#, r#""offset":7,"launched":null}"#)
+    );
+}
+
+/// Value: protects=the daemon's log saying why a resume was declined in the words it always has;
+/// fails_when=a reason's wording changes or two reasons swap; why_new=the resume lifecycle's
+/// restructure; seam=none
+#[test]
+fn a_decline_says_why_in_its_log() {
+    let pending = |hooked: bool| Pending {
+        file: launch_file(),
+        hooked,
+        root: None,
+        shell: None,
+    };
+    assert_eq!(
+        pending(false).why(true),
+        "its shell's first prompt came before its helper reported, so it ran no Workroom hook"
+    );
+    assert_eq!(
+        pending(false).why(false),
+        "its shell never loaded Workroom's hook, and its helper never reported"
+    );
+    for at_prompt in [true, false] {
+        assert_eq!(
+            pending(true).why(at_prompt),
+            "its shell loaded Workroom's hook, then exec replaced the shell before its helper ran"
+        );
+    }
+}
