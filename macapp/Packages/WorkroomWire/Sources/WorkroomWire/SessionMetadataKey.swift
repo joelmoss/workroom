@@ -6,6 +6,12 @@ public enum SessionMetadataKey {
   /// When the daemon made the session, in milliseconds since the epoch. The daemon adds it itself, so
   /// it has no environment variable (#255).
   public static let created = "created"
+  /// The app's "Resume programs after a restart" for a session it creates (#827), set only to
+  /// `programResumeOff` when it's off: that session gets no resume token, and so accepts no
+  /// reports. The daemon reads it as it creates the session and keeps none of it; absent is on.
+  public static let programResume = "programResume"
+  /// `programResume`'s value for off (`resume::OFF` in the daemon).
+  public static let programResumeOff = "off"
 
   /// The canonical key <-> environment-variable-name association for this metadata bag, crossing
   /// the process boundary in both directions: the app's PersistentSessionService writes these
@@ -19,5 +25,6 @@ public enum SessionMetadataKey {
     (workroom, "WORKROOM_SESSION_WORKROOM"),
     (tab, "WORKROOM_SESSION_TAB"),
     (title, "WORKROOM_SESSION_TITLE"),
+    (programResume, "WORKROOM_SESSION_PROGRAM_RESUME"),
   ]
 }

@@ -872,11 +872,17 @@ private struct TerminalSettingsPane: View {
     WindowRegistry.shared.allStores.reduce(into: Set<UUID>()) { $0.formUnion($1.heldSessionIDs) }
   }
 
+  private static let resumeProgramsHelp =
+    "When your Mac restarts or a terminal's session ends, programs that support it, such as "
+    + "Claude Code and Codex, come back where they were."
+
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   @Default(.terminalReportsGhostty) private var reportsGhostty
+  // ADR 0082, #827: `ProgramResume` is where the rest of the app reads it.
+  @Default(.resumePrograms) private var resumePrograms
   // The detached sessions "Stop Detached Terminals" found; non-nil presents its alert.
   @State private var detachedToStop: [UUID]?
 
@@ -942,6 +948,18 @@ private struct TerminalSettingsPane: View {
           )
           .font(.caption)
           .foregroundStyle(.secondary)
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+          Toggle("Resume programs after a restart", isOn: $resumePrograms)
+            .help(Self.resumeProgramsHelp)
+            .accessibilityIdentifier("settings.control.resumePrograms")
+          // Read as each terminal attaches (`ProgramResume`), so it applies to terminals started
+          // from now on, and to a terminal whose session is gone when it comes back.
+          Text(Self.resumeProgramsHelp)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("settings.control.resumeProgramsCaption")
         }
 
         Picker("Open file paths in", selection: $pathEditor) {

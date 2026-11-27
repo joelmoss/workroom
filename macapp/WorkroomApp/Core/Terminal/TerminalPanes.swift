@@ -3252,9 +3252,11 @@ final class TerminalPanes {
           let state = tab.terminal, let sessionID = state.sessionID
         else { continue }
         let descriptor = live.first(where: { $0.identifier.uuid == sessionID })
-        guard descriptor != nil || (state.resume != nil && !state.launch.isRunSession) else {
-          continue
-        }
+        // A gone one with a record only while programs resume (#827): with it off, its pane would
+        // only be a new shell, made when it is shown, as before resume.
+        let resumes =
+          state.resume != nil && !state.launch.isRunSession && sessionService.programResumeIsOn()
+        guard descriptor != nil || resumes else { continue }
         // The local PTY belongs to the attach helper, so foreground-process recognition cannot
         // see the agent after a restart. Recover it from the helper's live command metadata;
         // screen repaint alone need not replay the shell's original command title.

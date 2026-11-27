@@ -184,10 +184,21 @@ final class PaneSessionAttachment {
     // other gone session is made again, running its tab's resume record in its folder when it has
     // one (ADR 0082, #825), which the relay is handed in a file; else it is a new shell. Its
     // "Resumed" waits for the daemon to say the program started (`resumeStarted`).
+    // With "Resume programs after a restart" off (#827) no record goes: a gone session here is a
+    // new shell, and on a host it has ended. The new shell forgets the record, as a declined
+    // resume does: it is what the pane runs now, and the record would resume over it once the
+    // setting is on again.
     endResume()
     var resumeFile: String?
+    let resumes = service.programResumeIsOn()
+    let resumeRecord = resumes ? tabResume() : nil
     if !isRunSession, service.willReplaceRestoredSession(sessionID, wasRestored: isRestored) {
-      if let record = tabResume(),
+      if !resumes, tabResume() != nil {
+        // Not while the surface is being made, which this is asked during.
+        let forget = forgetTabResume
+        Task { @MainActor in forget() }
+      }
+      if let record = resumeRecord,
         let file = service.writeResumeLaunch(
           record, for: sessionID, savedFolder: workingDirectory)
       {
@@ -196,7 +207,7 @@ final class PaneSessionAttachment {
       } else {
         surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
       }
-    } else if !isRunSession, isRestored, service.isRemote(sessionID), let record = tabResume(),
+    } else if !isRunSession, isRestored, service.isRemote(sessionID), let record = resumeRecord,
       let file = service.writeResumeLaunch(record, for: sessionID, savedFolder: workingDirectory)
     {
       // A remote pane's (#826): its host's daemon makes the session again with it only if it is

@@ -207,6 +207,13 @@ public enum SSHTransport {
     ] + SessionMetadataKey.environmentVariables.map(\.variable)
   }
 
+  /// The metadata (`SessionMetadataKey`) a remote pane's attach takes to its host: the workroom and
+  /// title, which the host's daemon keeps (#255), and the app's resume setting, which it reads as it
+  /// creates the session (#827). Not the project, which is this Mac's path.
+  static let hostMetadataKeys: Set<String> = [
+    SessionMetadataKey.workroom, SessionMetadataKey.title, SessionMetadataKey.programResume,
+  ]
+
   /// What the Mac's attach client sends the host's daemon about the session, as `workroomd attach`
   /// reads it (`AttachRequest::from_vars`).
   ///
@@ -214,8 +221,8 @@ public enum SSHTransport {
   /// without Ghostty's shell integration when the bootstrap's terminfo is not beside it (#239), as
   /// the host-side script decided before. `metadata`'s workroom and title go in under the same
   /// variables a local pane's attach gets (`SessionMetadataKey.environmentVariables`), which the
-  /// host's daemon keeps (#255). Nothing else of it does: the project is this Mac's path, which the
-  /// host neither keeps nor needs.
+  /// host's daemon keeps (#255), and so does its resume setting (#827, `hostMetadataKeys`). Nothing
+  /// else of it does: the project is this Mac's path, which the host neither keeps nor needs.
   ///
   /// `runCommand` makes the session a run session (#522), whose daemon runs it under the run
   /// supervisor in the host's own login shell.
@@ -229,7 +236,7 @@ public enum SSHTransport {
     runCommand: String?
   ) -> [String] {
     let names = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
-      .filter { [SessionMetadataKey.workroom, SessionMetadataKey.title].contains($0.key) }
+      .filter { hostMetadataKeys.contains($0.key) }
     return [
       "TERM=xterm-ghostty",
       keepaliveVariable,
@@ -392,9 +399,10 @@ public enum SSHTransport {
   /// 255 instead, ssh's own status for a lost link, which the app answers by attaching again with
   /// backoff: by then the bootstrap, which nothing orders panes after, has installed it.
   /// `metadata`'s workroom and title go in under the same variables a local pane's attach gets
-  /// (`SessionMetadataKey.environmentVariables`), which the host's daemon keeps (#255). Nothing
-  /// else does: the project is this Mac's path, which the host neither keeps nor needs, and an ssh
-  /// command line is visible to everything on the host.
+  /// (`SessionMetadataKey.environmentVariables`), which the host's daemon keeps (#255), and so does
+  /// its resume setting (#827, `hostMetadataKeys`). Nothing else does: the project is this Mac's
+  /// path, which the host neither keeps nor needs, and an ssh command line is visible to everything
+  /// on the host.
   ///
   /// `runCommand` makes the session a run session (#522), whose daemon runs it under the run
   /// supervisor in the host's own login shell. It is the project's run command, which the user
@@ -420,7 +428,7 @@ public enum SSHTransport {
       "WORKROOM_SESSION_RESOURCES=\(resources)", "GHOSTTY_SHELL_FEATURES=cursor,sudo,title",
     ]
     let names = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
-      .filter { [SessionMetadataKey.workroom, SessionMetadataKey.title].contains($0.key) }
+      .filter { hostMetadataKeys.contains($0.key) }
     let variables =
       [keepaliveVariable]
       + (hostname.map { ["WORKROOM_SESSION_HOSTNAME=\($0)"] } ?? [])

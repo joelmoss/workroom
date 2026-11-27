@@ -390,11 +390,13 @@ final class PaneSessionAttachmentTests: XCTestCase {
 
   /// A restored pane on a service whose daemon holds no session: its session is gone. Each pane's
   /// record forgets count in `forgets`, and its confirmation wait never runs out on its own.
-  private func goneSessionPanes() -> (
+  /// `resumes` is the app's "Resume programs after a restart" (#827).
+  private func goneSessionPanes(resumes: Bool = true) -> (
     pane: (ResumeRecord?) -> (PaneSessionAttachment, FakePaneSurface), forgets: () -> Int
   ) {
     let gone = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") }, ownership: { _ in .notOwned })
+    gone.programResumeIsOn = { resumes }
     let folder = FileManager.default.temporaryDirectory
       .appendingPathComponent("wr-resume-pane-\(UUID().uuidString.prefix(8))")
     addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
@@ -461,6 +463,63 @@ final class PaneSessionAttachmentTests: XCTestCase {
       XCTAssertEqual(notices.notices, said, "a pane that resumed nothing says nothing more")
     }
     XCTAssertEqual(forgets(), 1)
+  }
+
+  /// Value: protects=with "Resume programs after a restart" off, a restored pane whose session is
+  /// gone getting today's new shell, its daemon told to give it no resume token, and its tab
+  /// forgetting the record it no longer runs; on, its daemon told nothing; fails_when=a record
+  /// goes to the relay while off, the variable is missing while off or sent while on, the pane
+  /// toasts a resume, or the record outlives the new shell; why_new=new (#827); seam=the
+  /// service's `programResumeIsOn`
+  func testWithResumeOffAGonePaneIsANewShellThatForgetsItsRecord() async throws {
+    let (pane, forgets) = goneSessionPanes(resumes: false)
+    let (plain, notices) = pane(claude)
+    let launch = try XCTUnwrap(
+      plain.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false),
+      "no daemon command in this test host")
+    XCTAssertNil(launch.environment.first { $0.key == ResumeLaunchFile.variable })
+    XCTAssertEqual(
+      launch.environment.first { $0.key == "WORKROOM_SESSION_PROGRAM_RESUME" }?.value, "off")
+    XCTAssertNil(plain.resumeState)
+    XCTAssertEqual(notices.notices, [PaneNoticeToast.sessionReplaced])
+    for _ in 0..<50 where forgets() == 0 { await Task.yield() }
+    XCTAssertEqual(forgets(), 1, "the new shell forgets the record")
+
+    let (onPane, _) = goneSessionPanes(resumes: true)
+    let (resuming, _) = onPane(claude)
+    let resumed = try XCTUnwrap(
+      resuming.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    XCTAssertNil(
+      resumed.environment.first { $0.key == "WORKROOM_SESSION_PROGRAM_RESUME" },
+      "on says nothing, as an older app")
+    XCTAssertNotNil(resumed.environment.first { $0.key == ResumeLaunchFile.variable })
+  }
+
+  /// Value: protects=with resume off, a restored remote pane sending no record, so its host shows a
+  /// gone session ended, and its attach telling the host's daemon to give a session it makes no
+  /// token; fails_when=the record or the offer survives, or the variable never reaches the attach
+  /// command; why_new=new (#827); seam=the service's `programResumeIsOn`
+  func testWithResumeOffARestoredRemotePaneSendsNoRecordAndSaysSoToItsHost() throws {
+    let folder = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-off-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+    service.resumeLaunchDirectory = folder
+    service.programResumeIsOn = { false }
+    let pane = try remotePane(log: "", provider: true)
+    pane.tabResume = {
+      ResumeRecord(argv: ["claude", "--resume", "a"], cwd: "/home/w", reportedAt: 1, boot: "b")
+    }
+    var forgets = 0
+    pane.forgetTabResume = { forgets += 1 }
+    pane.isRestored = true
+    let launch = try XCTUnwrap(
+      pane.launch(workingDirectory: "/home/w", runCommand: nil, isRunSession: false))
+    XCTAssertNil(launch.environment.first { $0.key == ResumeLaunchFile.variable })
+    XCTAssertNil(pane.resumeState)
+    XCTAssertTrue(
+      launch.command.contains("WORKROOM_SESSION_PROGRAM_RESUME=off"), launch.command)
+    XCTAssertEqual(forgets, 0, "a host's session may be live: its record stays")
+    XCTAssertEqual(try surface(of: pane).notices, [])
   }
 
   /// Value: protects=a resume nothing confirms within the wait (a shell whose Workroom hook loaded

@@ -170,6 +170,18 @@ final class SSHTransportShellTests: XCTestCase {
     environment = client.environment
     XCTAssertEqual(environment["WORKROOM_SESSION_RUN"], "1")
     XCTAssertEqual(environment["WORKROOM_SESSION_COMMAND"], "bin/dev 'web'")
+
+    // The app's resume setting (#827) reaches the host's daemon when it's off, and an inherited
+    // copy never does.
+    _ = try runPane(
+      paneCommand(
+        client: client, session: session,
+        metadata: [(key: "programResume", value: "off")]))
+    XCTAssertEqual(client.environment["WORKROOM_SESSION_PROGRAM_RESUME"], "off")
+    _ = try runPane(
+      paneCommand(client: client, session: session),
+      environment: ["WORKROOM_SESSION_PROGRAM_RESUME": "off"])
+    XCTAssertNil(client.environment["WORKROOM_SESSION_PROGRAM_RESUME"])
   }
 
   // Value: protects=refusal detection and the retry notice for a client-run pane; fails_when=the
@@ -291,6 +303,21 @@ final class SSHTransportShellTests: XCTestCase {
     XCTAssertEqual(installed.status, 7, installed.output)
     XCTAssertTrue(
       installed.output.hasSuffix(" relay --socket \(daemon)/workroomd.sock\n"), installed.output)
+  }
+
+  /// A container pane's in-container attach (`remoteAttachCommand`) takes the app's resume setting
+  /// to the daemon when it's off (#827), beside the workroom and title, and never the project.
+  func testTheInHostAttachCarriesTheResumeSetting() {
+    let script = SSHTransport.remoteAttachCommand(
+      binary: "/r/workroom", session: UUID(), socket: "/r/workroomd.sock", resources: "/r/res",
+      workingDirectory: "/w", restored: true,
+      metadata: [
+        (key: "programResume", value: "off"), (key: "title", value: "Build"),
+        (key: "project", value: "/Users/me/p"),
+      ], hostname: nil)
+    XCTAssertTrue(script.contains("'WORKROOM_SESSION_PROGRAM_RESUME=off'"), script)
+    XCTAssertTrue(script.contains("'WORKROOM_SESSION_TITLE=Build'"), script)
+    XCTAssertFalse(script.contains("WORKROOM_SESSION_PROJECT"), script)
   }
 
   func testMissingAttachBinaryKeepsTheRetryableTransportStatus() throws {
