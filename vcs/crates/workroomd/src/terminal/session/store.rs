@@ -328,8 +328,8 @@ impl SessionStore {
 
     /// What an attach carrying a resume record finds of `id` (#826): its live session, or whether
     /// a gone one may be made again to run the record. A session that ended under this daemon's
-    /// boot never may: its shell exited, or a client killed it (a closed tab on another Mac, an
-    /// agent's `session.kill`), and its program was stopped on purpose. Only one that ended with
+    /// boot never may: its shell exited, or a client killed it (a closed tab on another Mac, a
+    /// terminal API `session.kill`), and its program was stopped on purpose. Only one that ended with
     /// its daemon or its host may, and where this daemon keeps screens (`serve --screens`, every
     /// remote host) only one whose last screen the store kept: such a session leaves its record
     /// behind, and one that ends under any daemon has it removed (its kill at once, its exit on the

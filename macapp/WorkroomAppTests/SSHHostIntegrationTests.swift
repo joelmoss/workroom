@@ -498,7 +498,8 @@ final class SSHHostIntegrationTests: XCTestCase {
     for file in files {
       XCTAssertFalse(FileManager.default.fileExists(atPath: file), "its client claimed it")
     }
-    try await Task.sleep(for: .milliseconds(500))
+    // Time for a second run to write its line, were there one: the repo's 3 s floor for a wait.
+    try await Task.sleep(for: .seconds(3))
     let count = try await onHost(fixture, "wc -l < \(runs); rm -f \(runs)")
     XCTAssertEqual(count, "1", "the program resumed once, in one session")
   }

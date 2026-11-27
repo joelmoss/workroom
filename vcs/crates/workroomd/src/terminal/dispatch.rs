@@ -145,8 +145,8 @@ pub(crate) fn dispatch(
             // record, rather than shown ended or as its frozen last screen. Never a run, which
             // keeps its stopped tab (ADR 0058), nor under a root daemon, whose sessions never
             // resume (ADR 0082), nor a session that ended under this daemon (`SessionStore::found`:
-            // a tab another Mac closed, an agent's kill): all are refused as before, and an attach
-            // with no record too.
+            // a tab another Mac closed, a terminal API `close`): all are refused as before, and an
+            // attach with no record too.
             let resumes = request.resume.is_some()
                 && !run
                 && found == Found::EndedWithItsDaemon
