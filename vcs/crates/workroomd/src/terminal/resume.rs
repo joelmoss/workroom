@@ -11,8 +11,8 @@
 //! There are no per-program rules (ADR 0082): a process that can forge that already runs as the
 //! user. A daemon running as root gives no session a token, so it accepts nothing.
 //!
-//! **One record per owner, one shown.** Herdr's model: every pid that has reported has a `Word`
-//! (its last accepted `time` and stream offset, and its record if it has one). The session's record
+//! **One record per owner, one shown.** Herdr's model: every pid that has reported has an
+//! `OwnerSlot` (its last accepted `time` and stream offset, and its record if it has one). The session's record
 //! is chosen from the records whose owner runs under no other record's owner, and is the one among
 //! them that reported last: so a program's own child that reports does not displace it.
 //!
@@ -50,7 +50,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::terminal::process::{Identity, Image};
-use protocol::{Action, Ignored, Stream};
+use protocol::{Action, Stream};
 
 /// The environment variable a session's token is in.
 pub(crate) const TOKEN_VARIABLE: &str = "OSC7577_TOKEN";
@@ -98,8 +98,10 @@ impl From<Identity> for Owner {
     }
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct Record {
+/// One owner's record: what it reported, and what its check found of it. The session's resume
+/// record is one of these (`Resume::choice`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OwnerRecord {
     owner: Owner,
     /// The owner's parents, up to and including the session's first process.
     ancestors: Vec<Owner>,
@@ -115,20 +117,22 @@ struct Record {
     gone_since: Option<Instant>,
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct Word {
+/// What one pid that has reported holds: the guards against a replayed or older report, and its
+/// record, if it has one.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct OwnerSlot {
     /// The last accepted report's `time`: an older one is not accepted.
     time: u64,
     /// The stream offset just past the last report, accepted or not: a report at or before it is a
     /// replay.
     offset: u64,
-    record: Option<Record>,
+    record: Option<OwnerRecord>,
 }
 
-/// A session's resume record as the terminal API shows it: never the arguments, which can hold
-/// secrets.
+/// A session's resume record as the terminal API shows it (`Whole::redacted`): never the
+/// arguments, which can hold secrets.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recorded {
+pub struct Redacted {
     /// The program the record starts (`program_name`).
     pub program: String,
     /// Where it starts: the folder it reported, else its own when it reported.
@@ -148,6 +152,17 @@ pub struct Whole {
     pub cwd: Option<String>,
     /// When it reported, in milliseconds since the Unix epoch.
     pub reported_at_ms: u64,
+}
+
+impl Whole {
+    /// The record as the terminal API shows it: its program, never its arguments.
+    pub(crate) fn redacted(self) -> Redacted {
+        Redacted {
+            program: program_name(&self.argv),
+            cwd: self.cwd,
+            reported_at_ms: self.reported_at_ms,
+        }
+    }
 }
 
 impl std::fmt::Debug for Whole {
@@ -170,7 +185,7 @@ pub(crate) enum Outcome {
     },
     Cleared,
     NotAccepted {
-        reason: &'static str,
+        reason: Reason,
         program: Option<String>,
     },
     /// The record this session was started to resume (#825) was reported by its helper, and
@@ -302,23 +317,45 @@ enum Exit {
     Cleared { program: String },
 }
 
-/// Why an owner check failed.
+/// Why a report did not count (`Outcome::NotAccepted`), as the daemon's log names it
+/// (`as_str`). `BadMac`, `StaleTime` and `NoPid` ignore it (`protocol::authenticate`), and
+/// `Replayed` and `TooManyOwners` refuse it, all leaving its owner as it was; the rest reject
+/// an authenticated report, which removes its owner's record (`Resume::apply`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NotOwner {
-    /// The owner is gone, a zombie, or can't be read.
-    Gone,
-    /// It runs as another user.
+pub(crate) enum Reason {
+    /// No `mac`, or one that doesn't match the session's token.
+    BadMac,
+    /// A `time` outside the window, or not a number.
+    StaleTime,
+    /// No valid `pid`.
+    NoPid,
+    /// At or before its owner's last report in the stream, or older than its last accepted one.
+    Replayed,
+    /// From a pid not yet tracked, with `MAX_OWNERS` tracked already.
+    TooManyOwners,
+    /// Its owner is gone, a zombie, or can't be read (`check_owner`).
+    OwnerGone,
+    /// Its owner runs as another user.
     OtherUser,
-    /// It is not under the session's first process.
+    /// Its owner is not under the session's first process.
     NotDescendant,
+    /// Authenticated, but malformed, or asking for something this terminal does not support.
+    Malformed,
 }
 
-impl NotOwner {
-    fn reason(self) -> &'static str {
+impl Reason {
+    /// The reason as the daemon's log says it.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
-            NotOwner::Gone => "owner_gone",
-            NotOwner::OtherUser => "other_user",
-            NotOwner::NotDescendant => "not_descendant",
+            Reason::BadMac => "bad_mac",
+            Reason::StaleTime => "stale_time",
+            Reason::NoPid => "no_pid",
+            Reason::Replayed => "replayed",
+            Reason::TooManyOwners => "too_many_owners",
+            Reason::OwnerGone => "owner_gone",
+            Reason::OtherUser => "other_user",
+            Reason::NotDescendant => "not_descendant",
+            Reason::Malformed => "malformed",
         }
     }
 }
@@ -330,22 +367,20 @@ pub(crate) struct Checked {
     cwd: Option<String>,
 }
 
-/// One session's resume state: its token, its first process, and what its programs reported.
+/// One session's resume state: what a hand-off carries of it, where its scanner is, and the
+/// record it was started to resume.
 #[derive(Clone)]
 pub(crate) struct Resume {
-    token: String,
-    /// The daemon's user, whose processes alone may report.
-    uid: u32,
-    /// The session's first process, once it is known (`set_root`).
-    root: Option<Owner>,
-    words: BTreeMap<u32, Word>,
+    /// Its token, its first process, what its programs reported and how far into its output they
+    /// were read: all a hand-off carries, as it carries it (`carried`).
+    carried: Carried,
+    /// Where the scanner is inside a report it has not finished: not carried, so the next program
+    /// starts outside any, at the offset carried.
     stream: Stream,
     /// The record this session was started to resume (#825), until its program has ended or been
     /// running for long: its failure is said only within `launch::FAILED_WITHIN` of its start.
     /// Not carried by a hand-off, which outlasts that.
     resuming: Option<Resuming>,
-    /// The resumed program and its helper, once it started (`foreground_process`).
-    launched: Option<Launched>,
 }
 
 impl std::fmt::Debug for Resume {
@@ -355,17 +390,25 @@ impl std::fmt::Debug for Resume {
     }
 }
 
-/// What a hand-off carries of a session's resume state (`daemon::handoff`, table version 6). The
-/// shell keeps its token across the hand-off, so the next program must check reports with the
-/// same one, and go on from the same stream offset so a report after it is not a replay.
-#[derive(Clone, Serialize, Deserialize)]
+/// What a hand-off carries of a session's resume state (`daemon::handoff`, table version 6), and
+/// what a live session keeps of it (`Resume::carried`). The shell keeps its token across the
+/// hand-off, so the next program must check reports with the same one, and go on from the same
+/// stream offset so a report after it is not a replay. Its JSON is the table's: a field's name,
+/// order and default are the table's format.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Carried {
     token: String,
+    /// The daemon's user, whose processes alone may report.
     uid: u32,
+    /// The session's first process, once it is known (`Resume::set_root`).
     root: Option<Owner>,
-    words: BTreeMap<u32, Word>,
+    /// Every pid that has reported.
+    #[serde(rename = "words")]
+    slots: BTreeMap<u32, OwnerSlot>,
+    /// How many bytes of the session's output have been scanned for reports.
     offset: u64,
-    /// `Resume::launched`; absent from a table this field predates.
+    /// The resumed program and its helper, once it started (`foreground_process`); absent from a
+    /// table this field predates.
     #[serde(default)]
     launched: Option<Launched>,
 }
@@ -375,19 +418,6 @@ impl std::fmt::Debug for Carried {
         f.write_str("Carried([private])")
     }
 }
-
-impl PartialEq for Carried {
-    fn eq(&self, other: &Carried) -> bool {
-        self.token == other.token
-            && self.uid == other.uid
-            && self.root == other.root
-            && self.words == other.words
-            && self.offset == other.offset
-            && self.launched == other.launched
-    }
-}
-
-impl Eq for Carried {}
 
 #[cfg(test)]
 impl Carried {
@@ -402,12 +432,12 @@ impl Carried {
             token: token.into(),
             uid: 501,
             root: Some(owner),
-            words: BTreeMap::from([(
+            slots: BTreeMap::from([(
                 4242,
-                Word {
+                OwnerSlot {
                     time: 1_795_543_200,
                     offset,
-                    record: Some(Record {
+                    record: Some(OwnerRecord {
                         owner,
                         // The session's first process itself: no parents up to itself, as
                         // `check_owner` finds for it.
@@ -442,15 +472,14 @@ impl Resume {
     }
 
     fn with_token(token: String, uid: u32) -> Resume {
-        Resume {
+        Resume::adopted(Carried {
             token,
             uid,
             root: None,
-            words: BTreeMap::new(),
-            stream: Stream::default(),
-            resuming: None,
+            slots: BTreeMap::new(),
+            offset: 0,
             launched: None,
-        }
+        })
     }
 
     /// This session was started to resume `record` (#825), which its helper will report, from the
@@ -502,7 +531,7 @@ impl Resume {
             }) => Some(Pending {
                 file: file.clone(),
                 hooked: *hooked,
-                root: self.root,
+                root: self.carried.root,
                 shell: *shell,
             }),
             _ => None,
@@ -543,11 +572,6 @@ impl Resume {
         }
     }
 
-    /// The resumed program and its helper, once it started, for `foreground_process`.
-    fn launched(&self) -> Option<Launched> {
-        self.launched
-    }
-
     /// What a resumed program's exit with `status`, said at `at`, means: its failure to resume
     /// when it failed before it started, or within `launch::FAILED_WITHIN` of starting, said
     /// once; else a plain clear.
@@ -566,7 +590,7 @@ impl Resume {
 
     /// What an accepted `record` means, accepted at `at`: the resumed program starting when it is
     /// the record the session waits for its helper to report, said once; else just accepted.
-    fn started(&mut self, outcome: Outcome, record: Option<&Record>, at: Instant) -> Outcome {
+    fn started(&mut self, outcome: Outcome, record: Option<&OwnerRecord>, at: Instant) -> Outcome {
         let reported = |argv: &Vec<String>, cwd: &Option<String>| {
             record.is_some_and(|record| record.argv == *argv && record.reported_cwd == *cwd)
         };
@@ -580,7 +604,7 @@ impl Resume {
                 });
                 // The report's owner is the helper's child, so its parent, the first of its
                 // ancestors, is the helper.
-                self.launched = record.and_then(|record| {
+                self.carried.launched = record.and_then(|record| {
                     Some(Launched {
                         helper: *record.ancestors.first()?,
                         program: record.owner,
@@ -598,29 +622,29 @@ impl Resume {
     /// The token the session's shell was given in `TOKEN_VARIABLE`.
     #[cfg(test)]
     pub(crate) fn token(&self) -> &str {
-        &self.token
+        &self.carried.token
     }
 
     /// Records the session's first process, once its shell has started.
     pub(crate) fn set_root(&mut self, pid: i32) {
-        if self.root.is_none()
+        if self.carried.root.is_none()
             && let Ok(pid) = u32::try_from(pid)
             && let Some(identity) = crate::terminal::process::identity(pid)
-            && identity.uid == self.uid
+            && identity.uid == self.carried.uid
         {
-            self.root = Some(identity.into());
+            self.carried.root = Some(identity.into());
         }
     }
 
     /// Every report `bytes` (raw pty output) completes, applied, with what each did.
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<Outcome> {
-        let reports = self.stream.feed(bytes);
+        let reports = self.stream.feed(&mut self.carried.offset, bytes);
         if reports.is_empty() {
             return Vec::new();
         }
         let now = unix_now();
         let at = Instant::now();
-        let (root, uid) = (self.root, self.uid);
+        let (root, uid) = (self.carried.root, self.carried.uid);
         reports
             .into_iter()
             .map(|(offset, body)| {
@@ -641,10 +665,11 @@ impl Resume {
             (Outcome::Cleared, None) if protocol::workroom_hook(body) => self.hook_loaded(),
             (Outcome::Accepted { .. }, _) => {
                 let record = self
-                    .words
+                    .carried
+                    .slots
                     .values()
-                    .find(|word| word.offset == offset)
-                    .and_then(|word| word.record.clone());
+                    .find(|slot| slot.offset == offset)
+                    .and_then(|slot| slot.record.clone());
                 self.started(outcome, record.as_ref(), at)
             }
             _ => outcome,
@@ -657,101 +682,102 @@ impl Resume {
         offset: u64,
         body: &[u8],
         now: u64,
-        find_owner: impl FnOnce(u32) -> Result<Checked, NotOwner>,
+        find_owner: impl FnOnce(u32) -> Result<Checked, Reason>,
     ) -> Outcome {
-        let report = match protocol::authenticate(body, &self.token, now) {
-            Ok(report) => report,
-            Err(ignored) => {
-                return Outcome::NotAccepted {
-                    reason: match ignored {
-                        Ignored::BadMac => "bad_mac",
-                        Ignored::StaleTime => "stale_time",
-                        Ignored::NoPid => "no_pid",
-                    },
-                    program: None,
-                };
-            }
-        };
-        let program = match &report.action {
-            Some(Action::Set { argv, .. }) => Some(program_name(argv)),
+        let report = protocol::authenticate(body, &self.carried.token, now);
+        let program = match &report {
+            Ok(protocol::Report {
+                action: Some(Action::Set { argv, .. }),
+                ..
+            }) => Some(program_name(argv)),
             _ => None,
         };
-        // A pid that never got a record is forgotten a minute after it last reported.
-        self.words.retain(|_, word| {
-            word.record.is_some() || now.saturating_sub(word.time) <= protocol::WINDOW_SECONDS
-        });
-        let previous = self.words.get(&report.pid);
-        if let Some(word) = previous
-            && (offset <= word.offset || report.time < word.time)
-        {
-            return Outcome::NotAccepted {
-                reason: "replayed",
-                program,
-            };
-        }
-        if previous.is_none() && self.words.len() >= MAX_OWNERS {
-            return Outcome::NotAccepted {
-                reason: "too_many_owners",
-                program,
-            };
-        }
-        let previous_time = previous.map_or(0, |word| word.time);
-        let (record, outcome) = match report.action {
-            Some(Action::Set { argv, cwd }) => match find_owner(report.pid) {
-                Ok(checked) => (
-                    Some(Record {
-                        owner: checked.owner,
-                        ancestors: checked.ancestors,
-                        argv,
-                        reported_cwd: cwd,
-                        owner_cwd: checked.cwd,
-                        reported_at: report.time,
-                        gone_since: None,
-                    }),
-                    Outcome::Accepted {
-                        program: program.clone().unwrap_or_default(),
-                    },
-                ),
-                Err(not) => (
-                    None,
-                    Outcome::NotAccepted {
-                        reason: not.reason(),
-                        program,
-                    },
-                ),
+        let applied = match report {
+            Ok(report) => self.take(offset, report, now, find_owner),
+            Err(reason) => Err(reason),
+        };
+        match applied {
+            Ok(Some(_)) => Outcome::Accepted {
+                program: program.unwrap_or_default(),
             },
-            Some(Action::Clear) => (None, Outcome::Cleared),
+            Ok(None) => Outcome::Cleared,
+            Err(reason) => Outcome::NotAccepted { reason, program },
+        }
+    }
+
+    /// Takes one authenticated `report` found at `offset` into its owner's slot: the record it
+    /// sets, `None` for a clear, or why it does not count.
+    fn take(
+        &mut self,
+        offset: u64,
+        report: protocol::Report,
+        now: u64,
+        find_owner: impl FnOnce(u32) -> Result<Checked, Reason>,
+    ) -> Result<Option<&OwnerRecord>, Reason> {
+        let slots = &mut self.carried.slots;
+        // A pid that never got a record is forgotten a minute after it last reported.
+        slots.retain(|_, slot| {
+            slot.record.is_some() || now.saturating_sub(slot.time) <= protocol::WINDOW_SECONDS
+        });
+        let previous = slots.get(&report.pid);
+        if let Some(slot) = previous
+            && (offset <= slot.offset || report.time < slot.time)
+        {
+            return Err(Reason::Replayed);
+        }
+        if previous.is_none() && slots.len() >= MAX_OWNERS {
+            return Err(Reason::TooManyOwners);
+        }
+        let previous_time = previous.map_or(0, |slot| slot.time);
+        let record = match report.action {
+            Some(Action::Set { argv, cwd }) => find_owner(report.pid).map(|checked| {
+                Some(OwnerRecord {
+                    owner: checked.owner,
+                    ancestors: checked.ancestors,
+                    argv,
+                    reported_cwd: cwd,
+                    owner_cwd: checked.cwd,
+                    reported_at: report.time,
+                    gone_since: None,
+                })
+            }),
+            Some(Action::Clear) => Ok(None),
             // Authenticated and malformed: rejected, which removes every record the owner has, and
             // a pid has one.
-            None => (
-                None,
-                Outcome::NotAccepted {
-                    reason: "malformed",
-                    program: None,
-                },
-            ),
+            None => Err(Reason::Malformed),
         };
         // Only an accepted report moves the owner's time on; a rejection still removes its record.
-        let accepted = matches!(outcome, Outcome::Accepted { .. } | Outcome::Cleared);
-        let time = if accepted { report.time } else { previous_time };
-        self.words.insert(
+        let (time, record, taken) = match record {
+            Ok(record) => (report.time, record, Ok(())),
+            Err(reason) => (previous_time, None, Err(reason)),
+        };
+        slots.insert(
             report.pid,
-            Word {
+            OwnerSlot {
                 time,
                 offset,
                 record,
             },
         );
-        outcome
+        taken.map(|()| slots.get(&report.pid)?.record.as_ref())
+    }
+
+    /// Every owner's record.
+    fn records(&self) -> impl Iterator<Item = &OwnerRecord> {
+        self.carried
+            .slots
+            .values()
+            .filter_map(|slot| slot.record.as_ref())
     }
 
     /// The record the session would resume from: among the records whose owner runs under no other
     /// record's owner, the one that reported last.
-    fn choice(&self) -> Option<&Record> {
+    fn choice(&self) -> Option<&OwnerRecord> {
         let records = || {
-            self.words
+            self.carried
+                .slots
                 .values()
-                .filter_map(|word| Some((word.offset, word.record.as_ref()?)))
+                .filter_map(|slot| Some((slot.offset, slot.record.as_ref()?)))
         };
         records()
             .filter(|(_, record)| {
@@ -763,35 +789,29 @@ impl Resume {
 
     /// Whether a record's owner was found gone and is still inside its grace.
     fn in_grace(&self) -> bool {
-        self.words
-            .values()
-            .filter_map(|word| word.record.as_ref())
-            .any(|record| record.gone_since.is_some())
+        self.records().any(|record| record.gone_since.is_some())
     }
 
     /// Every record's owner.
     fn owners(&self) -> Vec<Owner> {
-        self.words
-            .values()
-            .filter_map(|word| word.record.as_ref().map(|record| record.owner))
-            .collect()
+        self.records().map(|record| record.owner).collect()
     }
 
     /// One look at `owner`, found `gone` (or its pid now another process's) at `now`: starts its
     /// record's grace, ends it if the owner is back, and clears the record once it has been gone
     /// for `EXIT_GRACE`. A record that is no longer `owner`'s (a newer report replaced it, or its
-    /// pid was reused) is left alone. The `Word` stays, so a replay is still refused.
+    /// pid was reused) is left alone. The `OwnerSlot` stays, so a replay is still refused.
     fn check_exit(&mut self, owner: Owner, gone: bool, now: Instant) -> Exit {
-        let Some(word) = self.words.get_mut(&owner.pid) else {
+        let Some(slot) = self.carried.slots.get_mut(&owner.pid) else {
             return Exit::Unchanged;
         };
-        let Some(record) = word.record.as_mut().filter(|record| record.owner == owner) else {
+        let Some(record) = slot.record.as_mut().filter(|record| record.owner == owner) else {
             return Exit::Unchanged;
         };
         match record.gone_since {
             Some(since) if gone && now.saturating_duration_since(since) >= EXIT_GRACE => {
                 let program = program_name(&record.argv);
-                word.record = None;
+                slot.record = None;
                 Exit::Cleared { program }
             }
             Some(_) if !gone => {
@@ -807,12 +827,8 @@ impl Resume {
     }
 
     /// The session's resume record, as the terminal API shows it.
-    pub(crate) fn recorded(&self) -> Option<Recorded> {
-        self.whole().map(|whole| Recorded {
-            program: program_name(&whole.argv),
-            cwd: whole.cwd,
-            reported_at_ms: whole.reported_at_ms,
-        })
+    pub(crate) fn redacted(&self) -> Option<Redacted> {
+        self.whole().map(Whole::redacted)
     }
 
     /// The session's resume record whole, arguments and all, for the app alone (#824).
@@ -829,26 +845,15 @@ impl Resume {
 
     /// What a hand-off carries of this state.
     pub(crate) fn carried(&self) -> Carried {
-        Carried {
-            token: self.token.clone(),
-            uid: self.uid,
-            root: self.root,
-            words: self.words.clone(),
-            offset: self.stream.offset,
-            launched: self.launched,
-        }
+        self.carried.clone()
     }
 
-    /// The state a hand-off carried, going on from where its stream stopped.
+    /// The state a hand-off carried, going on from where its stream stopped, outside any report.
     pub(crate) fn adopted(carried: Carried) -> Resume {
         Resume {
-            token: carried.token,
-            uid: carried.uid,
-            root: carried.root,
-            words: carried.words,
-            stream: Stream::at(carried.offset),
+            carried,
+            stream: Stream::default(),
             resuming: None,
-            launched: carried.launched,
         }
     }
 }
@@ -868,7 +873,7 @@ pub(crate) fn foreground_process(
 ) -> i32 {
     let Some(launched) = crate::util::lock_or_recover(shared)
         .as_ref()
-        .and_then(Resume::launched)
+        .and_then(|state| state.carried.launched)
     else {
         return group;
     };
@@ -893,21 +898,21 @@ fn check_owner(
     uid: u32,
     pid: u32,
     lookup: impl Fn(u32) -> Option<Identity>,
-) -> Result<Checked, NotOwner> {
-    let root = root.ok_or(NotOwner::NotDescendant)?;
-    let owner = lookup(pid).ok_or(NotOwner::Gone)?;
+) -> Result<Checked, Reason> {
+    let root = root.ok_or(Reason::NotDescendant)?;
+    let owner = lookup(pid).ok_or(Reason::OwnerGone)?;
     if owner.uid != uid {
-        return Err(NotOwner::OtherUser);
+        return Err(Reason::OtherUser);
     }
     let mut ancestors = Vec::new();
     let mut process = owner;
     while Owner::from(process) != root {
         if process.pid == root.pid || process.parent == 0 || ancestors.len() == MAX_ANCESTORS {
-            return Err(NotOwner::NotDescendant);
+            return Err(Reason::NotDescendant);
         }
-        let parent = lookup(process.parent).ok_or(NotOwner::NotDescendant)?;
+        let parent = lookup(process.parent).ok_or(Reason::NotDescendant)?;
         if parent.start > process.start || parent.pid == process.pid {
-            return Err(NotOwner::NotDescendant);
+            return Err(Reason::NotDescendant);
         }
         ancestors.push(Owner::from(parent));
         process = parent;
@@ -950,7 +955,7 @@ pub(crate) fn watch_owners(
         let Some(state) = state.as_ref() else {
             return Watched::default();
         };
-        (state.root, state.owners())
+        (state.carried.root, state.owners())
     };
     if owners.is_empty() {
         return Watched::default();

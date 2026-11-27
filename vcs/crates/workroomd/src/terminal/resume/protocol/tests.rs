@@ -1,6 +1,6 @@
 //! Ported from herdr-core's `resume/protocol.rs` tests (see the parent module's header), Licensed
 //! under the Apache License, Version 2.0. Changed for Workroom: an ignored report is an `Err` with
-//! its reason, and the Windows-only `cwd` case is dropped. The published reports are the spec's
+//! its reason, the scanner is fed its stream offset, and the Windows-only `cwd` case is dropped. The published reports are the spec's
 //! own examples (https://www.superlogical.com/rex/docs/build/program-resume).
 
 use super::*;
@@ -39,15 +39,15 @@ fn authenticates_the_published_reports() {
     assert!(authenticate(CLEAR, TOKEN, TIME + 60).is_ok());
     assert_eq!(
         authenticate(CLEAR, TOKEN, TIME - 61),
-        Err(Ignored::StaleTime)
+        Err(Reason::StaleTime)
     );
     assert_eq!(
         authenticate(CLEAR, TOKEN, TIME + 61),
-        Err(Ignored::StaleTime)
+        Err(Reason::StaleTime)
     );
     assert_eq!(
         authenticate(CLEAR, "other-token", TIME),
-        Err(Ignored::BadMac)
+        Err(Reason::BadMac)
     );
 }
 
@@ -72,28 +72,34 @@ fn frames_at_every_split_and_restarts_after_an_unterminated_string() {
     for end in [b"\x07".as_slice(), b"\x1b\\"] {
         let frame = [OPEN, CLEAR, end].concat();
         for split in 0..=frame.len() {
-            let mut stream = Stream::default();
-            let mut reports = stream.feed(&frame[..split]);
-            reports.extend(stream.feed(&frame[split..]));
+            let (mut stream, mut offset) = (Stream::default(), 0);
+            let mut reports = stream.feed(&mut offset, &frame[..split]);
+            reports.extend(stream.feed(&mut offset, &frame[split..]));
             assert_eq!(reports, [(frame.len() as u64, CLEAR.to_vec())]);
         }
-        let mut stream = Stream::default();
+        let (mut stream, mut offset) = (Stream::default(), 0);
         let interrupted = [b"output\x1b]0;".as_slice(), &frame].concat();
         assert_eq!(
-            stream.feed(&interrupted),
+            stream.feed(&mut offset, &interrupted),
             [(interrupted.len() as u64, CLEAR.to_vec())]
         );
-        assert!(stream.feed(&[OPEN, CLEAR, b"\x18"].concat()).is_empty());
-        assert_eq!(stream.feed(&frame).len(), 1);
+        assert!(
+            stream
+                .feed(&mut offset, &[OPEN, CLEAR, b"\x18"].concat())
+                .is_empty()
+        );
+        assert_eq!(stream.feed(&mut offset, &frame).len(), 1);
 
         let size = LIMIT - OPEN.len() - end.len();
         assert_eq!(
-            stream.feed(&[OPEN, &vec![b'a'; size], end].concat()).len(),
+            stream
+                .feed(&mut offset, &[OPEN, &vec![b'a'; size], end].concat())
+                .len(),
             1
         );
         assert!(
             stream
-                .feed(&[OPEN, &vec![b'a'; size + 1], end].concat())
+                .feed(&mut offset, &[OPEN, &vec![b'a'; size + 1], end].concat())
                 .is_empty()
         );
     }
@@ -135,10 +141,10 @@ fn authenticated_malformed_reports_reject_but_untrusted_ones_are_ignored() {
             cwd: None
         })
     );
-    assert_eq!(parse("clear=1:pid=6"), Err(Ignored::NoPid));
+    assert_eq!(parse("clear=1:pid=6"), Err(Reason::NoPid));
     assert_eq!(
         parse("clear=1:time=99999999999999999999999"),
-        Err(Ignored::StaleTime)
+        Err(Reason::StaleTime)
     );
     let args = format!("argv=Yg{}", ",YQ".repeat(63));
     assert!(parse(&args).unwrap().action.is_some());

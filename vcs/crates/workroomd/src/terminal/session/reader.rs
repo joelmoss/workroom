@@ -116,18 +116,19 @@ fn answer_program(pty: &Pty, answer: &[u8], id: SessionId, hooks: &Hooks) {
 fn note_resume(id: SessionId, outcome: Outcome) {
     let id = id.to_hyphenated();
     match outcome {
+        Outcome::NotAccepted { reason, program } => {
+            let reason = reason.as_str();
+            match program {
+                Some(program) => crate::note!(
+                    "session {id}: a resume report for {program} was not accepted ({reason})"
+                ),
+                None => crate::note!("session {id}: a resume report was not accepted ({reason})"),
+            }
+        }
         Outcome::Accepted { program } => {
             crate::note!("session {id}: {program} reported how to resume it");
         }
         Outcome::Cleared => crate::note!("session {id}: a program cleared its resume record"),
-        Outcome::NotAccepted { reason, program } => match program {
-            Some(program) => {
-                crate::note!(
-                    "session {id}: a resume report for {program} was not accepted ({reason})"
-                )
-            }
-            None => crate::note!("session {id}: a resume report was not accepted ({reason})"),
-        },
         Outcome::ResumeStarted { program } => {
             crate::note!("session {id}: {program} resumed: it reported itself as it started");
         }

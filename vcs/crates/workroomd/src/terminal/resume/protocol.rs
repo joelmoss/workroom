@@ -6,11 +6,15 @@
 //! `0cb50d57832f3ebb69157ce7f023fbbc520181a8`), Licensed under the Apache License, Version 2.0
 //! (`LICENSE` beside this file). Changed from the original for Workroom: SHA-256 and base64 come
 //! from this crate's `util` instead of herdr-core's; the reasons a report is ignored are returned
-//! (`Ignored`) so the daemon can log them; Windows path rules are dropped; the tests moved to
+//! (`super::Reason`, shared with every other reason a report doesn't count) so the daemon can log
+//! them; the scanner's stream offset is its caller's (`Stream::feed`), which a hand-off
+//! carries; Windows path rules are dropped; the tests moved to
 //! `protocol/tests.rs`; and `workroom_exit` and `workroom_hook` read Workroom's own keys.
 
 use std::collections::HashSet;
 use std::path::Path;
+
+use super::Reason;
 
 /// What opens a report: `ESC ] 7577 ;`.
 pub(super) const OPEN: &[u8] = b"\x1b]7577;";
@@ -18,11 +22,12 @@ pub(super) const OPEN: &[u8] = b"\x1b]7577;";
 pub(super) const LIMIT: usize = 8192;
 
 /// A scanner over one session's raw pty output, carried across reads, so a report split at any
-/// byte is still found. `offset` counts every byte it has been fed; a report is returned with the
-/// offset just past its terminator, which `Resume` uses to refuse a replayed report.
+/// byte is still found. The offset it is fed with counts every byte of the stream; a report is
+/// returned with the offset just past its terminator, which `Resume` uses to refuse a replayed
+/// report. The offset is the caller's, which a hand-off carries; the scanner's place inside a
+/// report it has not finished is not.
 #[derive(Clone, Default, PartialEq)]
 pub(super) struct Stream {
-    pub(super) offset: u64,
     frame: Frame,
     body: Vec<u8>,
 }
@@ -42,16 +47,9 @@ enum Frame {
 }
 
 impl Stream {
-    /// A scanner that carries on from `offset`, for a session adopted after a hand-off.
-    pub(super) fn at(offset: u64) -> Self {
-        Self {
-            offset,
-            ..Self::default()
-        }
-    }
-
-    /// Every report `bytes` completes, each with the stream offset just past it.
-    pub(super) fn feed(&mut self, mut bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    /// Every report `bytes` completes, each with the stream offset just past it. `offset` is the
+    /// stream's before `bytes`, and is moved on past them.
+    pub(super) fn feed(&mut self, offset: &mut u64, mut bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
         let mut reports = Vec::new();
         loop {
             if matches!(self.frame, Frame::Ground) {
@@ -59,14 +57,14 @@ impl Stream {
                     .iter()
                     .position(|&byte| byte == 0x1b)
                     .unwrap_or(bytes.len());
-                self.offset += skip as u64;
+                *offset += skip as u64;
                 bytes = &bytes[skip..];
             }
             let Some((&byte, rest)) = bytes.split_first() else {
                 break;
             };
             bytes = rest;
-            self.offset += 1;
+            *offset += 1;
             let frame = self.frame;
             if matches!(
                 (frame, byte),
@@ -74,7 +72,7 @@ impl Stream {
             ) {
                 let terminator_len = if byte == 7 { 1 } else { 2 };
                 if OPEN.len() + self.body.len() + terminator_len <= LIMIT {
-                    reports.push((self.offset, std::mem::take(&mut self.body)));
+                    reports.push((*offset, std::mem::take(&mut self.body)));
                 }
                 self.body.clear();
                 self.frame = Frame::Ground;
@@ -126,18 +124,6 @@ pub(super) struct Report {
     pub action: Option<Action>,
 }
 
-/// Why a report was ignored: it changes nothing, since nobody who knows the token can be shown to
-/// have sent it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Ignored {
-    /// No `mac`, or one that doesn't match the session's token.
-    BadMac,
-    /// A `time` outside the window, or not a number.
-    StaleTime,
-    /// No valid `pid`.
-    NoPid,
-}
-
 /// How far a report's `time` may be from the daemon's clock, either way (the spec's suggestion).
 pub(super) const WINDOW_SECONDS: u64 = 60;
 
@@ -168,14 +154,15 @@ fn envelope<'a>(body: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
 }
 
 /// Checks a report body's `mac` against `token` and its `time` against `now` (Unix seconds), then
-/// parses it.
-pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Result<Report, Ignored> {
+/// parses it. A report that fails is ignored (`Reason::BadMac`, `StaleTime` or `NoPid`): it
+/// changes nothing, since nobody who knows the token can be shown to have sent it.
+pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Result<Report, Reason> {
     let end = body
         .len()
         .checked_sub(b":mac=".len() + 64)
-        .ok_or(Ignored::BadMac)?;
+        .ok_or(Reason::BadMac)?;
     let (body, suffix) = body.split_at(end);
-    let sent = suffix.strip_prefix(b":mac=").ok_or(Ignored::BadMac)?;
+    let sent = suffix.strip_prefix(b":mac=").ok_or(Reason::BadMac)?;
     let expected = mac(body, token);
     // Compared in constant time, so a timing difference says nothing about the token.
     if sent
@@ -184,17 +171,17 @@ pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Result<Report,
         .fold(0, |diff, (a, b)| diff | (a ^ b))
         != 0
     {
-        return Err(Ignored::BadMac);
+        return Err(Reason::BadMac);
     }
     let time: u64 = envelope(body, b"time=")
         .and_then(number)
-        .ok_or(Ignored::StaleTime)?;
+        .ok_or(Reason::StaleTime)?;
     if now.abs_diff(time) > WINDOW_SECONDS {
-        return Err(Ignored::StaleTime);
+        return Err(Reason::StaleTime);
     }
     let pid = envelope(body, b"pid=")
         .and_then(number)
-        .ok_or(Ignored::NoPid)?;
+        .ok_or(Reason::NoPid)?;
     Ok(Report {
         pid,
         time,
