@@ -30,7 +30,7 @@
 //! `ssh-add` passphrase) is no sign it won't. Unless a startup file `exec`s another program in
 //! the shell's place (a `.zshrc` that ends in `exec tmux` or `exec fish`): the session's first
 //! process then runs another file than the shell it was started from, which is declined at a
-//! prompt mark or at `DECLINE_AFTER` (`resume::Pending::declines`). The cost, accepted: a startup
+//! prompt mark or at `DECLINE_AFTER` (`resume::Decline::stands`). The cost, accepted: a startup
 //! file that keeps the loaded hook from running in the shell it started as (a `.zshrc` that
 //! resets `precmd_functions`, or `exec`s the same shell again) is never declined, so the app
 //! keeps the record and tries it at each restart, its own fallback saying each time that the

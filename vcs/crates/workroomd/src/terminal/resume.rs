@@ -34,11 +34,13 @@
 //! `process::identity` doesn't tell that from an exit; a record is never cleared while the
 //! session's own shell is gone, which stands in for herdr's check that the terminal is healthy;
 //! each record that clears is returned for the daemon's log; the helper's report of a resumed
-//! record says its program started (`started`), and its exit, which the helper reports too, can
-//! say it failed to resume (`exited`); the shell's own clear with `workroomhook=1` says Workroom's
-//! hook loaded in it (`hook_loaded`); launching is `launch`'s;
-//! and there is no rapid-loss guard, since a program that fails at once exits, which clears its
-//! record.
+//! record says its program started, and its exit, which the helper reports too, can say it
+//! failed to resume, and the shell's own clear with `workroomhook=1` says Workroom's hook loaded
+//! in it, each an `Event` of one resume lifecycle (`Resuming::decide`); launching is `launch`'s;
+//! the reasons a report does not count are one `Reason`, and the owner check returns it;
+//! `Word` is `OwnerSlot`, and the state a hand-off carries is `Carried` itself, its JSON
+//! unchanged; and there is no rapid-loss guard, since a program that fails at once exits, which
+//! clears its record.
 
 pub mod launch;
 mod protocol;
@@ -201,55 +203,132 @@ pub(crate) enum Outcome {
     },
     /// The session's shell said, as Workroom's hook loaded in it (`launch::run_hook`), that the
     /// hook runs there: a resume it waits for is not declined at a prompt or a deadline, unless
-    /// `exec` replaced the shell (`Pending::declines`).
+    /// `exec` replaced the shell (`Decline::stands`).
     HookLoaded,
 }
 
-/// Where a session started to resume a record (#825) is with it.
-#[derive(Clone, Debug)]
+/// Where a session started to resume a record (#825) is with it: one lifecycle, moved on only by
+/// `Resuming::decide`, whose table is the whole of it.
+///
+/// ```text
+/// Waiting(Unhooked) ── HookLoaded ──────────────────────────────▶ Waiting(Hooked)
+/// Waiting ─────────── Reported, by its helper ──────────────────▶ Started
+/// Waiting ─────────── Exited, a failure ────────────────────────▶ Failed
+/// Started ─────────── Exited, a failure within FAILED_WITHIN ───▶ Failed
+/// Waiting, Started ── Exited, otherwise ────────────────────────▶ Ended
+/// Waiting ─────────── Claimed, its launch file a decline's ─────▶ Declined
+/// ```
+///
+/// `Prompt` and `Tick` move nothing: they say whether to decline it (`Decision::Decline`), which
+/// takes reading processes and claiming its launch file with every lock released, and only the
+/// claim, once it is the daemon's, declines it (`Claimed`). `Failed`, `Ended` and `Declined` end
+/// it: nothing moves any of them on.
+#[derive(Clone)]
 enum Resuming {
-    /// Its helper has not yet reported the record, whose command and folder these are, from the
-    /// launch file `file` this daemon wrote for it at `since`. `hooked` once the shell said its
-    /// Workroom hook loaded (`Outcome::HookLoaded`). `shell` is the file the session's shell was
-    /// started from, when it is known (`process::image_of`).
-    Waiting {
-        program: String,
-        argv: Vec<String>,
-        cwd: Option<String>,
-        file: std::path::PathBuf,
-        since: Instant,
-        hooked: bool,
-        shell: Option<Image>,
-    },
+    Waiting(Waiting),
     /// Its helper's report was accepted at `at`: the program started then.
-    Started { program: String, at: Instant },
+    Started {
+        program: String,
+        at: Instant,
+    },
+    Failed,
+    Ended,
+    Declined,
+}
+
+/// A resume whose helper has not yet reported the record, whose command and folder these are,
+/// from the launch file `file` this daemon wrote for it at `since`.
+#[derive(Clone)]
+struct Waiting {
+    program: String,
+    argv: Vec<String>,
+    cwd: Option<String>,
+    file: std::path::PathBuf,
+    since: Instant,
+    /// Whether the shell said its Workroom hook loaded (`Event::HookLoaded`).
+    hook: Hook,
+    /// The file the session's shell was started from, when it is known (`process::image_of`).
+    shell: Option<Image>,
+}
+
+/// Whether a waiting resume's shell said Workroom's hook loaded in it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hook {
+    Unhooked,
+    Hooked,
+}
+
+/// What happens to a session's resume (#825), as `Resume::decide` reads it.
+pub(crate) enum Event<'a> {
+    /// The shell said Workroom's hook loaded in it (`protocol::workroom_hook`).
+    HookLoaded,
+    /// `record` was accepted, read at `at`.
+    Reported {
+        record: &'a OwnerRecord,
+        at: Instant,
+    },
+    /// A resumed program's exit with `status`, read at `at` (`protocol::workroom_exit`).
+    Exited { status: i32, at: Instant },
+    /// A read brought the shell's prompt (OSC 133).
+    Prompt,
+    /// The screens tick, at its instant.
+    Tick(Instant),
+    /// The daemon claimed the launch file a `Decision::Decline` named (`launch::claim`).
+    Claimed,
+}
+
+/// What an `Event` decided of a session's resume.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    /// Its helper reported it, so the program starts now (`Outcome::ResumeStarted`), and runs as
+    /// `launched`.
+    Started {
+        program: String,
+        launched: Option<Launched>,
+    },
+    /// It could not be resumed (`Outcome::ResumeFailed`).
+    Failed { program: String, status: i32 },
+    /// Nothing to decline yet: the tick looks at it again.
+    Wait,
+    /// Decline it, when it stands (`Decline::stands`) and its launch file is claimed.
+    Decline(Decline),
+    /// It was declined, so `program` will not start.
+    Declined { program: String },
 }
 
 /// How long after its session started a resume whose helper has not reported is declined
-/// (`Resume::overdue`), when its shell never said Workroom's hook loaded in it: for a shell that
+/// (`Event::Tick`), when its shell never said Workroom's hook loaded in it: for a shell that
 /// skipped the hook and whose prompt sends no OSC 133, which would decline it at once
-/// (`Resume::pending`). A shell whose hook loaded is declined this way only once `exec` has
-/// replaced it (`Pending::declines`), never however long its startup files take (an `ssh-add`
+/// (`Event::Prompt`). A shell whose hook loaded is declined this way only once `exec` has
+/// replaced it (`Decline::stands`), never however long its startup files take (an `ssh-add`
 /// passphrase answered minutes later). Long enough for a login shell on a cold disk after a
 /// reboot, with every restored pane's shell starting at once (oh-my-zsh and nvm can take 10 s
 /// there), before it reaches the hook; a hook that loads later than this finds its file claimed
 /// and starts nothing, so the outcome is the one the app was told either way.
 pub(crate) const DECLINE_AFTER: Duration = Duration::from_secs(30);
 
-/// A resume whose helper has not reported (#825), as a decline at its shell's first prompt or at
-/// `DECLINE_AFTER` reads it (`Resume::pending`, `Resume::overdue`).
+/// A resume whose helper has not reported (#825), to decline at its shell's first prompt or at
+/// `DECLINE_AFTER`: while the shell has not said Workroom's hook loaded in it, it is declined
+/// there. Once the hook loaded, a prompt before it ran (Powerlevel10k's instant prompt prints one
+/// from the top of `.zshrc`) or a startup file that waits (a passphrase) is no sign it won't run,
+/// so the resume waits for the helper for as long as the session lives, unless `exec` replaced
+/// the shell (a `.zshrc` that ends in `exec tmux` or `exec fish`). A hook that loads and then
+/// never reaches the first prompt in the shell it was started as (a `.zshrc` that resets
+/// `precmd_functions`, or `exec`s the same shell again) is the accepted cost: nothing declines
+/// it, so the app keeps the record and tries it again at each restart, its own fallback saying
+/// each time that the pane got a new shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Pending {
+pub(crate) struct Decline {
     /// Its launch file: the one path a decline claims (`launch::claim`).
     pub file: std::path::PathBuf,
-    /// Whether its shell said Workroom's hook loaded in it.
-    pub hooked: bool,
+    /// Why it is declined, for the daemon's log.
+    pub why: Why,
     /// The session's first process and the file its shell was started from, when both are known.
     root: Option<Owner>,
     shell: Option<Image>,
 }
 
-impl Pending {
+impl Decline {
     /// Whether it is declined now, with `image` (`process::image`) and `lookup`
     /// (`process::identity`) for the session's first process: at once when its shell never said
     /// Workroom's hook loaded, as such a shell skipped it. One whose hook loaded only on proof that
@@ -260,12 +339,12 @@ impl Pending {
     /// later process has its start time, so the file read was that process's. `exec` keeps both,
     /// and nothing but `exec` changes what a process runs. Anything unknown or unread declines
     /// nothing: the resume waits, as one whose hook loaded always did.
-    pub(crate) fn declines(
+    pub(crate) fn stands(
         &self,
         image: impl Fn(u32) -> Option<Image>,
         lookup: impl Fn(u32) -> Option<Identity>,
     ) -> bool {
-        if !self.hooked {
+        if self.why != Why::ExecReplaced {
             return true;
         }
         let (Some(root), Some(shell)) = (self.root, self.shell) else {
@@ -275,21 +354,132 @@ impl Pending {
             && lookup(root.pid).map(Owner::from) == Some(root)
     }
 
-    /// Why it is declined, for the daemon's log, at the shell's first prompt (`at_prompt`) or at
-    /// `DECLINE_AFTER`.
-    pub(crate) fn why(&self, at_prompt: bool) -> &'static str {
-        match (self.hooked, at_prompt) {
-            (true, _) => {
-                "its shell loaded Workroom's hook, then exec replaced the shell before its \
-                 helper ran"
-            }
-            (false, true) => {
+    /// Whether the tick looks at it again when it does not stand, or its launch file is not
+    /// claimed: one whose shell never said its hook loaded is looked at every tick; one whose
+    /// hook loaded owes no look after its deadline, and is declined there, or at any later tick
+    /// something else wakes, once `exec` has replaced its shell.
+    pub(crate) fn looked_at_again(&self) -> bool {
+        self.why != Why::ExecReplaced
+    }
+}
+
+/// Why a resume was declined (`Decline`), as the daemon's log says it (`as_str`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Why {
+    /// At its shell's first prompt, from a shell that never said its hook loaded.
+    PromptFirst,
+    /// At `DECLINE_AFTER`, from a shell that never said its hook loaded.
+    NoHook,
+    /// From a shell whose hook loaded, once `exec` replaced it.
+    ExecReplaced,
+}
+
+impl Why {
+    /// The reason as the daemon's log says it.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Why::PromptFirst => {
                 "its shell's first prompt came before its helper reported, so it ran no \
                  Workroom hook"
             }
-            (false, false) => {
-                "its shell never loaded Workroom's hook, and its helper never reported"
+            Why::NoHook => "its shell never loaded Workroom's hook, and its helper never reported",
+            Why::ExecReplaced => {
+                "its shell loaded Workroom's hook, then exec replaced the shell before its \
+                 helper ran"
             }
+        }
+    }
+}
+
+impl Resuming {
+    /// What `event` decides, in a session whose first process is `root`, and the state it moves
+    /// this resume on to (the table on `Resuming`).
+    fn decide(&mut self, root: Option<Owner>, event: Event<'_>) -> Option<Decision> {
+        let soon = |started: Instant, at: Instant| {
+            at.saturating_duration_since(started) < launch::FAILED_WITHIN
+        };
+        let (next, decision) = match (&mut *self, event) {
+            (Resuming::Waiting(waiting), Event::HookLoaded) => {
+                waiting.hook = Hook::Hooked;
+                (None, None)
+            }
+            (Resuming::Waiting(waiting), Event::Reported { record, at })
+                if record.argv == waiting.argv && record.reported_cwd == waiting.cwd =>
+            {
+                let program = waiting.program.clone();
+                (
+                    Some(Resuming::Started {
+                        program: program.clone(),
+                        at,
+                    }),
+                    Some(Decision::Started {
+                        program,
+                        launched: Launched::of(record),
+                    }),
+                )
+            }
+            (Resuming::Waiting(waiting), Event::Exited { status, .. })
+                if launch::failed(status) =>
+            {
+                let program = waiting.program.clone();
+                (
+                    Some(Resuming::Failed),
+                    Some(Decision::Failed { program, status }),
+                )
+            }
+            (Resuming::Started { program, at }, Event::Exited { status, at: exited })
+                if launch::failed(status) && soon(*at, exited) =>
+            {
+                let program = program.clone();
+                (
+                    Some(Resuming::Failed),
+                    Some(Decision::Failed { program, status }),
+                )
+            }
+            (Resuming::Waiting(_) | Resuming::Started { .. }, Event::Exited { .. }) => {
+                (Some(Resuming::Ended), None)
+            }
+            (Resuming::Waiting(waiting), Event::Prompt) => (
+                None,
+                Some(Decision::Decline(waiting.decline(root, Why::PromptFirst))),
+            ),
+            (Resuming::Waiting(waiting), Event::Tick(now))
+                if now.saturating_duration_since(waiting.since) < DECLINE_AFTER =>
+            {
+                (None, Some(Decision::Wait))
+            }
+            (Resuming::Waiting(waiting), Event::Tick(_)) => (
+                None,
+                Some(Decision::Decline(waiting.decline(root, Why::NoHook))),
+            ),
+            (Resuming::Waiting(waiting), Event::Claimed) => {
+                let program = waiting.program.clone();
+                (
+                    Some(Resuming::Declined),
+                    Some(Decision::Declined { program }),
+                )
+            }
+            _ => (None, None),
+        };
+        if let Some(next) = next {
+            *self = next;
+        }
+        decision
+    }
+}
+
+impl Waiting {
+    /// Its decline, `why` it is when its shell never said its hook loaded, in a session whose
+    /// first process is `root`.
+    fn decline(&self, root: Option<Owner>, why: Why) -> Decline {
+        Decline {
+            file: self.file.clone(),
+            why: match self.hook {
+                Hook::Unhooked => why,
+                Hook::Hooked => Why::ExecReplaced,
+            },
+            root,
+            shell: self.shell,
         }
     }
 }
@@ -299,9 +489,20 @@ impl Pending {
 /// foreground group names the helper, and `foreground_process` names the program instead.
 /// Carried by a hand-off, as the program runs on through it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Launched {
+pub(crate) struct Launched {
     helper: Owner,
     program: Owner,
+}
+
+impl Launched {
+    /// The helper's report of its program's `record`: its owner is the helper's child, so its
+    /// parent, the first of its ancestors, is the helper.
+    fn of(record: &OwnerRecord) -> Option<Launched> {
+        Some(Launched {
+            helper: *record.ancestors.first()?,
+            program: record.owner,
+        })
+    }
 }
 
 /// What one look at a record's owner did (`Resume::check_exit`).
@@ -491,132 +692,35 @@ impl Resume {
         file: std::path::PathBuf,
         shell: Option<Image>,
     ) {
-        self.resuming = Some(Resuming::Waiting {
+        self.resuming = Some(Resuming::Waiting(Waiting {
             program: program_name(&record.argv),
             argv: record.argv.clone(),
             cwd: record.cwd.clone(),
             file,
             since: Instant::now(),
-            hooked: false,
+            hook: Hook::Unhooked,
             shell,
-        });
+        }));
+    }
+
+    /// The resume whose helper has not reported (#825), if there is one.
+    fn waiting(&self) -> Option<&Waiting> {
+        match &self.resuming {
+            Some(Resuming::Waiting(waiting)) => Some(waiting),
+            _ => None,
+        }
     }
 
     /// The launch file of a resume whose helper has not reported (#825): the one path a decline
     /// claims (`launch::claim`), and a session's end removes.
     pub(crate) fn waiting_file(&self) -> Option<std::path::PathBuf> {
-        match &self.resuming {
-            Some(Resuming::Waiting { file, .. }) => Some(file.clone()),
-            _ => None,
-        }
+        self.waiting().map(|waiting| waiting.file.clone())
     }
 
-    /// The resume whose helper has not reported, as the shell's first prompt or `DECLINE_AFTER`
-    /// declines it (`Pending::declines`). While the shell has not said Workroom's hook loaded in
-    /// it, it is declined there. Once the hook loaded, a prompt before it ran (Powerlevel10k's
-    /// instant prompt prints one from the top of `.zshrc`) or a startup file that waits (a
-    /// passphrase) is no sign it won't run, so the resume waits for the helper for as long as the
-    /// session lives, unless `exec` replaced the shell (a `.zshrc` that ends in `exec tmux` or
-    /// `exec fish`). A hook that loads and then never reaches the first prompt in the shell it
-    /// was started as (a `.zshrc` that resets `precmd_functions`, or `exec`s the same shell again)
-    /// is the accepted cost: nothing declines it, so the app keeps the record and tries it again
-    /// at each restart, its own fallback saying each time that the pane got a new shell.
-    pub(crate) fn pending(&self) -> Option<Pending> {
-        match &self.resuming {
-            Some(Resuming::Waiting {
-                file,
-                hooked,
-                shell,
-                ..
-            }) => Some(Pending {
-                file: file.clone(),
-                hooked: *hooked,
-                root: self.carried.root,
-                shell: *shell,
-            }),
-            _ => None,
-        }
-    }
-
-    /// `pending`, once it has waited `DECLINE_AFTER` at `now`.
-    pub(crate) fn overdue(&self, now: Instant) -> Option<Pending> {
-        match &self.resuming {
-            Some(Resuming::Waiting { since, .. })
-                if now.saturating_duration_since(*since) >= DECLINE_AFTER =>
-            {
-                self.pending()
-            }
-            _ => None,
-        }
-    }
-
-    /// The session's shell said Workroom's hook loaded in it (`Outcome::HookLoaded`): a resume it
-    /// waits for is no longer declined at a prompt or a deadline, unless `exec` replaced the shell
-    /// (`Pending::declines`).
-    fn hook_loaded(&mut self) -> Outcome {
-        if let Some(Resuming::Waiting { hooked, .. }) = &mut self.resuming {
-            *hooked = true;
-        }
-        Outcome::HookLoaded
-    }
-
-    /// The resume still waiting is declined, its launch file claimed by the daemon: the program it
-    /// would have started, `None` when it is not waiting any more.
-    pub(crate) fn decline(&mut self) -> Option<String> {
-        match self.resuming.take() {
-            Some(Resuming::Waiting { program, .. }) => Some(program),
-            other => {
-                self.resuming = other;
-                None
-            }
-        }
-    }
-
-    /// What a resumed program's exit with `status`, said at `at`, means: its failure to resume
-    /// when it failed before it started, or within `launch::FAILED_WITHIN` of starting, said
-    /// once; else a plain clear.
-    fn exited(&mut self, status: i32, at: Instant) -> Outcome {
-        let soon = |started: Instant| at.saturating_duration_since(started) < launch::FAILED_WITHIN;
-        match self.resuming.take() {
-            Some(Resuming::Waiting { program, .. }) if launch::failed(status) => {
-                Outcome::ResumeFailed { program, status }
-            }
-            Some(Resuming::Started { program, at }) if launch::failed(status) && soon(at) => {
-                Outcome::ResumeFailed { program, status }
-            }
-            _ => Outcome::Cleared,
-        }
-    }
-
-    /// What an accepted `record` means, accepted at `at`: the resumed program starting when it is
-    /// the record the session waits for its helper to report, said once; else just accepted.
-    fn started(&mut self, outcome: Outcome, record: Option<&OwnerRecord>, at: Instant) -> Outcome {
-        let reported = |argv: &Vec<String>, cwd: &Option<String>| {
-            record.is_some_and(|record| record.argv == *argv && record.reported_cwd == *cwd)
-        };
-        match self.resuming.take() {
-            Some(Resuming::Waiting {
-                program, argv, cwd, ..
-            }) if reported(&argv, &cwd) => {
-                self.resuming = Some(Resuming::Started {
-                    program: program.clone(),
-                    at,
-                });
-                // The report's owner is the helper's child, so its parent, the first of its
-                // ancestors, is the helper.
-                self.carried.launched = record.and_then(|record| {
-                    Some(Launched {
-                        helper: *record.ancestors.first()?,
-                        program: record.owner,
-                    })
-                });
-                Outcome::ResumeStarted { program }
-            }
-            other => {
-                self.resuming = other;
-                outcome
-            }
-        }
+    /// What `event` decides of the resume this session was started for (`Resuming::decide`),
+    /// `None` for a session that resumes nothing.
+    pub(crate) fn decide(&mut self, event: Event<'_>) -> Option<Decision> {
+        self.resuming.as_mut()?.decide(self.carried.root, event)
     }
 
     /// The token the session's shell was given in `TOKEN_VARIABLE`.
@@ -659,19 +763,44 @@ impl Resume {
     /// What the report applied at `offset` did, once read at `at` for the record this session
     /// resumes: its helper's report starting it, its exit (`protocol::workroom_exit`) in a clear,
     /// or the shell's hook loading (`protocol::workroom_hook`) in one.
+    /// A resumed program's failure is said once, when it failed before it started or within
+    /// `launch::FAILED_WITHIN` of starting; its start, once, when the record accepted is the one
+    /// the session waits for its helper to report. The hook's word is said whether or not a resume
+    /// waits for it.
     fn after(&mut self, outcome: Outcome, offset: u64, body: &[u8], at: Instant) -> Outcome {
-        match (&outcome, protocol::workroom_exit(body)) {
-            (Outcome::Cleared, Some(status)) => self.exited(status, at),
-            (Outcome::Cleared, None) if protocol::workroom_hook(body) => self.hook_loaded(),
-            (Outcome::Accepted { .. }, _) => {
-                let record = self
+        let event = match &outcome {
+            Outcome::Cleared => match protocol::workroom_exit(body) {
+                Some(status) => Event::Exited { status, at },
+                None if protocol::workroom_hook(body) => Event::HookLoaded,
+                None => return outcome,
+            },
+            // Only while a resume waits for its helper is the accepted record looked for.
+            Outcome::Accepted { .. } if self.waiting().is_some() => {
+                let Some(record) = self
                     .carried
                     .slots
                     .values()
                     .find(|slot| slot.offset == offset)
-                    .and_then(|slot| slot.record.clone());
-                self.started(outcome, record.as_ref(), at)
+                    .and_then(|slot| slot.record.as_ref())
+                else {
+                    return outcome;
+                };
+                Event::Reported { record, at }
             }
+            _ => return outcome,
+        };
+        let hook = matches!(event, Event::HookLoaded);
+        let decided = match self.resuming.as_mut() {
+            Some(resuming) => resuming.decide(self.carried.root, event),
+            None => None,
+        };
+        match decided {
+            Some(Decision::Started { program, launched }) => {
+                self.carried.launched = launched;
+                Outcome::ResumeStarted { program }
+            }
+            Some(Decision::Failed { program, status }) => Outcome::ResumeFailed { program, status },
+            _ if hook => Outcome::HookLoaded,
             _ => outcome,
         }
     }
@@ -795,6 +924,16 @@ impl Resume {
     /// Every record's owner.
     fn owners(&self) -> Vec<Owner> {
         self.records().map(|record| record.owner).collect()
+    }
+
+    /// What one look at the records' owners looks at (`watch_owners`): `None` when no record has
+    /// an owner to look at, so no look is owed.
+    pub(crate) fn watch(&self) -> Option<Watch> {
+        let owners = self.owners();
+        (!owners.is_empty()).then_some(Watch {
+            root: self.carried.root,
+            owners,
+        })
     }
 
     /// One look at `owner`, found `gone` (or its pid now another process's) at `now`: starts its
@@ -924,6 +1063,13 @@ fn check_owner(
     })
 }
 
+/// What one look at a session's record owners looks at (`watch_owners`), copied under its lock:
+/// the session's first process, and every record's owner.
+pub(crate) struct Watch {
+    root: Option<Owner>,
+    owners: Vec<Owner>,
+}
+
 /// What one look at a session's record owners found (`watch_owners`).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Watched {
@@ -942,24 +1088,16 @@ pub(crate) struct Watched {
 /// must outlast it (#824).
 ///
 /// The lookups run with the state's lock released, so a read waits on it only while the owners are
-/// copied and while what was found is applied. A report accepted meanwhile is safe: it replaces
-/// its pid's record with one `check_exit` sees is not the owner it looked up, or is the same owner
-/// again, which is then running.
+/// copied (`Resume::watch`, `watch`) and while what was found is applied. A report accepted
+/// meanwhile is safe: it replaces its pid's record with one `check_exit` sees is not the owner it
+/// looked up, or is the same owner again, which is then running.
 pub(crate) fn watch_owners(
     shared: &SharedResume,
+    watch: Watch,
     now: Instant,
     lookup: impl Fn(u32) -> Option<Identity>,
 ) -> Watched {
-    let (root, owners) = {
-        let state = crate::util::lock_or_recover(shared);
-        let Some(state) = state.as_ref() else {
-            return Watched::default();
-        };
-        (state.carried.root, state.owners())
-    };
-    if owners.is_empty() {
-        return Watched::default();
-    }
+    let Watch { root, owners } = watch;
     let running = |owner: Owner| lookup(owner.pid).map(Owner::from) == Some(owner);
     // A record is only accepted once the first process is known, so `root` is set here.
     if !root.is_some_and(running) {

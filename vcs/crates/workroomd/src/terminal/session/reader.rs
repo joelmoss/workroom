@@ -12,7 +12,7 @@ use super::terminate::{sweep_run_session, terminate};
 use super::{Attached, Hooks, Session, SessionId, SessionStore, TERMINATING, exit_code};
 use crate::terminal::images;
 use crate::terminal::pty::Pty;
-use crate::terminal::resume::Outcome;
+use crate::terminal::resume::{self, Outcome};
 use crate::terminal::shadow::Shadow;
 use crate::util::{lock_or_recover, recover};
 use wr_protocol::frame::{Frame, FrameKind};
@@ -226,12 +226,13 @@ pub(super) fn read_session(
         // the locks are released.
         // A resume (#825) whose helper had not reported by the end of a read that brought the
         // shell's prompt (OSC 133) is declined once the locks are released, when the shell never
-        // said Workroom's hook loaded in it (`Resume::pending`): the hook runs the helper
+        // said Workroom's hook loaded in it (`resume::Event::Prompt`): the hook runs the helper
         // before the first prompt is drawn, so a prompt first from such a shell means it never
         // ran. A shell whose hook loaded can print a prompt mark before it runs (an instant
         // prompt), so it is waited for, unless `exec` replaced it (`exec fish` in a `.zshrc`),
         // which its first process is read for then, with every lock released
-        // (`Pending::declines`).
+        // (`Decline::stands`). The prompt is told to the resume state under the attachment lock,
+        // once the shadow's is released, and only by a read whose prompt count changed.
         let (read, clients, answer, published, waiting, resumed, declined) = {
             let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
@@ -246,7 +247,7 @@ pub(super) fn read_session(
                     // in the status under the shadow's, which the write below commits (#824).
                     // Fed before the write, so a report and a prompt in one read count as started.
                     let mut record = None;
-                    let mut unreported = None;
+                    let prompted;
                     if let Some(resume) = &resume
                         && let Some(state) = lock_or_recover(resume).as_mut()
                     {
@@ -259,7 +260,6 @@ pub(super) fn read_session(
                         {
                             record = Some(state.whole());
                         }
-                        unreported = state.pending();
                     }
                     // A resumed program that started, or failed at once (#825): the app's toast
                     // says so.
@@ -288,9 +288,7 @@ pub(super) fn read_session(
                         let before = prompts(&mut shadow);
                         let (replies, changed) =
                             shadow.write_from_pty(&buffer[..n], || pty.foreground_pgid());
-                        if prompts(&mut shadow) != before {
-                            declined = unreported;
-                        }
+                        prompted = prompts(&mut shadow) != before;
                         answer = replies;
                         published = changed.and_then(|blocked| {
                             let status = shadow.status()?;
@@ -306,6 +304,14 @@ pub(super) fn read_session(
                         }
                         shadow.take_disturbed()
                     };
+                    if prompted && let Some(resume) = &resume {
+                        declined = lock_or_recover(resume).as_mut().and_then(|state| {
+                            match state.decide(resume::Event::Prompt) {
+                                Some(resume::Decision::Decline(decline)) => Some(decline),
+                                _ => None,
+                            }
+                        });
+                    }
                     held.changed = true;
                     hooks.screen_changed();
                     held.clients
@@ -348,18 +354,13 @@ pub(super) fn read_session(
             hooks.status_changed(id, published);
         }
         // After the read's own status, whose revision is older.
-        if let (Some(pending), Some(resume)) = (declined, &resume)
-            && pending.declines(
+        if let (Some(decline), Some(resume)) = (declined, &resume)
+            && decline.stands(
                 crate::terminal::process::image,
                 crate::terminal::process::identity,
             )
         {
-            sessions.decline_resume(
-                id,
-                &pending.file,
-                (resume, &attached, &shadow),
-                pending.why(true),
-            );
+            sessions.decline_resume(id, &decline, (resume, &attached, &shadow));
         }
 
         // "The child is gone" looks different on each platform: reading a pty master whose child

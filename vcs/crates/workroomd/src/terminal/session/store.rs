@@ -642,7 +642,7 @@ impl SessionStore {
     }
 
     /// Session `id` was just started to resume `record` (#825) from the launch file `file` this
-    /// daemon wrote, its shell from the file `shell` when known (`Pending::declines`): its status
+    /// daemon wrote, its shell from the file `shell` when known (`Decline::stands`): its status
     /// carries the record from its first event, published now, so the app keeps it until the
     /// program reports itself in the new session, and its resume state knows what it resumes,
     /// whose helper's report says it started. The locks are taken in the reader's order, with the
@@ -718,32 +718,37 @@ impl SessionStore {
         })
     }
 
-    /// Declines session `id`'s resume (#825), whose helper has not reported, `why` it is: its
-    /// launch file `file` (`Resume::waiting_file`, the path this daemon wrote for the session) is
+    /// Declines session `id`'s resume (#825), whose helper has not reported, as `decline` says:
+    /// its launch file (`Resume::waiting_file`, the path this daemon wrote for the session) is
     /// claimed first, with every lock released, so a helper that has it already runs the program
-    /// and nothing is declined; once claimed, no helper can start it later. Then, under the locks
-    /// in the reader's order, the seeded record goes from the status, which says
-    /// `resumeDeclined`, published at once. Whether it was declined.
+    /// and nothing is declined; once claimed, no helper can start it later
+    /// (`resume::Event::Claimed`). Then, under the locks in the reader's order, the seeded record
+    /// goes from the status, which says `resumeDeclined`, published at once. Whether it was
+    /// declined.
     pub(super) fn decline_resume(
         &self,
         id: SessionId,
-        file: &std::path::Path,
+        decline: &crate::terminal::resume::Decline,
         parts: (
             &crate::terminal::resume::SharedResume,
             &Mutex<Attached>,
             &Mutex<Shadow>,
         ),
-        why: &str,
     ) -> bool {
+        use crate::terminal::resume::{Decision, Event};
         let (resume, attached, shadow) = parts;
-        if crate::terminal::resume::launch::claim(file, Some(id)).is_err() {
+        if crate::terminal::resume::launch::claim(&decline.file, Some(id)).is_err() {
             return false;
         }
         let mut declined = None;
         self.publish_held(id, attached, shadow, || {
-            let (program, record) = lock_or_recover(resume)
-                .as_mut()
-                .map_or((None, None), |state| (state.decline(), state.whole()));
+            let (program, record) =
+                lock_or_recover(resume)
+                    .as_mut()
+                    .map_or((None, None), |state| match state.decide(Event::Claimed) {
+                        Some(Decision::Declined { program }) => (Some(program), state.whole()),
+                        _ => (None, state.whole()),
+                    });
             let change = program.is_some().then_some(record);
             declined = program;
             move |status: &mut Store| {
@@ -756,8 +761,9 @@ impl SessionStore {
             return false;
         };
         crate::note!(
-            "session {}: not resuming {program}: {why}",
-            id.to_hyphenated()
+            "session {}: not resuming {program}: {}",
+            id.to_hyphenated(),
+            decline.why.as_str()
         );
         true
     }
@@ -766,65 +772,72 @@ impl SessionStore {
     /// shell that never said Workroom's hook loaded in it or that `exec` replaced (#825,
     /// `decline_resume`), and clears each resume record whose owner has been gone for
     /// `resume::EXIT_GRACE` while its session's shell runs on (ADR 0082, #823), looking at `now`;
-    /// `screens::tick` runs it every `screens::INTERVAL`. Each session's resume lock is taken on
-    /// its own, with the map released, as `described` takes it. A session whose record cleared
-    /// publishes its status (#824), with the record read again under its attachment lock, as its
-    /// reader reads it, so a report fed meanwhile is never overwritten by the record before it.
-    /// Whether a session still has a record to look at again.
+    /// `screens::tick` runs it every `screens::INTERVAL`. Each session's resume lock is taken
+    /// once under the map, with its attachment lock released, as `list` takes it, to decide its
+    /// resume and copy its records' owners: a session with neither to look at is passed over
+    /// there. Its processes are read, its resume declined and its owners' exits applied with the
+    /// map released (`resume::watch_owners`). A session whose record cleared publishes its status
+    /// (#824), with the record read again under its attachment lock, as its reader reads it, so a
+    /// report fed meanwhile is never overwritten by the record before it. Whether a session still
+    /// has a record to look at again.
     pub fn watch_resume_owners(&self, now: Instant) -> bool {
-        use crate::terminal::resume::SharedResume;
+        use crate::terminal::resume::{Decision, Event, SharedResume, Watch};
         type Parts = (
             SessionId,
             SharedResume,
             Arc<Mutex<Attached>>,
             Arc<Mutex<Shadow>>,
+            Option<Decision>,
+            Option<Watch>,
         );
         let resumes: Vec<Parts> = {
             let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
-                .map(|session| {
-                    (
-                        session.id,
-                        Arc::clone(&session.resume),
-                        Arc::clone(&session.attached),
-                        Arc::clone(&session.shadow),
-                    )
+                .filter_map(|session| {
+                    let (decision, watch) = {
+                        let mut state = lock_or_recover(&session.resume);
+                        let state = state.as_mut()?;
+                        (state.decide(Event::Tick(now)), state.watch())
+                    };
+                    (decision.is_some() || watch.is_some()).then(|| {
+                        (
+                            session.id,
+                            Arc::clone(&session.resume),
+                            Arc::clone(&session.attached),
+                            Arc::clone(&session.shadow),
+                            decision,
+                            watch,
+                        )
+                    })
                 })
                 .collect()
         };
         let mut watching = false;
-        for (id, resume, attached, shadow) in resumes {
+        for (id, resume, attached, shadow, decision, watch) in resumes {
             // A resume whose helper has not reported, from a shell that never said Workroom's
             // hook loaded in it, is looked at again on every tick, and declined once it has
             // waited `DECLINE_AFTER` (#825). One whose hook loaded is looked at until then, and
             // declined there, or at any later tick something else wakes, only once `exec` has
-            // replaced its shell (`Pending::declines`): it owes no look after its deadline. The
-            // processes are read with the resume lock released.
-            let (waiting, overdue) =
-                lock_or_recover(&resume)
-                    .as_ref()
-                    .map_or((false, None), |state| {
-                        let overdue = state.overdue(now);
-                        let waiting = state
-                            .pending()
-                            .is_some_and(|pending| !pending.hooked || overdue.is_none());
-                        (waiting, overdue)
-                    });
-            let declined = overdue.is_some_and(|pending| {
-                pending.declines(
-                    crate::terminal::process::image,
-                    crate::terminal::process::identity,
-                ) && self.decline_resume(
-                    id,
-                    &pending.file,
-                    (&resume, &attached, &shadow),
-                    pending.why(false),
-                )
-            });
-            watching |= waiting && !declined;
+            // replaced its shell (`Decline::stands`): it owes no look after its deadline.
+            match decision {
+                Some(Decision::Wait) => watching = true,
+                Some(Decision::Decline(decline)) => {
+                    let declined =
+                        decline.stands(
+                            crate::terminal::process::image,
+                            crate::terminal::process::identity,
+                        ) && self.decline_resume(id, &decline, (&resume, &attached, &shadow));
+                    watching |= decline.looked_at_again() && !declined;
+                }
+                _ => {}
+            }
+            let Some(watch) = watch else {
+                continue;
+            };
             let watched = crate::terminal::resume::watch_owners(
                 &resume,
+                watch,
                 now,
                 crate::terminal::process::identity,
             );

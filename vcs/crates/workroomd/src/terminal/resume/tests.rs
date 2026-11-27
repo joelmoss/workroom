@@ -330,16 +330,16 @@ fn a_record_clears_once_its_owner_has_been_gone_for_the_grace_while_the_shell_ru
         watching: true,
     };
     assert_eq!(
-        watch_owners(&shared, t0, lookup),
+        watch(&shared, t0, lookup),
         Watched::default(),
         "it runs, so no look is owed before output"
     );
     table.lock().unwrap().retain(|p| p.pid != 20);
-    assert_eq!(watch_owners(&shared, at(100), lookup), watching);
-    assert_eq!(watch_owners(&shared, at(2_099), lookup), watching);
+    assert_eq!(watch(&shared, at(100), lookup), watching);
+    assert_eq!(watch(&shared, at(2_099), lookup), watching);
     assert!(recorded(&shared), "within the grace");
     assert_eq!(
-        watch_owners(&shared, at(2_100), lookup),
+        watch(&shared, at(2_100), lookup),
         Watched {
             cleared: vec!["private-command".into()],
             watching: false
@@ -354,8 +354,8 @@ fn a_pid_that_names_another_process_is_its_owner_gone() {
     let shared = shared_with(shell, claude);
     let table = [process(10, 100, 1, UID), process(20, 900, 10, UID)];
     let lookup = |pid| table.iter().copied().find(|p| p.pid == pid);
-    watch_owners(&shared, t0, lookup);
-    let watched = watch_owners(&shared, t0 + EXIT_GRACE, lookup);
+    watch(&shared, t0, lookup);
+    let watched = watch(&shared, t0 + EXIT_GRACE, lookup);
     assert_eq!(watched.cleared, ["private-command"]);
 }
 
@@ -368,10 +368,10 @@ fn nothing_clears_while_the_sessions_shell_is_gone() {
     let shared = shared_with(shell, claude);
     let table = Mutex::new(vec![process(10, 100, 1, UID)]);
     let lookup = |pid| table.lock().unwrap().iter().copied().find(|p| p.pid == pid);
-    watch_owners(&shared, t0, lookup);
+    watch(&shared, t0, lookup);
     table.lock().unwrap().clear();
     for ms in [1_500, 2_000, 60_000] {
-        let watched = watch_owners(&shared, t0 + Duration::from_millis(ms), lookup);
+        let watched = watch(&shared, t0 + Duration::from_millis(ms), lookup);
         assert_eq!(watched, Watched::default(), "{ms}");
     }
     assert!(recorded(&shared));
@@ -383,7 +383,7 @@ fn a_session_with_no_record_or_no_token_owes_no_look() {
     let empty: SharedResume = Arc::new(Mutex::new(Some(state())));
     for shared in [none, empty] {
         assert_eq!(
-            watch_owners(&shared, Instant::now(), |_| unreachable!()),
+            watch(&shared, Instant::now(), |_| unreachable!()),
             Watched::default()
         );
     }
@@ -530,12 +530,32 @@ fn launch_file() -> std::path::PathBuf {
     "/private/launch/resume-file.json".into()
 }
 
-/// The launch file a decline of `pending`, at a prompt or a deadline, would claim, with no
-/// process able to be read: none for a resume whose shell said its hook loaded.
-fn declined(pending: Option<Pending>) -> Option<std::path::PathBuf> {
-    pending
-        .filter(|pending| pending.declines(|_| None, |_| None))
-        .map(|pending| pending.file)
+/// The launch file a decline that `decision`, at a prompt or a deadline, calls for would claim,
+/// with no process able to be read: none for a resume whose shell said its hook loaded.
+fn declined(decision: Option<Decision>) -> Option<std::path::PathBuf> {
+    match decision {
+        Some(Decision::Decline(decline)) if decline.stands(|_| None, |_| None) => {
+            Some(decline.file)
+        }
+        _ => None,
+    }
+}
+
+/// What the claim of its launch file declines: the program it would have started.
+fn decline(s: &mut Resume) -> Option<String> {
+    match s.decide(Event::Claimed) {
+        Some(Decision::Declined { program }) => Some(program),
+        _ => None,
+    }
+}
+
+/// One look at `shared`'s record owners as the screens tick takes it: what it looks at copied
+/// under the lock, then looked at with the lock released.
+fn watch(shared: &SharedResume, now: Instant, lookup: impl Fn(u32) -> Option<Identity>) -> Watched {
+    let watch = shared.lock().unwrap().as_ref().and_then(Resume::watch);
+    watch.map_or_else(Watched::default, |watch| {
+        watch_owners(shared, watch, now, lookup)
+    })
 }
 
 /// Value: protects=a resume whose helper never reported being declinable (#825): its launch file
@@ -550,21 +570,21 @@ fn a_resume_whose_helper_never_reported_is_declined_once() {
     s.resuming(&resumed_record(), launch_file(), None);
     let now = Instant::now();
     assert_eq!(s.waiting_file(), Some(launch_file()));
-    assert_eq!(s.overdue(now), None);
+    assert_eq!(s.decide(Event::Tick(now)), Some(Decision::Wait));
     assert_eq!(
-        declined(s.overdue(now + DECLINE_AFTER)),
+        declined(s.decide(Event::Tick(now + DECLINE_AFTER))),
         Some(launch_file())
     );
-    assert_eq!(s.decline(), Some("claude".into()));
-    assert_eq!(s.decline(), None, "once");
+    assert_eq!(decline(&mut s), Some("claude".into()));
+    assert_eq!(decline(&mut s), None, "once");
     assert_eq!(s.waiting_file(), None);
 
     let mut s = state();
     s.resuming(&resumed_record(), launch_file(), None);
     helper_reports(&mut s, 1, now);
     assert_eq!(s.waiting_file(), None, "it started");
-    assert_eq!(s.overdue(now + DECLINE_AFTER), None);
-    assert_eq!(s.decline(), None);
+    assert_eq!(s.decide(Event::Tick(now + DECLINE_AFTER)), None);
+    assert_eq!(decline(&mut s), None);
 }
 
 /// Value: protects=a resumed program reading as itself, not as its helper, wherever a session's
@@ -752,15 +772,19 @@ fn a_resume_whose_shell_said_its_hook_loaded_waits_for_its_helper() {
     assert_eq!(authenticated.action, Some(Action::Clear), "a spec clear");
     let mut s = state();
     s.resuming(&resumed_record(), launch_file(), None);
-    assert_eq!(declined(s.pending()), Some(launch_file()));
+    assert_eq!(declined(s.decide(Event::Prompt)), Some(launch_file()));
     assert_eq!(shell_says(&mut s, 1, hook, now), Outcome::HookLoaded);
     assert_eq!(
-        declined(s.pending()),
+        declined(s.decide(Event::Prompt)),
         None,
         "a prompt mark declines nothing"
     );
     let later = now + DECLINE_AFTER * 20;
-    assert_eq!(declined(s.overdue(later)), None, "nor does any deadline");
+    assert_eq!(
+        declined(s.decide(Event::Tick(later))),
+        None,
+        "nor does any deadline"
+    );
     assert_eq!(s.waiting_file(), Some(launch_file()), "its end removes it");
     assert_eq!(s.whole(), None, "the hook's word is no record");
     assert_eq!(
@@ -782,10 +806,18 @@ fn a_resume_whose_shell_said_its_hook_loaded_waits_for_its_helper() {
             Outcome::Cleared,
             "{why}"
         );
-        assert_eq!(declined(s.pending()), Some(launch_file()), "{why}");
+        assert_eq!(
+            declined(s.decide(Event::Prompt)),
+            Some(launch_file()),
+            "{why}"
+        );
         // After it started waiting, so this is past its deadline.
         let due = Instant::now() + DECLINE_AFTER;
-        assert_eq!(declined(s.overdue(due)), Some(launch_file()), "{why}");
+        assert_eq!(
+            declined(s.decide(Event::Tick(due))),
+            Some(launch_file()),
+            "{why}"
+        );
     }
     let mut s = state();
     s.resuming(&resumed_record(), launch_file(), None);
@@ -796,7 +828,7 @@ fn a_resume_whose_shell_said_its_hook_loaded_waits_for_its_helper() {
         Outcome::NotAccepted { .. }
     ));
     assert_eq!(
-        declined(s.pending()),
+        declined(s.decide(Event::Prompt)),
         Some(launch_file()),
         "an unsigned report"
     );
@@ -832,49 +864,62 @@ fn a_hooked_resume_is_declined_only_once_exec_replaced_its_shell() {
             })
         }
     };
-    let pending = |hooked: bool, root: Option<Owner>, shell: Option<Image>| Pending {
+    let pending = |why: Why, root: Option<Owner>, shell: Option<Image>| Decline {
         file: launch_file(),
-        hooked,
+        why,
         root,
         shell,
     };
-    let hooked = pending(true, Some(root), Some(shell));
+    let hooked = pending(Why::ExecReplaced, Some(root), Some(shell));
     assert!(
-        !hooked.declines(|_| Some(shell), alive(7)),
+        !hooked.stands(|_| Some(shell), alive(7)),
         "still the shell it started as, as at an instant prompt"
     );
+    assert!(hooked.stands(|_| Some(other), alive(7)), "exec replaced it");
+    assert!(!hooked.stands(|_| None, alive(7)), "an image not read");
     assert!(
-        hooked.declines(|_| Some(other), alive(7)),
-        "exec replaced it"
-    );
-    assert!(!hooked.declines(|_| None, alive(7)), "an image not read");
-    assert!(
-        !hooked.declines(|_| Some(other), alive(8)),
+        !hooked.stands(|_| Some(other), alive(8)),
         "the pid is another process's"
     );
-    assert!(!hooked.declines(|_| Some(other), |_| None), "gone");
+    assert!(!hooked.stands(|_| Some(other), |_| None), "gone");
     assert!(
-        !pending(true, Some(root), None).declines(|_| Some(other), alive(7)),
+        !pending(Why::ExecReplaced, Some(root), None).stands(|_| Some(other), alive(7)),
         "a shell not known"
     );
     assert!(
-        !pending(true, None, Some(shell)).declines(|_| Some(other), alive(7)),
+        !pending(Why::ExecReplaced, None, Some(shell)).stands(|_| Some(other), alive(7)),
         "a first process not known"
     );
-    assert!(
-        pending(false, None, None).declines(|_| None, |_| None),
-        "a shell that never said its hook loaded needs no proof"
-    );
+    for why in [Why::PromptFirst, Why::NoHook] {
+        assert!(
+            pending(why, None, None).stands(|_| None, |_| None),
+            "a shell that never said its hook loaded needs no proof"
+        );
+    }
 
     // The state hands both on, and the hook's word marks it hooked.
     let mut s = state();
     s.carried.root = Some(root);
     s.resuming(&resumed_record(), launch_file(), Some(shell));
-    assert_eq!(s.pending(), Some(pending(false, Some(root), Some(shell))));
+    assert_eq!(
+        s.decide(Event::Prompt),
+        Some(Decision::Decline(pending(
+            Why::PromptFirst,
+            Some(root),
+            Some(shell)
+        )))
+    );
     shell_says(&mut s, 1, "clear=1:workroomhook=1", Instant::now());
-    assert_eq!(s.pending(), Some(hooked.clone()));
+    assert_eq!(
+        s.decide(Event::Prompt),
+        Some(Decision::Decline(hooked.clone()))
+    );
     let due = Instant::now() + DECLINE_AFTER;
-    assert_eq!(s.overdue(due), Some(hooked), "and at its deadline");
+    assert_eq!(
+        s.decide(Event::Tick(due)),
+        Some(Decision::Decline(hooked)),
+        "and at its deadline"
+    );
 }
 
 /// Value: protects=a hand-off from a daemon whose table predates `launched` (#822 to #825's)
@@ -976,23 +1021,30 @@ fn a_report_that_does_not_count_says_why_in_its_log() {
 /// restructure; seam=none
 #[test]
 fn a_decline_says_why_in_its_log() {
-    let pending = |hooked: bool| Pending {
-        file: launch_file(),
-        hooked,
-        root: None,
-        shell: None,
+    type At = fn(Instant) -> Event<'static>;
+    let why = |hooked: bool, event: At| {
+        let mut s = state();
+        s.resuming(&resumed_record(), launch_file(), None);
+        if hooked {
+            shell_says(&mut s, 1, "clear=1:workroomhook=1", Instant::now());
+        }
+        match s.decide(event(Instant::now() + DECLINE_AFTER)) {
+            Some(Decision::Decline(decline)) => decline.why.as_str(),
+            other => panic!("no decline: {other:?}"),
+        }
     };
+    let (prompt, tick): (At, At) = (|_| Event::Prompt, Event::Tick);
     assert_eq!(
-        pending(false).why(true),
+        why(false, prompt),
         "its shell's first prompt came before its helper reported, so it ran no Workroom hook"
     );
     assert_eq!(
-        pending(false).why(false),
+        why(false, tick),
         "its shell never loaded Workroom's hook, and its helper never reported"
     );
-    for at_prompt in [true, false] {
+    for event in [prompt, tick] {
         assert_eq!(
-            pending(true).why(at_prompt),
+            why(true, event),
             "its shell loaded Workroom's hook, then exec replaced the shell before its helper ran"
         );
     }
