@@ -182,7 +182,10 @@ fn claude_is_found_by_its_program_alone_or_under_an_interpreter() {
         args("/Users/me/.local/bin/claude -c", NATIVE),
         Some(words("-c"))
     );
-    assert_eq!(args(&format!("{NATIVE} --verbose"), NATIVE), Some(words("--verbose")));
+    assert_eq!(
+        args(&format!("{NATIVE} --verbose"), NATIVE),
+        Some(words("--verbose"))
+    );
     assert_eq!(
         args("node /usr/local/bin/claude --model x", NODE),
         Some(words("--model x"))
@@ -243,9 +246,15 @@ fn an_npm_claudes_argv_counts_only_when_it_is_provably_whole() {
     // Linux's `cmdline` reads the title alone, empty words dropped; node still runs it.
     assert_eq!(found(&["claude"], Some(NODE)), Err("unproven"));
     // Blanked only past the script: an empty prompt, or a flag's value gone.
-    assert_eq!(found(&["node", CLI, "--model", ""], Some(NODE)), Err("unproven"));
+    assert_eq!(
+        found(&["node", CLI, "--model", ""], Some(NODE)),
+        Err("unproven")
+    );
     // Under node, with no script of Claude's named; and an executable that can't be read.
-    assert_eq!(found(&["node", "--model", "opus"], Some(NODE)), Err("other"));
+    assert_eq!(
+        found(&["node", "--model", "opus"], Some(NODE)),
+        Err("other")
+    );
     assert_eq!(found(&whole, None), Err("unproven"));
     // argv saying an interpreter that the executable isn't, or the reverse.
     assert_eq!(
@@ -394,6 +403,92 @@ fn install_adds_the_hook_beside_the_users_own_and_remove_takes_only_it() {
     assert_eq!(settings(&profile), theirs);
     assert_eq!(states(&remove(&home, &none())), [State::Absent]);
     assert_eq!(read_record(&home), Vec::<PathBuf>::new());
+}
+
+/// Value: protects=a user's settings.json keeping their key order, spacing and newline through
+/// the hook's install and removal (#828); fails_when=the file is written from a sorted map, or
+/// in another indent, or a removal leaves a stray comma or blank line; why_new=new (#828
+/// review); seam=none
+#[test]
+fn a_settings_file_without_hooks_gets_its_own_bytes_back_after_install_then_remove() {
+    let home = Scratch::new("resume-hook-bytes");
+    let profile = home.join(".claude");
+    fs::create_dir(&profile).unwrap();
+    let path = profile.join("settings.json");
+    for original in [
+        // Four spaces, keys out of order, a space before a colon, a trailing newline.
+        "{\n    \"theme\" : \"dark\",\n    \"model\": \"opus\",\n    \"env\": {\"B\": \"1\", \"A\": \"2\"}\n}\n",
+        // Tabs, and no trailing newline.
+        "{\n\t\"permissions\": {\"allow\": [\"Bash(ls)\"]},\n\t\"alwaysThinkingEnabled\": true\n}",
+        // One line, and one member.
+        "{\"zeta\":1,\"alpha\":[1, 2]}",
+        "{\"model\": \"opus\"}\n",
+        "{}\n",
+    ] {
+        fs::write(&path, original).unwrap();
+        assert_eq!(
+            states(&install(&home, &none())),
+            [State::Installed],
+            "{original}"
+        );
+        let installed = fs::read_to_string(&path).unwrap();
+        assert_eq!(ours(&settings(&profile)["hooks"]["SessionStart"]), 1);
+        // The user's members are where they were, in their order, as they wrote them, and the
+        // hook comes after them, before the file's own end.
+        let members = original.trim_end().strip_suffix('}').unwrap().trim_end();
+        let end = &original[members.len()..];
+        assert!(installed.ends_with(end), "{installed}");
+        if members != "{" {
+            assert!(installed.starts_with(&format!("{members},")), "{installed}");
+            let one_line = !original.trim_end().contains('\n');
+            assert_eq!(
+                !installed.trim_end().contains('\n'),
+                one_line,
+                "a one-line file stays one: {installed}"
+            );
+        }
+        assert_eq!(states(&remove(&home, &none())), [State::Removed]);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+}
+
+/// Value: protects=every byte of a user's settings.json outside its `hooks` value (#828);
+/// fails_when=a change to `hooks` rewrites or reorders anything around it; why_new=new (#828
+/// review); seam=none
+#[test]
+fn only_the_hooks_value_changes_in_a_settings_file_that_has_one() {
+    let home = Scratch::new("resume-hook-hooks-only");
+    let profile = home.join(".claude");
+    fs::create_dir(&profile).unwrap();
+    let path = profile.join("settings.json");
+    let before = "{\n   \"zeta\": true,\n   \"hooks\": {\n      \"Stop\": []\n   },\n   \"alpha\" :  [ 1,2 ]\n}";
+    let (head, tail) = (
+        "{\n   \"zeta\": true,\n   \"hooks\": ",
+        ",\n   \"alpha\" :  [ 1,2 ]\n}",
+    );
+    fs::write(&path, before).unwrap();
+    assert_eq!(states(&install(&home, &none())), [State::Installed]);
+    let installed = fs::read_to_string(&path).unwrap();
+    assert!(installed.starts_with(head), "{installed}");
+    assert!(installed.ends_with(tail), "{installed}");
+    // The hooks value in the file's own three-space indent, at its depth.
+    let value = &installed[head.len()..installed.len() - tail.len()];
+    assert!(
+        value.starts_with("{\n      \"SessionStart\": [\n         {"),
+        "{value}"
+    );
+    assert!(value.ends_with("\n      \"Stop\": []\n   }"), "{value}");
+    assert_eq!(ours(&settings(&profile)["hooks"]["SessionStart"]), 1);
+
+    assert_eq!(states(&remove(&home, &none())), [State::Removed]);
+    let removed = fs::read_to_string(&path).unwrap();
+    assert!(
+        removed.starts_with(head) && removed.ends_with(tail),
+        "{removed}"
+    );
+    assert_eq!(settings(&profile)["hooks"], json!({"Stop": []}));
+    // Its `hooks` was as Workroom writes one in that indent, so it is all as it was.
+    assert_eq!(removed, before);
 }
 
 #[test]
