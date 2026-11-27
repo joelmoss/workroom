@@ -573,6 +573,17 @@ final class PersistentSessionService {
   /// Test seam: where `writeResumeLaunch` puts its files instead of beside the socket.
   var resumeLaunchDirectory: URL?
 
+  /// Whether programs resume (#827), read as each pane attaches: `ProgramResume`'s, or a test's.
+  var programResumeIsOn: () -> Bool = { ProgramResume.isOn }
+
+  /// `metadata` and what a session's attach says of the resume setting (`ProgramResume`), which
+  /// the daemon that creates the session reads, on this Mac or a host.
+  private func withResumeSetting(_ metadata: [(key: String, value: String)])
+    -> [(key: String, value: String)]
+  {
+    metadata + ProgramResume.sessionMetadata(isOn: programResumeIsOn())
+  }
+
   /// The command libghostty forks for this session, from the helper that owns it.
   ///
   /// Requires the same three things `launchEnvironment` does — owner, binary AND socket — because
@@ -713,7 +724,8 @@ final class PersistentSessionService {
       do {
         let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
-          restored: restored, metadata: remote.metadata, runCommand: remote.runCommand)
+          restored: restored, metadata: withResumeSetting(remote.metadata),
+          runCommand: remote.runCommand)
         guard let pane else { return PaneAttach(command: command, reachesSession: true) }
         attachedRemote[sessionID, default: []].insert(pane)
         // A pane attaching connects a host with no service connection, so its badge is heard and a
@@ -812,7 +824,7 @@ final class PersistentSessionService {
     }
     let variables = Dictionary(
       uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
-    for entry in metadata {
+    for entry in withResumeSetting(metadata) {
       guard let variable = variables[entry.key], !entry.value.isEmpty else { continue }
       entries.append((variable, entry.value))
     }

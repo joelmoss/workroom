@@ -125,6 +125,11 @@ extension Defaults.Keys {
   static let terminalReportsGhostty = Key<Bool>(
     "terminalReportsGhostty", default: false, suite: .app)
 
+  /// "Resume programs after a restart" (ADR 0082, #827), Settings ▸ Terminal: a pane whose session
+  /// is gone runs again the program its record names. On by default. Read only through
+  /// `ProgramResume`, the one place the app asks it.
+  static let resumePrograms = Key<Bool>("resumePrograms", default: true, suite: .app)
+
   /// The terminal's font and cursor (Settings ▸ Terminal), written into the generated
   /// `ghostty.conf` by `TerminalTypography.configLines`. Each default writes no line.
   /// The font family; "" is libghostty's built-in JetBrains Mono.

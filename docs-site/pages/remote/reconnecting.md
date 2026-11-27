@@ -66,6 +66,7 @@ A terminal whose program said how to start itself again, such as Claude Code thr
 - Programs never resume on a host whose Workroom daemon runs as root, such as a container whose image has no other user. Its terminals say they ended, as before.
 - A hidden tab of a remote workroom resumes when you open it, as it reconnects then.
 - A run tab doesn't resume: it says its run ended, as before.
+- With [**Resume programs after a restart**](../app/settings.md#resume-programs-after-a-restart) off on the Mac you're using, its terminals say they ended, as before.
 
 ## Other things you might see
 

@@ -121,6 +121,14 @@ On, new terminals set `TERM=xterm-ghostty`. Programs that look a terminal up by 
 
 The setting applies to terminals you open after changing it. Remote workrooms don't use this setting. They use `xterm-ghostty` once Workroom has installed its entry on the remote machine, and `xterm-256color` until then.
 
+### Resume programs after a restart {nightly}
+
+On by default. When your Mac restarts or a terminal's session ends, programs that support it, such as Claude Code and Codex, come back where they were. See [Programs that resume after a restart](terminals-and-tabs.md#programs-that-resume-after-a-restart).
+
+Off, a terminal whose session is gone gets a new shell, and a remote workroom's says it has ended, as they did before programs resumed. Terminals you open while it's off can't say how to resume. One opened while it was on still can, and comes back once you turn it on again. A terminal that got a new shell while it was off doesn't bring its old program back later.
+
+The setting applies to terminals you open after changing it, and to a terminal whose session is gone when it comes back. It's set on each Mac: in a remote workroom, it follows the setting on the Mac whose terminal started the session.
+
 ### Stop Detached Terminals…
 
 The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit and reattach when you relaunch, and that run commands do too unless you choose to stop them. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).

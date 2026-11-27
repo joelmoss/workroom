@@ -829,6 +829,13 @@ import WorkroomVCS
       flag("WorkroomUITestOnboardingRealGate")
     }
 
+    /// Keep "Resume programs after a restart" as an earlier launch left it
+    /// (`-WorkroomUITestKeepResumePrograms 1`), for the second launch of a relaunch pair; every
+    /// other fixture launch pins it to its default, on (`applyFixtureDefaults`).
+    static var keepsResumePrograms: Bool {
+      flag("WorkroomUITestKeepResumePrograms")
+    }
+
     /// Explicit starting value for `hasCompletedOnboarding`, written FROM INSIDE the app itself
     /// (`-WorkroomUITestOnboardingSeed true|false`) — the same pattern every other fixture pin already
     /// uses (`lightTheme`, `sidebarWidth`, etc: the app writes what it's about to read, no external
@@ -1445,6 +1452,9 @@ import WorkroomVCS
       // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
       // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
       Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
+      // Program resume (#827), for the same reason: a test that turns it off and fails would leave
+      // every later launch's restored panes as new shells.
+      if !keepsResumePrograms { Defaults[.resumePrograms] = true }
       if let glassOpacity { Defaults[.glassOpacity] = glassOpacity }
       // Pinned "already onboarded" for the same reason as `lightTheme`/`diffViewMode` above: the flag
       // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
