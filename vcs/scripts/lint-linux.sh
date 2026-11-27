@@ -9,7 +9,10 @@ RUST_VERSION="${1:?pass the Makefile VCS_RUST version}"
 TARGET="${2:-vcs-lint}"
 case "$TARGET" in
   vcs-lint) label=vcs-lint-linux; make_args=("VCS_RUST=$RUST_VERSION") ;;
-  vcs-test) label=vcs-test-linux; make_args=("VCS_RUST=$RUST_VERSION" "VCS_TEST_FLAGS=${VCS_TEST_FLAGS:-}") ;;
+  vcs-test)
+    label=vcs-test-linux
+    make_args=("VCS_RUST=$RUST_VERSION" "VCS_TEST_FLAGS=${VCS_TEST_FLAGS:-}")
+    ;;
   *) echo "lint-linux.sh: no gate '$TARGET'; use vcs-lint or vcs-test" >&2; exit 2 ;;
 esac
 if [ "$(uname -s)" = Linux ]; then
@@ -62,6 +65,31 @@ image="workroom-linux-lint:$RUST_VERSION-$zig_version-$image_hash"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/workroom/linux-lint/$(uname -m)"
 checkout="$( { printf '%s' "$ROOT" | shasum -a 256 2>/dev/null || printf '%s' "$ROOT" | sha256sum; } | cut -c1-12)"
 mkdir -p "$cache/home"
+# The daemon's build number, which build.rs reads from git: a linked checkout's metadata is outside
+# the mount, so it is given. Any number does for the lint. The tests compare builds (an older one is
+# refused), so they get HEAD's commit time, read here, as CI's build reads it from git.
+build=1
+tests=()
+if [ "$TARGET" = vcs-test ]; then
+  build="$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null)" || build=1
+  # The container runs as this user, whose uid the image has no account for (a Mac's 501), and
+  # the tests that read their own account entry, as a host's daemon does, need one: root and this
+  # user, home and shell as the container has them, as CI's runner has its own. Per checkout, so
+  # two workrooms' runs never write the same file.
+  passwd="$cache/passwd-$checkout"
+  printf 'root:x:0:0:root:/root:/bin/bash\n%s:x:%s:%s::/cache/home:/bin/bash\n' \
+    "$(id -un)" "$(id -u)" "$(id -g)" > "$passwd.tmp"
+  mv -f "$passwd.tmp" "$passwd"
+  # The tests link every test binary, which the lint never does, and cargo starts one link per
+  # CPU: 18 of them outgrew the container's 4G and ld was killed (2026-11-27), with full debug info
+  # or line tables alike. Then 18 test threads, each with its own daemons and shells, starved the
+  # relay and terminal API tests in two full runs (5 failures; each passes alone). Both are capped
+  # at 4, as CI's Linux runners have, to fit the fixed --memory rather than this machine's CPUs,
+  # at the cost of a slower run; raising --memory instead would depend on each Docker VM's size.
+  jobs="${VCS_TEST_LINUX_JOBS:-4}"
+  tests=(--volume "$passwd:/etc/passwd:ro" --env "CARGO_BUILD_JOBS=$jobs"
+    --env "RUST_TEST_THREADS=$jobs")
+fi
 echo "$label: $runtime, Rust $RUST_VERSION, Zig $zig_version; cache $cache, target-$checkout for $ROOT"
 # A linked checkout's .git points outside this mount. Fetches from a build script must
 # not discover that host-only metadata; the engine's own cache remains a real git repo.
@@ -79,5 +107,5 @@ exec "$runtime" run --rm --init --memory 4G --user "$(id -u):$(id -g)" \
   --workdir /workroom --env HOME=/cache/home --env CARGO_HOME=/cache/cargo \
   --env "CARGO_TARGET_DIR=/cache/target-$checkout" --env WR_GHOSTTY_VT_CACHE=/cache/ghostty-vt \
   --env ZIG_GLOBAL_CACHE_DIR=/tmp/zig/global --env WR_GHOSTTY_VT_ZIG_CACHE=/tmp/zig \
-  --env GIT_CEILING_DIRECTORIES=/workroom \
-  --env WORKROOMD_BUILD=1 "$image" make "$TARGET" "${make_args[@]}"
+  --env GIT_CEILING_DIRECTORIES=/workroom ${tests[@]+"${tests[@]}"} \
+  --env "WORKROOMD_BUILD=$build" "$image" make "$TARGET" "${make_args[@]}"

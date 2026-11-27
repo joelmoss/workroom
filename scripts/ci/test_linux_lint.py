@@ -25,7 +25,9 @@ if name == "uname":
 elif name == "shasum":
     sys.exit(127)
 elif name == "sha256sum":
-    print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest(), args[0])
+    # A file argument, or standard input when there is none, as the real tool reads.
+    data = pathlib.Path(args[0]).read_bytes() if args else sys.stdin.buffer.read()
+    print(hashlib.sha256(data).hexdigest(), args[0] if args else "-")
 elif name in ("container", "docker", "podman"):
     if args[0] in ("system", "info"):
         sys.exit(1 if name in os.environ.get("LINT_TEST_OFF", "").split(",") else 0)
@@ -33,8 +35,24 @@ elif name in ("container", "docker", "podman"):
 '''
 
 
+def copy_checkout(into):
+    """A checkout holding just what the launcher reads, at `into`; its launcher's path."""
+    for relative in ("vcs/scripts/lint-linux.sh", "vcs/scripts/build-ghostty-vt.sh",
+                     "vcs/scripts/linux-lint/Dockerfile"):
+        target = into / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    return into / "vcs/scripts/lint-linux.sh"
+
+
+def env_of(run):
+    return dict(run[i + 1].split("=", 1) for i, arg in enumerate(run) if arg == "--env")
+
+
 class LinuxLintTests(unittest.TestCase):
-    def run_launcher(self, **overrides):
+    def run_launcher(self, *gate, launcher=None, files=None, **overrides):
+        """Runs the launcher with stubbed tools: its result and every stub call. `files`, when
+        given, is filled with the text of each file the container run mounts from the cache."""
         with tempfile.TemporaryDirectory(prefix="linux-lint-test-") as directory:
             fixture = Path(directory)
             binary = fixture / "bin"
@@ -51,10 +69,18 @@ class LinuxLintTests(unittest.TestCase):
             env.update(PATH=f"{binary}:/usr/bin:/bin", XDG_CACHE_HOME=str(fixture / "cache"),
                        LINT_TEST_LOG=str(fixture / "calls.jsonl"), **overrides)
             result = subprocess.run(
-                ["/bin/bash", str(ROOT / "vcs/scripts/lint-linux.sh"), RUST],
+                ["/bin/bash", str(launcher or ROOT / "vcs/scripts/lint-linux.sh"), RUST, *gate],
                 env=env, capture_output=True, text=True, timeout=10,
             )
-            calls = [json.loads(line) for line in (fixture / "calls.jsonl").read_text().splitlines()]
+            log = fixture / "calls.jsonl"
+            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            if files is not None:
+                for call in calls:
+                    for i, arg in enumerate(call[:-1]):
+                        source = call[i + 1].split(":", 1)[0]
+                        if arg == "--volume" and source.startswith(str(fixture / "cache")):
+                            if Path(source).is_file():
+                                files[call[i + 1]] = Path(source).read_text()
             return result, calls
 
     def test_native_linux_uses_canonical_gate(self):
@@ -71,12 +97,93 @@ class LinuxLintTests(unittest.TestCase):
         self.assertIn(f"RUST_VERSION={RUST}", build)
         self.assertIn(f"{ROOT}:/workroom:ro", run)
         self.assertIn("CARGO_HOME=/cache/cargo", run)
-        self.assertIn("CARGO_TARGET_DIR=/cache/target", run)
+        self.assertRegex(env_of(run)["CARGO_TARGET_DIR"], r"^/cache/target-[0-9a-f]{12}$")
         self.assertIn("GIT_CEILING_DIRECTORIES=/workroom", run)
         self.assertIn("--user", run)
         self.assertEqual(run[run.index("--memory") + 1], "4G")
         self.assertEqual(run[-4], build[build.index("--tag") + 1])
         self.assertEqual(run[-3:], ["make", "vcs-lint", f"VCS_RUST={RUST}"])
+
+    def test_each_checkout_builds_in_its_own_target_dir(self):
+        # Every checkout mounts at /workroom, so in one shared target dir another workroom's older
+        # build of a crate looked fresh to cargo (#832).
+        with tempfile.TemporaryDirectory(prefix="linux-lint-checkouts-") as directory:
+            first = copy_checkout(Path(directory) / "first")
+            second = copy_checkout(Path(directory) / "second")
+            targets = []
+            for launcher in (first, second, first):
+                result, calls = self.run_launcher(launcher=launcher)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run = next(call for call in calls if call[:2] == ["docker", "run"])
+                targets.append(env_of(run)["CARGO_TARGET_DIR"])
+            self.assertNotEqual(targets[0], targets[1])
+            self.assertEqual(targets[0], targets[2])
+
+    def test_the_container_user_has_an_account_entry(self):
+        # The tests that read their own account entry, as a host's daemon does, need one for a
+        # uid the image doesn't know (a Mac's 501).
+        files = {}
+        result, calls = self.run_launcher("vcs-test", files=files)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = next(call for call in calls if call[:2] == ["docker", "run"])
+        mounts = [run[i + 1] for i, arg in enumerate(run) if arg == "--volume"]
+        passwd = next(mount for mount in mounts if mount.endswith(":/etc/passwd:ro"))
+        entries = [line.split(":") for line in files[passwd].splitlines()]
+        mine = [entry for entry in entries if entry[2] == str(os.getuid())]
+        self.assertEqual(len(mine), 1, files[passwd])
+        self.assertEqual(mine[0][3], str(os.getgid()))
+        self.assertEqual(mine[0][5], "/cache/home")
+        self.assertEqual(env_of(run)["HOME"], "/cache/home")
+        self.assertIn(["root", "x", "0", "0", "root", "/root", "/bin/bash"], entries)
+
+    def test_vcs_test_gate_runs_the_tests_with_their_flags(self):
+        flags = "-p workroom --test resume_session"
+        result, calls = self.run_launcher("vcs-test", VCS_TEST_FLAGS=flags)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("vcs-test-linux:", result.stdout)
+        run = next(call for call in calls if call[:2] == ["docker", "run"])
+        self.assertEqual(run[-4:], ["make", "vcs-test", f"VCS_RUST={RUST}", f"VCS_TEST_FLAGS={flags}"])
+        self.assertIn("--user", run)
+
+        result, calls = self.run_launcher("vcs-test", LINT_TEST_OS="Linux", VCS_TEST_FLAGS=flags)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["make", "-C", str(ROOT), "vcs-test", f"VCS_RUST={RUST}",
+                       f"VCS_TEST_FLAGS={flags}"], calls)
+
+    def test_only_the_tests_cap_their_links_and_get_an_account_entry(self):
+        # Linking every test binary at once outgrew the container's 4G (2026-11-27); the lint links
+        # none, so it keeps cargo's default jobs, and the mounts it was proven with.
+        for gate, jobs in ((), None), (("vcs-test",), "4"):
+            with self.subTest(gate=gate):
+                result, calls = self.run_launcher(*gate)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run = next(call for call in calls if call[:2] == ["docker", "run"])
+                self.assertEqual(env_of(run).get("CARGO_BUILD_JOBS"), jobs)
+                self.assertEqual(env_of(run).get("RUST_TEST_THREADS"), jobs)
+                self.assertEqual(any(arg.endswith(":/etc/passwd:ro") for arg in run), jobs is not None)
+        result, calls = self.run_launcher("vcs-test", VCS_TEST_LINUX_JOBS="2")
+        run = next(call for call in calls if call[:2] == ["docker", "run"])
+        self.assertEqual(env_of(run)["CARGO_BUILD_JOBS"], "2")
+        self.assertEqual(env_of(run)["RUST_TEST_THREADS"], "2")
+
+    def test_the_tests_build_as_heads_commit_time(self):
+        # A test pushes build 1 as an older daemon and expects it refused, which a daemon built as 1
+        # would take as current; the lint compares no builds.
+        head = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%ct"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        for gate, build in ((), "1"), (("vcs-test",), head):
+            with self.subTest(gate=gate):
+                result, calls = self.run_launcher(*gate)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run = next(call for call in calls if call[:2] == ["docker", "run"])
+                self.assertEqual(env_of(run)["WORKROOMD_BUILD"], build)
+        self.assertGreater(int(head), 1)
+
+    def test_an_unknown_gate_fails_before_any_container_starts(self):
+        result, calls = self.run_launcher("vcs-bench")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no gate 'vcs-bench'", result.stderr)
+        self.assertFalse(any(call[1:2] in (["build"], ["run"]) for call in calls))
 
     def test_zig_caches_stay_off_the_host_mount(self):
         # Docker Desktop's macOS bind mount has no exclusive flock, which Zig's cache needs (#599).
