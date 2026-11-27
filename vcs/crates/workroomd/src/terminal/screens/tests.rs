@@ -10,6 +10,20 @@ fn scratch(name: &str) -> crate::commands::Unmade {
 
 const ID: SessionId = SessionId([7u8; 16]);
 
+/// A screens folder that is a link, to keep the screens on another disk, still opens, made
+/// private where it points: the resume cleanup's stricter `util::private_dir` refuses a link, and
+/// would have lost a host's screens and layouts silently.
+#[test]
+fn a_screens_folder_that_is_a_link_still_opens() {
+    let target = scratch("link-target");
+    std::fs::create_dir_all(&*target).unwrap();
+    let link = scratch("link");
+    std::os::unix::fs::symlink(&*target, &*link).unwrap();
+    Screens::open(&link).expect("a linked folder opens");
+    let mode = std::fs::metadata(&*target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}
+
 #[test]
 fn a_record_round_trips() {
     let bytes = encode(120, 40, b"\x1b[1mhello\x1b[m");

@@ -91,7 +91,11 @@ pub struct Layouts {
 impl Layouts {
     /// Opens `dir`, creating it private to this user.
     pub fn open(dir: &Path) -> io::Result<Layouts> {
-        crate::util::private_dir(dir)?;
+        // Followed if it is a link, as the screens folder it sits beside is (`Screens::open`):
+        // not `util::private_dir`, which refuses one.
+        std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700)
+            .create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         Ok(Layouts {
             dir: dir.to_path_buf(),
             writing: Mutex::new(()),

@@ -5,6 +5,16 @@ fn scratch(name: &str) -> crate::commands::Unmade {
     crate::commands::Unmade::in_temp(&format!("wr-layouts-{name}"))
 }
 
+/// A layouts folder that is a link opens, as the screens folder beside it does.
+#[test]
+fn a_layouts_folder_that_is_a_link_still_opens() {
+    let target = scratch("link-target");
+    std::fs::create_dir_all(&*target).unwrap();
+    let link = scratch("link");
+    std::os::unix::fs::symlink(&*target, &*link).unwrap();
+    Layouts::open(&link).expect("a linked folder opens");
+}
+
 fn request(value: Value) -> Vec<u8> {
     serde_json::to_vec(&value).unwrap()
 }

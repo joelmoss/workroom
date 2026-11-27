@@ -109,9 +109,13 @@ impl Screens {
     /// Opens `dir`, creating it private to this user, and drops what a reboot left half-written
     /// and records beyond `MAX_RECORDS`.
     pub fn open(dir: &Path) -> io::Result<Screens> {
+        // Followed if it is a link, as an SSH host's start script made it (`mkdir -p`): someone
+        // may keep the screens on another disk. Not `util::private_dir`, which refuses a link.
+        std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700)
+            .create(dir)?;
         // A record is whatever was on the user's screen, so the directory is theirs alone even if
         // something else created it first.
-        crate::util::private_dir(dir)?;
+        fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
         let screens = Screens {
             dir: dir.to_path_buf(),
         };
