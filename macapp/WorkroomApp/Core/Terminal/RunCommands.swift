@@ -165,7 +165,7 @@ final class RunCommands: ObservableObject {
   /// The live run sessions `host`'s daemon holds for `workroom` (D7), or none when it can't say.
   /// Connects first, as no pane of the workroom may have yet: the user asked for the run, so its
   /// host is activated (a stopped container is started) and woken (`docs/remote-host-states.md`).
-  static func liveRunSessions(on host: HostID, workroom: String) async -> [UUID] {
+  static func liveRunSessions(on host: HostID, workroom: String) async -> [LiveRun] {
     RemoteHosts.shared.reachability.activate(host)
     try? await RemoteHosts.shared.reachability.ensureConnected(host, wake: true)
     guard
@@ -174,15 +174,24 @@ final class RunCommands: ObservableObject {
     return runSessions(in: sessions, workroom: workroom)
   }
 
+  /// A run session on a workroom's host (D7): its id, and its label, the name the Mac that started
+  /// it gives its tab (its command, unless renamed there), which names the tab another Mac adopts
+  /// it in (`TerminalPanes.addRestoredRunTab`).
+  struct LiveRun: Equatable, Sendable {
+    let id: UUID
+    let label: String?
+  }
+
   /// The run sessions among `sessions` that are `workroom`'s. Not a run `workroom new --run`
   /// opened (#693, its `opened_by`): an agent's command, never the project's Run.
-  static func runSessions(in sessions: [SessionDescriptor], workroom: String) -> [UUID] {
+  static func runSessions(in sessions: [SessionDescriptor], workroom: String) -> [LiveRun] {
     sessions.compactMap { descriptor in
       guard descriptor.value(forMetadataKey: SessionMetadataKey.workroom) == workroom,
         descriptor.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run,
-        descriptor.value(forMetadataKey: RunSessionKey.openedBy) == nil
+        descriptor.value(forMetadataKey: RunSessionKey.openedBy) == nil,
+        let id = descriptor.identifier.uuid
       else { return nil }
-      return descriptor.identifier.uuid
+      return LiveRun(id: id, label: descriptor.value(forMetadataKey: SessionMetadataKey.title))
     }
   }
 }

@@ -2120,7 +2120,8 @@ final class RunCommandTests: XCTestCase {
         workingDirectory: "/w", isAttached: false,
         metadata: tags.map { SessionEnvironmentEntry(key: $0.key, value: $0.value) })
     }
-    let mine = session([SessionMetadataKey.workroom: "W", "kind": "run"])
+    let mine = session(
+      [SessionMetadataKey.workroom: "W", "kind": "run", SessionMetadataKey.title: "bin/dev"])
     let shell = session([SessionMetadataKey.workroom: "W"])
     let other = session([SessionMetadataKey.workroom: "X", "kind": "run"])
     // An agent's `workroom new --run` in the workroom (#693): its command, not the project's Run.
@@ -2128,6 +2129,39 @@ final class RunCommandTests: XCTestCase {
 
     XCTAssertEqual(
       RunCommands.runSessions(in: [shell, mine, other, opened], workroom: "W"),
-      [mine.identifier.uuid!])
+      [RunCommands.LiveRun(id: mine.identifier.uuid!, label: "bin/dev")],
+      "with its label, the name the Mac that started it gives it")
+  }
+
+  /// A second Mac adopting a run another Mac started, with another run command, names its tab by
+  /// the session's label (that Mac's command) as the name it has unnamed: not a rename, so the
+  /// program's own title still outranks it, and the label the daemon tells agrees with it.
+  func testARunAdoptedFromAnotherMacIsNamedByItsLabelNotPinnedAsARename() throws {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    let tab = store.terminals.addRestoredRunTab(
+      for: t, command: "bin/dev", sessionID: UUID(), label: "npm run dev", focus: false)
+    guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
+
+    XCTAssertEqual(tab.content.title, "npm run dev", "the other Mac's command")
+    XCTAssertNil(state.userTitle, "not a rename")
+    XCTAssertEqual(captured.last, "bin/dev", "its surface is still given this Mac's")
+    let applied = try XCTUnwrap(
+      store.terminals.sessionLabel(ofTab: tab.id, in: t, applying: "npm run dev"))
+    XCTAssertEqual(
+      SessionLabelRule.action(
+        heard: "npm run dev", live: false, local: state.sessionLabel, applied: applied,
+        synced: state.syncedLabel),
+      .agree, "the daemon's label agrees, so nothing pins it")
+    state.liveTitle = "vite"
+    XCTAssertEqual(tab.content.title, "vite", "the program's own title outranks it")
+
+    // A label naming no command (none, or the "Run" older builds labelled runs with): this Mac's.
+    for label in [nil, "Run", "Terminal 3"] {
+      let other = store.terminals.addRestoredRunTab(
+        for: t, command: "bin/dev", sessionID: UUID(), label: label, focus: false)
+      XCTAssertEqual(other.content.title, "bin/dev", String(describing: label))
+    }
   }
 }

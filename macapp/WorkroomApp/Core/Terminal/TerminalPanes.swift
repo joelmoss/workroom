@@ -2073,12 +2073,20 @@ final class TerminalPanes {
   /// A run tab attached to a run session that is already going (#522): one another Mac started on
   /// the workroom's host (D7). Attached as a restored pane, so a session that has gone meanwhile is
   /// never started again.
+  ///
+  /// Named by the session's `label`, the name the Mac that started it gives its tab: its command,
+  /// which can differ from this Mac's. A label is what tells it here, since the daemon lists no
+  /// run's command; the tab shows it as the name it has unnamed, not as a rename, so the program's
+  /// own title still outranks it and the label sync agrees rather than pinning it. With no label to
+  /// go by, it is named by `command`, this Mac's.
   @discardableResult
   func addRestoredRunTab(
-    for target: TerminalTarget, command: String, sessionID: UUID, focus: Bool
+    for target: TerminalTarget, command: String, sessionID: UUID, label: String? = nil,
+    focus: Bool
   ) -> TerminalTab {
     let tab = makeRunTab(
-      for: target, command: command, cwd: target.path, runSession: true, sessionID: sessionID)
+      for: target, command: command, cwd: target.path, runSession: true, sessionID: sessionID,
+      name: Self.adoptedRunName(label: label))
     insert(tab, for: target)
     if focus {
       setFocused(tab.id, for: target.id)
@@ -2141,6 +2149,15 @@ final class TerminalPanes {
     }
     reconcileOcclusion(for: target)
     return tab
+  }
+
+  /// The name a run tab adopted from another Mac takes from its session's `label`
+  /// (`addRestoredRunTab`): nil for none, a numbered default, or the "Run" every run session was
+  /// labelled before run tabs were named by their command, which name no command.
+  nonisolated static func adoptedRunName(label: String?) -> CommandName? {
+    guard let label = cleanedName(label), label != "Run", !TerminalState.isNumberedName(label)
+    else { return nil }
+    return CommandName(command: label)
   }
 
   /// Build a run tab (issue #7) without placing it: the surface launches `command` in `cwd`, named
@@ -2990,9 +3007,8 @@ final class TerminalPanes {
       commandName: commandName)
     state.userTitle = userTitle
     // Its session is labelled with the tab's name (#694): the user's, or its command on a run tab;
-    // none
-    // for a tab that shows its default. A fresh session is made with it, so this Mac and the daemon
-    // agree on it from the start; a restored tab keeps what it last agreed.
+    // none for a tab that shows its default. A fresh session is made with it, so this Mac and the
+    // daemon agree on it from the start; a restored tab keeps what it last agreed.
     state.syncedLabel =
       sessionID == nil && assignedSessionID != nil
       ? SyncedLabel(label: state.sessionLabel) : syncedLabel
