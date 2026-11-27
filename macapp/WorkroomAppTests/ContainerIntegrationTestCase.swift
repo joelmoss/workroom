@@ -327,12 +327,12 @@ class ContainerIntegrationTestCase: XCTestCase {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-resume-container-\(UUID().uuidString.prefix(8))")
     addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
-    let record = ResumeRecord(
+    let resume = ResumeRecord(
       argv: ["/bin/sh", "-c", "echo SHOULD-NOT-\"\"RUN; exec sleep 60"], cwd: "/workspaces/app",
       reportedAt: 1, boot: "before the restart")
     let file = try XCTUnwrap(
       ResumeLaunchFile.write(
-        record, for: session, savedFolder: "/workspaces/app", in: folder, onThisMac: false))
+        resume, for: session, savedFolder: "/workspaces/app", in: folder, onThisMac: false))
     let second = try pane(
       driver, host, session: session, restored: true,
       environment: [ResumeLaunchFile.variable: file])
@@ -343,7 +343,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     XCTAssertFalse(seen.contains("SHOULD-NOT-RUN"), seen)
     XCTAssertFalse(FileManager.default.fileExists(atPath: file), "this Mac's copy goes")
     let (_, left) = try await driver.exec(
-      "ls -A /run/workroom/resume-launch 2>/dev/null | wc -l", on: host
+      "test -d /run/workroom/resume-launch && ls -A /run/workroom/resume-launch | wc -l", on: host
     ).communicate(nil, timeout: 20)
     XCTAssertEqual(
       left.trimmingCharacters(in: .whitespacesAndNewlines), "0",

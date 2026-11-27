@@ -605,7 +605,9 @@ final class PaneSessionAttachmentTests: XCTestCase {
     live.sessionHeard(boot: "b")
     live.resumeStarted()
     live.sessionReported()
-    XCTAssertNil(live.resumeState, "its record's daemon held it live")
+    XCTAssertEqual(
+      live.resumeState, .offered(program: "Claude Code", boot: "b"),
+      "its record's daemon held it live: the offer stays inert")
     XCTAssertEqual(quiet.notices, [], "a live reattach says nothing, however sticky the flags")
 
     let (resumed, toasts, _) = try launched()
