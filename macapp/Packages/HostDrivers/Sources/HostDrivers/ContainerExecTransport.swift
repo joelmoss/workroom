@@ -190,12 +190,14 @@ public enum ContainerExecTransport {
   }
 
   /// The in-container half of a pane's attach that hands its client the record `stageResume`
-  /// copied in for its session, by path (#826), and nothing when there is none.
+  /// copied in for its session, by path (#826), and nothing when there is none. The newest by
+  /// mtime: an earlier attach whose client never claimed its copy leaves one for up to an hour
+  /// (`stageResume`'s sweep), and this attach's copy is the one just staged.
   static func stagedResume(session: UUID, socket: String) -> String {
     let mine = "resume-\(session.uuidString.lowercased())-"
-    return "for f in \(PosixShell.quoted(resumeFolder(besideSocket: socket)))/\(mine)*.json; do "
+    return "f=$(ls -t \(PosixShell.quoted(resumeFolder(besideSocket: socket)))/\(mine)*.json "
+      + "2>/dev/null | head -n 1); "
       + "if test -f \"$f\"; then WORKROOM_SESSION_RESUME=$f; export WORKROOM_SESSION_RESUME; fi; "
-      + "done; "
   }
 
   /// What a pane runs around its `exec`, as
