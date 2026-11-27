@@ -246,8 +246,11 @@ fn find_claude(pid: u32) -> Option<(u32, Vec<String>)> {
 }
 
 /// Writes `frame` to the terminal device at `path`, which must still be `device`: opened as no
-/// controlling terminal, and sent in one `write(2)` where the terminal takes it whole, so Claude's
-/// own output doesn't land inside it.
+/// controlling terminal, and sent in one `write(2)` where the terminal takes it whole. The frame
+/// is typically about 300 bytes (at most the protocol's 8 KiB). On Linux a tty write that size
+/// is atomic, so Claude's own output can't land inside it. On macOS it isn't always: a tty write
+/// can sleep partway once about 2 KB is queued and let another writer in. A frame torn that way
+/// is only rejected by the daemon, which costs that one record.
 fn write_to_terminal(path: &Path, device: u64, frame: &[u8]) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
