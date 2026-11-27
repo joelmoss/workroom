@@ -539,7 +539,13 @@ fn resumed(
         .ok_or_else(|| std::io::Error::other("this daemon serves no socket"))
         .and_then(|socket| {
             let helper = crate::daemon::own_copy::binary()?;
-            launch::prepare(invocation, &record, &launch::dir_beside(socket), id, &helper)
+            launch::prepare(
+                invocation,
+                &record,
+                &launch::dir_beside(socket),
+                id,
+                &helper,
+            )
         });
     match prepared {
         Ok(wrapper) => {

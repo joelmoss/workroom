@@ -361,10 +361,31 @@ struct ResumeRecord: Codable, Hashable, Sendable, CustomStringConvertible,
       && boot.utf8.count <= SessionLimits.maxStringLength
   }
 
-  /// The program alone, never its arguments.
-  var description: String {
-    "ResumeRecord(\(argv.first.map { ($0 as NSString).lastPathComponent } ?? ""))"
+  /// The program it starts, by its short name: the last part of its first word, or, for one that
+  /// starts with `env` (`env CLAUDE_CONFIG_DIR=… claude --resume …`, ADR 0082), of the first word
+  /// past `env`'s options and assignments, as the daemon names it (`resume::program_name`).
+  var program: String {
+    let base = { (word: String) in (word as NSString).lastPathComponent }
+    guard let first = argv.first else { return "" }
+    if base(first) == "env",
+      let command = argv.dropFirst().first(where: { !$0.hasPrefix("-") && !$0.contains("=") })
+    {
+      return base(command)
+    }
+    return base(first)
   }
+
+  /// How a toast names the program (#825): Claude Code by its product name, any other by its own.
+  var displayName: String {
+    switch program {
+    case "claude": return "Claude Code"
+    case "codex": return "Codex"
+    default: return program
+    }
+  }
+
+  /// The program alone, never its arguments.
+  var description: String { "ResumeRecord(\(program))" }
 
   var debugDescription: String { description }
 }

@@ -95,13 +95,15 @@ final class ProgramStatusBinding {
   }
 
   /// Puts the monitor's rollup, and its resume record (#824), on every tab of `terminals`
-  /// attached to `sessions`.
+  /// attached to `sessions`, and tells a pane whose resumed program failed at once (#825).
   private func applyProgramStatus(
     _ sessions: Set<UUID>,
     to terminals: [(target: TerminalTarget.ID, tab: TerminalTab.ID, state: TerminalState)]
   ) {
     for (targetID, tabID, state) in terminals {
       guard let sessionID = state.sessionID, sessions.contains(sessionID) else { continue }
+      // A program this pane resumed that failed at once (#825): its toast says so.
+      if monitor.resumeFailed(for: sessionID) { access.surface(tabID)?.attachment.resumeFailed() }
       let rollup = monitor.rollup(for: sessionID)
       let resume = resume(of: sessionID, keeping: state.resume)
       guard rollup != state.programStatus || resume != state.resume else { continue }

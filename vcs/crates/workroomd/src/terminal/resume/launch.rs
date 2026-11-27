@@ -99,7 +99,10 @@ impl Launch {
         let command = path.is_absolute()
             || (!first.starts_with('-')
                 && !first.contains('/')
-                && matches!(path.components().next(), Some(std::path::Component::Normal(_))));
+                && matches!(
+                    path.components().next(),
+                    Some(std::path::Component::Normal(_))
+                ));
         command
             && self.argv.len() <= MAX_WORDS
             && self.argv.iter().map(String::len).sum::<usize>() <= MAX_BYTES
@@ -181,7 +184,9 @@ pub(crate) fn is_launch_name(name: &str, id: Option<SessionId>) -> bool {
         .filter(|parsed| parsed.to_hyphenated() == session);
     parsed.is_some_and(|parsed| id.is_none_or(|id| id == parsed))
         && nonce.len() == 32
-        && nonce.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && nonce
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Writes `contents` to a new file for session `id` in the private folder `dir`, readable by this

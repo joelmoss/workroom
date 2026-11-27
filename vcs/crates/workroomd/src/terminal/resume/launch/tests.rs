@@ -40,10 +40,17 @@ fn a_launch_file_is_claimed_once_by_its_own_session_and_then_gone() {
     let path = write_launch(&dir.0, SESSION, &launch()).unwrap();
     let mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
     assert_eq!(mode, 0o600);
-    assert!(claim_launch(&path, Some(SessionId([1; 16]))).is_err(), "another session's");
+    assert!(
+        claim_launch(&path, Some(SessionId([1; 16]))).is_err(),
+        "another session's"
+    );
     assert_eq!(claim_launch(&path, Some(SESSION)).unwrap(), launch());
     assert!(claim_launch(&path, Some(SESSION)).is_err(), "claimed twice");
-    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0, "nothing left");
+    assert_eq!(
+        std::fs::read_dir(&dir.0).unwrap().count(),
+        0,
+        "nothing left"
+    );
 }
 
 /// Value: protects=the helper reading only a file this code wrote for this user; fails_when=a
@@ -68,7 +75,10 @@ fn a_claim_refuses_a_file_it_cannot_prove_is_its_own() {
 
     let stray = dir.0.join("resume-notes.json");
     std::fs::write(&stray, serde_json::to_vec(&launch()).unwrap()).unwrap();
-    assert!(claim_launch(&stray, None).is_err(), "not a launch file's name");
+    assert!(
+        claim_launch(&stray, None).is_err(),
+        "not a launch file's name"
+    );
     assert!(stray.exists());
 
     std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -84,10 +94,9 @@ fn a_claim_refuses_a_file_it_cannot_prove_is_its_own() {
 fn a_sweep_removes_only_launch_files_and_not_new_ones_when_told_an_age() {
     let dir = Dir::new("sweep");
     let fresh = write_launch(&dir.0, SESSION, &launch()).unwrap();
-    let claimed = dir.0.join(format!(
-        "{}.claim",
-        launch_name(SESSION, "shell").unwrap()
-    ));
+    let claimed = dir
+        .0
+        .join(format!("{}.claim", launch_name(SESSION, "shell").unwrap()));
     std::fs::write(&claimed, b"").unwrap();
     let other = dir.0.join("notes.txt");
     std::fs::write(&other, b"").unwrap();
@@ -95,7 +104,10 @@ fn a_sweep_removes_only_launch_files_and_not_new_ones_when_told_an_age() {
     std::os::unix::fs::symlink(&other, &link).unwrap();
 
     sweep(&dir.0, Some(ABANDONED));
-    assert!(fresh.exists() && claimed.exists(), "too new to be abandoned");
+    assert!(
+        fresh.exists() && claimed.exists(),
+        "too new to be abandoned"
+    );
     sweep(&dir.0, None);
     assert!(!fresh.exists() && !claimed.exists());
     assert!(other.exists(), "not a launch file");
@@ -108,9 +120,15 @@ fn a_launch_files_name_is_its_session_and_32_hex() {
     assert!(is_launch_name(&name, Some(SESSION)));
     assert!(is_launch_name(&name, None));
     assert!(!is_launch_name(&name, Some(SessionId([1; 16]))));
-    assert!(is_launch_name(&launch_name(SESSION, "shell").unwrap(), None));
+    assert!(is_launch_name(
+        &launch_name(SESSION, "shell").unwrap(),
+        None
+    ));
     assert!(!is_launch_name(&launch_name(SESSION, "txt").unwrap(), None));
-    let upper = name.replace(&SESSION.to_hyphenated(), &SESSION.to_hyphenated().to_uppercase());
+    let upper = name.replace(
+        &SESSION.to_hyphenated(),
+        &SESSION.to_hyphenated().to_uppercase(),
+    );
     assert!(!is_launch_name(&upper, None), "one written form of the id");
     assert!(!is_launch_name(&format!("{name}.claim"), None));
     assert!(!is_launch_name("resume-x-y.json", None));
@@ -223,7 +241,11 @@ fn a_record_whose_folder_is_gone_is_not_prepared() {
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
     let prepared = prepare(&shell, &launch(), &dir.0, SESSION, Path::new("/w")).unwrap();
     assert_eq!(prepared.program, "/bin/zsh");
-    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 2, "a launch and a shell file");
+    assert_eq!(
+        std::fs::read_dir(&dir.0).unwrap().count(),
+        2,
+        "a launch and a shell file"
+    );
 }
 
 #[test]

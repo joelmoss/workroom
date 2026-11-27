@@ -166,6 +166,18 @@ These images don't come back:
 
 When you reopen Workroom, visible panes reconnect immediately. Hidden terminal tabs reconnect gradually after the window appears, so restoring many panes leaves room for clicks and typing. Their shells and commands keep running in the background helper throughout.
 
+### Programs that resume after a restart {nightly}
+
+A restart of your Mac, or a crash of the background helper, ends every terminal's shell. When you open Workroom again, a terminal whose program said how to start itself again gets that program back, in the folder it was in, instead of an empty shell, so a coding agent that reports itself carries on its conversation. The terminal says **Resumed Claude Code**, or **Resumed** and the program's name for any other.
+
+- When you quit the resumed program, the terminal stays open at a shell prompt in that folder.
+- If the program exits with an error within 5 seconds, the terminal says **Couldn't resume** and the program's name, and leaves you at a shell prompt.
+- If the folder the program was in is gone, the terminal opens a new shell, as it does for a program that never said how to resume.
+- Hidden terminal tabs resume as they reconnect, so their marks in the sidebar come back without opening each tab.
+- A run tab doesn't resume: it comes back stopped, and ⌘R starts it again.
+
+A program says how to resume over the Program Resume Protocol (OSC 7577). This works in terminals on this Mac.
+
 ### Who is attached to a terminal {nightly}
 
 Each tab or split showing a terminal is one of its clients, on this Mac or, for a remote workroom, on another Mac showing the same terminal. A terminal takes the size of the client you last typed or clicked in.

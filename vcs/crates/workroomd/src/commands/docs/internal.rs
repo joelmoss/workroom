@@ -324,6 +324,19 @@ const ATTACH_ENTRIES: &[(&str, &str)] = &[
         "The machine the client is on: for a pane, the Mac showing it.",
     ),
     (
+        "RESUME_ARG",
+        "One word of the tab's resume record's command, in order, sent only with the attach that \
+         makes a restored pane's gone session again: the session's login shell runs it.",
+    ),
+    (
+        "RESUME_CWD",
+        "The folder the resume record's command runs in; a folder that is gone means no resume.",
+    ),
+    (
+        "RESUME_AT",
+        "When the resume record was reported, in milliseconds since the Unix epoch.",
+    ),
+    (
         "ENV:NAME",
         "One variable for the session's environment, the client's own, not the daemon's.",
     ),
@@ -630,6 +643,16 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
         "The daemon: it is what a run session's pty runs around its command.",
     ),
     (
+        "resume-launch",
+        "The daemon: a resuming session's login shell runs it first, to become the program the \
+         tab's resume record names, in its folder.",
+    ),
+    (
+        "resume-shell",
+        "The daemon: that shell then becomes it, which becomes the session's own shell, after \
+         saying a program that failed at once couldn't be resumed.",
+    ),
+    (
         "protocol",
         "The app, to ask a binary which protocol it speaks before using it.",
     ),
@@ -821,6 +844,12 @@ const STREAM_EVENTS: &[StreamEvent] = &[
                 "The session's resume record whole, as the next-but-one table says, or null for \
                  none. The app saves it in the tab's saved-layout entry. A daemon that predates \
                  resume records leaves it out, which says nothing about the tab's record.",
+            ),
+            (
+                "resumeFailed",
+                "`true`, sent only then: the program the session was started to resume exited \
+                 with an error within 5 s of the session starting, so the pane says it couldn't \
+                 be resumed.",
             ),
         ],
     },

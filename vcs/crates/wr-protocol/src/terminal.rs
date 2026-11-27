@@ -286,9 +286,10 @@ pub struct ResumeRequest {
 
 impl std::fmt::Debug for ResumeRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let program = self.argv.first().map_or("", |word| {
-            word.rsplit('/').next().unwrap_or(word.as_str())
-        });
+        let program = self
+            .argv
+            .first()
+            .map_or("", |word| word.rsplit('/').next().unwrap_or(word.as_str()));
         write!(f, "ResumeRequest({program})")
     }
 }
@@ -638,14 +639,21 @@ mod tests {
         };
         let decoded = AttachRequest::decode(&request.encode()).expect("decode");
         assert_eq!(decoded.resume, Some(resume));
-        assert_eq!(format!("{:?}", decoded.resume), "Some(ResumeRequest(claude))");
+        assert_eq!(
+            format!("{:?}", decoded.resume),
+            "Some(ResumeRequest(claude))"
+        );
         assert!(!format!("{decoded:?}").contains("two words"));
 
         let with = |entries: &[u8]| [&[3u8; 16][..], entries].concat();
         let decode = |entries: &[u8]| AttachRequest::decode(&with(entries)).unwrap().resume;
         assert_eq!(decode(b"RESUME_ARG=vim\0"), None, "no folder");
         assert_eq!(decode(b"RESUME_CWD=/w\0"), None, "no command");
-        assert_eq!(decode(b"RESUME_ARG=\xff\0RESUME_CWD=/w\0"), None, "not UTF-8");
+        assert_eq!(
+            decode(b"RESUME_ARG=\xff\0RESUME_CWD=/w\0"),
+            None,
+            "not UTF-8"
+        );
         assert_eq!(decode(b"COLS=80\0"), None, "an attach that never had one");
     }
 
