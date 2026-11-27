@@ -117,9 +117,12 @@ struct OpenRowReflow: Equatable {
     switch dragged {
     case .workroom, .project:
       if let shape, shape.nested.contains(dragged) {
-        // Among its project's workrooms.
+        // Among its project's workrooms; its root, which the list keeps first, alone.
         let project = blockOf(dragged)
-        domain = items.filter { shape.nested.contains($0) && blockOf($0) == project }
+        domain =
+          dragged.isRoot
+          ? [dragged]
+          : items.filter { shape.nested.contains($0) && blockOf($0) == project && !$0.isRoot }
         hidden = Set(items.filter { $0.isTab && $0.owner == owner })
       } else {
         // Among the blocks' first rows, its block with it.
@@ -490,6 +493,12 @@ extension OpenTabsItem {
 
   var isTab: Bool {
     if case .tab = self { return true }
+    return false
+  }
+
+  /// A project root's row, which a project grouping lists first in its project.
+  var isRoot: Bool {
+    if case .workroom(.root) = self { return true }
     return false
   }
 

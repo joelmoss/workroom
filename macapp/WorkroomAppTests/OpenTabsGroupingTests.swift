@@ -414,6 +414,24 @@ final class OpenTabsGroupingTests: XCTestCase {
     XCTAssertEqual(items(.projectWorkroom, in: store), shown, "the list as the gap showed it")
   }
 
+  /// Value: protects=a project's root stays first under its header: a workroom can't land above
+  /// it, nor it below one, so the list never snaps back after a drop (Codex review, PR #837);
+  /// fails_when=a reorder across the root commits; seam=OpenRowReflow.titleBarMove.
+  func testANestedReorderNeverCrossesItsRoot() throws {
+    let store = makeStore()
+    try open(root, in: store)
+    try open(one, in: store)
+    order([root, one], in: store)
+
+    var lifted = try lift(.workroom(one), in: .projectWorkroom, store: store)
+    try point(&lifted, at: .workroom(root), 0.3)
+    XCTAssertNil(lifted.titleBarMove, "a workroom can't go above its root")
+
+    var rootLifted = try lift(.workroom(root), in: .projectWorkroom, store: store)
+    try point(&rootLifted, at: .workroom(one), 0.7)
+    XCTAssertNil(rootLifted.titleBarMove, "its root can't go below a workroom")
+  }
+
   /// Value: protects=in Project › Workroom a tab dragged over a folded workroom's row under its
   /// header is onto that row, so let go there it joins that workroom, as grouped by workroom
   /// (Codex review, PR #837); fails_when=the row takes no drop and the drag cancels;
