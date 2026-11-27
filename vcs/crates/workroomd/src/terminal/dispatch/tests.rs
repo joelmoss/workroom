@@ -203,8 +203,75 @@ fn a_long_title_is_cut_at_a_character_boundary() {
     assert!(cut.chars().all(|c| c == '€'));
 }
 
-/// With every field at its bound, hundreds of sessions still fit one list reply, so no title or
-/// workroom id can turn the whole list into a `Failure` (D8).
+/// A run session lists its command (#836), so another Mac adopting the run can tell a label that
+/// is its command from one the user gave it; a shell lists none, and a command past the bound is
+/// not listed rather than cut.
+#[test]
+fn a_run_session_lists_its_command_up_to_the_bound() {
+    use crate::terminal::run::{COMMAND_KEY, MAX_COMMAND_BYTES};
+    let command = |metadata: Vec<(String, String)>| {
+        metadata
+            .into_iter()
+            .find(|(key, _)| key == COMMAND_KEY)
+            .map(|(_, value)| value)
+    };
+    let run = session_metadata(&env(&[
+        ("WORKROOM_SESSION_RUN", "1"),
+        ("WORKROOM_SESSION_COMMAND", "npm run dev"),
+        ("WORKROOM_SESSION_TITLE", "npm run dev"),
+    ]));
+    assert_eq!(command(run), Some("npm run dev".to_string()));
+
+    let shell = session_metadata(&env(&[("WORKROOM_SESSION_COMMAND", "vim")]));
+    assert_eq!(command(shell), None, "a command not run as a run session");
+
+    let at = "c".repeat(MAX_COMMAND_BYTES);
+    let over = "c".repeat(MAX_COMMAND_BYTES + 1);
+    for (long, listed) in [(&at, Some(at.clone())), (&over, None)] {
+        let metadata = session_metadata(&env(&[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", long),
+        ]));
+        assert!(
+            metadata
+                .iter()
+                .any(|(key, value)| key == "kind" && value == "run")
+        );
+        assert_eq!(command(metadata), listed);
+    }
+}
+
+/// A run session's command is listed beside its foreground program, never in its place: the list
+/// gives the foreground program as `command`, which the app reads as the pane's program and
+/// `workroomd list` prints (#836).
+#[test]
+fn a_run_sessions_command_does_not_take_its_foreground_programs_place() {
+    use crate::terminal::session::SessionInfo;
+    let session = SessionInfo {
+        id: SessionId([7u8; 16]),
+        pid: 1,
+        attached: false,
+        foreground: Some("node".into()),
+        cwd: None,
+        claude_profile: None,
+        metadata: session_metadata(&env(&[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", "npm run dev"),
+        ])),
+    };
+    let encoded = encode_descriptor_list(std::slice::from_ref(&session));
+    assert_eq!(decode_descriptor_list(&encoded)[0].2, "node");
+    let commands: Vec<&str> = session
+        .metadata
+        .iter()
+        .filter(|(key, _)| key == "command")
+        .map(|(_, value)| value.as_str())
+        .collect();
+    assert!(commands.is_empty(), "no second `command`: {commands:?}");
+}
+
+/// With every field at its bound, hundreds of sessions still fit one list reply, so no title,
+/// workroom id or run command can turn the whole list into a `Failure` (D8).
 #[test]
 fn many_sessions_at_the_metadata_bounds_still_list() {
     use crate::terminal::session::SessionInfo;
@@ -212,6 +279,11 @@ fn many_sessions_at_the_metadata_bounds_still_list() {
         ("workroom".to_string(), "w".repeat(MAX_WORKROOM_BYTES)),
         ("title".to_string(), "t".repeat(MAX_TITLE_BYTES)),
         ("created".to_string(), u64::MAX.to_string()),
+        ("kind".to_string(), "run".to_string()),
+        (
+            crate::terminal::run::COMMAND_KEY.to_string(),
+            "c".repeat(crate::terminal::run::MAX_COMMAND_BYTES),
+        ),
     ];
     let sessions: Vec<SessionInfo> = (0..250u8)
         .map(|n| SessionInfo {

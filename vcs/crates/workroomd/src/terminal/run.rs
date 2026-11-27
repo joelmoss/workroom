@@ -92,6 +92,18 @@ pub const REQUEST_VARIABLE: &str = "WORKROOM_SESSION_RUN";
 pub const KIND_KEY: &str = "kind";
 pub const RUN_KIND: &str = "run";
 
+/// The metadata key a run session lists its command under, as the app that started it asked for
+/// it: another Mac that adopts the run names its tab by it, and so tells a label that is the
+/// command from one the user gave it (#836). Not `command`, which the session list already gives
+/// its foreground program (`dispatch::encode_descriptor_list`).
+pub const COMMAND_KEY: &str = "run_command";
+
+/// The longest command a run session lists, in bytes: a title's bound, so every session's metadata
+/// at its bounds still fits one list reply. A longer one is not listed at all rather than cut,
+/// since a cut command would name its tab by a command that never ran; the adopting app then
+/// names the tab by its label, as it does for a run an older daemon lists with no command.
+pub const MAX_COMMAND_BYTES: usize = 256;
+
 /// Where a socket's run sessions keep their status files, in the daemon's own directory.
 pub fn dir_beside(socket: &Path) -> PathBuf {
     socket.with_extension("runs")

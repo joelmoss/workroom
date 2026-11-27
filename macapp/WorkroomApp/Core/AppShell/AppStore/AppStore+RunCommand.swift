@@ -346,7 +346,8 @@ extension AppStore {
     let tab: TerminalTab
     if let session {
       tab = terminals.addRestoredRunTab(
-        for: target, command: command, sessionID: session.id, label: session.label, focus: focus)
+        for: target, command: command, sessionID: session.id, runCommand: session.command,
+        label: session.label, focus: focus)
     } else {
       tab = terminals.addRunTab(
         for: target, command: command, cwd: target.path, focus: focus, runSession: true)
