@@ -807,4 +807,176 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
         assert_eq!(cleared["resume"], Value::Null, "{cleared}");
         store.kill_all();
     }
+
+    /// Value: protects=Claude Code's resume record coming from Workroom's `SessionStart` hook
+    /// (#828): the conversation's id and the flags kept from Claude's own arguments, again with
+    /// the new id after `/clear`, behind `env CLAUDE_CONFIG_DIR=…` for a profile other than the
+    /// default, and nothing for a `claude -p` or one with a flag the hook doesn't know;
+    /// fails_when=the hook writes anywhere but Claude's own terminal (it has none of its own),
+    /// signs with the wrong owner, keeps a prompt or drops a kept flag, or reports for `-p`;
+    /// why_new=#828; seam=a stand-in `claude` (`stand_in_claude_hook`) that runs the hook's
+    /// command exactly as installed, as Claude does: through `sh -c`, with its input on stdin,
+    /// from a process with no controlling terminal
+    #[test]
+    fn claudes_hook_reports_its_conversation_with_the_flags_that_shape_it() {
+        // SAFETY: no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+            return;
+        }
+        let scratch = Scratch::new("claude-hook");
+        let dir = scratch.0.to_path_buf();
+        // The pane's daemon's bin folder, with its `workroom`.
+        let bin_dir = dir.join("bin-dir");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_workroom"), bin_dir.join("workroom"))
+            .unwrap();
+        // The hook, as `workroom resume-hook install` writes it into a throwaway home's profile.
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let installed = std::process::Command::new(env!("CARGO_BIN_EXE_workroom"))
+            .args(["resume-hook", "install", "--json"])
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(installed.status.success(), "{installed:?}");
+        let settings: Value =
+            serde_json::from_slice(&std::fs::read(home.join(".claude/settings.json")).unwrap())
+                .unwrap();
+        let command = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(command.ends_with("# workroom-resume-hook"), "{command}");
+        // The stand-in `claude`, a script on PATH: it runs the hook once for each conversation
+        // id it is given (a second is what `/clear` starts), then stays while asked to.
+        let path = dir.join("path");
+        std::fs::create_dir(&path).unwrap();
+        let claude = path.join("claude");
+        std::fs::write(
+            &claude,
+            format!(
+                "#!/bin/sh\nfor id in $STAND_IN_IDS; do\n  \
+                 printf '{{\"session_id\":\"%s\",\"hook_event_name\":\"SessionStart\"}}' \"$id\" \
+                 > {input}.$$\n  \
+                 {detach} stand_in_claude_hook --exact --ignored --nocapture <{input}.$$ \
+                 >/dev/null 2>&1\n  \
+                 sleep 1\ndone\necho \"claude-ran $*\"\n\
+                 [ -n \"$STAND_IN_STAY\" ] && sleep 30\nexit 0\n",
+                input = dir.join("input").display(),
+                detach = std::env::current_exe().unwrap().display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let profile = dir.join("profile");
+        let first = "11111111-1111-4111-8111-111111111111";
+        let cleared = "22222222-2222-4222-8222-222222222222";
+        let script = format!(
+            "STAND_IN_IDS=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa claude -p 'say hi'\n\
+             STAND_IN_IDS=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb claude --not-a-claude-flag\n\
+             STAND_IN_IDS='{first} {cleared}' STAND_IN_STAY=1 CLAUDE_CONFIG_DIR='{profile}' \
+             claude 'fix the tests' --model sonnet --permission-mode plan --add-dir ../a ../b\n",
+            profile = profile.display(),
+        );
+        let store = SessionStore::new();
+        let mut client = Client::connect(&store);
+        client.request(json!({"version": 1, "method": "subscribe"}));
+        client.events_until(|e| e["event"] == "snapshot-complete");
+        let args = [OsString::from("-c"), OsString::from(script)];
+        let env = [
+            (OsString::from("TERM"), OsString::from("xterm-256color")),
+            (
+                OsString::from("PATH"),
+                OsString::from(format!("{}:/usr/bin:/bin", path.display())),
+            ),
+            (OsString::from("HOME"), home.clone().into_os_string()),
+            (OsString::from("WORKROOM_BIN_DIR"), bin_dir.into_os_string()),
+            (
+                OsString::from("OSC7577_TOKEN"),
+                OsString::from("a-test-token-0123456789"),
+            ),
+        ];
+        store
+            .create(SessionSpec {
+                id: id(1),
+                program: OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &env,
+                cwd: None,
+                columns: 80,
+                rows: 24,
+                metadata: &[],
+                interactive: true,
+            })
+            .expect("create");
+        let session = id(1).to_hyphenated();
+        let record = |client: &mut Client| {
+            client
+                .events_until(|e| e["session"] == session.as_str() && !e["resume"].is_null())
+                .pop()
+                .unwrap()["resume"]["argv"]
+                .clone()
+        };
+        let resumed = |id: &str| {
+            json!([
+                "env",
+                format!("CLAUDE_CONFIG_DIR={}", profile.display()),
+                "claude",
+                "--resume",
+                id,
+                "--model",
+                "sonnet",
+                "--permission-mode",
+                "plan",
+                "--add-dir",
+                "../a",
+                "../b"
+            ])
+        };
+        // The `-p` and the unknown flag ran their hooks first and reported nothing, so the first
+        // record is the third's.
+        assert_eq!(
+            record(&mut client),
+            resumed(first),
+            "{}",
+            text(&store, id(1))
+        );
+        assert_eq!(record(&mut client), resumed(cleared));
+        // Nothing reached the screen but the stand-in's own line.
+        let screen = text(&store, id(1));
+        assert!(screen.contains("claude-ran -p say hi"), "{screen}");
+        assert!(!screen.contains("7577"), "{screen}");
+        store.kill_all();
+    }
+}
+
+/// Not a test: what the stand-in `claude` of
+/// `claudes_hook_reports_its_conversation_with_the_flags_that_shape_it` runs its hook through, as
+/// Claude Code runs one: a process with no controlling terminal of its own (`setsid`), which runs
+/// the hook's command with `sh -c`, its input on stdin.
+#[test]
+#[ignore = "a stand-in the resume hook test runs, not a test"]
+fn stand_in_claude_hook() {
+    use std::os::unix::process::CommandExt;
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let settings = std::path::Path::new(&home).join(".claude/settings.json");
+    let Ok(bytes) = std::fs::read(settings) else {
+        return;
+    };
+    let settings: Value = serde_json::from_slice(&bytes).unwrap();
+    let Some(command) = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str() else {
+        return;
+    };
+    // SAFETY: no preconditions; it fails only for a process group leader, which this isn't.
+    unsafe { libc::setsid() };
+    let error = std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .exec();
+    panic!("couldn't run the hook: {error}");
 }

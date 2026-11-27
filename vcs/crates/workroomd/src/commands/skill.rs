@@ -136,7 +136,7 @@ pub(super) struct Places {
 
 impl Places {
     /// The places `get` names: each variable when it is an absolute path, else none.
-    fn from_env(get: impl Fn(&str) -> Option<String>) -> Places {
+    pub(super) fn from_env(get: impl Fn(&str) -> Option<String>) -> Places {
         let absolute = |name: &str| {
             get(name)
                 .map(PathBuf::from)
@@ -147,6 +147,37 @@ impl Places {
             codex_home: absolute("CODEX_HOME"),
         }
     }
+
+    /// `CLAUDE_CONFIG_DIR`, the Claude profile Claude Code uses when it is set.
+    pub(super) fn claude_config_dir(&self) -> Option<&Path> {
+        self.claude_config_dir.as_deref()
+    }
+
+    /// The places in this process's environment, or with `login`, the user's login shell's, as
+    /// `skill` and `resume-hook` read them (`--login-environment`).
+    pub(super) fn read(context: &Context, home: &Path, login: bool) -> Places {
+        if !login {
+            return Places::from_env(|name| context.env(name));
+        }
+        let shell = login_shell(context.env("SHELL"), crate::terminal::shell::user_shell);
+        let environment = crate::host::environment::login_environment(
+            &shell,
+            home,
+            crate::host::environment::PROBE_TIMEOUT,
+            |_| {},
+        );
+        Places::from_env(|name| environment.get(name).cloned())
+    }
+}
+
+/// The home folder a hidden command for the app is to work in: only the `HOME` this process was
+/// given, never a passwd lookup, since the app runs these with a throwaway `HOME` in its tests
+/// and that must be the only home they can reach.
+pub(super) fn given_home(context: &Context) -> Option<PathBuf> {
+    context
+        .env("HOME")
+        .filter(|home| Path::new(home).is_absolute())
+        .map(PathBuf::from)
 }
 
 /// One coding agent's skill: the folder that says it is set up, the folder its `skills` folder is
@@ -224,13 +255,8 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             ));
         }
     };
-    // Only the HOME this process was given, never a passwd lookup: the app runs it with a
-    // throwaway HOME in its tests, and that must be the only home it can reach.
-    let home = match context
-        .env("HOME")
-        .filter(|home| Path::new(home).is_absolute())
-    {
-        Some(home) => PathBuf::from(home),
+    let home = match given_home(context) {
+        Some(home) => home,
         None => {
             return Outcome::FailedIn(
                 name,
@@ -240,18 +266,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             );
         }
     };
-    let places = if args.is_set("login-environment") {
-        let shell = login_shell(context.env("SHELL"), crate::terminal::shell::user_shell);
-        let login = crate::host::environment::login_environment(
-            &shell,
-            &home,
-            crate::host::environment::PROBE_TIMEOUT,
-            |_| {},
-        );
-        Places::from_env(|name| login.get(name).cloned())
-    } else {
-        Places::from_env(|name| context.env(name))
-    };
+    let places = Places::read(context, &home, args.is_set("login-environment"));
     let skills = if install {
         self::install(&home, &places, &skill_text())
     } else {

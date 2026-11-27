@@ -52,6 +52,7 @@ mod needs_the_user;
 mod panel;
 pub(crate) mod prompt;
 mod prompt_agent;
+mod resume_hook;
 mod send;
 mod sessions;
 mod skill;
@@ -873,6 +874,49 @@ const COMMANDS: &[Command] = &[
         implementation: sessions::run,
     },
     Command {
+        name: "resume-hook",
+        aliases: &[],
+        usage: "resume-hook report|install|remove",
+        short: "Report how to resume Claude Code, or install or remove the hook that does (used \
+                by the desktop app)",
+        long: None,
+        // Claude Code's `SessionStart` hook runs `report`; the app runs the others, from Settings
+        // ▸ Terminal and each host's bootstrap (#828).
+        hidden: true,
+        mac_only: false,
+        flags: &[],
+        subcommands: &[
+            subcommand(
+                RESUME_HOOK,
+                false,
+                "report",
+                "resume-hook report",
+                "Report the running Claude Code's conversation to the pane, from its hook",
+                &[],
+            ),
+            subcommand(
+                RESUME_HOOK,
+                false,
+                "install",
+                "resume-hook install",
+                "Install the hook in each Claude profile's settings",
+                resume_hook::FLAGS,
+            ),
+            subcommand(
+                RESUME_HOOK,
+                false,
+                "remove",
+                "resume-hook remove",
+                "Remove the hook Workroom installed, keeping the rest",
+                resume_hook::FLAGS,
+            ),
+        ],
+        // `report`, `install` or `remove`, which `resume_hook::run` checks.
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: RESUME_HOOK,
+    },
+    Command {
         name: "skill",
         aliases: &[],
         usage: "skill install|remove",
@@ -998,6 +1042,7 @@ const COMMANDS: &[Command] = &[
 const API: Implementation = api::run;
 const BASE: Implementation = base::run;
 const HOST: Implementation = host::run;
+const RESUME_HOOK: Implementation = resume_hook::run;
 const SKILL: Implementation = skill::run;
 const TRUST: Implementation = trust::run;
 
@@ -1477,10 +1522,11 @@ fn help_command(_: &Context, args: &Args) -> Outcome {
 const HELP_AGENTS: &str = "agents";
 
 /// Whether the command `name` (a top-level one) honours `--pretend`. The terminal API's commands,
-/// the ones `help agents` guides, and `skill` can't go through without doing what they do, so they
-/// refuse it, and their help and docs don't list it.
+/// the ones `help agents` guides, `skill` and `resume-hook` can't go through without doing what
+/// they do, so they refuse it, and their help and docs don't list it.
 fn honours_pretend(name: &str) -> bool {
-    name != "skill" && !agents::GUIDED.iter().any(|guided| guided.command == name)
+    !["skill", "resume-hook"].contains(&name)
+        && !agents::GUIDED.iter().any(|guided| guided.command == name)
 }
 
 /// The help of the top-level command `name`, as a command with only subcommands shows it alone.
@@ -2463,7 +2509,7 @@ mod tests {
         for name in agents::GUIDED
             .iter()
             .map(|guided| guided.command)
-            .chain(["skill"])
+            .chain(["skill", "resume-hook"])
         {
             for flag in ["--pretend", "-p"] {
                 let ((stdout, stderr), code) =

@@ -682,6 +682,11 @@ const HIDDEN: &[(&str, &str)] = &[
         "Creating a remote workroom: the project's `.worktreeinclude` files, packed to copy over.",
     ),
     (
+        "resume-hook",
+        "Claude Code's `SessionStart` hook, to report how to resume its conversation (`report`); \
+         Settings ▸ Terminal, and each host's bootstrap, to install or remove that hook.",
+    ),
+    (
         "skill",
         "Settings ▸ AI Agents, and each host's bootstrap, to install or remove the Workroom skill.",
     ),
@@ -1346,6 +1351,7 @@ mod tests {
             "delete-project",
             "host",
             "include-archive",
+            "resume-hook",
             "skill",
         ] {
             assert!(outermost.contains(name), "{name}");

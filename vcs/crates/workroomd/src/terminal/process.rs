@@ -88,6 +88,17 @@ pub fn arguments(pid: i32) -> Option<Vec<String>> {
     platform::arguments(pid)
 }
 
+/// A process's controlling terminal: its device's path (`/dev/ttys003`, `/dev/pts/3`) and number,
+/// which an open of that path must match. `None` when it has none, or it can't be read: the
+/// process is gone, or belongs to another user. Workroom's Claude Code hook writes its report
+/// there (#828), since the hook itself runs with no controlling terminal.
+pub fn terminal_device(pid: i32) -> Option<(std::path::PathBuf, u64)> {
+    if pid <= 0 {
+        return None;
+    }
+    platform::terminal_device(pid)
+}
+
 /// A process's current working directory, for OSC 7.
 pub fn working_directory(pid: i32) -> Option<String> {
     if pid <= 0 {
@@ -362,6 +373,38 @@ mod platform {
         (end > 0).then(|| String::from_utf8_lossy(&path[..end]).into_owned())
     }
 
+    /// The BSD info's controlling terminal (`e_tdev`), named by `devname`, which looks the device
+    /// up in `/dev`.
+    pub(super) fn terminal_device(pid: i32) -> Option<(std::path::PathBuf, u64)> {
+        // SAFETY: `proc_bsdinfo` is plain C data, for which all zeroes is a valid value.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as libc::c_int;
+        // SAFETY: `info` is `size` bytes and that is the size passed.
+        let read = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        // NODEV, all ones, is no terminal.
+        if read != size || info.e_tdev == u32::MAX {
+            return None;
+        }
+        let device = info.e_tdev as libc::dev_t;
+        // SAFETY: `devname` takes plain values and returns a pointer to its own static buffer, or
+        // null; it is read at once, before anything else could call it.
+        let name = unsafe { libc::devname(device, libc::S_IFCHR) };
+        if name.is_null() {
+            return None;
+        }
+        // SAFETY: a non-null `devname` result is a NUL-terminated string.
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok()?;
+        if name.is_empty() || name.starts_with('?') || name.contains("..") {
+            return None;
+        }
+        Some((
+            std::path::Path::new("/dev").join(name),
+            u64::from(info.e_tdev),
+        ))
+    }
+
     /// The BSD info's parent and user, and the start time from its resource usage
     /// (`ri_proc_start_abstime`, mach absolute time). As herdr-core reads them
     /// (`platform/unix_resume.rs`, Apache-2.0; see `crate::terminal::resume`).
@@ -454,6 +497,34 @@ mod platform {
     pub(super) fn environment_value(pid: i32, key: &str) -> Option<String> {
         let raw = fs::read(format!("/proc/{pid}/environ")).ok()?;
         super::value_in_environment(raw.split(|b| *b == 0), key)
+    }
+
+    /// `stat`'s `tty_nr`, then the path of the open file of the process's (stdin, stdout or
+    /// stderr) that is that device, else `/dev/pts/<minor>` for a pseudo-terminal; either checked
+    /// to be that device.
+    pub(super) fn terminal_device(pid: i32) -> Option<(std::path::PathBuf, u64)> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let stat = fs::read(format!("/proc/{pid}/stat")).ok()?;
+        let at = stat.iter().rposition(|b| *b == b')')?;
+        let fields = std::str::from_utf8(&stat[at + 1..]).ok()?;
+        // state, ppid, pgrp, session, tty_nr.
+        let device: u64 = fields.split_ascii_whitespace().nth(4)?.parse().ok()?;
+        if device == 0 {
+            return None;
+        }
+        let is_device = |path: &std::path::Path| {
+            fs::metadata(path)
+                .is_ok_and(|meta| meta.file_type().is_char_device() && meta.rdev() == device)
+        };
+        let major = (device >> 8) & 0xfff;
+        let minor = (device & 0xff) | ((device >> 12) & 0xfff00);
+        (0..3)
+            .filter_map(|fd| fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok())
+            .chain((136..=143).contains(&major).then(|| {
+                std::path::PathBuf::from(format!("/dev/pts/{}", (major - 136) * 256 + minor))
+            }))
+            .find(|path| path.starts_with("/dev/") && is_device(path))
+            .map(|path| (path, device))
     }
 
     pub(super) fn working_directory(pid: i32) -> Option<String> {
