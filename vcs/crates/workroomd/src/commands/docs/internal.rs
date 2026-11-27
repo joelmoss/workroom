@@ -816,6 +816,12 @@ const STREAM_EVENTS: &[StreamEvent] = &[
                 "Only on a run session: what its supervisor last wrote, such as `running` or \
                  `exited 3`.",
             ),
+            (
+                "resume",
+                "The session's resume record whole, as the next-but-one table says, or null for \
+                 none. The app saves it in the tab's saved-layout entry. A daemon that predates \
+                 resume records leaves it out, which says nothing about the tab's record.",
+            ),
         ],
     },
     StreamEvent {
@@ -846,6 +852,25 @@ const STREAM_EVENTS: &[StreamEvent] = &[
             (
                 "exitCode",
                 "Only on the shell command's record: the command's exit code.",
+            ),
+        ],
+    },
+    StreamEvent {
+        heading: "ProgramStatus `status` resume",
+        says: "A `status` event's `resume`: how the session's program last said, over OSC 7577, \
+               it should be started again (ADR 0082). Only here: its arguments can hold secrets, \
+               so the terminal API lists a record without them.",
+        read: || struct_fields(PROGRAM_STATUS_SOURCE, "WireResume"),
+        fields: &[
+            ("argv", "The command, as the program reported it."),
+            (
+                "cwd",
+                "Where it starts: the folder it reported, else its own when it reported; null \
+                 when neither is known.",
+            ),
+            (
+                "reportedAt",
+                "When it reported, in milliseconds since the Unix epoch.",
             ),
         ],
     },

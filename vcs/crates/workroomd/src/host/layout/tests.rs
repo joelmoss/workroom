@@ -22,6 +22,27 @@ fn a_put_at_the_current_revision_is_kept_and_raises_it() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Value: protects=a host's layout, whose tabs carry their resume records' arguments, is the
+/// user's alone, a layout an older build left readable included (#824); fails_when=a put writes
+/// with the umask's mode, or leaves an existing file's mode as it was; why_new=nothing checked the
+/// mode; seam=none
+#[test]
+fn a_layout_is_written_readable_by_its_user_alone() {
+    let dir = scratch("mode");
+    let layouts = Layouts::open(&dir).unwrap();
+    layouts.put("wr-1", 0, b"first").unwrap();
+    let path = layouts.path("wr-1");
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&path), 0o600);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let temporary = path.with_extension("layout.tmp");
+    fs::write(&temporary, b"left by a crash").unwrap();
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644)).unwrap();
+    layouts.put("wr-1", 1, b"second").unwrap();
+    assert_eq!(mode(&path), 0o600, "an existing layout's mode is tightened");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A put naming a revision that has moved is refused with the current one, and changes nothing.
 #[test]
 fn a_stale_put_is_refused_with_the_current_revision() {
