@@ -87,9 +87,20 @@ fn a_claim_refuses_a_file_it_cannot_prove_is_its_own() {
     assert!(shared.exists());
 }
 
-/// Value: protects=the clean-up removing only launch files, and never one a helper may still be
-/// about to claim; fails_when=it removes another name, a link, or a new file when told an age;
-/// why_new=new; seam=none
+/// Value: protects=the clean-up removing only launch files, and never one a helper may still
+/// claim: a new one, or any of a session that still runs, whose shell file waits for its program
+/// to end; fails_when=it removes another name, a link, a new file when told an age, or a running
+/// session's file however old; why_new=new; seam=the `live` callback
+#[test]
+fn a_sweep_removes_only_launch_files_and_never_a_running_sessions() {
+    let dir = Dir::new("sweep-live");
+    let shell = write_new(&dir.0, SESSION, "shell", b"{}").unwrap();
+    sweep(&dir.0, Some(Duration::ZERO), |session| session == SESSION);
+    assert!(shell.exists(), "its session still runs its program");
+    sweep(&dir.0, Some(Duration::ZERO), |_| false);
+    assert!(!shell.exists(), "its session is gone");
+}
+
 #[test]
 fn a_sweep_removes_only_launch_files_and_not_new_ones_when_told_an_age() {
     let dir = Dir::new("sweep");
@@ -103,12 +114,12 @@ fn a_sweep_removes_only_launch_files_and_not_new_ones_when_told_an_age() {
     let link = dir.0.join(launch_name(SESSION, "json").unwrap());
     std::os::unix::fs::symlink(&other, &link).unwrap();
 
-    sweep(&dir.0, Some(ABANDONED));
+    sweep(&dir.0, Some(ABANDONED), |_| false);
     assert!(
         fresh.exists() && claimed.exists(),
         "too new to be abandoned"
     );
-    sweep(&dir.0, None);
+    sweep(&dir.0, None, |_| false);
     assert!(!fresh.exists() && !claimed.exists());
     assert!(other.exists(), "not a launch file");
     assert!(std::fs::symlink_metadata(&link).is_ok(), "a link is left");
@@ -236,10 +247,13 @@ fn a_record_whose_folder_is_gone_is_not_prepared() {
         ..launch()
     };
     let shell = invocation("/bin/zsh", &["-zsh"]);
-    let error = prepare(&shell, &gone, &dir.0, SESSION, Path::new("/w")).unwrap_err();
+    let error = prepare(&shell, &gone, &dir.0, SESSION, Path::new("/w"), |_| false).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
-    let prepared = prepare(&shell, &launch(), &dir.0, SESSION, Path::new("/w")).unwrap();
+    let prepared = prepare(&shell, &launch(), &dir.0, SESSION, Path::new("/w"), |_| {
+        false
+    })
+    .unwrap();
     assert_eq!(prepared.program, "/bin/zsh");
     assert_eq!(
         std::fs::read_dir(&dir.0).unwrap().count(),

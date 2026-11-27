@@ -545,6 +545,7 @@ fn resumed(
                 &launch::dir_beside(socket),
                 id,
                 &helper,
+                |session| sessions.contains(session),
             )
         });
     match prepared {
