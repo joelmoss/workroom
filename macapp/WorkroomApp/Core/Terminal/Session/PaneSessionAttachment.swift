@@ -212,7 +212,7 @@ final class PaneSessionAttachment {
     // attach-only client in its own use case. `attachCommand(forSession:)` already answers nil when
     // the owning backend has no binary, so the global check bought nothing on this path.
     guard
-      let command = service.attachCommand(
+      let attach = service.attach(
         forSession: sessionID, restored: isRestored, by: token)
     else {
       // A pane that expected a persisted session fell back to a plain login shell. Whatever the
@@ -228,6 +228,15 @@ final class PaneSessionAttachment {
       endResume()
       return nil
     }
+    // A remote pane whose host's attach couldn't be built runs only a notice that says so (#826):
+    // no relay claims the file this launch just wrote, which holds the record's arguments, so it
+    // goes now rather than at a later write's hour-old sweep.
+    if !attach.reachesSession, let file = resumeFile {
+      unlink(file)
+      resumeFile = nil
+      endResume()
+    }
+    let command = attach.command
     var environment = service.launchEnvironment(
       sessionID: sessionID,
       workingDirectory: workingDirectory,
