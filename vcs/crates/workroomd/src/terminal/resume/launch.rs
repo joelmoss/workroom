@@ -16,13 +16,23 @@
 //! hooks folder) is not resumed: it starts as a new shell (`bin_path::hooked`), and the daemon
 //! declines the resume at once.
 //!
-//! **A hook that never runs.** A startup file can keep the hook from running: a `.zshrc` that
-//! ends in `exec fish`, or that resets `precmd_functions`. The hook runs the helper before the
-//! first prompt is drawn, so the shell's first OSC 133 prompt arriving before the helper reported
-//! means it never ran; a shell whose prompt sends no OSC 133 is given `DECLINE_AFTER` instead.
-//! Either way the daemon declines the resume by claiming the launch file itself, so no helper can
-//! start the program later, and says `resumeDeclined` (`SessionStore::decline_resume`). A session
-//! that ends with its file unclaimed removes it.
+//! **A hook that never loads.** As soon as the hook is read (zsh's `.zshenv`, before any of the
+//! user's startup files, so before an instant prompt; bash's `ENV`, before it reads them), it
+//! runs `<helper> resume-launch --hook-loaded`, which reports as the shell that the hook loaded
+//! (`run_hook`, `Outcome::HookLoaded`). A shell that never says so skipped the hook (one that
+//! bypasses `.zshenv` or `ENV`): the hook runs the helper before the first prompt is drawn, so
+//! such a shell's first OSC 133 prompt arriving before the helper reported means it never will;
+//! one whose prompt sends no OSC 133 is given `DECLINE_AFTER` instead. Either way the daemon
+//! declines the resume by claiming the launch file itself, so no helper can start the program
+//! later, and says `resumeDeclined` (`SessionStore::decline_resume`). A shell whose hook loaded
+//! is waited for as long as it lives, since a prompt mark before the hook runs (Powerlevel10k's
+//! instant prompt, or Ghostty's own with `no_prompt_percent`) or a startup file that waits (an
+//! `ssh-add` passphrase) is no sign it won't. The cost, accepted: a startup file that keeps the
+//! loaded hook from running (a `.zshrc` that ends in `exec fish`, or that resets
+//! `precmd_functions`) is never declined, so the app keeps the record and tries it at each
+//! restart, its own fallback saying each time that the pane got a new shell
+//! (`PaneSessionAttachment.resumeUnconfirmed`). A session that ends with its file unclaimed
+//! removes it.
 //!
 //! **The helper.** `resume-launch` claims the launch file, goes to the record's folder and finds
 //! the command on PATH, then forks. The child reports the record over OSC 7577 as its own pid (so
@@ -430,6 +440,22 @@ fn set_report(launch: &Launch) -> Option<Vec<u8>> {
     )
 }
 
+/// `resume-launch`'s word for what a resuming session's shell runs as Workroom's hook loads.
+const HOOK_LOADED: &str = "--hook-loaded";
+
+/// `workroomd resume-launch --hook-loaded`: what a resuming session's shell runs as Workroom's
+/// hook loads in it, before any startup file of the user's (module doc). Reports, signed with the
+/// session's token, `clear=1:workroomhook=1` as its parent, the shell: the daemon reads it as the
+/// hook being there to run the helper, however late the first prompt comes. Says nothing, and
+/// succeeds, with no token.
+fn run_hook() -> std::process::ExitCode {
+    send(report(
+        std::os::unix::process::parent_id(),
+        "clear=1:workroomhook=1",
+    ));
+    std::process::ExitCode::SUCCESS
+}
+
 /// Whether a program's exit `status` is a failure to resume: not 0, and not ^C (130), which is
 /// the user stopping it, as a command result reads it.
 pub(crate) fn failed(status: i32) -> bool {
@@ -444,6 +470,9 @@ pub(crate) fn failed(status: i32) -> bool {
 /// (the spec lets a helper report for another process), else as this process's, so a program that
 /// ran for long keeps its record through the exit grace, as one killed at a logout must.
 pub fn run_launch(args: &[String]) -> std::process::ExitCode {
+    if args.get(1).map(String::as_str) == Some(HOOK_LOADED) {
+        return run_hook();
+    }
     let (status, child) = launch_and_wait(args);
     if failed(status) {
         let pid = child

@@ -7,7 +7,7 @@
 //! (`LICENSE` beside this file). Changed from the original for Workroom: SHA-256 and base64 come
 //! from this crate's `util` instead of herdr-core's; the reasons a report is ignored are returned
 //! (`Ignored`) so the daemon can log them; Windows path rules are dropped; the tests moved to
-//! `protocol/tests.rs`; and `workroom_exit` reads Workroom's own key.
+//! `protocol/tests.rs`; and `workroom_exit` and `workroom_hook` read Workroom's own keys.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -207,6 +207,14 @@ pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Result<Report,
 /// so any other terminal reads the report as a plain clear.
 pub(super) fn workroom_exit(body: &[u8]) -> Option<i32> {
     envelope(body, b"workroomexit=").and_then(number)
+}
+
+/// Whether an authenticated `clear=1` report carries Workroom's key `workroomhook=1`: the
+/// session's shell saying, as its Workroom hook loads (`launch::run_hook`, #825), that the hook
+/// runs in it. Any other terminal reads it as a plain clear of the shell's records, which a shell
+/// that has only just started has none of.
+pub(super) fn workroom_hook(body: &[u8]) -> bool {
+    envelope(body, b"workroomhook=") == Some(b"1".as_slice())
 }
 
 /// Standard base64, padding optional. `None` for anything outside the alphabet or an impossible

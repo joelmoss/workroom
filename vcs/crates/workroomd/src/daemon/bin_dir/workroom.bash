@@ -8,11 +8,14 @@
 # A session that resumes a program (#825, `resume/launch.rs`) names its launch file and the helper
 # in WORKROOM_RESUME_FILE and WORKROOM_RESUME_HELPER. Both leave the environment here, before any
 # startup file runs, and at the first prompt the helper runs the file's program as this shell's
-# first job: ^Z suspends it to this shell, and `fg` brings it back.
+# first job: ^Z suspends it to this shell, and `fg` brings it back. Here too, before any startup
+# file can print a prompt mark or wait (a passphrase), the helper tells the daemon, as this shell,
+# that the hook loaded, so the daemon waits for the first prompt.
 
 if [[ "$-" == *i* && -n "${WORKROOM_RESUME_FILE-}" && -n "${WORKROOM_RESUME_HELPER-}" ]]; then
   __workroom_resume_file=$WORKROOM_RESUME_FILE
   __workroom_resume_helper=$WORKROOM_RESUME_HELPER
+  "$__workroom_resume_helper" resume-launch --hook-loaded 2>/dev/null
 fi
 builtin unset WORKROOM_RESUME_FILE WORKROOM_RESUME_HELPER
 

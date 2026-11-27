@@ -374,33 +374,85 @@ fn fails_at_once_or_is_declined(shell: &str) {
     );
 }
 
-/// Value: protects=a resume whose shell never runs Workroom's hook (a `.zshrc` that resets
-/// `precmd_functions`, one that ends in `exec fish`) being declined at its first prompt: the
-/// daemon claims and removes its launch file, so nothing starts the command later, drops the
-/// record it seeded and says `resumeDeclined`, so the app forgets the record rather than retry it
-/// at every restart; and a session that ends before anything declined it removing its file;
-/// fails_when=the first OSC 133 prompt stops declining, the seeded record stays, the file is left
-/// behind, or the command runs anyway; why_new=#825's second review (a declined resume never
-/// forgot its record); seam=none
+/// Value: protects=a resume whose shell prints a prompt mark before Workroom's hook runs, as
+/// Powerlevel10k's instant prompt does from the top of `.zshrc`, still starting its program
+/// (#825): the hook said it loaded from `.zshenv` (bash: its `ENV`), so the daemon waits for the
+/// helper past that mark; fails_when=the hook stops announcing itself before the user's startup
+/// files, the daemon stops reading the announcement, or an early mark declines the resume again;
+/// why_new=#825's third review (an instant prompt declined resumes that would have worked);
+/// seam=none
 #[test]
-fn a_shell_that_never_runs_the_hook_declines_the_resume_at_its_first_prompt() {
+fn a_prompt_mark_before_the_hook_runs_still_resumes_the_program() {
     if is_root() || !common::has_terminal_state() {
         eprintln!("skipped: needs a daemon with terminal-state, not running as root");
         return;
     }
     for shell in hooked_shells() {
-        declined_at_first_prompt(shell);
+        resumes_past_an_early_prompt_mark(shell);
     }
 }
 
-fn declined_at_first_prompt(shell: &str) {
+fn resumes_past_an_early_prompt_mark(shell: &str) {
     let name = shell.rsplit('/').next().unwrap();
-    let workspace = Workspace::new(&format!("resume-decline-{name}"));
+    let workspace = Workspace::new(&format!("resume-instant-{name}"));
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
-    let home = home(&workspace, "decline");
-    // Only Workroom's hook goes: zsh's is a precmd function by now, bash's is installed after the
-    // startup files, from the variable this unsets.
+    let home = home(&workspace, "instant");
+    // The mark an instant prompt prints, then a pause, so the daemon reads it well before the
+    // helper's report, which a mark in the same read would count as started.
+    let early = "printf '\\033]133;A\\007'\nsleep 1\nPS1='PROMPT> '\n";
+    std::fs::write(home.join(".zshrc"), early).unwrap();
+    std::fs::write(home.join(".bashrc"), early).unwrap();
+    let session = "ce5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e18";
+    let file = app_launch_file(
+        &workspace,
+        session,
+        &["/bin/echo", "RESUMED-PAST-THE-MARK"],
+        &workspace,
+    );
+    let (_client, mut reader) = restore(&socket, session, shell, &home, &file);
+    let seen = reader
+        .read_until("RESUMED-PAST-THE-MARK", Duration::from_secs(30))
+        .to_string();
+    assert!(seen.contains("RESUMED-PAST-THE-MARK"), "{shell}: {seen}");
+    assert!(!seen.contains("couldn't resume"), "{shell}: {seen}");
+    let mut said = Value::Null;
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            said = status(&socket, session);
+            said["resumeStarted"] == true
+        }),
+        "{shell}: {said}"
+    );
+    assert!(said.get("resumeDeclined").is_none(), "{shell}: {said}");
+}
+
+/// Value: protects=the accepted limit of a resume whose shell loaded Workroom's hook but whose
+/// startup files keep it from running (a `.zshrc` that resets `precmd_functions`, one that ends
+/// in `exec fish`): nothing declines it at the first prompt, so the seeded record stays and the
+/// app's own fallback speaks; the command never runs; and the session's end removes its launch
+/// file, with or without a prompt mark; fails_when=the first prompt declines a shell whose hook
+/// loaded, the seeded record goes, the command runs anyway, or the file is left behind;
+/// why_new=#825's third review (a hook that loaded is waited for); seam=none
+#[test]
+fn a_hook_that_loaded_but_never_runs_keeps_the_record_until_its_session_ends() {
+    if is_root() || !common::has_terminal_state() {
+        eprintln!("skipped: needs a daemon with terminal-state, not running as root");
+        return;
+    }
+    for shell in hooked_shells() {
+        kept_past_the_first_prompt(shell);
+    }
+}
+
+fn kept_past_the_first_prompt(shell: &str) {
+    let name = shell.rsplit('/').next().unwrap();
+    let workspace = Workspace::new(&format!("resume-kept-{name}"));
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let home = home(&workspace, "kept");
+    // Only Workroom's hook goes, once it has loaded: zsh's is a precmd function by now, bash's is
+    // installed after the startup files, from the variable this unsets.
     std::fs::write(
         home.join(".zshrc"),
         "PS1='PROMPT> '\nprecmd_functions=(${precmd_functions:#_workroom_resume})\n",
@@ -422,30 +474,35 @@ fn declined_at_first_prompt(shell: &str) {
         &workspace,
     );
     let (mut client, mut reader) = restore(&socket, session, shell, &home, &file);
-    assert!(
-        wait_for(
-            Duration::from_secs(30),
-            || status(&socket, session)["resumeDeclined"] == true
-        ),
-        "{shell}: {}",
-        status(&socket, session)
-    );
-    let declined = status(&socket, session);
-    assert!(declined["resume"].is_null(), "{shell}: {declined}");
-    assert!(
-        declined.get("resumeStarted").is_none(),
-        "{shell}: {declined}"
-    );
-    assert_eq!(left(), 0, "{shell}: the daemon claimed its own launch file");
+    // Typed once the prompt has come, so its answer comes after the first prompt's mark.
+    reader.read_until("PROMPT> ", Duration::from_secs(30));
     type_into(&mut client, "echo \"PLAIN-$((40+2))\"\n");
     let plain = reader
         .read_until("PLAIN-42", Duration::from_secs(10))
         .to_string();
     assert!(plain.contains("PLAIN-42"), "{shell}: {plain}");
     assert!(!plain.contains("SHOULD-NOT-RUN"), "{shell}: {plain}");
+    let kept = status(&socket, session);
+    assert!(kept.get("resumeDeclined").is_none(), "{shell}: {kept}");
+    assert!(kept.get("resumeStarted").is_none(), "{shell}: {kept}");
+    assert_eq!(
+        kept["resume"]["cwd"],
+        workspace.to_str().unwrap(),
+        "{shell}: the seeded record stays: {kept}"
+    );
+    assert_eq!(
+        left(),
+        1,
+        "{shell}: its launch file waits for a hook that may still run"
+    );
+    type_into(&mut client, "exit\n");
+    assert!(
+        wait_for(Duration::from_secs(10), || left() == 0),
+        "{shell}: a session that ends removes its unclaimed launch file"
+    );
 
-    // A shell that sends no prompt mark (its precmd functions all gone, Ghostty's with them), and
-    // ends before the daemon's wait runs out: its file goes with it.
+    // A shell that sends no prompt mark (its precmd functions all gone, Ghostty's with them): its
+    // file goes with it too.
     if name == "zsh" {
         std::fs::write(home.join(".zshrc"), "PS1='PROMPT> '\nprecmd_functions=()\n").unwrap();
         let session = "ae5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e16";
@@ -519,10 +576,14 @@ fn a_resumed_claude_is_named_profiled_and_prompted_as_claude() {
         eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
         return;
     }
-    let Some(shell) = hooked_shells().into_iter().next() else {
-        return;
-    };
-    let workspace = Workspace::new("resume-claude");
+    for shell in hooked_shells() {
+        named_profiled_and_prompted_as_claude(shell);
+    }
+}
+
+fn named_profiled_and_prompted_as_claude(shell: &str) {
+    let name = shell.rsplit('/').next().unwrap();
+    let workspace = Workspace::new(&format!("resume-claude-{name}"));
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
     let home = home(&workspace, "claude");
