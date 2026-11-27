@@ -70,13 +70,7 @@ pub fn run_program_status(args: &[String]) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
             } else if value["event"] == "status" {
-                let mut value = value;
-                // A resume record's arguments can hold secrets (#824), and this output gets pasted
-                // into bug reports: the app alone is told them.
-                if let Some(resume) = value.get_mut("resume").and_then(Value::as_object_mut) {
-                    resume.remove("argv");
-                }
-                sessions.push(value);
+                sessions.push(shown(value));
             } else if value["event"] == "snapshot-complete" {
                 print(as_json, &result.unwrap_or_default(), &sessions);
                 return ExitCode::SUCCESS;
@@ -97,19 +91,33 @@ pub fn run_program_status(args: &[String]) -> ExitCode {
     ExitCode::from(DAEMON_UNAVAILABLE)
 }
 
+/// A `status` event as this command prints it: a resume record's arguments can hold secrets
+/// (#824), and this output gets pasted into bug reports, so the app alone is told them.
+fn shown(mut status: Value) -> Value {
+    if let Some(resume) = status.get_mut("resume").and_then(Value::as_object_mut) {
+        resume.remove("argv");
+    }
+    status
+}
+
+/// The `--json` output, for `result` and `sessions` as `print` takes them.
+fn json_output(result: &Value, sessions: &[Value]) -> Value {
+    let mut out = json!({
+        "schema_version": SCHEMA_VERSION,
+        "available": result["available"] == true,
+        "droppedReplies": result["droppedReplies"],
+        "sessions": sessions,
+    });
+    if let Some(reason) = result.get("reason") {
+        out["reason"] = reason.clone();
+    }
+    out
+}
+
 /// `result` is the subscribe reply's (or the reason it was not made); `sessions` the snapshot.
 fn print(as_json: bool, result: &Value, sessions: &[Value]) {
     if as_json {
-        let mut out = json!({
-            "schema_version": SCHEMA_VERSION,
-            "available": result["available"] == true,
-            "droppedReplies": result["droppedReplies"],
-            "sessions": sessions,
-        });
-        if let Some(reason) = result.get("reason") {
-            out["reason"] = reason.clone();
-        }
-        println!("{out}");
+        println!("{}", json_output(result, sessions));
         return;
     }
     if result["available"] != true {
@@ -147,5 +155,28 @@ fn print(as_json: bool, result: &Value, sessions: &[Value]) {
                 record["message"],
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Value: protects=the hidden command's `--json` output, which gets pasted into bug reports,
+    /// never carrying a resume record's arguments, which can hold secrets (#824); fails_when=a
+    /// status event's `resume.argv` reaches the output, or the record goes with it; why_new=the
+    /// redaction was untested (#824's review); seam=the status event the app's decoder tests share
+    #[test]
+    fn the_json_output_never_carries_a_resume_records_arguments() {
+        let status: Value = serde_json::from_str(include_str!(
+            "../../../../../testdata/program-status/status.json"
+        ))
+        .unwrap();
+        assert_eq!(status["resume"]["argv"][2], "a-session", "the fixture has arguments");
+        let out = json_output(&json!({"available": true}), &[shown(status)]).to_string();
+        assert!(!out.contains("argv"), "{out}");
+        assert!(!out.contains("a-session"), "{out}");
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["sessions"][0]["resume"]["cwd"], "/work", "{out}");
     }
 }

@@ -390,6 +390,33 @@ final class SessionRestoreTests: XCTestCase {
       recaptured.tabs.firstIndex { $0.key == recaptured.focusedKey })
   }
 
+  /// A tab's resume record (#824) survives the saved layout: captured with the tab, and back on
+  /// the restored tab, which is what a gone session resumes from (#825).
+  func testAResumeRecordSurvivesCaptureAndRestore() throws {
+    let first = makeSessions()
+    first.addTab(for: target)
+    var tab = try XCTUnwrap(first.tabs(for: target).first)
+    guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
+    let record = ResumeRecord(
+      argv: ["claude", "--resume", "a-session"], cwd: "/work", reportedAt: 1_795_543_200_000,
+      boot: "boot-1")
+    state.sessionID = UUID()
+    state.resume = record
+    tab.content = .terminal(state)
+    first.replace(tab, for: target)
+
+    let captured = try XCTUnwrap(capture(first))
+    XCTAssertEqual(captured.tabs.first?.terminal?.resume, record)
+    let second = makeSessions()
+    second.restore(captured, for: target)
+    let restored = try XCTUnwrap(second.tabs(for: target).first)
+    guard case .terminal(let restoredState) = restored.content else {
+      return XCTFail("expected terminal")
+    }
+    XCTAssertEqual(restoredState.resume, record)
+    XCTAssertEqual(try XCTUnwrap(capture(second)).tabs.first?.terminal?.resume, record)
+  }
+
   /// The whole point of the many-groups change, through the PERSISTENCE path: a file holding two
   /// disjoint groups must come back as two disjoint groups, with every leaf remapped to a freshly
   /// minted tab id. Every other restore test builds ONE group, so nothing else covers
