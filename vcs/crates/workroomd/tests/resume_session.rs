@@ -19,21 +19,37 @@ use common::{ClientReader, Workspace, attach_with_env, start_daemon, wait_for};
 use serde_json::{Value, json};
 
 /// Writes the app's launch file for `session` (as `PersistentSessionService` does): `0600`, in a
-/// `0700` folder, named `resume-<session>-<32 hex>.json`.
+/// `0700` folder. Its name and its JSON are the shared fixture's (`testdata/resume-launch`, which
+/// the app's `SavedLayoutStoreTests` checks is what its writer writes), with this test's session
+/// in the name and its `argv` and `cwd` in place of the fixture's.
 fn app_launch_file(workspace: &Workspace, session: &str, argv: &[&str], cwd: &Path) -> PathBuf {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/resume-launch");
+    let fixture = std::fs::read_dir(&fixtures)
+        .expect("testdata/resume-launch")
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .expect("the app's launch file fixture");
+    let name = fixture.file_name().unwrap().to_str().unwrap();
+    let fixture_session = name
+        .strip_prefix("resume-")
+        .and_then(|rest| rest.get(..36))
+        .expect("named resume-<session>-<32 hex>.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&fixture).unwrap()).unwrap();
+    assert!(record["argv"].is_array(), "{record}");
+    assert!(record["cwd"].is_string(), "{record}");
+    assert!(record["reportedAt"].is_u64(), "{record}");
+    record["argv"] = json!(argv);
+    record["cwd"] = json!(cwd);
+
     let dir = workspace.join("app-resume");
     let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-    let path = dir.join(format!(
-        "resume-{session}-{}.json",
-        "0123456789abcdef".repeat(2)
-    ));
+    let path = dir.join(name.replace(fixture_session, session));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&path)
         .expect("launch file");
-    let record = json!({"argv": argv, "cwd": cwd, "reportedAt": 1_795_543_200_000u64});
     std::io::Write::write_all(&mut file, record.to_string().as_bytes()).unwrap();
     path
 }

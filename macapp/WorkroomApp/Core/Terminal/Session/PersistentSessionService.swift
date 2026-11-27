@@ -550,13 +550,16 @@ final class PersistentSessionService {
   /// Hands a restored local pane's resume record (ADR 0082, #825) to the relay that will make its
   /// gone session again: the file's path, which `launchEnvironment`'s caller adds as
   /// `ResumeLaunchFile.variable`, or nil for no resume (a remote pane, a folder that is gone, no
-  /// socket). Only after `willReplaceRestoredSession` said the session is gone.
-  func writeResumeLaunch(_ record: ResumeRecord, for sessionID: UUID) -> String? {
+  /// socket). `savedFolder` is the pane's own, where a record that names none runs. Only after
+  /// `willReplaceRestoredSession` said the session is gone.
+  func writeResumeLaunch(_ record: ResumeRecord, for sessionID: UUID, savedFolder: String)
+    -> String?
+  {
     guard !isRemote(sessionID), backend(forSession: sessionID) == .daemon,
       let socket = socketPath(for: .daemon)
     else { return nil }
     return ResumeLaunchFile.write(
-      record, for: sessionID,
+      record, for: sessionID, savedFolder: savedFolder,
       in: resumeLaunchDirectory ?? ResumeLaunchFile.directory(socketPath: socket))
   }
 

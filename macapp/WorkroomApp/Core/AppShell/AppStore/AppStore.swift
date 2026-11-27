@@ -2133,6 +2133,10 @@ final class AppStore: ObservableObject {
           if UITestFixture.programStatus {
             UITestFixture.seedProgramStatus(in: terminals, target: target)
           }
+          // Resume scenario (#825): the first terminal's resume started, or failed, no daemon.
+          if UITestFixture.resume != nil {
+            UITestFixture.seedResume(in: terminals, target: target)
+          }
           // Typing marker scenario (#696): Claude in one terminal typing into another, no daemon.
           if UITestFixture.typingMarker {
             if UITestFixture.typingMarkerElsewhere, project.workrooms.count > 1 {

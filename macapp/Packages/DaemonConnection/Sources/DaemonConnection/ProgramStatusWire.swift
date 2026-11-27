@@ -93,10 +93,13 @@ public enum ProgramStatusEvent: Sendable, Equatable {
   /// only for a run session (#522): what its supervisor last wrote, such as `running 4123`,
   /// `stopped 1` or `exited 1 2` (ending in the launch's number). `resume` is its resume record
   /// (#824). `resumeFailed`: the program the session was started to resume (#825) exited with an
-  /// error at once, so the pane says it couldn't be resumed.
+  /// error at once, so the pane says it couldn't be resumed. `resumeStarted`: that program really
+  /// started (its helper's report was accepted), so the pane says it resumed; a daemon that
+  /// predates it never says so, and its pane's resume reads as declined.
   case status(
     boot: String, session: UUID, revision: UInt64, reporting: Bool, records: [ProgramStatusRecord],
-    run: String? = nil, resume: ProgramResumeReport = .unknown, resumeFailed: Bool = false)
+    run: String? = nil, resume: ProgramResumeReport = .unknown, resumeFailed: Bool = false,
+    resumeStarted: Bool = false)
   case ended(boot: String, session: UUID)
   /// Closes the snapshot that follows a subscribe: a session the snapshot did not name has gone.
   case snapshotComplete(boot: String, sessions: [UUID])
@@ -119,7 +122,7 @@ public enum ProgramStatusEvent: Sendable, Equatable {
         .status(
           boot: boot, session: session, revision: revision, reporting: wire.reporting ?? false,
           records: kept, run: wire.run, resume: wire.resume,
-          resumeFailed: wire.resumeFailed ?? false),
+          resumeFailed: wire.resumeFailed ?? false, resumeStarted: wire.resumeStarted ?? false),
         records.count - kept.count
       )
     case "ended":
@@ -151,9 +154,13 @@ public enum ProgramStatusEvent: Sendable, Equatable {
     let resume: ProgramResumeReport
     /// Sent only once true (#825).
     let resumeFailed: Bool?
+    /// Absent or false until the resumed program really started (#825); absent from a daemon that
+    /// predates it.
+    let resumeStarted: Bool?
 
     private enum CodingKeys: String, CodingKey {
       case event, boot, session, revision, reporting, records, sessions, run, resume, resumeFailed
+      case resumeStarted
     }
 
     private struct ResumeFields: Decodable {
@@ -173,6 +180,7 @@ public enum ProgramStatusEvent: Sendable, Equatable {
       sessions = try container.decodeIfPresent([String].self, forKey: .sessions)
       run = try container.decodeIfPresent(String.self, forKey: .run)
       resumeFailed = try? container.decodeIfPresent(Bool.self, forKey: .resumeFailed)
+      resumeStarted = try? container.decodeIfPresent(Bool.self, forKey: .resumeStarted)
       if !container.contains(.resume) {
         resume = .unknown
       } else if try container.decodeNil(forKey: .resume) {

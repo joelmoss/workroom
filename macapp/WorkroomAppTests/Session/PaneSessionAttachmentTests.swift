@@ -388,44 +388,61 @@ final class PaneSessionAttachmentTests: XCTestCase {
     XCTAssertFalse(service.hasAttachedPane(on: host), "a pane whose surface went holds its host")
   }
 
-  /// Value: protects=a restored local pane whose session is gone handing its tab's resume record
-  /// to its relay in a file named in `WORKROOM_SESSION_RESUME`, toasting "Resumed …", and turning
-  /// that into "Couldn't resume …" once when the daemon says it failed; and a tab with no record,
-  /// one whose folder is gone, and a run tab keeping today's behaviour; fails_when=the file or the
-  /// variable goes missing, the toast is wrong, a failure is said twice or for a pane that resumed
-  /// nothing; why_new=new (#825); seam=the service's launch folder
-  func testARestoredPaneWhoseSessionIsGoneResumesItsTabsRecord() throws {
+  /// A restored pane on a service whose daemon holds no session: its session is gone. Each pane's
+  /// record forgets count in `forgets`, and its confirmation wait never runs out on its own.
+  private func goneSessionPanes() -> (
+    pane: (ResumeRecord?) -> (PaneSessionAttachment, FakePaneSurface), forgets: () -> Int
+  ) {
     let gone = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") }, ownership: { _ in .notOwned })
     let folder = FileManager.default.temporaryDirectory
       .appendingPathComponent("wr-resume-pane-\(UUID().uuidString.prefix(8))")
     addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
     gone.resumeLaunchDirectory = folder
-    func pane(_ record: ResumeRecord?) -> (PaneSessionAttachment, FakePaneSurface) {
+    var forgets = 0
+    let pane = { (record: ResumeRecord?) -> (PaneSessionAttachment, FakePaneSurface) in
       let surface = FakePaneSurface()
-      surfaces.append(surface)
+      self.surfaces.append(surface)
       let pane = PaneSessionAttachment(service: gone)
       pane.surface = surface
-      addTeardownBlock { pane.close() }
+      self.addTeardownBlock { pane.close() }
       let session = UUID()
       pane.tabSessionID = { session }
       pane.tabResume = { record }
+      pane.forgetTabResume = { forgets += 1 }
+      pane.resumeConfirmationWait = 3600
       pane.isRestored = true
       return (pane, surface)
     }
-    let claude = ResumeRecord(
-      argv: ["claude", "--resume", "a"], cwd: NSTemporaryDirectory(), reportedAt: 1, boot: "b")
+    return (pane, { forgets })
+  }
 
+  private let claude = ResumeRecord(
+    argv: ["claude", "--resume", "a"], cwd: NSTemporaryDirectory(), reportedAt: 1, boot: "b")
+
+  /// Value: protects=a restored local pane whose session is gone handing its tab's resume record
+  /// to its relay in a file named in `WORKROOM_SESSION_RESUME`, saying "Resumed …" only once the
+  /// daemon says the program started, and "Couldn't resume …" once when it says it failed, which
+  /// forgets the record; and a tab with no record, one whose folder is gone, and a run tab keeping
+  /// today's behaviour; fails_when=the file or the variable goes missing, "Resumed" shows before
+  /// anything confirms it, the toast is wrong, a failure is said twice or for a pane that resumed
+  /// nothing; why_new=new (#825); seam=the service's launch folder
+  func testARestoredPaneWhoseSessionIsGoneResumesItsTabsRecord() throws {
+    let (pane, forgets) = goneSessionPanes()
     let (resuming, toasts) = pane(claude)
     let launch = resuming.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false)
     let launched = try XCTUnwrap(launch, "no daemon command in this test host")
     let file = try XCTUnwrap(
       launched.environment.first { $0.key == ResumeLaunchFile.variable }?.value)
     XCTAssertTrue(FileManager.default.fileExists(atPath: file))
+    XCTAssertEqual(toasts.notices, [], "nothing has said the program started yet")
+    resuming.resumeStarted()
+    resuming.resumeStarted()
     XCTAssertEqual(toasts.notices, ["Resumed Claude Code"])
     resuming.resumeFailed()
     resuming.resumeFailed()
     XCTAssertEqual(toasts.notices, ["Resumed Claude Code", "Couldn't resume Claude Code"])
+    XCTAssertEqual(forgets(), 1, "a failed resume forgets its record")
 
     var away = claude
     away.cwd = "/definitely/not/a/folder"
@@ -438,9 +455,66 @@ final class PaneSessionAttachmentTests: XCTestCase {
       let launch = plain.launch(workingDirectory: "/tmp", runCommand: "x", isRunSession: isRun)
       XCTAssertNil(launch?.environment.first { $0.key == ResumeLaunchFile.variable })
       XCTAssertEqual(notices.notices, said)
+      plain.resumeStarted()
       plain.resumeFailed()
-      XCTAssertEqual(notices.notices, said, "a pane that resumed nothing says no failure")
+      plain.resumeUnconfirmed()
+      XCTAssertEqual(notices.notices, said, "a pane that resumed nothing says nothing more")
     }
+    XCTAssertEqual(forgets(), 1)
+  }
+
+  /// Value: protects=a resume nothing confirms within the wait (an older daemon, a shell that never
+  /// reached the program) saying the pane got a new shell and forgetting the record, and a start or
+  /// failure heard after that still correcting the toast; fails_when=an unconfirmed resume says
+  /// "Resumed", keeps its record, or a late start is lost; why_new=new (#825 review); seam=the
+  /// wait, run out by the test
+  func testAResumeNothingConfirmsIsDeclinedAndALateStartCorrectsIt() throws {
+    let (pane, forgets) = goneSessionPanes()
+    let (late, toasts) = pane(claude)
+    XCTAssertNotNil(late.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    late.resumeUnconfirmed()
+    late.resumeUnconfirmed()
+    XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced])
+    XCTAssertEqual(forgets(), 1, "a declined resume forgets its record")
+    late.resumeStarted()
+    XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced, "Resumed Claude Code"])
+    late.resumeUnconfirmed()
+    XCTAssertEqual(toasts.notices.count, 2, "a started resume is never declined")
+
+    let (failing, failed) = pane(claude)
+    XCTAssertNotNil(failing.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    failing.resumeUnconfirmed()
+    failing.resumeFailed()
+    XCTAssertEqual(
+      failed.notices, [PaneNoticeToast.sessionReplaced, "Couldn't resume Claude Code"])
+  }
+
+  /// Value: protects=the wait running out by itself; fails_when=the timer is never scheduled, or
+  /// fires after a start; why_new=new (#825 review); seam=a short wait, waited on for 3 s+
+  func testTheConfirmationWaitRunsOutOnItsOwn() throws {
+    let (pane, _) = goneSessionPanes()
+    let (unconfirmed, toasts) = pane(claude)
+    unconfirmed.resumeConfirmationWait = 0.05
+    XCTAssertNotNil(
+      unconfirmed.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    let (confirmed, quiet) = pane(claude)
+    confirmed.resumeConfirmationWait = 0.05
+    XCTAssertNotNil(
+      confirmed.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    confirmed.resumeStarted()
+    let declined = expectation(description: "the wait ran out")
+    let deadline = Date().addingTimeInterval(5)
+    func check() {
+      if toasts.notices == [PaneNoticeToast.sessionReplaced] || Date() > deadline {
+        declined.fulfill()
+      } else {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: check)
+      }
+    }
+    check()
+    wait(for: [declined], timeout: 6)
+    XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced], "the unconfirmed resume")
+    XCTAssertEqual(quiet.notices, ["Resumed Claude Code"], "a started one's wait was cancelled")
   }
 
   /// A tab's surface attaches through the service its window holds, whichever factory made the

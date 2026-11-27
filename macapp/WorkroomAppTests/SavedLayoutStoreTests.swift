@@ -331,7 +331,8 @@ final class SavedLayoutStoreTests: XCTestCase {
     let session = UUID()
     let record = ResumeRecord(
       argv: ["claude", "--resume", "a b"], cwd: NSTemporaryDirectory(), reportedAt: 7, boot: "b")
-    let path = try XCTUnwrap(ResumeLaunchFile.write(record, for: session, in: directory))
+    let path = try XCTUnwrap(
+      ResumeLaunchFile.write(record, for: session, savedFolder: "/", in: directory))
     let name = (path as NSString).lastPathComponent
     XCTAssertTrue(ResumeLaunchFile.isLaunchName(name))
     XCTAssertTrue(name.hasPrefix("resume-\(session.uuidString.lowercased())-"))
@@ -343,10 +344,63 @@ final class SavedLayoutStoreTests: XCTestCase {
       try JSONSerialization.jsonObject(
         with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
     XCTAssertEqual(written?["argv"] as? [String], record.argv)
+    XCTAssertEqual(written?["cwd"] as? String, NSTemporaryDirectory(), "its own folder first")
 
     var gone = record
     gone.cwd = "/definitely/not/a/folder"
-    XCTAssertNil(ResumeLaunchFile.write(gone, for: session, in: directory))
+    XCTAssertNil(
+      ResumeLaunchFile.write(gone, for: session, savedFolder: "/", in: directory),
+      "a reported folder that is gone is no resume, whatever the pane's own")
     XCTAssertFalse(ResumeLaunchFile.isLaunchName("resume-\(session.uuidString)-0.json"))
+  }
+
+  /// Value: protects=a record that names no folder resuming in the pane's saved one (ADR 0082),
+  /// and none when that is gone too; fails_when=a record with no `cwd` is dropped, or written
+  /// for a folder that isn't there; why_new=new (#825 review); seam=the folder
+  func testAResumeLaunchFileWithNoReportedFolderRunsInThePanesOwn() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-launch-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let saved = NSTemporaryDirectory()
+    for cwd in [nil, ""] as [String?] {
+      let record = ResumeRecord(argv: ["nvim", "-S"], cwd: cwd, reportedAt: 7, boot: "b")
+      let path = try XCTUnwrap(
+        ResumeLaunchFile.write(record, for: UUID(), savedFolder: saved, in: directory))
+      let written =
+        try JSONSerialization.jsonObject(
+          with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
+      XCTAssertEqual(written?["cwd"] as? String, saved, "\(String(describing: cwd))")
+      let away = ResumeLaunchFile.write(
+        record, for: UUID(), savedFolder: "/definitely/not/a/folder", in: directory)
+      XCTAssertNil(away)
+    }
+  }
+
+  /// Value: protects=the launch file the daemon's tests read (`testdata/resume-launch`,
+  /// `vcs/crates/workroomd/tests/resume_session.rs`) being what this app writes, byte for byte,
+  /// under a name of the shape it makes; fails_when=the writer changes a key, the encoding or the
+  /// name without the shared fixture, so the two halves drift apart; why_new=new (#825 review);
+  /// seam=the shared fixture
+  func testTheSharedResumeLaunchFixtureIsWhatTheWriterWrites() throws {
+    let folder = SharedFixture.repositoryRoot.appendingPathComponent("testdata/resume-launch")
+    let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+      .filter { $0.hasSuffix(".json") }
+    XCTAssertEqual(names.count, 1, "one fixture, which the daemon's test reads: \(names)")
+    let name = try XCTUnwrap(names.first)
+    XCTAssertTrue(ResumeLaunchFile.isLaunchName(name), name)
+    let session = try XCTUnwrap(
+      UUID(uuidString: String(name.dropFirst("resume-".count).prefix(36))))
+    let made = ResumeLaunchFile.name(for: session)
+    XCTAssertEqual(made.count, name.count)
+    XCTAssertEqual(made.prefix("resume-".count + 37), name.prefix("resume-".count + 37))
+
+    let record = ResumeRecord(
+      argv: ["/usr/local/bin/claude", "--resume", "two words", "a'\"b"],
+      cwd: "/Users/someone/the project", reportedAt: 1_795_543_200_000, boot: "b")
+    let fixture = try Data(contentsOf: folder.appendingPathComponent(name))
+    let written = try XCTUnwrap(
+      ResumeLaunchFile.contents(of: record, cwd: try XCTUnwrap(record.cwd)))
+    XCTAssertEqual(
+      String(decoding: written, as: UTF8.self), String(decoding: fixture, as: UTF8.self))
   }
 }

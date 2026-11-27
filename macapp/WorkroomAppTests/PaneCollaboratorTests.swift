@@ -192,6 +192,34 @@ final class ProgramStatusBindingTests: XCTestCase {
       .init(host: .local, sessions: [], isLaunchSnapshot: false, isSnapshot: true))
     XCTAssertEqual(tabs.events, [.runSessionGone(target, run)])
   }
+
+  /// Value: protects=a declined or failed resume (#825) forgetting the old daemon's record the tab
+  /// kept, so it doesn't resume again after the next restart, while keeping one the session's
+  /// daemon holds now; fails_when=the old record survives, or a started program's new record is
+  /// lost; why_new=new (#825 review); seam=a seeded monitor
+  func testAForgottenResumeKeepsOnlyWhatTheDaemonHoldsNow() {
+    let tabs = FakePaneTabs()
+    let service = isolatedPaneSessionService()
+    let binding = ProgramStatusBinding(access: tabs.access, sessionService: { service })
+    let monitor = ProgramStatusMonitor()
+    binding.monitor = monitor
+    binding.follow(.local)
+    let session = UUID()
+    let tab = tabs.add(to: target, sessionID: session)
+    let old = ResumeRecord(
+      argv: ["claude", "--resume", "a"], cwd: "/w", reportedAt: 1, boot: "old")
+    tabs.access.mutate(tab, target) { $0.resume = old }
+    monitor.seed(session, records: [], boot: "new", resume: .none)
+    XCTAssertEqual(tabs.state(tab)?.resume, old, "a new daemon's none leaves the old record")
+
+    binding.forgetResume(tab: tab, target: target)
+    XCTAssertNil(tabs.state(tab)?.resume)
+
+    let reported = ProgramResumeRecord(argv: ["claude", "--resume", "b"], cwd: "/w", reportedAt: 2)
+    monitor.seed(session, records: [], boot: "new", resume: .record(reported))
+    binding.forgetResume(tab: tab, target: target)
+    XCTAssertEqual(tabs.state(tab)?.resume?.argv, reported.argv, "the daemon's own is kept")
+  }
 }
 
 @MainActor

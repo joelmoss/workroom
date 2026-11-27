@@ -516,6 +516,22 @@ import WorkroomVCS
       terminals.select(tabs[0].id, for: target)
     }
 
+    /// `-WorkroomUITestResume started|failed` (#825): the fixture workroom's first terminal resumes
+    /// Claude Code as a restored pane whose session was gone does, and its daemon says the program
+    /// started (the pane says "Resumed Claude Code") or, for `failed`, then that it exited with an
+    /// error at once ("Couldn't resume Claude Code"). No daemon is involved: the status goes
+    /// straight into the monitor.
+    static var resume: String? {
+      text("WorkroomUITestResume").flatMap { ["started", "failed"].contains($0) ? $0 : nil }
+    }
+
+    @MainActor
+    static func seedResume(in terminals: TerminalPanes, target: TerminalTarget) {
+      guard let resume, let tab = terminals.tabs(for: target).first else { return }
+      terminals.seedResumeForFixture(
+        tab: tab.id, target: target.id, program: "Claude Code", failed: resume == "failed")
+    }
+
     /// When set (`-WorkroomUITestTypingMarker 1`, #696), the fixture workroom opens two terminals with
     /// Claude in the second, which types into the first once a second for the whole launch, the
     /// first focused: its typing marker shows "Claude · tab 2" with no daemon, for as long as a

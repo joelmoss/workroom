@@ -168,11 +168,13 @@ When you reopen Workroom, visible panes reconnect immediately. Hidden terminal t
 
 ### Programs that resume after a restart {nightly}
 
-A restart of your Mac, or a crash of the background helper, ends every terminal's shell. When you open Workroom again, a terminal whose program said how to start itself again gets that program back, in the folder it was in, instead of an empty shell, so a coding agent that reports itself carries on its conversation. The terminal says **Resumed Claude Code**, or **Resumed** and the program's name for any other.
+A restart of your Mac, or a crash of the background helper, ends every terminal's shell. When you open Workroom again, a terminal whose program said how to start itself again gets that program back, in the folder it was in, instead of an empty shell, so a coding agent that reports itself carries on its conversation. Once the program has started, the terminal says **Resumed Claude Code**, or **Resumed** and the program's name for any other.
 
 - When you quit the resumed program, the terminal stays open at a shell prompt in that folder.
 - The resumed program runs as a job of the terminal's shell, as if you had typed it: ⌃Z suspends it to the prompt, and `fg` brings it back. Its command line never goes into your shell's history.
-- If the program can't start, or exits with an error within 5 seconds of starting, the terminal says **Couldn't resume** and the program's name, and leaves you at a shell prompt.
+- If the program can't start, or exits with an error within 5 seconds of starting, the terminal says **Couldn't resume** and the program's name, and leaves you at a shell prompt. Workroom then forgets the program, so it doesn't try again after the next restart.
+- If the program hasn't started within a few seconds, the terminal says it's a new terminal, and Workroom forgets the program. If the program starts after all, the terminal says **Resumed**.
+- If the program didn't say which folder it was in, it resumes in the terminal's last folder.
 - If the folder the program was in is gone, the terminal opens a new shell, as it does for a program that never said how to resume.
 - Programs resume in zsh and bash. In any other shell, and in macOS's own `/bin/bash`, the terminal opens a new shell instead.
 - Hidden terminal tabs resume as they reconnect, so their marks in the sidebar come back without opening each tab.
