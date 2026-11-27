@@ -184,7 +184,7 @@ final class OpenSectionTests: XCTestCase {
     XCTAssertEqual(try row(standalone, in: store).tabs.count, 0, "it shows no strip either")
   }
 
-  // MARK: Selected, focused and visible in a split
+  // MARK: Selected and focused
 
   func testTheSelectedRowAndTheFocusedTab() throws {
     let store = makeStore()
@@ -201,12 +201,13 @@ final class OpenSectionTests: XCTestCase {
     store.setOpenRow(one, folded: false)
     let other = try row(one, in: store)
     XCTAssertFalse(other.isSelected)
-    XCTAssertFalse(other.isVisibleInSplit)
     XCTAssertEqual(other.tabs.count, 1)
-    XCTAssertTrue(other.tabs.allSatisfy { !$0.isFocused && !$0.isVisibleInSplit })
+    XCTAssertTrue(other.tabs.allSatisfy { !$0.isFocused })
   }
 
-  func testTabsShownInOtherPanesOfASplitAreVisibleInSplit() throws {
+  /// Only the focused pane's tab is focused: a split's other pane, and the workroom beside it,
+  /// are not marked (owner amendment 13).
+  func testOnlyTheFocusedPanesTabIsFocusedInASplit() throws {
     let store = makeStore()
     let first = try open(one, in: store)
     try open(two, in: store)
@@ -219,12 +220,11 @@ final class OpenSectionTests: XCTestCase {
     let selected = try row(one, in: store)
     XCTAssertEqual(selected.tabs.count, 2)
     XCTAssertEqual(selected.tabs.filter(\.isFocused).map(\.id), [focused])
-    XCTAssertEqual(selected.tabs.filter(\.isVisibleInSplit).count, 1, "the other pane")
 
     store.setOpenRow(two, folded: false)
     let beside = try row(two, in: store)
-    XCTAssertTrue(beside.isVisibleInSplit)
-    XCTAssertEqual(beside.tabs.filter(\.isVisibleInSplit).count, 1, "its pane is on screen")
+    XCTAssertFalse(beside.isSelected)
+    XCTAssertTrue(beside.tabs.allSatisfy { !$0.isFocused })
   }
 
   // MARK: Fold state

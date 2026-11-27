@@ -12,10 +12,9 @@ extension AppStore {
   /// The Open section's rows, in title-bar order, each holding its tabs in strip order. A folded
   /// row holds only `showing`, when it is one of its tabs: its placeholder while a drag lifts it,
   /// which the list passes in. Its other tabs draw nothing, so their rows (unread counts, run
-  /// state, diagnoses, what is on screen) are not built.
+  /// state, diagnoses) are not built.
   func openSectionRows(showing: OpenSectionItem? = nil) -> [OpenSectionRow] {
-    let visibleSplit = resolvedSplitLeaves().map { Set($0.map(\.sid)) } ?? []
-    return displayedWorkroomTargets().map { sid, target in
+    displayedWorkroomTargets().map { sid, target in
       let isSelected = sid == selectedTargetID
       let isFolded = isOpenRowFolded(sid)
       let tabs = terminals.tabs(for: target)
@@ -29,9 +28,7 @@ extension AppStore {
           sid: sid, target: target,
           presentation: workroomTabPresentation(sid: sid, target: target),
           marks: workroomTabMarks(sid: sid, target: target),
-          isSelected: isSelected,
-          isVisibleInSplit: !isSelected && visibleSplit.contains(sid),
-          isFolded: isFolded, tabCount: stripTabs.count),
+          isSelected: isSelected, isFolded: isFolded, tabCount: stripTabs.count),
         tabs: openSectionTabRows(built, sid: sid, target: target, isSelected: isSelected))
     }
   }
@@ -42,10 +39,6 @@ extension AppStore {
   ) -> [OpenSectionTabRow] {
     guard !tabs.isEmpty else { return [] }
     let activeID = terminals.activeTab(for: target)?.id
-    // The tabs on screen in this target's panes, when the target itself is on screen.
-    let shown: Set<TerminalTab.ID> =
-      onScreenTarget(forID: target.id) == nil
-      ? [] : Set(terminals.split(for: target)?.tabIDs ?? activeID.map { [$0] } ?? [])
     return tabs.map { tab in
       let isFocused = tab.id == activeID && isSelected
       let title: SidebarTerminalRowModel.TitleSource =
@@ -64,8 +57,7 @@ extension AppStore {
           hasUnread: notifications.count(tab: tab.id) > 0,
           runState: runCommand.runState(ofTab: tab.id, in: target.id),
           hasDiagnosis: terminals.codingAgentManager.banners[tab.id] != nil,
-          isFocused: isFocused, isVisibleInSplit: !isFocused && shown.contains(tab.id),
-          isPoppedOut: terminals.detachedTabIDs.contains(tab.id)),
+          isFocused: isFocused, isPoppedOut: terminals.detachedTabIDs.contains(tab.id)),
         tab: tab)
     }
   }
@@ -199,7 +191,6 @@ struct OpenSectionRow: Identifiable {
   var sid: SidebarID { model.sid }
   var target: TerminalTarget { model.target }
   var isSelected: Bool { model.isSelected }
-  var isVisibleInSplit: Bool { model.isVisibleInSplit }
   var isFolded: Bool { model.isFolded }
   var canFold: Bool { model.canFold }
 }
@@ -213,8 +204,6 @@ struct OpenSectionWorkroomRowModel: Equatable {
   let marks: WorkroomTabMarks
   /// The window's selected target, as the title bar's selected chip.
   let isSelected: Bool
-  /// On screen beside the selection, in the visible workroom split.
-  let isVisibleInSplit: Bool
   let isFolded: Bool
   /// How many tab rows it has under it.
   let tabCount: Int
@@ -235,7 +224,6 @@ struct OpenSectionTabRow: Identifiable {
   var sid: SidebarID { model.sid }
   var target: TerminalTarget { model.target }
   var isFocused: Bool { model.isFocused }
-  var isVisibleInSplit: Bool { model.isVisibleInSplit }
 }
 
 /// What a tab's Open row draws of it and of the window, comparable without reading its live title.
@@ -259,8 +247,6 @@ struct OpenSectionTabRowModel: Equatable {
   let hasDiagnosis: Bool
   /// The active tab of the selected target: the one with focus.
   let isFocused: Bool
-  /// On screen in another pane of a split, not focused.
-  let isVisibleInSplit: Bool
   /// Popped out into a window of its own (issue #172): its slot shows a placeholder.
   var isPoppedOut = false
 }

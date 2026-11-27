@@ -789,12 +789,14 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(try listRows(f), 5, "back, every project's rows are there")
   }
 
-  /// Renders past the views' cross-fade, so the view going has gone.
+  /// Renders until the views' cross-fade has ended, so the view going has gone: both Lists stay
+  /// mounted while it runs. Polled, not timed, so a busy runner only takes more passes.
   private func settleSwitch(_ f: Fixture) async throws {
-    for _ in 0..<6 {
+    for _ in 0..<50 {
       try await render(f)
-      try await Task.sleep(for: .milliseconds(60))
+      if tables(f).count == 1 { return }
     }
+    XCTFail("the view going is still mounted after 50 renders (over 15 s) of its cross-fade")
   }
 
   // MARK: Terminals section

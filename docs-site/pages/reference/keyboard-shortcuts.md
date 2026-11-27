@@ -127,22 +127,21 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 | Push | <kbd>⇧⌘P</kbd> |
 | Pull with Rebase | <kbd>⌥⇧⌘P</kbd> |
 
-<!-- stable -->
 ## Sidebar & Inspector
 
 | Action | Keys |
 | --- | --- |
-| Show Sidebar | <kbd>⌃⌘S</kbd> |
-| Sidebar: Terminals | <kbd>⌃⌘T</kbd> |
-| Sidebar: Projects | <kbd>⌃⌘P</kbd> |
-| Show Inspector | <kbd>⌘B</kbd> |
+| Show Sidebar (Nightly only) | <kbd>⌃⌘S</kbd> |
+| Sidebar: Open (Nightly only) | <kbd>⌃⌘T</kbd> |
+| Sidebar: Projects (Nightly only) | <kbd>⌃⌘P</kbd> |
+| Show Inspector (Nightly only) | <kbd>⌘B</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
 | Changes | <kbd>⌥⌘C</kbd> |
 | History | <kbd>⌥⌘Y</kbd> |
 | Pull Request | <kbd>⌥⌘P</kbd> |
 | Files | <kbd>⌥⌘F</kbd> |
 
-Nightly only: **Sidebar: Terminals** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. In the stable release **Show Sidebar** is **Projects** and **Show Inspector** is **Inspector**. See [Open and Projects](../app/projects.md#open-and-projects).
+Nightly only: **Sidebar: Open** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. In the stable release **Show Sidebar** is **Projects** and **Show Inspector** is **Inspector**. See [Open and Projects](../app/projects.md#open-and-projects).
 
 <!-- stable -->
 ## Navigation & Attention

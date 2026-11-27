@@ -283,7 +283,7 @@ struct WorkroomCommands: Commands {
       .disabled(!workroomCommandEnabled(hasRunTerminal))
   }
 
-  /// View ▸ Sidebar's Terminals or Projects: checked while the sidebar shows `view`. Choosing it,
+  /// View ▸ Sidebar's Open or Projects: checked while the sidebar shows `view`. Choosing it,
   /// checked or not, shows that view and a hidden sidebar: it is a pick, never an un-pick.
   private func sidebarViewBinding(_ view: SidebarView, shown: SidebarView?) -> Binding<Bool> {
     Binding(
@@ -481,10 +481,10 @@ struct WorkroomCommands: Commands {
           .shortcut(.projects)
           .disabled(modalBlocked || noSidebarContent)
         Divider()
-        Toggle("Terminals", isOn: sidebarViewBinding(.open, shown: shown))
+        Toggle(SidebarView.open.title, isOn: sidebarViewBinding(.open, shown: shown))
           .shortcut(.showOpenView)
           .disabled(modalBlocked || noSidebarContent)
-        Toggle("Projects", isOn: sidebarViewBinding(.projects, shown: shown))
+        Toggle(SidebarView.projects.title, isOn: sidebarViewBinding(.projects, shown: shown))
           .shortcut(.showProjectsView)
           .disabled(modalBlocked || noSidebarContent)
       }
