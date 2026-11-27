@@ -1,9 +1,11 @@
-//! `replay_…_prefer_an_ancestor` is ported from herdr-core's `resume.rs` tests (see the parent
-//! module's header), Licensed under the Apache License, Version 2.0, and changed for Workroom to
-//! send real report bodies through `apply`. The rest are Workroom's.
+//! `replay_…_prefer_an_ancestor` and `an_owners_exit_gets_a_grace` are ported from herdr-core's
+//! `resume.rs` tests (see the parent module's header), Licensed under the Apache License, Version
+//! 2.0, and changed for Workroom: the first sends real report bodies through `apply`, and the
+//! second runs on a monotonic clock and leaves out the rapid-loss guard. The rest are Workroom's.
 
 use super::*;
 use crate::terminal::process::Identity;
+use std::sync::{Arc, Mutex};
 
 const TOKEN: &str = "private-token";
 const NOW: u64 = 1_795_543_200;
@@ -131,6 +133,23 @@ fn an_accepted_report_is_the_sessions_record_without_its_arguments() {
 }
 
 #[test]
+fn a_newer_report_from_its_owner_replaces_the_record_and_a_clear_clears_it() {
+    let mut s = state();
+    let editor = owner(42, 1);
+    for (offset, program) in [(1, "vim"), (2, "nvim")] {
+        let report = body(42, NOW, &argv(&[program]));
+        s.apply(offset, &report, NOW, |_| checked(editor, &[]));
+        assert_eq!(s.recorded().map(|r| r.program), Some(program.into()));
+    }
+    let clear = body(42, NOW, "clear=1");
+    assert_eq!(
+        s.apply(3, &clear, NOW, |_| unreachable!()),
+        Outcome::Cleared
+    );
+    assert_eq!(s.recorded(), None);
+}
+
+#[test]
 fn a_report_without_a_folder_uses_its_owners() {
     let mut s = state();
     let report = body(41, NOW, &argv(&["nvim", "-S", "/state/session.vim"]));
@@ -243,6 +262,160 @@ fn an_owner_must_run_under_the_sessions_first_process_as_the_daemons_user() {
         Some(NotOwner::NotDescendant),
         "no first process known yet"
     );
+}
+
+#[test]
+fn an_owners_exit_gets_a_grace() {
+    let mut s = state();
+    let (owner, t0) = (owner(1, 1), Instant::now());
+    let at = |ms| t0 + Duration::from_millis(ms);
+    set(&mut s, 10, 60, owner, &[]);
+    assert_eq!(s.check_exit(owner, true, t0), Exit::Gone);
+    assert_eq!(s.check_exit(owner, true, at(1_999)), Exit::Unchanged);
+    assert!(s.choice().is_some(), "loss during the grace can resume");
+    assert_eq!(
+        s.check_exit(owner, true, at(2_000)),
+        Exit::Cleared {
+            program: "private-command".into()
+        }
+    );
+    assert!(s.choice().is_none());
+    assert!(
+        !set(&mut s, 10, 60, owner, &[]),
+        "the owner's word stays, so its report is still a replay"
+    );
+}
+
+#[test]
+fn an_owner_back_within_its_grace_starts_it_again_and_another_owners_record_is_left_alone() {
+    let mut s = state();
+    let (first, t0) = (owner(1, 1), Instant::now());
+    let at = |ms| t0 + Duration::from_millis(ms);
+    set(&mut s, 10, 60, first, &[]);
+    assert_eq!(s.check_exit(first, true, t0), Exit::Gone);
+    assert_eq!(s.check_exit(first, false, at(1_000)), Exit::Back);
+    assert_eq!(s.check_exit(first, true, at(2_500)), Exit::Gone);
+    assert_eq!(s.check_exit(first, true, at(4_000)), Exit::Unchanged);
+    // Its pid reused by a program that reported: the look at the first owner changes nothing.
+    let reused = owner(1, 70);
+    assert!(set(&mut s, 20, 60, reused, &[]));
+    assert_eq!(s.check_exit(first, true, at(9_000)), Exit::Unchanged);
+    assert_eq!(chosen(&s), Some(reused));
+}
+
+/// A session whose first process is `shell`, with a record owned by `owner`, shared as a session
+/// holds it.
+fn shared_with(shell: Owner, owner: Owner) -> SharedResume {
+    let mut s = state();
+    s.root = Some(shell);
+    assert!(set(&mut s, 10, NOW, owner, &[shell]));
+    Arc::new(Mutex::new(Some(s)))
+}
+
+fn recorded(shared: &SharedResume) -> bool {
+    shared
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .recorded()
+        .is_some()
+}
+
+#[test]
+fn a_record_clears_once_its_owner_has_been_gone_for_the_grace_while_the_shell_runs_on() {
+    let (shell, claude, t0) = (owner(10, 100), owner(20, 200), Instant::now());
+    let at = |ms| t0 + Duration::from_millis(ms);
+    let shared = shared_with(shell, claude);
+    let table = Mutex::new(vec![process(10, 100, 1, UID), process(20, 200, 10, UID)]);
+    let lookup = |pid| table.lock().unwrap().iter().copied().find(|p| p.pid == pid);
+    let watching = Watched {
+        cleared: Vec::new(),
+        watching: true,
+    };
+    assert_eq!(watch_owners(&shared, t0, lookup), watching, "it runs");
+    table.lock().unwrap().retain(|p| p.pid != 20);
+    assert_eq!(watch_owners(&shared, at(100), lookup), watching);
+    assert_eq!(watch_owners(&shared, at(2_099), lookup), watching);
+    assert!(recorded(&shared), "within the grace");
+    assert_eq!(
+        watch_owners(&shared, at(2_100), lookup),
+        Watched {
+            cleared: vec!["private-command".into()],
+            watching: false
+        }
+    );
+    assert!(!recorded(&shared));
+}
+
+#[test]
+fn a_pid_that_names_another_process_is_its_owner_gone() {
+    let (shell, claude, t0) = (owner(10, 100), owner(20, 200), Instant::now());
+    let shared = shared_with(shell, claude);
+    let table = [process(10, 100, 1, UID), process(20, 900, 10, UID)];
+    let lookup = |pid| table.iter().copied().find(|p| p.pid == pid);
+    watch_owners(&shared, t0, lookup);
+    let watched = watch_owners(&shared, t0 + EXIT_GRACE, lookup);
+    assert_eq!(watched.cleared, ["private-command"]);
+}
+
+/// The session ending: its shell exits, and the owner may well have gone just before it. Nothing
+/// clears then, so a record whose owner died less than `EXIT_GRACE` before its session ended is
+/// the session's last record.
+#[test]
+fn nothing_clears_while_the_sessions_shell_is_gone() {
+    let (shell, claude, t0) = (owner(10, 100), owner(20, 200), Instant::now());
+    let shared = shared_with(shell, claude);
+    let table = Mutex::new(vec![process(10, 100, 1, UID)]);
+    let lookup = |pid| table.lock().unwrap().iter().copied().find(|p| p.pid == pid);
+    watch_owners(&shared, t0, lookup);
+    table.lock().unwrap().clear();
+    for ms in [1_500, 2_000, 60_000] {
+        let watched = watch_owners(&shared, t0 + Duration::from_millis(ms), lookup);
+        assert!(watched.cleared.is_empty() && watched.watching, "{ms}");
+    }
+    assert!(recorded(&shared));
+}
+
+#[test]
+fn a_session_with_no_record_or_no_token_owes_no_look() {
+    let none: SharedResume = Arc::new(Mutex::new(None));
+    let empty: SharedResume = Arc::new(Mutex::new(Some(state())));
+    for shared in [none, empty] {
+        assert_eq!(
+            watch_owners(&shared, Instant::now(), |_| unreachable!()),
+            Watched::default()
+        );
+    }
+}
+
+/// The spec: a rejected report removes every record its owner has. A pid has one, and it goes,
+/// whatever the reason the report was rejected; another owner's record stays, and the rejection
+/// does not move the owner's time on.
+#[test]
+fn a_rejected_report_removes_its_owners_record_and_only_its() {
+    let (vim, other) = (owner(7, 1), owner(8, 1));
+    let malformed = body(7, NOW, "argv=");
+    let not_owned = body(7, NOW, &argv(&["vim"]));
+    type Reject = fn(u32) -> Result<Checked, NotOwner>;
+    let rejections: [(&[u8], Reject); 2] = [
+        (&malformed, |_| unreachable!()),
+        (&not_owned, |_| Err(NotOwner::NotDescendant)),
+    ];
+    for (report, find_owner) in rejections {
+        let mut s = state();
+        assert!(set(&mut s, 1, NOW - 5, vim, &[]));
+        assert!(set(&mut s, 2, NOW, other, &[]));
+        assert!(matches!(
+            s.apply(3, report, NOW, find_owner),
+            Outcome::NotAccepted { .. }
+        ));
+        assert_eq!(s.owners(), [other], "only the rejected owner's record went");
+        assert!(
+            set(&mut s, 4, NOW - 5, vim, &[]),
+            "a report as old as its last accepted one still counts"
+        );
+    }
 }
 
 #[test]

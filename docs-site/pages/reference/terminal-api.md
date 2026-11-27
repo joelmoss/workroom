@@ -999,7 +999,7 @@ How every reply that lists sessions gives one.
 | `cwd` | string or null | yes | The working directory of its foreground program. |
 | `id` | string | yes | The session's id, a hyphenated UUID. |
 | `label` | string or null | yes | The session's name, its tab's name in the app: the one the user gave its tab, `session.new`'s `title` or `session.label`'s, which are one name. Null when it has none. |
-| `resume` | object or null | yes | What its program last reported, over the Program Resume Protocol (OSC 7577), about how to start it again should the session be lost: its resume record. Never the command's arguments, which can hold secrets. Null when no program has reported one. |
+| `resume` | object or null | yes | What its program last reported, over the Program Resume Protocol (OSC 7577), about how to start it again should the session be lost: its resume record. Never the command's arguments, which can hold secrets. Null when no program has reported one, or once its program has cleared it or has exited, after a 2 s grace, while the session runs on. |
 | `resume.cwd` | string or null | yes | Where it would start: the folder it reported, else its own when it reported. |
 | `resume.program` | string | yes | The program the record starts, such as `claude`. |
 | `resume.reported_at` | integer | yes | When it reported, in milliseconds since the Unix epoch. |

@@ -326,8 +326,16 @@ pub fn spawn(sessions: SessionStore) {
 }
 
 /// One tick: the records, then the compression, which then also undoes what the records' reads
-/// re-inflated, then the unprobed requests whose grace has passed (#481). Whether another tick
-/// is owed without new output: a record to retry, or a request still waiting out its grace.
+/// re-inflated, then the unprobed requests whose grace has passed (#481), then the resume records
+/// whose owners have gone (#823). Whether another tick is owed without new output: a record to
+/// retry, a request still waiting out its grace, or a resume record whose owner is watched.
+///
+/// The resume owners are watched here, not on a thread of their own or per session: this is the
+/// one thread every daemon runs that already visits each session on a timer, and its 2 s
+/// `INTERVAL` is the protocol's exit grace, so a record clears 2 to 4 s after its owner exits.
+/// Their exit is not always followed by output (a wrapper's or a hook's owner, a program run in
+/// the background), so a session with a resume record keeps the thread ticking: one wakeup each
+/// `INTERVAL` while any program holds a record, a lookup per owner each.
 fn tick(
     sessions: &SessionStore,
     written: &mut HashSet<SessionId>,
@@ -335,8 +343,10 @@ fn tick(
 ) -> bool {
     flush(sessions, written, failing);
     sessions.compress_shadows();
-    let unprobed = sessions.promote_unprobed(std::time::Instant::now());
-    unprobed || !failing.is_empty()
+    let now = std::time::Instant::now();
+    let unprobed = sessions.promote_unprobed(now);
+    let resuming = sessions.watch_resume_owners(now);
+    unprobed || resuming || !failing.is_empty()
 }
 
 /// One tick: writes the screens that changed, and removes the records of sessions that ended.

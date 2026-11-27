@@ -15,26 +15,44 @@
 //! is chosen from the records whose owner runs under no other record's owner, and is the one among
 //! them that reported last: so a program's own child that reports does not displace it.
 //!
-//! The decisions in `apply` and the owner check are ported from herdr-core
-//! (herdrdev/herdr-core#429, `crates/herdr-core/src/resume.rs` at
+//! **When a record goes.** A `clear=1` report from its owner clears it, as does a newer accepted
+//! report replacing it. A report from its owner that is rejected (authenticated, but malformed, or
+//! from an owner that fails its check) removes it: the spec has a rejection remove every record
+//! its owner has, and a pid here has one. Its owner exiting while the session's shell runs on
+//! clears it once the owner has been gone for `EXIT_GRACE` (`watch_owners`). The session ending,
+//! its tab closed or its daemon or host gone, takes the whole state with it; the app keeps the
+//! record it last saw for a session that ended any way but its tab being closed (#824).
+//!
+//! The decisions in `apply`, the owner check and the exit grace (`check_exit`, `watch_owners`) are
+//! ported from herdr-core (herdrdev/herdr-core#429, `crates/herdr-core/src/resume.rs` at
 //! `0cb50d57832f3ebb69157ce7f023fbbc520181a8`), Licensed under the Apache License, Version 2.0
 //! (`resume/LICENSE`). Changed from the original for Workroom: the state is a session's, not a
 //! kept terminal's; each report's outcome is returned so the daemon can log why one did not count;
-//! the record carries when it was reported; and launching, exit grace and the rapid-loss guard
-//! are not here (#823, #825).
+//! the record carries when it was reported; the grace runs on a monotonic clock and a hand-off
+//! starts it again rather than carrying it; an owner that can't be read counts as gone, since
+//! `process::identity` doesn't tell that from an exit; a record is never cleared while the
+//! session's own shell is gone, which stands in for herdr's check that the terminal is healthy;
+//! each record that clears is returned for the daemon's log; and launching and the rapid-loss
+//! guard are not here (#825).
 
 mod protocol;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::terminal::process::Identity;
 use protocol::{Action, Ignored, Stream};
 
 /// The environment variable a session's token is in.
 pub(crate) const TOKEN_VARIABLE: &str = "OSC7577_TOKEN";
+
+/// How long a record's owner must stay gone, while its session's shell runs on, before the record
+/// clears. At logout or shutdown a program can exit just before its session does, and the spec
+/// would have that record kept; it says a second or two is enough.
+pub(crate) const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// The most pids one session tracks at once. A report from a new pid past it is not accepted.
 const MAX_OWNERS: usize = 256;
@@ -49,8 +67,8 @@ pub(crate) struct Owner {
     pub start: u64,
 }
 
-impl From<crate::terminal::process::Identity> for Owner {
-    fn from(identity: crate::terminal::process::Identity) -> Owner {
+impl From<Identity> for Owner {
+    fn from(identity: Identity) -> Owner {
         Owner {
             pid: identity.pid,
             start: identity.start,
@@ -69,6 +87,10 @@ struct Record {
     owner_cwd: Option<String>,
     /// The report's `time`, in Unix seconds.
     reported_at: u64,
+    /// When a look first found its owner gone (`check_exit`), until it is back or the grace has
+    /// passed. Not carried: the next program starts the grace again.
+    #[serde(skip)]
+    gone_since: Option<Instant>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -109,6 +131,19 @@ pub(crate) enum Outcome {
         reason: &'static str,
         program: Option<String>,
     },
+}
+
+/// What one look at a record's owner did (`Resume::check_exit`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Exit {
+    /// Nothing: the owner runs, its grace has not passed, or the record is another owner's now.
+    Unchanged,
+    /// The owner was found gone, which starts its grace.
+    Gone,
+    /// The owner was found running again before its grace passed.
+    Back,
+    /// The owner stayed gone for the grace, so its record, which started `program`, cleared.
+    Cleared { program: String },
 }
 
 /// Why an owner check failed.
@@ -213,6 +248,7 @@ impl Carried {
                         reported_cwd: Some("/work".into()),
                         owner_cwd: None,
                         reported_at: 1_795_543_200,
+                        gone_since: None,
                     }),
                 },
             )]),
@@ -336,6 +372,7 @@ impl Resume {
                         reported_cwd: cwd,
                         owner_cwd: checked.cwd,
                         reported_at: report.time,
+                        gone_since: None,
                     }),
                     Outcome::Accepted {
                         program: program.clone().unwrap_or_default(),
@@ -350,7 +387,8 @@ impl Resume {
                 ),
             },
             Some(Action::Clear) => (None, Outcome::Cleared),
-            // Authenticated and malformed: rejected, which removes the owner's record.
+            // Authenticated and malformed: rejected, which removes every record the owner has, and
+            // a pid has one.
             None => (
                 None,
                 Outcome::NotAccepted {
@@ -387,6 +425,43 @@ impl Resume {
             })
             .max_by_key(|(offset, _)| *offset)
             .map(|(_, record)| record)
+    }
+
+    /// Every record's owner.
+    fn owners(&self) -> Vec<Owner> {
+        self.words
+            .values()
+            .filter_map(|word| word.record.as_ref().map(|record| record.owner))
+            .collect()
+    }
+
+    /// One look at `owner`, found `gone` (or its pid now another process's) at `now`: starts its
+    /// record's grace, ends it if the owner is back, and clears the record once it has been gone
+    /// for `EXIT_GRACE`. A record that is no longer `owner`'s (a newer report replaced it, or its
+    /// pid was reused) is left alone. The `Word` stays, so a replay is still refused.
+    fn check_exit(&mut self, owner: Owner, gone: bool, now: Instant) -> Exit {
+        let Some(word) = self.words.get_mut(&owner.pid) else {
+            return Exit::Unchanged;
+        };
+        let Some(record) = word.record.as_mut().filter(|record| record.owner == owner) else {
+            return Exit::Unchanged;
+        };
+        match record.gone_since {
+            Some(since) if gone && now.saturating_duration_since(since) >= EXIT_GRACE => {
+                let program = program_name(&record.argv);
+                word.record = None;
+                Exit::Cleared { program }
+            }
+            Some(_) if !gone => {
+                record.gone_since = None;
+                Exit::Back
+            }
+            None if gone => {
+                record.gone_since = Some(now);
+                Exit::Gone
+            }
+            _ => Exit::Unchanged,
+        }
     }
 
     /// The session's resume record, as the terminal API shows it.
@@ -431,7 +506,7 @@ fn check_owner(
     root: Option<Owner>,
     uid: u32,
     pid: u32,
-    lookup: impl Fn(u32) -> Option<crate::terminal::process::Identity>,
+    lookup: impl Fn(u32) -> Option<Identity>,
 ) -> Result<Checked, NotOwner> {
     let root = root.ok_or(NotOwner::NotDescendant)?;
     let owner = lookup(pid).ok_or(NotOwner::Gone)?;
@@ -456,6 +531,69 @@ fn check_owner(
         ancestors,
         cwd: crate::terminal::process::working_directory(pid as i32),
     })
+}
+
+/// What one look at a session's record owners found (`watch_owners`).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Watched {
+    /// The programs whose records cleared, their owners gone for `EXIT_GRACE`.
+    pub cleared: Vec<String>,
+    /// Whether a record is left, so another look is owed.
+    pub watching: bool,
+}
+
+/// One look, at `now`, at whether each record's owner in `shared` still runs, with `lookup`
+/// (`process::identity`): an owner gone, or whose pid now names another process, starts its
+/// grace, and its record clears once it has stayed gone for `EXIT_GRACE` (`Resume::check_exit`).
+/// While the session's own shell is gone nothing clears: the session is ending, and its records
+/// must outlast it (#824).
+///
+/// The lookups run with the state's lock released, so a read waits on it only while the owners are
+/// copied and while what was found is applied. A report accepted meanwhile is safe: it replaces
+/// its pid's record with one `check_exit` sees is not the owner it looked up, or is the same owner
+/// again, which is then running.
+pub(crate) fn watch_owners(
+    shared: &SharedResume,
+    now: Instant,
+    lookup: impl Fn(u32) -> Option<Identity>,
+) -> Watched {
+    let (root, owners) = {
+        let state = crate::util::lock_or_recover(shared);
+        let Some(state) = state.as_ref() else {
+            return Watched::default();
+        };
+        (state.root, state.owners())
+    };
+    if owners.is_empty() {
+        return Watched::default();
+    }
+    let running = |owner: Owner| lookup(owner.pid).map(Owner::from) == Some(owner);
+    // A record is only accepted once the first process is known, so `root` is set here.
+    if !root.is_some_and(running) {
+        return Watched {
+            cleared: Vec::new(),
+            watching: true,
+        };
+    }
+    let found: Vec<(Owner, bool)> = owners
+        .into_iter()
+        .map(|owner| (owner, !running(owner)))
+        .collect();
+    let mut state = crate::util::lock_or_recover(shared);
+    let Some(state) = state.as_mut() else {
+        return Watched::default();
+    };
+    let cleared = found
+        .into_iter()
+        .filter_map(|(owner, gone)| match state.check_exit(owner, gone, now) {
+            Exit::Cleared { program } => Some(program),
+            _ => None,
+        })
+        .collect();
+    Watched {
+        cleared,
+        watching: !state.owners().is_empty(),
+    }
 }
 
 /// The program a command starts, by its short name: the basename of `argv[0]`, or, for one that
