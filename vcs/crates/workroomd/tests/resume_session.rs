@@ -359,6 +359,7 @@ fn fails_at_once_or_is_declined(shell: &str) {
             let status = status(&socket, session);
             assert!(status["resume"].is_null(), "{shell}: {status}");
             assert!(status.get("resumeStarted").is_none(), "{shell}: {status}");
+            assert_eq!(status["resumeDeclined"], true, "{shell}: {status}");
         }
     }
     let launches = socket.with_extension("resume");
@@ -367,4 +368,213 @@ fn fails_at_once_or_is_declined(shell: &str) {
         0,
         "a declined resume writes no launch file"
     );
+}
+
+/// Value: protects=a resume whose shell never runs Workroom's hook (a `.zshrc` that resets
+/// `precmd_functions`, one that ends in `exec fish`) being declined at its first prompt: the
+/// daemon claims and removes its launch file, so nothing starts the command later, drops the
+/// record it seeded and says `resumeDeclined`, so the app forgets the record rather than retry it
+/// at every restart; and a session that ends before anything declined it removing its file;
+/// fails_when=the first OSC 133 prompt stops declining, the seeded record stays, the file is left
+/// behind, or the command runs anyway; why_new=#825's second review (a declined resume never
+/// forgot its record); seam=none
+#[test]
+fn a_shell_that_never_runs_the_hook_declines_the_resume_at_its_first_prompt() {
+    if is_root() || !common::has_terminal_state() {
+        eprintln!("skipped: needs a daemon with terminal-state, not running as root");
+        return;
+    }
+    for shell in hooked_shells() {
+        declined_at_first_prompt(shell);
+    }
+}
+
+fn declined_at_first_prompt(shell: &str) {
+    let name = shell.rsplit('/').next().unwrap();
+    let workspace = Workspace::new(&format!("resume-decline-{name}"));
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let home = home(&workspace, "decline");
+    // Only Workroom's hook goes: zsh's is a precmd function by now, bash's is installed after the
+    // startup files, from the variable this unsets.
+    std::fs::write(
+        home.join(".zshrc"),
+        "PS1='PROMPT> '\nprecmd_functions=(${precmd_functions:#_workroom_resume})\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home.join(".bashrc"),
+        "PS1='PROMPT> '\nunset __workroom_resume_file\n",
+    )
+    .unwrap();
+    let launches = socket.with_extension("resume");
+    let left = || std::fs::read_dir(&launches).map_or(0, |dir| dir.count());
+
+    let session = "ae5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e15";
+    let file = app_launch_file(
+        &workspace,
+        session,
+        &["/bin/echo", "SHOULD-NOT-RUN"],
+        &workspace,
+    );
+    let (mut client, mut reader) = restore(&socket, session, shell, &home, &file);
+    assert!(
+        wait_for(
+            Duration::from_secs(30),
+            || status(&socket, session)["resumeDeclined"] == true
+        ),
+        "{shell}: {}",
+        status(&socket, session)
+    );
+    let declined = status(&socket, session);
+    assert!(declined["resume"].is_null(), "{shell}: {declined}");
+    assert!(
+        declined.get("resumeStarted").is_none(),
+        "{shell}: {declined}"
+    );
+    assert_eq!(left(), 0, "{shell}: the daemon claimed its own launch file");
+    type_into(&mut client, "echo \"PLAIN-$((40+2))\"\n");
+    let plain = reader
+        .read_until("PLAIN-42", Duration::from_secs(10))
+        .to_string();
+    assert!(plain.contains("PLAIN-42"), "{shell}: {plain}");
+    assert!(!plain.contains("SHOULD-NOT-RUN"), "{shell}: {plain}");
+
+    // A shell that sends no prompt mark (its precmd functions all gone, Ghostty's with them), and
+    // ends before the daemon's wait runs out: its file goes with it.
+    if name == "zsh" {
+        std::fs::write(home.join(".zshrc"), "PS1='PROMPT> '\nprecmd_functions=()\n").unwrap();
+        let session = "ae5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e16";
+        let file = app_launch_file(
+            &workspace,
+            session,
+            &["/bin/echo", "SHOULD-NOT-RUN"],
+            &workspace,
+        );
+        let (mut client, mut reader) = restore(&socket, session, shell, &home, &file);
+        type_into(&mut client, "echo \"QUIET-$((40+2))\"\n");
+        reader.read_until("QUIET-42", Duration::from_secs(30));
+        assert_eq!(left(), 1, "waiting on a hook that may still run");
+        type_into(&mut client, "exit\n");
+        assert!(
+            wait_for(Duration::from_secs(10), || left() == 0),
+            "a session that ends removes its unclaimed launch file"
+        );
+    }
+}
+
+/// The record that resumes the stand-in `claude` (`stand_in_claude`) with the Claude profile
+/// `profile`, as Workroom's Claude hook writes one for a profile other than the default
+/// (ADR 0082): `env CLAUDE_CONFIG_DIR=… claude …`.
+fn claude_record(profile: &str, mark: &str) -> Vec<String> {
+    [
+        "env",
+        &format!("CLAUDE_CONFIG_DIR={profile}"),
+        &format!("{STAND_IN}={mark}"),
+        "claude",
+        "stand_in_claude",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ]
+    .map(str::to_string)
+    .to_vec()
+}
+
+/// What makes `stand_in_claude` act as the stand-in, its mark the value.
+const STAND_IN: &str = "WORKROOM_STAND_IN_CLAUDE";
+
+/// Not a test: the stand-in `claude` that `a_resumed_claude_is_named_profiled_and_prompted_as_claude`
+/// resumes, a copy of this test binary named `claude` running only this. A script would do but
+/// for macOS, which keeps a platform binary's environment (`/bin/sh`'s) from the profile's read,
+/// as it never does a real `claude`'s. With bracketed paste on, as Claude Code's prompt has it, it
+/// says `AGENT-<mark>` and reads its input until it closes.
+#[test]
+#[ignore = "a stand-in program the resume tests run, not a test"]
+fn stand_in_claude() {
+    use std::io::Write;
+    let Some(mark) = std::env::var_os(STAND_IN) else {
+        return;
+    };
+    let mut stdout = std::io::stdout();
+    let _ = write!(stdout, "\x1b[?2004hAGENT-{}\r\n", mark.to_string_lossy());
+    let _ = stdout.flush();
+    let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+}
+
+/// Value: protects=a resumed program reading as itself wherever its session's foreground is
+/// named, though its helper leads the shell's job (#825): `claude` as the session list's command
+/// (the pane's title and Claude detection after a restart), its profile (only ever read for a
+/// confirmed `claude`), and `terminal.prompt` taking it as a coding agent; fails_when=the helper's
+/// name (`workroom`) is shown, the profile is not read, or a prompt is `NotAnAgent`;
+/// why_new=#825's second review (the foreground was the helper's); seam=a stand-in `claude` on
+/// PATH (`stand_in_claude`)
+#[test]
+fn a_resumed_claude_is_named_profiled_and_prompted_as_claude() {
+    if is_root() {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
+    let Some(shell) = hooked_shells().into_iter().next() else {
+        return;
+    };
+    let workspace = Workspace::new("resume-claude");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let home = home(&workspace, "claude");
+    let bin = workspace.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), bin.join("claude")).unwrap();
+    std::fs::write(
+        home.join(".zshrc"),
+        format!("PS1='PROMPT> '\npath=({} $path)\n", bin.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        home.join(".bashrc"),
+        format!("PS1='PROMPT> '\nPATH={}:$PATH\n", bin.display()),
+    )
+    .unwrap();
+    let profile = workspace.join("claude-profile");
+    let session = "be5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e17";
+    let argv = claude_record(profile.to_str().unwrap(), "RESUMED");
+    let words: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let file = app_launch_file(&workspace, session, &words, &workspace);
+    let (_client, mut reader) = restore(&socket, session, shell, &home, &file);
+    reader.read_until("AGENT-RESUMED", Duration::from_secs(30));
+
+    let listed = || list_sessions_line(&socket, session);
+    assert!(
+        wait_for(Duration::from_secs(10), || listed().ends_with(" claude")),
+        "{shell}: the program, not its helper: {}",
+        listed()
+    );
+    let descriptors = common::control(
+        &socket,
+        wr_protocol::frame::Frame::control(wr_protocol::frame::FrameKind::List),
+    );
+    let payload = String::from_utf8_lossy(&descriptors.payload).into_owned();
+    assert!(
+        payload.contains("claude_profile") && payload.contains(profile.to_str().unwrap()),
+        "{shell}: its Claude profile is read: {payload:?}"
+    );
+    if common::has_terminal_state() {
+        let run = Command::new(common::daemon_binary())
+            .args(["prompt", session, "hello", "--json"])
+            .env("WORKROOM_DAEMON", &socket)
+            .output()
+            .expect("prompt");
+        let envelope: Value = serde_json::from_slice(&run.stdout).unwrap_or_default();
+        assert_eq!(envelope["ok"], true, "{shell}: {envelope}");
+    }
+}
+
+/// `workroom list`'s line for `session`, or empty.
+fn list_sessions_line(socket: &Path, session: &str) -> String {
+    common::list_sessions(socket)
+        .lines()
+        .find(|line| line.starts_with(session))
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
 }

@@ -220,18 +220,24 @@ pub(super) fn read_session(
         // Resume reports are read under the attachment lock too, so a hand-off's freeze carries a
         // stream offset that matches the bytes it carries (`frozen`); what each did is logged once
         // the locks are released.
-        let (read, clients, answer, published, waiting, resumed) = {
+        // A resume (#825) whose helper had not reported by the end of a read that brought the
+        // shell's prompt (OSC 133) is declined once the locks are released: the hook runs the
+        // helper before the first prompt is drawn, so a prompt first means it never ran.
+        let (read, clients, answer, published, waiting, resumed, declined) = {
             let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
             let mut answer = Vec::new();
             let mut published = None;
             let mut waiting = None;
             let mut resumed = Vec::new();
+            let mut declined = None;
             let clients = match read {
                 Ok(n) if n > 0 => {
                     // The record as the reports left it, copied out under the resume lock and put
                     // in the status under the shadow's, which the write below commits (#824).
+                    // Fed before the write, so a report and a prompt in one read count as started.
                     let mut record = None;
+                    let mut unreported = None;
                     if let Some(resume) = &resume
                         && let Some(state) = lock_or_recover(resume).as_mut()
                     {
@@ -239,6 +245,7 @@ pub(super) fn read_session(
                         if !resumed.is_empty() {
                             record = Some(state.whole());
                         }
+                        unreported = state.waiting_file();
                     }
                     // A resumed program that started, or failed at once (#825): the app's toast
                     // says so.
@@ -263,8 +270,13 @@ pub(super) fn read_session(
                         }
                         shadow
                             .watch_for_transfers(held.clients.iter().any(|c| c.transfer.is_some()));
+                        let prompts = |shadow: &mut Shadow| shadow.status().map(|s| s.prompts());
+                        let before = prompts(&mut shadow);
                         let (replies, changed) =
                             shadow.write_from_pty(&buffer[..n], || pty.foreground_pgid());
+                        if prompts(&mut shadow) != before {
+                            declined = unreported;
+                        }
                         answer = replies;
                         published = changed.and_then(|blocked| {
                             let status = shadow.status()?;
@@ -302,7 +314,7 @@ pub(super) fn read_session(
                 }
                 _ => Vec::new(),
             };
-            (read, clients, answer, published, waiting, resumed)
+            (read, clients, answer, published, waiting, resumed, declined)
         };
         for outcome in resumed {
             note_resume(id, outcome);
@@ -320,6 +332,16 @@ pub(super) fn read_session(
         }
         if let Some(published) = published {
             hooks.status_changed(id, published);
+        }
+        // After the read's own status, whose revision is older.
+        if let (Some(file), Some(resume)) = (declined, &resume) {
+            sessions.decline_resume(
+                id,
+                &file,
+                (resume, &attached, &shadow),
+                "its shell's first prompt came before its helper reported, so it ran no \
+                 Workroom hook",
+            );
         }
 
         // "The child is gone" looks different on each platform: reading a pty master whose child
@@ -414,6 +436,14 @@ pub(super) fn read_session(
                     Frame::new(FrameKind::Exited, exit_code(status).to_be_bytes().to_vec()),
                 );
                 deliver(&attached, &target, &bytes, &hooks);
+            }
+            // A resume whose helper never claimed its launch file (#825): the one path this daemon
+            // wrote for this session goes with it (`launch::discard`).
+            let unclaimed = resume
+                .as_ref()
+                .and_then(|resume| lock_or_recover(resume).as_ref()?.waiting_file());
+            if let Some(file) = unclaimed {
+                crate::terminal::resume::launch::discard(&file, id);
             }
             return;
         }

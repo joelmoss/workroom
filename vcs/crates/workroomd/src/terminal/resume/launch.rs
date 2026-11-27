@@ -5,15 +5,24 @@
 //! **How a record is run.** The session's shell starts as it would have, its own login shell with
 //! Ghostty's integration, and is told of the launch file in its environment (`prepare`:
 //! `FILE_VARIABLE`, and the helper in `HELPER_VARIABLE`). Workroom's hook for that shell
-//! (`daemon::bin_dir`: zsh's `.zshenv`, bash's `ENV`, fish's `vendor_conf.d`) takes both out of
-//! the environment before any startup file runs, and at the first prompt, once the startup files
-//! have set PATH, runs `<helper> resume-launch <file>` as the shell's first foreground job. So the
+//! (`daemon::bin_dir`: zsh's `.zshenv`, bash's `ENV`; only these two) takes both out of the
+//! environment before any startup file runs, and at the first prompt, once the startup files have
+//! set PATH, runs `<helper> resume-launch <file>` as the shell's first foreground job. So the
 //! program is a job of the pane's interactive shell, as one the user typed: ^Z suspends it to that
 //! shell's prompt, `fg` brings it back, and quitting it leaves the prompt in its folder. Only the
 //! file's path is ever in the shell's environment or the job's words, never the command, and the
-//! hook runs no line the shell's history keeps. A shell with no such hook (sh, dash, ksh, nu,
-//! elvish, macOS's own bash, which Ghostty's integration skips, or any session with no hooks
-//! folder) is not resumed: it starts as a new shell (`bin_path::hooked`).
+//! hook runs no line the shell's history keeps. A shell with no such hook (fish, sh, dash, ksh,
+//! nu, elvish, macOS's own bash 3.2, which Ghostty's integration skips, or any session with no
+//! hooks folder) is not resumed: it starts as a new shell (`bin_path::hooked`), and the daemon
+//! declines the resume at once.
+//!
+//! **A hook that never runs.** A startup file can keep the hook from running: a `.zshrc` that
+//! ends in `exec fish`, or that resets `precmd_functions`. The hook runs the helper before the
+//! first prompt is drawn, so the shell's first OSC 133 prompt arriving before the helper reported
+//! means it never ran; a shell whose prompt sends no OSC 133 is given `DECLINE_AFTER` instead.
+//! Either way the daemon declines the resume by claiming the launch file itself, so no helper can
+//! start the program later, and says `resumeDeclined` (`SessionStore::decline_resume`). A session
+//! that ends with its file unclaimed removes it.
 //!
 //! **The helper.** `resume-launch` claims the launch file, goes to the record's folder and finds
 //! the command on PATH, then forks. The child reports the record over OSC 7577 as its own pid (so
@@ -381,15 +390,16 @@ pub(crate) fn discard(file: &Path, id: SessionId) {
     }
 }
 
-/// An OSC 7577 report from this process, signed with the session's token, for its pty: `fields`
-/// after `pid` and `time`. `None` with no token, so nothing is reported.
-fn report(fields: &str) -> Option<Vec<u8>> {
+/// An OSC 7577 report for process `pid` (this one, or its child it reports for), signed with the
+/// session's token, for its pty: `fields` after `pid` and `time`. `None` with no token, so nothing
+/// is reported.
+fn report(pid: u32, fields: &str) -> Option<Vec<u8>> {
     let token = std::env::var(super::TOKEN_VARIABLE).ok()?;
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    let body = format!("pid={}:time={now}:{fields}", std::process::id());
+    let body = format!("pid={pid}:time={now}:{fields}");
     let mac = super::protocol::mac(body.as_bytes(), &token);
     Some(format!("\x1b]7577;{body}:mac={mac}\x07").into_bytes())
 }
@@ -410,11 +420,14 @@ fn set_report(launch: &Launch) -> Option<Vec<u8>> {
         .iter()
         .map(|word| crate::util::base64(word.as_bytes()))
         .collect();
-    report(&format!(
-        "argv={}:cwd={}",
-        words.join(","),
-        crate::util::base64(launch.cwd.as_bytes())
-    ))
+    report(
+        std::process::id(),
+        &format!(
+            "argv={}:cwd={}",
+            words.join(","),
+            crate::util::base64(launch.cwd.as_bytes())
+        ),
+    )
 }
 
 /// Whether a program's exit `status` is a failure to resume: not 0, and not ^C (130), which is
@@ -426,26 +439,32 @@ pub(crate) fn failed(status: i32) -> bool {
 /// `workroomd resume-launch <file>`: claims the launch file, goes to its folder and runs its
 /// command as a child that reports the record as its own pid, waiting for it as the module says.
 /// Its status is the command's, or 128 and its signal; 127 for a command it could not find, else
-/// 126, when it could not start. Either way a failure is reported first.
+/// 126, when it could not start. Either way a failure is reported first: as the child's pid when
+/// the child failed within `FAILED_WITHIN` of its start, so the record it reported clears at once
+/// (the spec lets a helper report for another process), else as this process's, so a program that
+/// ran for long keeps its record through the exit grace, as one killed at a logout must.
 pub fn run_launch(args: &[String]) -> std::process::ExitCode {
-    let status = launch_and_wait(args);
+    let (status, child) = launch_and_wait(args);
     if failed(status) {
-        send(report(&format!("clear=1:workroomexit={status}")));
+        let pid = child
+            .filter(|(_, started)| started.elapsed() < FAILED_WITHIN)
+            .map_or(std::process::id(), |(pid, _)| pid);
+        send(report(pid, &format!("clear=1:workroomexit={status}")));
     }
     std::process::ExitCode::from(u8::try_from(status).unwrap_or(u8::MAX))
 }
 
-/// `run_launch` up to its report: the status it ends with.
-fn launch_and_wait(args: &[String]) -> i32 {
+/// `run_launch` up to its report: the status it ends with, and the child it forked, with when.
+fn launch_and_wait(args: &[String]) -> (i32, Option<(u32, std::time::Instant)>) {
     let Some(file) = args.get(1) else {
         eprintln!("usage: workroomd resume-launch <file>");
-        return 126;
+        return (126, None);
     };
     let launch = match claim_launch(Path::new(file), None) {
         Ok(launch) => launch,
         Err(error) => {
             eprintln!("workroom: couldn't resume the program: {error}\r");
-            return 126;
+            return (126, None);
         }
     };
     let program = super::program_name(&launch.argv);
@@ -453,18 +472,19 @@ fn launch_and_wait(args: &[String]) -> i32 {
         Ok(command) => command,
         Err(error) => {
             eprintln!("workroom: couldn't resume {program}: {error}\r");
-            return if error.kind() == io::ErrorKind::NotFound {
+            let status = if error.kind() == io::ErrorKind::NotFound {
                 127
             } else {
                 126
             };
+            return (status, None);
         }
     };
     match run_child(&launch, &command) {
-        Ok(status) => status,
+        Ok((status, child)) => (status, Some(child)),
         Err(error) => {
             eprintln!("workroom: couldn't resume {program}: {error}\r");
-            126
+            (126, None)
         }
     }
 }
@@ -479,8 +499,8 @@ struct Command {
 const PROGRAMS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP];
 
 /// Forks: the child reports `launch` as its own pid and `execv`s `command`; this process waits for
-/// it as the module says. The child's status, as a shell reads it.
-fn run_child(launch: &Launch, command: &Command) -> io::Result<i32> {
+/// it as the module says. The child's status, as a shell reads it, and its pid and start.
+fn run_child(launch: &Launch, command: &Command) -> io::Result<(i32, (u32, std::time::Instant))> {
     let mut pointers: Vec<*const libc::c_char> =
         command.words.iter().map(|word| word.as_ptr()).collect();
     pointers.push(std::ptr::null());
@@ -515,11 +535,12 @@ fn run_child(launch: &Launch, command: &Command) -> io::Result<i32> {
             libc::sigprocmask(libc::SIG_SETMASK, &before, std::ptr::null_mut());
             return Err(error);
         }
+        let started = std::time::Instant::now();
         for signal in PROGRAMS {
             libc::signal(signal, libc::SIG_IGN);
         }
         libc::sigprocmask(libc::SIG_SETMASK, &before, std::ptr::null_mut());
-        Ok(wait_for(child))
+        Ok((wait_for(child), (child.unsigned_abs(), started)))
     }
 }
 

@@ -478,6 +478,8 @@ pub(crate) fn launch<T>(
     let resumed = resume
         .filter(|_| !run && invocation.interactive)
         .and_then(|resume| resumed(sessions, id, &invocation, resume));
+    // Asked to resume and can't: the app is told at once (`resumeDeclined`).
+    let declined = resume.is_some() && resumed.is_none();
     let (invocation, record, launch_file) = match resumed {
         Some((prepared, record)) => (prepared.invocation, Some(record), Some(prepared.file)),
         None => (invocation, None, None),
@@ -504,8 +506,10 @@ pub(crate) fn launch<T>(
         },
         |info| {
             // Before the reader starts, so the session's first status carries the record.
-            if let Some(record) = record {
-                sessions.resuming(id, record);
+            if let (Some(record), Some(file)) = (record, launch_file.clone()) {
+                sessions.resuming(id, record, file);
+            } else if declined {
+                sessions.resume_declined_at_start(id);
             }
             register(info).map_err(|reason| {
                 failure = Some(reason);

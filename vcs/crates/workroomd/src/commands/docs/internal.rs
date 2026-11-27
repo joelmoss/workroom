@@ -846,8 +846,20 @@ const STREAM_EVENTS: &[StreamEvent] = &[
                 "`true`, sent only then and in every event after: the program the session was \
                  started to resume has started, its helper's report of the record accepted, so \
                  the pane says it resumed. Left out of a session that resumes nothing, or whose \
-                 resume the daemon declined (its folder is gone, or its shell has no Workroom \
-                 hook). A hand-off's next program doesn't carry it.",
+                 resume the daemon declined (`resumeDeclined`). A hand-off's next program doesn't \
+                 carry it.",
+            ),
+            (
+                "resumeDeclined",
+                "`true`, sent only then and in every event after: the daemon declined the resume \
+                 the session was started for, so the pane says it got a new shell and the tab \
+                 forgets the record. Sent from the session's first event when the record's folder \
+                 is gone or its shell has no Workroom hook (only zsh and bash have one); else at \
+                 the shell's first OSC 133 prompt when its helper had not reported (a startup file \
+                 kept the hook from running), or 30 s after the session started for a shell whose \
+                 prompt sends no OSC 133. The daemon claims the unused launch file first, so \
+                 nothing starts the program later, and the record it seeded goes with it. A \
+                 hand-off's next program doesn't carry it.",
             ),
             (
                 "resumeFailed",
