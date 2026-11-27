@@ -174,11 +174,12 @@ final class RunCommands: ObservableObject {
     return runSessions(in: sessions, workroom: workroom)
   }
 
-  /// A run session on a workroom's host (D7): its id, and its label, the name the Mac that started
-  /// it gives its tab (its command, unless renamed there), which names the tab another Mac adopts
-  /// it in (`TerminalPanes.addRestoredRunTab`).
+  /// A run session on a workroom's host (D7), as another Mac adopts it
+  /// (`TerminalPanes.addRestoredRunTab`): its id, its command as the Mac that started it ran it
+  /// (nil from an older daemon), and its label, the name that Mac gives its tab.
   struct LiveRun: Equatable, Sendable {
     let id: UUID
+    let command: String?
     let label: String?
   }
 
@@ -191,7 +192,9 @@ final class RunCommands: ObservableObject {
         descriptor.value(forMetadataKey: RunSessionKey.openedBy) == nil,
         let id = descriptor.identifier.uuid
       else { return nil }
-      return LiveRun(id: id, label: descriptor.value(forMetadataKey: SessionMetadataKey.title))
+      return LiveRun(
+        id: id, command: descriptor.value(forMetadataKey: SessionMetadataKey.runCommand),
+        label: descriptor.value(forMetadataKey: SessionMetadataKey.title))
     }
   }
 }

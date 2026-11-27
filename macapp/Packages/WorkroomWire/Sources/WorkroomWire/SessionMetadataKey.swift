@@ -3,6 +3,11 @@ public enum SessionMetadataKey {
   public static let workroom = "workroom"
   public static let tab = "tab"
   public static let title = "title"
+  /// A run session's command, as the app that started it asked for it (#836). The daemon lists it
+  /// from the `WORKROOM_SESSION_COMMAND` a run's attach already carries, so it has no variable of its
+  /// own here; absent for a shell, a command over the daemon's bound, or an older daemon's run.
+  /// Not `command`, which the list gives a session's foreground program.
+  public static let runCommand = "run_command"
   /// When the daemon made the session, in milliseconds since the epoch. The daemon adds it itself, so
   /// it has no environment variable (#255).
   public static let created = "created"

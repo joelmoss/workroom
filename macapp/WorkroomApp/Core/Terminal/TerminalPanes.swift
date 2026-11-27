@@ -2074,19 +2074,24 @@ final class TerminalPanes {
   /// the workroom's host (D7). Attached as a restored pane, so a session that has gone meanwhile is
   /// never started again.
   ///
-  /// Named by the session's `label`, the name the Mac that started it gives its tab: its command,
-  /// which can differ from this Mac's. A label is what tells it here, since the daemon lists no
-  /// run's command; the tab shows it as the name it has unnamed, not as a rename, so the program's
-  /// own title still outranks it and the label sync agrees rather than pinning it. With no label to
-  /// go by, it is named by `command`, this Mac's.
+  /// Named by `runCommand`, the command its daemon lists it with (#836): what the Mac that started
+  /// it runs, which can differ from this Mac's `command`. Its label is then weighed as any run
+  /// tab's is (`SessionLabels`): the command, or the "Run" older builds labelled runs with, names
+  /// it nothing, and any other label is the name the user gave it, a rename this Mac can clear.
+  ///
+  /// A daemon from before #836 lists no command, and nor does one for a command over its bound.
+  /// Then the `label` names the tab as the name it has unnamed, since that Mac's command is what it
+  /// most likely is; a rename there shows the same, but as a name the program's title outranks.
+  /// With no label either, it is named by `command`, this Mac's.
   @discardableResult
   func addRestoredRunTab(
-    for target: TerminalTarget, command: String, sessionID: UUID, label: String? = nil,
-    focus: Bool
+    for target: TerminalTarget, command: String, sessionID: UUID, runCommand: String? = nil,
+    label: String? = nil, focus: Bool
   ) -> TerminalTab {
+    let name = runCommand.flatMap(CommandName.init(command:)) ?? Self.adoptedRunName(label: label)
     let tab = makeRunTab(
       for: target, command: command, cwd: target.path, runSession: true, sessionID: sessionID,
-      name: Self.adoptedRunName(label: label))
+      name: name)
     insert(tab, for: target)
     if focus {
       setFocused(tab.id, for: target.id)
@@ -2151,8 +2156,8 @@ final class TerminalPanes {
     return tab
   }
 
-  /// The name a run tab adopted from another Mac takes from its session's `label`
-  /// (`addRestoredRunTab`): nil for none, a numbered default, or the "Run" every run session was
+  /// The name a run tab adopted from another Mac takes from its session's `label` when its daemon
+  /// lists no command (`addRestoredRunTab`): nil for none, a numbered default, or the "Run" every run session was
   /// labelled before run tabs were named by their command, which name no command.
   nonisolated static func adoptedRunName(label: String?) -> CommandName? {
     guard let label = cleanedName(label), label != "Run", !TerminalState.isNumberedName(label)

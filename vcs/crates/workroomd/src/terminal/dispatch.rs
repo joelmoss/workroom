@@ -846,7 +846,8 @@ fn encode_descriptor_list(sessions: &[SessionInfo]) -> Vec<u8> {
 /// out in one list reply (`list_reply`), so one long title must not be able to fill it.
 const MAX_TITLE_BYTES: usize = 256;
 
-/// What the app said about a session it creates: its workroom and title, from the
+/// What the app said about a session it creates: its workroom and title (and a run session's
+/// command, `run::COMMAND_KEY`), from the
 /// variables it puts in the attach command's environment (`PersistentSessionService.launchEnvironment`,
 /// mapped through `SessionMetadataKey.environmentVariables`), which the attach client forwards with
 /// the rest of its environment. Under the keys the app reads them back by (`SessionMetadataKey`).
@@ -883,6 +884,12 @@ fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
             crate::terminal::run::KIND_KEY.to_string(),
             crate::terminal::run::RUN_KIND.to_string(),
         ));
+        // Its command, for another Mac adopting the run to name its tab by (#836).
+        if let Some(command) = get("WORKROOM_SESSION_COMMAND")
+            .filter(|command| command.len() <= crate::terminal::run::MAX_COMMAND_BYTES)
+        {
+            metadata.push((crate::terminal::run::COMMAND_KEY.to_string(), command));
+        }
     }
     metadata
 }
