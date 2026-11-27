@@ -923,6 +923,13 @@ fn daemon_user() -> Option<u32> {
     (euid != 0 && euid == uid).then_some(euid)
 }
 
+/// Whether this daemon accepts reports at all (`daemon_user`): a root one gives no session a
+/// token, so no session of its resumes either, and a remote pane's gone session stays ended
+/// (#826).
+pub(crate) fn daemon_accepts_reports() -> bool {
+    daemon_user().is_some()
+}
+
 /// A new random token for an interactive session's `TOKEN_VARIABLE`, or `None` when the daemon
 /// accepts no reports (`daemon_user`) or the system's randomness fails: that session then gets no
 /// token, never a predictable one.

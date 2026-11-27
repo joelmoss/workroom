@@ -303,9 +303,11 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // `--no-create`: attach only if the session exists (see `AttachRequest::existing_only`).
     request.existing_only = args.iter().any(|arg| arg == "--no-create");
     // The tab's resume record (#825), sent only if the session is gone and made again: claimed
-    // now, whatever happens next, so its file never outlives this pane's start.
+    // now, whatever happens next, so its file never outlives this pane's start. A remote pane's
+    // (#826), dialed from the Mac or attached inside a container, the file on the side its client
+    // runs.
     let resume = take_resume(&mut request.env, request.id)
-        .filter(|_| invoked_by_the_app && dialed.is_none() && request.existing_only);
+        .filter(|_| invoked_by_the_app && request.existing_only);
     // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and a
     // daemon started here would be the idle-exit kind a remote host must not have, racing the
     // supervised one for the socket (#228). It also changes what a lost daemon connection means:
@@ -313,6 +315,14 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // A dialed daemon is a host's, so it is `--no-spawn` too, and more: this process runs on the
     // Mac, so it never falls back to a shell, which would be the Mac's (see `open_dialed`).
     let no_spawn = dialed.is_some() || args.iter().any(|arg| arg == "--no-spawn");
+    // A remote pane's record goes with its first attach (#826): after a host restart the host's
+    // daemon answers a gone session with its frozen last screen, or says it ended and closes the
+    // link, never a refusal this client could answer by asking again. With the record it makes
+    // the session again instead, once, however many Macs ask; a daemon before #826 ignores it and
+    // says the session ended, as before. A pane on this Mac keeps its two steps (below).
+    if no_spawn {
+        request.resume = resume.clone();
+    }
     (request.client, request.hostname) = declared(
         invoked_by_the_app || dialed.is_some(),
         no_spawn && dialed.is_none(),

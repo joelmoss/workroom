@@ -326,7 +326,10 @@ const ATTACH_ENTRIES: &[(&str, &str)] = &[
     (
         "RESUME_ARG",
         "One word of the tab's resume record's command, in order, sent only with the attach that \
-         makes a restored pane's gone session again: the session's login shell runs it.",
+         makes a restored pane's gone session again: the session's login shell runs it. A remote \
+         pane sends it with its first attach, `CREATE=0` too: a gone session is then made again \
+         with it, once however many clients ask, unless it is a run session or the daemon runs as \
+         root, which are refused as before.",
     ),
     (
         "RESUME_CWD",
