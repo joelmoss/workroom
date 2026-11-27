@@ -90,8 +90,9 @@ fn recover_noting<G>(result: LockResult<G>, noted: &AtomicBool, note: impl FnOnc
 }
 
 /// Standard base64 with padding. Hand-rolled because it is fifteen lines and the crate has no other
-/// use for a base64 dependency; `Data(base64Encoded:)` is its decoder on the Swift side. The File
-/// service's reads and the Kitty image chunks a reattach re-sends are both encoded with it.
+/// use for a base64 dependency; `base64_decode` is its decoder, and `Data(base64Encoded:)` on the
+/// Swift side. The File service's reads and the Kitty image chunks a reattach re-sends are both
+/// encoded with it.
 pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -113,6 +114,42 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+/// `base64`'s decoder, padding optional. `None` for anything outside the alphabet or an impossible
+/// length; it accepts text that is not the canonical encoding (nonzero bits past the last byte),
+/// so a caller that must refuse that compares the text with `base64` of what this returns, as the
+/// resume protocol's fields do.
+pub(crate) fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    fn value(byte: u8) -> Option<u32> {
+        Some(match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    }
+    let trimmed = text.trim_end_matches('=');
+    if text.len() - trimmed.len() > 2 || trimmed.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(trimmed.len() * 3 / 4);
+    for chunk in trimmed.as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for (i, &byte) in chunk.iter().enumerate() {
+            n |= value(byte)? << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
 }
 
 /// The SHA-256 of `bytes`, in lowercase hex: a script's approval (`trusted_scripts`) and a release

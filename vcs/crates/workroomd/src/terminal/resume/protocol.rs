@@ -217,44 +217,10 @@ pub(super) fn workroom_hook(body: &[u8]) -> bool {
     envelope(body, b"workroomhook=") == Some(b"1".as_slice())
 }
 
-/// Standard base64, padding optional. `None` for anything outside the alphabet or an impossible
-/// length; whether the text is the canonical encoding is `decode`'s check.
-fn base64_bytes(text: &str) -> Option<Vec<u8>> {
-    fn value(byte: u8) -> Option<u32> {
-        Some(match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32)
-    }
-    let trimmed = text.trim_end_matches('=');
-    if text.len() - trimmed.len() > 2 || trimmed.len() % 4 == 1 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(trimmed.len() * 3 / 4);
-    for chunk in trimmed.as_bytes().chunks(4) {
-        let mut n = 0u32;
-        for (i, &byte) in chunk.iter().enumerate() {
-            n |= value(byte)? << (18 - 6 * i);
-        }
-        out.push((n >> 16) as u8);
-        if chunk.len() > 2 {
-            out.push((n >> 8) as u8);
-        }
-        if chunk.len() > 3 {
-            out.push(n as u8);
-        }
-    }
-    Some(out)
-}
-
 /// One base64 field as text: canonical (with or without its padding), valid UTF-8, and with no
 /// control characters.
 fn decode(text: &str) -> Option<String> {
-    let bytes = base64_bytes(text)?;
+    let bytes = crate::util::base64_decode(text)?;
     let canonical = crate::util::base64(&bytes);
     if text != canonical && text != canonical.trim_end_matches('=') {
         return None;
