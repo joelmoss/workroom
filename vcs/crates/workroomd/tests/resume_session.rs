@@ -964,7 +964,8 @@ fn the_losing_create_of_two_resumes_attaches_and_discards_its_file() {
     let workspace = Workspace::new("resume-race");
     let socket = workspace.socket();
     let mut daemon =
-        common::start_daemon_with_env(&socket, &[], &[("WORKROOMD_TEST_RESUME_PAUSE_MS", "2000")]);
+        // Both relays reach their create within this, however busy the machine.
+        common::start_daemon_with_env(&socket, &[], &[("WORKROOMD_TEST_RESUME_PAUSE_MS", "5000")]);
     let home = home(&workspace, "race");
     let folder = workspace.join("the project");
     std::fs::create_dir(&folder).unwrap();
@@ -1015,6 +1016,6 @@ fn the_losing_create_of_two_resumes_attaches_and_discards_its_file() {
     assert_eq!(
         log.matches(&format!("session {session}: resuming")).count(),
         2,
-        "both attaches made their file, so one create lost: {log}"
+        "both attaches made their file within the first's 5 s pause, so one create lost: {log}"
     );
 }

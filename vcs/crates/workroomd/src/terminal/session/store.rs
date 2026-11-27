@@ -334,7 +334,8 @@ impl SessionStore {
     /// remote host) only one whose last screen the store kept: such a session leaves its record
     /// behind, and one that ends under any daemon has it removed (its kill at once, its exit on the
     /// screens thread's next pass, which `ended_here` covers until then). A daemon keeping no
-    /// screens (this Mac's) has only `ended_here`, which a hand-off doesn't carry.
+    /// screens (this Mac's) has only `ended_here`, which a hand-off or an idle exit doesn't carry:
+    /// a session this Mac's daemon ended before either is taken for one that ended with it.
     ///
     /// One look under the map's lock, which is also where `Hooks::creating` removes the record of
     /// a session taking the id: an attach racing another's create finds either the record or the
