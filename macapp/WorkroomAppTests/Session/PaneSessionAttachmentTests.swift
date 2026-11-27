@@ -471,7 +471,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
   /// goes to the relay while off, the variable is missing while off or sent while on, the pane
   /// toasts a resume, or the record outlives the new shell; why_new=new (#827); seam=the
   /// service's `programResumeIsOn`
-  func testWithResumeOffAGonePaneIsANewShellThatForgetsItsRecord() async throws {
+  func testWithResumeOffAGonePaneIsANewShellThatForgetsItsRecord() throws {
     let (pane, forgets) = goneSessionPanes(resumes: false)
     let (plain, notices) = pane(claude)
     let launch = try XCTUnwrap(
@@ -482,7 +482,13 @@ final class PaneSessionAttachmentTests: XCTestCase {
       launch.environment.first { $0.key == "WORKROOM_SESSION_PROGRAM_RESUME" }?.value, "off")
     XCTAssertNil(plain.resumeState)
     XCTAssertEqual(notices.notices, [PaneNoticeToast.sessionReplaced])
-    for _ in 0..<50 where forgets() == 0 { await Task.yield() }
+    // Not on the gone daemon's last word (the record's boot), which would hand the record back,
+    // nor before any word: on the first from another daemon, once.
+    plain.sessionHeard(boot: nil)
+    plain.sessionHeard(boot: claude.boot)
+    XCTAssertEqual(forgets(), 0, "still the gone daemon's word")
+    plain.sessionHeard(boot: "after the restart")
+    plain.sessionHeard(boot: "after the restart")
     XCTAssertEqual(forgets(), 1, "the new shell forgets the record")
 
     let (onPane, _) = goneSessionPanes(resumes: true)

@@ -13,9 +13,9 @@ import WorkroomWire
 /// on keeps its token until it ends. Turned on again, it applies to sessions made after that.
 ///
 /// The records a tab saved stay while it's off, so a pane whose session lives on resumes after a
-/// later restart once it's on again; a pane given a new shell while it's off forgets its record,
-/// as a declined resume does, since that shell is what the pane runs now
-/// (`PaneSessionAttachment.launch`).
+/// later restart once it's on again; a pane given a new shell while it's off forgets its record
+/// once the new daemon has its session, as a declined resume does, since that shell is what the
+/// pane runs now (`PaneSessionAttachment.sessionHeard`).
 enum ProgramResume {
   /// Whether programs resume.
   static var isOn: Bool { Defaults[.resumePrograms] }
