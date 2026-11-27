@@ -340,12 +340,13 @@ extension AppStore {
   /// Opens the target's run tab: a new run session for `command`, or, `adopting`, the run session
   /// another Mac started on the workroom's host, reattached as a restored one.
   private func openRunTab(
-    for target: TerminalTarget, command: String, focus: Bool, adopting session: UUID? = nil
+    for target: TerminalTarget, command: String, focus: Bool,
+    adopting session: RunCommands.LiveRun? = nil
   ) {
     let tab: TerminalTab
     if let session {
       tab = terminals.addRestoredRunTab(
-        for: target, command: command, sessionID: session, focus: focus)
+        for: target, command: command, sessionID: session.id, label: session.label, focus: focus)
     } else {
       tab = terminals.addRunTab(
         for: target, command: command, cwd: target.path, focus: focus, runSession: true)
