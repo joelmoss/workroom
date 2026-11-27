@@ -2,7 +2,7 @@
 
 Decided 2026-11-19 (owner, design grilling over the prototype on branch `prototype/terminal-groups`, variant B). Status: accepted, built. Supersedes in part ADR 0064: its rule that the Quick Terminal's terminals are not kept across a quit, and the launch sweep that ends them.
 
-Amended 2026-11-25 (#819, ADR 0082): the sidebar's standalone terminal and group rows now live in its Open section, which lists every workroom tab open in the window; they appear there only while they have tabs, and the Quick Terminal group is not pinned. The rest stands.
+Amended 2026-11-25 (#819, ADR 0082): the sidebar's standalone terminal and group rows now live in its Open section, which lists every workroom tab open in the window; they appear there only while they have tabs, and the Quick Terminal group is not pinned. Its terminals are in its panel, never a window's tabs, so it has no row there, and its starting folder is set in Settings ▸ Terminal ▸ Quick Terminal (amended 2026-11-27). The rest stands.
 
 Amended 2026-11-26 (owner): dropping terminals together no longer makes an unnamed group. Any drop that would make a new group (a standalone terminal's row or tab onto another, or a terminal's tab onto a standalone terminal) asks for the group's name first and makes a named group; Cancel or an empty name drops nothing. A name is never made up for it. Splitting a standalone terminal still makes an unnamed group, but an unnamed group is no longer labelled by its terminals' names, which changed whenever a program set its title: it is numbered, "Group 1", "Group 2", taking the lowest number no other unnamed group has when it is made and keeping it while it lasts (kept in the section's file). Naming it frees the number; clearing the name numbers it again.
 
