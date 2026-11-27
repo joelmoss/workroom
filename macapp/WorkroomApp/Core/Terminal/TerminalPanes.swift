@@ -337,7 +337,7 @@ extension TabSession {
           defaultTitle: state.defaultTitle, cwd: state.cwd,
           sessionID: state.sessionID?.uuidString,
           run: state.launch.isRunSession ? true : nil,
-          userTitle: state.userTitle, syncedLabel: state.syncedLabel))
+          userTitle: state.userTitle, syncedLabel: state.syncedLabel, resume: state.resume))
     case .diff(let descriptor):
       self.init(
         key: key, kind: Self.diffKind,
@@ -515,6 +515,13 @@ struct TerminalState {
   /// Saved with the tab, so a name changed while the daemon couldn't be told is told it later,
   /// and a label set while this Mac was away wins over a name this Mac never changed.
   var syncedLabel: SyncedLabel?
+
+  /// How the program in this terminal's session last said it should be started again (ADR 0082,
+  /// #824), as its daemon told it (`ProgramStatusBinding`). Saved with the tab, and kept when the
+  /// session ends, its daemon or host goes, or the Mac restarts, so the pane can resume it; only
+  /// its record clearing, or the tab closing, takes it away. Goes with the session when the tab is
+  /// pointed at another.
+  var resume: ResumeRecord?
 
   /// This terminal's session's label (#694), its name as the terminal API names it: the user's
   /// name for it, else the name a run tab shows unnamed ("Run"); nil when it shows its default.
@@ -1501,7 +1508,7 @@ final class TerminalPanes {
           title: legacyName == nil ? payload.defaultTitle : "Terminal",
           sessionID: payload.sessionID.flatMap(UUID.init(uuidString:)),
           userTitle: Self.cleanedName(payload.userTitle) ?? Self.cleanedName(legacyName),
-          syncedLabel: payload.syncedLabel)
+          syncedLabel: payload.syncedLabel, resume: payload.resume)
       } else if let content = saved.restoredContent {
         tab = TerminalTab(
           content: content, diffViewModeOverride: saved.restoredDiffViewMode,
@@ -2891,7 +2898,7 @@ final class TerminalPanes {
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
     sessionID: UUID? = nil, runSession: Bool = false, userTitle: String? = nil,
-    syncedLabel: SyncedLabel? = nil
+    syncedLabel: SyncedLabel? = nil, resume: ResumeRecord? = nil
   ) -> TerminalTab {
     let count = openPanes(target.id).updateState { $0.numberNextTerminal() }
     // A remote workroom's path is a path on its host; this Mac's process starts in the home
@@ -2921,6 +2928,9 @@ final class TerminalPanes {
     state.syncedLabel =
       sessionID == nil && assignedSessionID != nil
       ? SyncedLabel(label: state.sessionLabel) : syncedLabel
+    // A restored tab's record, which its session's daemon replaces once it says what it holds,
+    // and which outlives a session that has gone (#824).
+    state.resume = sessionID == nil ? nil : resume
     let metadata = target.sessionMetadata(title: state.sessionLabel)
     if let host = target.remoteHost, let assignedSessionID {
       // `cwd` is a path on the host here: the target's, or a split's anchor pane's.
@@ -2940,6 +2950,7 @@ final class TerminalPanes {
       // Who else types into it (#696), from the same host's events.
       PaneTypingMonitor.shared.watch(target.hostID)
       state.programStatus = programStatus.rollup(for: assignedSessionID)
+      state.resume = programStatusBinding.resume(of: assignedSessionID, keeping: state.resume)
       // A tab onto a session that already is (restored, or opened from the detached list) may
       // mount after its host's snapshot told the session's label: caught up from what was heard.
       if sessionID != nil { SessionLabels.shared.mounted(assignedSessionID, on: target.hostID) }

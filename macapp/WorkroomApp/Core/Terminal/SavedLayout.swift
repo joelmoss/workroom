@@ -317,12 +317,56 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   /// `TerminalState.syncedLabel`). Additive: an older build ignores it, and a tab without it
   /// catches up as one from before #694 does.
   var syncedLabel: SyncedLabel? = nil
+  /// How the program in the terminal's session last said it should be started again (ADR 0082,
+  /// #824; `TerminalState.resume`), kept so the pane can resume it once the session is gone.
+  /// Additive: an older build ignores it, and drops it at its next save.
+  var resume: ResumeRecord? = nil
 }
 
 /// A label this Mac and its daemon agreed on (#694), `label` nil when they agreed on none: kept
 /// apart from "never agreed", which is no `SyncedLabel` at all.
 struct SyncedLabel: Codable, Hashable, Sendable {
   var label: String?
+}
+
+/// A terminal's resume record (ADR 0082, #824), as its session's daemon last told it
+/// (`ProgramResumeRecord`). Its arguments can hold secrets: the file is written `0600`
+/// (`SavedLayoutStore`), and the record is never logged.
+struct ResumeRecord: Codable, Hashable, Sendable, CustomStringConvertible,
+  CustomDebugStringConvertible
+{
+  /// The command, as the program reported it.
+  var argv: [String]
+  /// Where it starts: the folder it reported, else its own when it reported.
+  var cwd: String?
+  /// When it reported, in milliseconds since the Unix epoch.
+  var reportedAt: UInt64
+  /// The daemon's numbering of its sessions (`ProgramStatusEvent.status`'s `boot`) when it told
+  /// this record: a session under the same id from a daemon that started over, after a reboot or
+  /// a crash, is a new shell that has none yet, which leaves this record for the pane to resume
+  /// (`ProgramStatusBinding.resume(_:after:boot:)`).
+  var boot: String
+
+  /// The most words a record keeps, and the most bytes of them all: what one report can carry
+  /// (`resume::protocol::LIMIT`, 8 KiB), so any record the daemon accepted fits. Past either, a
+  /// record read back is dropped whole, never cut: a shortened command is another command.
+  static let maxWords = 1024
+  static let maxBytes = 8192
+
+  /// Whether this record is one a daemon could have sent.
+  var isWellFormed: Bool {
+    !argv.isEmpty && argv.count <= Self.maxWords
+      && argv.reduce(0) { $0 + $1.utf8.count } <= Self.maxBytes
+      && (cwd?.utf8.count ?? 0) <= SessionLimits.maxStringLength
+      && boot.utf8.count <= SessionLimits.maxStringLength
+  }
+
+  /// The program alone, never its arguments.
+  var description: String {
+    "ResumeRecord(\(argv.first.map { ($0 as NSString).lastPathComponent } ?? ""))"
+  }
+
+  var debugDescription: String { description }
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive
@@ -800,6 +844,8 @@ extension TabSession {
       if let synced = terminal.syncedLabel {
         terminal.syncedLabel = SyncedLabel(label: clamp(synced.label))
       }
+      // Dropped whole rather than clamped: a cut argument is another command.
+      if terminal.resume?.isWellFormed == false { terminal.resume = nil }
       tab.terminal = terminal
     }
     if var diff = tab.diff {

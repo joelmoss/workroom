@@ -25,7 +25,27 @@ final class ProgramStatusWireTests: XCTestCase {
           ProgramStatusRecord(
             id: "", state: .blocked, kind: .permission, progress: -1, app: "claude-code",
             title: "", message: "Apply?", episode: 1, notify: true)
-        ]))
+        ],
+        resume: .record(
+          ProgramResumeRecord(
+            argv: ["claude", "--resume", "a-session"], cwd: "/work", reportedAt: 1_795_543_200_000)
+        )))
+  }
+
+  /// A session's resume record (#824): null is none, and an event with no `resume`, from a daemon
+  /// that predates records, says nothing of one.
+  func testResumeIsNoneWhenNullAndUnknownWhenAbsent() throws {
+    let none = try ProgramStatusEvent.decode(fixture("status-run")).event
+    guard case .status(_, _, _, _, _, _, let resume) = none else { return XCTFail() }
+    XCTAssertEqual(resume, ProgramResumeReport.none)
+    let older =
+      #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":false,"records":[]}"#
+    guard
+      case .status(_, _, _, _, _, _, let absent) = try ProgramStatusEvent.decode(
+        Data(older.utf8)
+      ).event
+    else { return XCTFail() }
+    XCTAssertEqual(absent, .unknown)
   }
 
   /// A command result (#473) is a record with an exit code, which no program's record carries.
@@ -39,9 +59,9 @@ final class ProgramStatusWireTests: XCTestCase {
         records: [
           ProgramStatusRecord(
             id: "shell command", state: .error, message: "npm test", exitCode: 1)
-        ]))
+        ], resume: .none))
     let program = try ProgramStatusEvent.decode(fixture("status")).event
-    guard case .status(_, _, _, _, let records, _) = program else { return XCTFail() }
+    guard case .status(_, _, _, _, let records, _, _) = program else { return XCTFail() }
     XCTAssertNil(records.first?.exitCode)
   }
 
@@ -51,9 +71,9 @@ final class ProgramStatusWireTests: XCTestCase {
       try ProgramStatusEvent.decode(fixture("status-run")).event,
       .status(
         boot: boot, session: session, revision: 1, reporting: false, records: [],
-        run: "exited 3"))
+        run: "exited 3", resume: .none))
     let shell = try ProgramStatusEvent.decode(fixture("status")).event
-    guard case .status(_, _, _, _, _, let run) = shell else { return XCTFail() }
+    guard case .status(_, _, _, _, _, let run, _) = shell else { return XCTFail() }
     XCTAssertNil(run)
   }
 
@@ -78,7 +98,7 @@ final class ProgramStatusWireTests: XCTestCase {
       """
     let decoded = try ProgramStatusEvent.decode(Data(json.utf8))
     XCTAssertEqual(decoded.droppedRecords, 3)
-    guard case .status(_, _, _, _, let records, _) = decoded.event else {
+    guard case .status(_, _, _, _, let records, _, _) = decoded.event else {
       return XCTFail("\(String(describing: decoded.event))")
     }
     XCTAssertEqual(records.map(\.id), ["a"])
@@ -100,7 +120,7 @@ final class ProgramStatusWireTests: XCTestCase {
       #"{"event":"status","boot":"b","session":"\#(session.uuidString)","revision":1,"reporting":true,"records":[\#(many)]}"#
     XCTAssertGreaterThan(big.utf8.count, 1_000_000)
     let decoded = try ProgramStatusEvent.decode(Data(big.utf8))
-    guard case .status(_, _, _, _, let records, _) = decoded.event else { return XCTFail() }
+    guard case .status(_, _, _, _, let records, _, _) = decoded.event else { return XCTFail() }
     XCTAssertEqual(records.count, 1_000, "a large but valid event still decodes")
   }
 

@@ -61,6 +61,22 @@ final class HostLayoutTests: XCTestCase {
     XCTAssertNil(read.tabs[0].detachedFrame)
   }
 
+  /// Value: protects=a remote terminal's resume record goes up to its host with the layout and
+  /// comes back whole on whichever Mac reads it (#824); fails_when=the host's copy strips the
+  /// record, or its read drops it; why_new=a host restart leaves the host layout the only copy
+  /// another Mac has; seam=none
+  func testAResumeRecordGoesUpAndComesBackWithItsTab() throws {
+    let record = ResumeRecord(
+      argv: ["claude", "--resume", "a-session"], cwd: "/w", reportedAt: 1_795_543_200_000,
+      boot: "b")
+    var target = local()
+    target.tabs[0].terminal?.resume = record
+    let blob = try HostLayout.encode(target, key: "WORKROOM-ID")
+    guard case .layout(let read) = HostLayout.decode(blob, targetID: "wr|/Volumes/other|cyan")
+    else { return XCTFail("not a layout") }
+    XCTAssertEqual(read.tabs[0].terminal?.resume, record)
+  }
+
   /// The last tab closed is a layout of its own (D11), not "nothing written yet".
   func testAWorkroomWithNoTabsIsAnEmptyLayout() throws {
     let blob = try HostLayout.encode(TargetSession(targetID: "x", tabs: []), key: "WORKROOM-ID")

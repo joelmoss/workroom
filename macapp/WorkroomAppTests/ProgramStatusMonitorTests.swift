@@ -687,6 +687,61 @@ final class ProgramStatusPaneTests: XCTestCase {
     XCTAssertEqual(connection.requests, ["seen 5 []"])
   }
 
+  /// Value: protects=a session's resume record, as its daemon publishes it, reaches its tab, and
+  /// outlives the session: its end, and a new shell under its id from a daemon that started over
+  /// (a reboot), leave it; only its own daemon saying it cleared takes it (#824); fails_when=the
+  /// binding stops copying the record, copies nil when the monitor drops the session, or clears it
+  /// on another boot's empty status; why_new=the only route from the daemon's record to the saved
+  /// layout; seam=none; no_claim=the record's rules (resume.rs), the save (SavedLayoutStoreTests)
+  func testAResumeRecordReachesItsTabAndOutlivesItsSession() async {
+    let monitor = ProgramStatusMonitor()
+    monitor.watchesHosts = true
+    let connection = FakeProgramStatusConnection()
+    monitor.connect = { _ in connection }
+    monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
+    let s = makeSessions(monitor)
+    s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
+    let tab = s.addTab(for: target)
+    let id = session(of: tab)
+    func resume() -> ResumeRecord? {
+      guard case .terminal(let state) = s.tabs(for: target)[0].content else { return nil }
+      return state.resume
+    }
+    func until(_ condition: () -> Bool) async {
+      for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+    await until {
+      connection.push(.snapshotComplete(boot: "b", sessions: []))
+      return monitor.hosts[.local] == .live
+    }
+    func status(boot: String, revision: UInt64, _ resume: ProgramResumeReport)
+      -> ProgramStatusEvent
+    {
+      .status(
+        boot: boot, session: id, revision: revision, reporting: false, records: [],
+        resume: resume)
+    }
+    let claude = ProgramResumeRecord(
+      argv: ["claude", "--resume", "a-session"], cwd: "/work", reportedAt: 1_795_543_200_000)
+    let saved = ResumeRecord(
+      argv: claude.argv, cwd: "/work", reportedAt: 1_795_543_200_000, boot: "b")
+
+    connection.push(status(boot: "b", revision: 2, .record(claude)))
+    await until { resume() != nil }
+    XCTAssertEqual(resume(), saved, "the record reaches the tab whole")
+
+    connection.push(.ended(boot: "b", session: id))
+    await until { !monitor.hasSession(id) }
+    // A new shell under the same id, from a daemon that started over: nothing to resume yet.
+    connection.push(status(boot: "after-reboot", revision: 1, .none))
+    await until { monitor.resume(for: id)?.boot == "after-reboot" }
+    XCTAssertEqual(resume(), saved, "neither the session's end nor its replacement takes it")
+
+    connection.push(status(boot: "b", revision: 3, .none))
+    await until { resume() == nil }
+    XCTAssertNil(resume(), "its own daemon saying it cleared does")
+  }
+
   /// A finish the user watched happen, in the focused pane, is marked seen when focus leaves, and
   /// only as finished.
   func testAFinishWatchedInTheFocusedPaneIsSeenWhenFocusLeaves() async {

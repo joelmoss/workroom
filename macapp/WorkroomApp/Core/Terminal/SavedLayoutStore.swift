@@ -230,8 +230,10 @@ final class SavedLayoutStore: @unchecked Sendable {
       try fileManager.createDirectory(
         at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
       // Atomic: a reader sees the complete old document or the complete new one, never a partial
-      // write from a process that died mid-save.
-      try data.write(to: url, options: .atomic)
+      // write from a process that died mid-save. Readable by this user alone, from its first byte:
+      // a tab's resume record (#824) can hold secrets in its arguments. The rename replaces the
+      // old file, so one an older build wrote with the umask's mode is tightened too.
+      try Self.writePrivately(data, to: url)
       return true
     } catch {
       logger.error("session snapshot could not be written: \(error.localizedDescription)")
@@ -239,12 +241,37 @@ final class SavedLayoutStore: @unchecked Sendable {
     }
   }
 
+  /// `data` at `destination` through a sibling made `0600` with `O_EXCL` and renamed over it, so
+  /// no other user can read it at any point, and a reader sees the old file or the new one whole.
+  private static func writePrivately(_ data: Data, to destination: URL) throws {
+    let temporary = destination.deletingLastPathComponent()
+      .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+    let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    do {
+      try handle.write(contentsOf: data)
+      try handle.close()
+    } catch {
+      try? handle.close()
+      unlink(temporary.path)
+      throw error
+    }
+    guard rename(temporary.path, destination.path) == 0 else {
+      let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+      unlink(temporary.path)
+      throw POSIXError(code)
+    }
+  }
+
   /// Move a file this build cannot read aside — once. A prior quarantine is replaced rather than
-  /// accumulating; the newest failure is the useful one.
+  /// accumulating; the newest failure is the useful one. It is this user's alone, as the file was
+  /// meant to be: it can hold tabs' resume records (#824).
   private func quarantine() {
     try? fileManager.removeItem(at: quarantineURL)
     do {
       try fileManager.moveItem(at: url, to: quarantineURL)
+      try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: quarantineURL.path)
     } catch {
       // If it cannot even be moved, delete it — leaving it in place would fail the same way on
       // every launch forever.
