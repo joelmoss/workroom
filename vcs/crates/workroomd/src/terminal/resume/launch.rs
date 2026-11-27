@@ -412,9 +412,38 @@ fn report(pid: u32, fields: &str) -> Option<Vec<u8>> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()?
         .as_secs();
+    Some(signed(&token, pid, now, fields))
+}
+
+/// The OSC 7577 frame for `fields` from process `pid` at `now` (Unix seconds), signed with
+/// `token`.
+fn signed(token: &str, pid: u32, now: u64, fields: &str) -> Vec<u8> {
     let body = format!("pid={pid}:time={now}:{fields}");
-    let mac = super::protocol::mac(body.as_bytes(), &token);
-    Some(format!("\x1b]7577;{body}:mac={mac}\x07").into_bytes())
+    let mac = super::protocol::mac(body.as_bytes(), token);
+    format!("\x1b]7577;{body}:mac={mac}\x07").into_bytes()
+}
+
+/// The report that records `argv` for process `pid`, signed with `token` at `now`, with no `cwd`
+/// (the daemon takes the owner's own folder): what Workroom's Claude Code hook sends for Claude
+/// (`commands::resume_hook`, #828). `None` for a record the daemon would reject, since a rejected
+/// report removes the record its owner has: more than `MAX_WORDS` words or `MAX_BYTES`, a control
+/// character, a first word that is no command, or a frame over the protocol's limit.
+pub(crate) fn record_report(token: &str, pid: u32, now: u64, argv: &[String]) -> Option<Vec<u8>> {
+    let launch = Launch {
+        argv: argv.to_vec(),
+        cwd: "/".into(),
+        reported_at_ms: 0,
+    };
+    if !launch.is_well_formed() {
+        return None;
+    }
+    let words: Vec<String> = argv
+        .iter()
+        .map(|word| crate::util::base64(word.as_bytes()))
+        .collect();
+    let frame = signed(token, pid, now, &format!("argv={}", words.join(",")));
+    // The frame with BEL, as `protocol::Stream` counts it.
+    (frame.len() <= super::protocol::LIMIT).then_some(frame)
 }
 
 /// Writes `report` to this process's terminal, its stdout, and leaves it there.
