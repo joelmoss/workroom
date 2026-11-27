@@ -62,7 +62,7 @@ osc7577_report devserver "$@"
 exec npm run dev -- "$@"
 ```
 
-Here the report asks for `devserver` itself to run again, found on your `PATH`, so it reports again when it resumes. A command must be an absolute path, or a bare name on `PATH`: a relative path such as `./devserver` is refused.
+Here the report asks for `devserver` itself to run again, found on your `PATH`, so it reports again when it resumes. A command must be an absolute path, or a bare name on `PATH`: a relative path such as `./devserver` is refused. A bare name is found as your shell would find it in the command's folder, so a relative `PATH` entry such as `./bin` or `node_modules/.bin` is that folder's.
 
 A program that saves its own state can report the command that restores it. For example, Neovim can report `nvim -S <session file>` each time it writes a session.
 

@@ -235,13 +235,14 @@ impl SessionStore {
         let _ = shadow.write_from_pty(&screen, || pty.foreground_pgid());
         let resume = resume.map(crate::terminal::resume::Resume::adopted);
         // After the screen, whose prompt marks would otherwise end the run they describe. With
-        // the resume record the hand-off carried in its resume state (#824).
+        // the resume record the hand-off carried in its resume state (#824): while a resume waits
+        // for its helper (#825), the record it was started to resume, which the app keeps.
         if let Some(status) = shadow.status() {
             *status = program_status;
             status.restore_resume(
                 resume
                     .as_ref()
-                    .and_then(crate::terminal::resume::Resume::whole),
+                    .and_then(crate::terminal::resume::Resume::shown),
             );
         }
         let session = Session {
