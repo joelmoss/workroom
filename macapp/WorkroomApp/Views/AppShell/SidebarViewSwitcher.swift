@@ -64,10 +64,13 @@ struct SidebarViewSwitcher: View {
     case .projects:
       // Through the store's request flag, so the sheet (re-homed to RootView, issue #23 OV1)
       // presents as File ▸ New Project…'s does.
-      SidebarIconButton(
-        systemImage: "plus", help: "Add Project…", label: "Add Project", id: "sidebar.add"
-      ) {
-        store.modals.requestAddProject = true
+      HStack(spacing: 0) {
+        SidebarProjectsFoldAllButton(store: store)
+        SidebarIconButton(
+          systemImage: "plus", help: "Add Project…", label: "Add Project", id: "sidebar.add"
+        ) {
+          store.modals.requestAddProject = true
+        }
       }
     }
   }

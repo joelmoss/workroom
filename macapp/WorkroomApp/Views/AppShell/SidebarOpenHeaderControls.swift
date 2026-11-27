@@ -10,27 +10,41 @@ struct SidebarOpenHeaderControls: View {
     let grouping = store.openTabsGrouping
     HStack(spacing: 0) {
       if grouping != .ungrouped {
-        SidebarOpenFoldAllButton(store: store, grouping: grouping)
+        SidebarFoldAllButton(
+          action: store.openTabsFoldAll(grouping: grouping), id: "sidebar.open.foldAll"
+        ) { store.foldAllOpenRows($0, grouping: grouping) }
       }
       SidebarOpenGroupByMenu(store: store, grouping: grouping)
     }
   }
 }
 
-/// Expand All / Collapse All: folds every row that folds, at every level, while any is unfolded,
-/// else unfolds them all.
-private struct SidebarOpenFoldAllButton: View {
+/// The Projects view's Expand All / Collapse All: every project, and every workroom's terminals.
+struct SidebarProjectsFoldAllButton: View {
   let store: AppStore
-  let grouping: OpenTabsGrouping
+
+  var body: some View {
+    SidebarFoldAllButton(action: store.projectsFoldAll(), id: "sidebar.projects.foldAll") {
+      store.foldAllProjects($0)
+    }
+  }
+}
+
+/// Expand All / Collapse All in a sidebar view's header: folds every row that folds, at every
+/// level, while any is unfolded (`action` `.collapse`), else unfolds them all. Disabled with
+/// nothing to fold (`action` nil).
+struct SidebarFoldAllButton: View {
+  let action: SidebarFoldAll?
+  let id: String
+  let perform: (SidebarFoldAll) -> Void
   @State private var hovering = false
 
   var body: some View {
-    let action = store.openTabsFoldAll(grouping: grouping)
     let collapses = action != .expand
     let title = collapses ? "Collapse All" : "Expand All"
     Button {
       guard let action else { return }
-      store.foldAllOpenRows(action, grouping: grouping)
+      perform(action)
     } label: {
       SidebarIconGlyph(
         systemImage: collapses ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
@@ -42,7 +56,7 @@ private struct SidebarOpenFoldAllButton: View {
     .onHover { hovering = $0 }
     .help(action == nil ? "Nothing to expand or collapse" : title)
     .accessibilityLabel(title)
-    .accessibilityIdentifier("sidebar.open.foldAll")
+    .accessibilityIdentifier(id)
   }
 }
 
@@ -66,7 +80,7 @@ private struct SidebarOpenGroupByMenu: View {
         }
       }
     } label: {
-      SidebarIconGlyph(systemImage: "rectangle.3.group", hovering: hovering)
+      SidebarIconGlyph(systemImage: "list.bullet.indent", hovering: hovering)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)

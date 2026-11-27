@@ -54,6 +54,8 @@ The tabs in the title bar are unchanged.
 
 The **Projects** view is the project tree described above. With no projects yet, while the **Open Tabs** view lists standalone terminals, it says **No projects yet** and offers **Add Project…**.
 
+The button beside its **+** is **Collapse All** while any project or any workroom's terminals are expanded: it collapses every project and every list of terminals. Then it is **Expand All**, which expands every project and shows the terminals of each workroom that has more than one. It is dimmed with no projects.
+
 ## Add a project
 
 1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. Nightly only: the **+** is beside **Projects** at the top of the projects instead. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.

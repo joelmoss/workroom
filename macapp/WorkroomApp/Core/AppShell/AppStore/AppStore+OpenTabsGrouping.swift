@@ -194,12 +194,42 @@ extension OpenTabsRow {
   }
 }
 
-/// What the Open Tabs view's Expand All / Collapse All button does now.
-enum OpenTabsFoldAll: Equatable {
+/// What a sidebar view's Expand All / Collapse All button does now.
+enum SidebarFoldAll: Equatable {
   /// Something is unfolded: fold everything.
   case collapse
   /// Everything is folded: unfold it all.
   case expand
+}
+
+extension AppStore {
+  // MARK: The Projects view's Expand All / Collapse All
+
+  /// What the Projects view's button does: nil with no projects. Collapse while any project, or
+  /// any workroom's terminals, is expanded.
+  func projectsFoldAll() -> SidebarFoldAll? {
+    let paths = projectStore.projects.map(\.path)
+    guard !paths.isEmpty else { return nil }
+    let expanded =
+      paths.contains { !collapsedProjects.contains($0) } || !expandedTerminalTargets.isEmpty
+    return expanded ? .collapse : .expand
+  }
+
+  /// Collapses every project and every workroom's terminals, or expands them all: the terminals
+  /// of each project target here that has more than one.
+  func foldAllProjects(_ action: SidebarFoldAll) {
+    switch action {
+    case .collapse:
+      collapsedProjects = Set(projectStore.projects.map(\.path))
+      expandedTerminalTargets = []
+    case .expand:
+      collapsedProjects = []
+      expandedTerminalTargets = Set(
+        terminals.activeTargetIDs.filter {
+          $0.projectPath != nil && terminals.tabCount(forTargetID: $0) > 1
+        })
+    }
+  }
 }
 
 extension AppStore {
@@ -237,7 +267,7 @@ extension AppStore {
 
   /// What the header's button does in `grouping`: nil when nothing there can fold (None, or only
   /// standalone terminals), which disables it.
-  func openTabsFoldAll(grouping: OpenTabsGrouping? = nil) -> OpenTabsFoldAll? {
+  func openTabsFoldAll(grouping: OpenTabsGrouping? = nil) -> SidebarFoldAll? {
     let (projects, targets) = openTabsFoldables(grouping: grouping)
     guard !projects.isEmpty || !targets.isEmpty else { return nil }
     let unfolded =
@@ -248,7 +278,7 @@ extension AppStore {
 
   /// Folds or unfolds every row `grouping` shows that folds, at every level. The selected row folds
   /// too, until it is next selected, as a fold by hand does.
-  func foldAllOpenRows(_ action: OpenTabsFoldAll, grouping: OpenTabsGrouping? = nil) {
+  func foldAllOpenRows(_ action: SidebarFoldAll, grouping: OpenTabsGrouping? = nil) {
     let (projects, targets) = openTabsFoldables(grouping: grouping)
     let folded = action == .collapse
     for path in projects { setOpenProject(path, folded: folded) }

@@ -76,6 +76,22 @@ final class OpenTabsGroupingUITests: XCTestCase {
     XCTAssertTrue(poll { !self.element(app, self.header).exists })
   }
 
+  /// The Projects view's header has the same button: Collapse All, then Expand All.
+  func testTheProjectsViewHasExpandAndCollapseAll() {
+    let app = launchedApp()
+    let projects = element(app, "sidebar.view.projects")
+    XCTAssertTrue(projects.waitForExistence(timeout: 15))
+    projects.click()
+    let button = element(app, "sidebar.projects.foldAll")
+    XCTAssertTrue(button.waitForExistence(timeout: 5), "the Projects view's fold button")
+    XCTAssertEqual(button.label, "Collapse All", "the fixture's project is expanded")
+
+    button.click()
+    XCTAssertTrue(poll { button.label == "Expand All" })
+    button.click()
+    XCTAssertTrue(poll { button.label == "Collapse All" })
+  }
+
   /// Collapse All folds every header and row, leaving no tab rows, and then offers Expand All,
   /// which shows them again.
   func testCollapseAllThenExpandAll() {

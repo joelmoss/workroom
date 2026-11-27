@@ -319,6 +319,32 @@ final class OpenTabsGroupingTests: XCTestCase {
     XCTAssertEqual(decoded.windows.first?.foldedOpenProjects, ["/q"])
   }
 
+  // MARK: The Projects view's Expand All / Collapse All
+
+  /// Value: protects=the Projects view's Collapse All collapses every project and every workroom's
+  /// terminals, then Expand All opens them all, the button saying which it will do (owner,
+  /// 2026-11-27); fails_when=a project or a terminal subtree is missed, or the button offers the
+  /// wrong action; seam=AppStore.projectsFoldAll / foldAllProjects.
+  func testProjectsCollapseAllThenExpandAll() throws {
+    let store = makeStore()
+    let saved = store.collapsedProjects
+    defer { store.collapsedProjects = saved }
+    try open(one, tabs: 2, in: store)
+    store.collapsedProjects = ["/q"]
+    XCTAssertEqual(store.projectsFoldAll(), .collapse, "/p is expanded")
+
+    store.foldAllProjects(.collapse)
+    XCTAssertEqual(store.collapsedProjects, ["/p", "/q"])
+    XCTAssertTrue(store.expandedTerminalTargets.isEmpty)
+    XCTAssertEqual(store.projectsFoldAll(), .expand)
+
+    store.foldAllProjects(.expand)
+    XCTAssertTrue(store.collapsedProjects.isEmpty)
+    let target = try XCTUnwrap(store.target(for: one))
+    XCTAssertEqual(store.expandedTerminalTargets, [target.id], "one's two terminals show")
+    XCTAssertEqual(store.projectsFoldAll(), .collapse)
+  }
+
   // MARK: Drags land where their gap shows
 
   /// Value: protects=a project header dragged above another moves its project's title-bar tabs as
