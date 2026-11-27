@@ -64,6 +64,9 @@ struct OpenRowReflow: Equatable {
     case before(SidebarID)
     case after(SidebarID)
     case end
+    /// In the title-bar slots the moved tabs hold now, in the order given: a reorder within a
+    /// project, which keeps its place among the other targets.
+    case inTheirSlots
   }
 
   /// The List's rows as the model had them when the row lifted, a placeholder for it included.
@@ -187,17 +190,25 @@ struct OpenRowReflow: Equatable {
 
   /// A lifted row of a grouped list let go now: the title-bar tabs it moves, and where they go,
   /// as its block's (a project's targets, or a target's) or, under its project's header, its
-  /// workroom's alone, beside the sibling it lands by. Nil where it stays, or grouped by workroom,
-  /// where `movedIndex` is the title bar's.
+  /// project's reordered in the slots they hold, its workroom beside the sibling it lands by. Nil
+  /// where it stays, or grouped by workroom, where `movedIndex` is the title bar's.
   var titleBarMove: (moving: [SidebarID], place: TitleBarPlace)? {
     guard shape != nil, !liftsTab, let index = movedIndex else { return nil }
     var landed = others
     landed.insert(dragged, at: min(index, landed.count))
     let at = min(index, landed.count - 1)
     if liftsNested {
-      if at + 1 < landed.count { return ([dragged.owner], .before(landed[at + 1].owner)) }
-      if at > 0 { return ([dragged.owner], .after(landed[at - 1].owner)) }
-      return nil
+      // Its project's targets reordered in the slots they hold, so its header, at its first
+      // target, stays where it is although other targets are between them.
+      var project = titleBar(of: block(of: dragged)).filter { $0 != dragged.owner }
+      if at + 1 < landed.count, let next = project.firstIndex(of: landed[at + 1].owner) {
+        project.insert(dragged.owner, at: next)
+      } else if at > 0, let previous = project.firstIndex(of: landed[at - 1].owner) {
+        project.insert(dragged.owner, at: previous + 1)
+      } else {
+        return nil
+      }
+      return (project, .inTheirSlots)
     }
     let moving = titleBar(of: block(of: dragged))
     guard at + 1 < landed.count, let next = titleBar(of: block(of: landed[at + 1])).first else {
@@ -443,7 +454,8 @@ struct OpenRowReflow: Equatable {
   /// the row lifted, which is where the drag measured the rows' drop zones: the same place on the
   /// same row. Nil over the gap and, lifting a tab, over its own workroom's rows, where the drop is
   /// this reorder's and no row's; over the tab rows of a workroom it can join, where its gap opens;
-  /// over a project's header and a workroom row under one, which only open gaps; and over another
+  /// over a project's header and a workroom row under one that shows tabs, which only open gaps;
+  /// and over another
   /// workroom row's upper quarter (lifting a tab that can leave its workroom) and lower quarter
   /// (that, or one whose tabs it can join), which are gaps: only its middle half is onto it
   /// (`AppStore.groupBand`).
@@ -456,7 +468,9 @@ struct OpenRowReflow: Equatable {
     if row == dragged { return nil }
     if case .project = row { return nil }
     if liftsTab, row.owner == dragged.owner { return nil }
-    if liftsTab, shape?.nested.contains(row) == true { return nil }
+    // A workroom row under a header showing tabs it can join only opens a gap; folded, it is a
+    // row like any other, onto which a drop joins it.
+    if liftsTab, shape?.nested.contains(row) == true, joinable.contains(row.owner) { return nil }
     // A tab row of a workroom it can join: the gap opens there, no row takes it.
     if row.isTab, joinable.contains(row.owner) { return nil }
     if row.isWorkroom, leavesWorkroom || joinable.contains(row.owner) {
