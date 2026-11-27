@@ -328,14 +328,17 @@ pub fn spawn(sessions: SessionStore) {
 /// One tick: the records, then the compression, which then also undoes what the records' reads
 /// re-inflated, then the unprobed requests whose grace has passed (#481), then the resume records
 /// whose owners have gone (#823). Whether another tick is owed without new output: a record to
-/// retry, a request still waiting out its grace, or a resume record whose owner is watched.
+/// retry, a request still waiting out its grace, or a resume record whose owner is inside its
+/// exit grace.
 ///
 /// The resume owners are watched here, not on a thread of their own or per session: this is the
 /// one thread every daemon runs that already visits each session on a timer, and its 2 s
-/// `INTERVAL` is the protocol's exit grace, so a record clears 2 to 4 s after its owner exits.
-/// Their exit is not always followed by output (a wrapper's or a hook's owner, a program run in
-/// the background), so a session with a resume record keeps the thread ticking: one wakeup each
-/// `INTERVAL` while any program holds a record, a lookup per owner each.
+/// `INTERVAL` is the protocol's exit grace, so a record clears 2 to 4 s after its owner is first
+/// found gone. Only an owner in its grace keeps the thread ticking. A running owner does not, so an
+/// idle daemon whose panes run Claude Code still sleeps: a program's exit prints its shell's
+/// prompt, and that output wakes the look that finds it gone. Accepted limit: an owner that exits
+/// with no output after it (one run in the background) keeps its record until the session's next
+/// output.
 fn tick(
     sessions: &SessionStore,
     written: &mut HashSet<SessionId>,

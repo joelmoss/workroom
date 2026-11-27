@@ -333,7 +333,11 @@ fn a_record_clears_once_its_owner_has_been_gone_for_the_grace_while_the_shell_ru
         cleared: Vec::new(),
         watching: true,
     };
-    assert_eq!(watch_owners(&shared, t0, lookup), watching, "it runs");
+    assert_eq!(
+        watch_owners(&shared, t0, lookup),
+        Watched::default(),
+        "it runs, so no look is owed before output"
+    );
     table.lock().unwrap().retain(|p| p.pid != 20);
     assert_eq!(watch_owners(&shared, at(100), lookup), watching);
     assert_eq!(watch_owners(&shared, at(2_099), lookup), watching);
@@ -372,7 +376,7 @@ fn nothing_clears_while_the_sessions_shell_is_gone() {
     table.lock().unwrap().clear();
     for ms in [1_500, 2_000, 60_000] {
         let watched = watch_owners(&shared, t0 + Duration::from_millis(ms), lookup);
-        assert!(watched.cleared.is_empty() && watched.watching, "{ms}");
+        assert_eq!(watched, Watched::default(), "{ms}");
     }
     assert!(recorded(&shared));
 }

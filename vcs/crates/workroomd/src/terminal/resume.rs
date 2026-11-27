@@ -427,6 +427,14 @@ impl Resume {
             .map(|(_, record)| record)
     }
 
+    /// Whether a record's owner was found gone and is still inside its grace.
+    fn in_grace(&self) -> bool {
+        self.words
+            .values()
+            .filter_map(|word| word.record.as_ref())
+            .any(|record| record.gone_since.is_some())
+    }
+
     /// Every record's owner.
     fn owners(&self) -> Vec<Owner> {
         self.words
@@ -538,7 +546,9 @@ fn check_owner(
 pub(crate) struct Watched {
     /// The programs whose records cleared, their owners gone for `EXIT_GRACE`.
     pub cleared: Vec<String>,
-    /// Whether a record is left, so another look is owed.
+    /// Whether an owner is inside its grace, so another look is owed whether or not more output
+    /// comes. A running owner owes none: its exit prints its shell's prompt, which wakes the next
+    /// look, so an idle daemon still sleeps while its programs hold records.
     pub watching: bool,
 }
 
@@ -570,10 +580,8 @@ pub(crate) fn watch_owners(
     let running = |owner: Owner| lookup(owner.pid).map(Owner::from) == Some(owner);
     // A record is only accepted once the first process is known, so `root` is set here.
     if !root.is_some_and(running) {
-        return Watched {
-            cleared: Vec::new(),
-            watching: true,
-        };
+        // The session is ending, and its end wakes the thread itself.
+        return Watched::default();
     }
     let found: Vec<(Owner, bool)> = owners
         .into_iter()
@@ -592,7 +600,7 @@ pub(crate) fn watch_owners(
         .collect();
     Watched {
         cleared,
-        watching: !state.owners().is_empty(),
+        watching: state.in_grace(),
     }
 }
 
