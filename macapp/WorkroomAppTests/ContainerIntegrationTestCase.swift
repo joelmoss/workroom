@@ -176,13 +176,14 @@ class ContainerIntegrationTestCase: XCTestCase {
   /// refuses a stdin that isn't one.
   func pane(
     _ driver: ContainerHostDriver, _ host: HostID, session: UUID, restored: Bool = false,
-    run: String? = nil
+    run: String? = nil, environment: [String: String] = [:]
   ) throws -> RemoteHostIntegrationTests.Pane {
     let attach = try driver.attachCommand(
       to: host, session: session, workingDirectory: "/workspaces/app", restored: restored,
       metadata: [], runCommand: run)
     return try RemoteHostIntegrationTests.Pane(
-      command: "/usr/bin/script -q /dev/null /bin/sh -c \(PosixShell.quoted(attach))")
+      command: "/usr/bin/script -q /dev/null /bin/sh -c \(PosixShell.quoted(attach))",
+      environment: environment)
   }
 
   nonisolated(nonsending) func connect(
@@ -288,7 +289,10 @@ class ContainerIntegrationTestCase: XCTestCase {
   }
 
   /// A pane reattaching after the container restarts is shown its last screen, ended, rather than
-  /// a fresh shell (#232): screens live in the remote user's home, which outlives a restart.
+  /// a fresh shell (#232): screens live in the remote user's home, which outlives a restart. Its
+  /// tab's resume record (#826) is copied into the container and claimed there by its client, but
+  /// this stock image runs its daemon as root, whose sessions never resume (ADR 0082): the
+  /// program never runs, and the pane still shows its screen ended.
   func aPaneIsShownItsLastScreenAfterARestart() async throws {
     let driver = driver()
     let host = try await create(driver, image: try await gitImage(driver))
@@ -320,11 +324,30 @@ class ContainerIntegrationTestCase: XCTestCase {
 
     try cli(["stop", try name(host)])
     try await driver.startIfStopped(host)
-    let second = try pane(driver, host, session: session, restored: true)
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-resume-container-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+    let record = ResumeRecord(
+      argv: ["/bin/sh", "-c", "echo SHOULD-NOT-\"\"RUN; exec sleep 60"], cwd: "/workspaces/app",
+      reportedAt: 1, boot: "before the restart")
+    let file = try XCTUnwrap(
+      ResumeLaunchFile.write(
+        record, for: session, savedFolder: "/workspaces/app", in: folder, onThisMac: false))
+    let second = try pane(
+      driver, host, session: session, restored: true,
+      environment: [ResumeLaunchFile.variable: file])
     defer { second.dropLink() }
     let seen = second.read(until: "host restarted", within: 40)
     XCTAssertTrue(seen.contains("LAST-SCREEN"), seen)
     XCTAssertTrue(seen.contains("ended when its host restarted"), seen)
+    XCTAssertFalse(seen.contains("SHOULD-NOT-RUN"), seen)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: file), "this Mac's copy goes")
+    let (_, left) = try await driver.exec(
+      "ls -A /run/workroom/resume-launch 2>/dev/null | wc -l", on: host
+    ).communicate(nil, timeout: 20)
+    XCTAssertEqual(
+      left.trimmingCharacters(in: .whitespacesAndNewlines), "0",
+      "the container's client claimed the copy")
     try await driver.destroy(host)
   }
 
