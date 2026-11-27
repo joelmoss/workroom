@@ -125,6 +125,8 @@ The setting applies to terminals you open after changing it. Remote workrooms do
 
 On by default. When your Mac restarts or a terminal's session ends, programs that support it, such as Claude Code and Codex, come back where they were. See [Programs that resume after a restart](terminals-and-tabs.md#programs-that-resume-after-a-restart).
 
+While it's on, Workroom keeps a hook in Claude Code's settings that lets a Claude Code conversation come back, and takes it out when you turn it off. See [Carry on a Claude Code conversation after a restart](coding-agents.md#carry-on-a-claude-code-conversation-after-a-restart).
+
 Off, a terminal whose session is gone gets a new shell, and a remote workroom's says it has ended, as they did before programs resumed. Terminals you open while it's off can't say how to resume. One opened while it was on still can, and comes back once you turn it on again. A terminal that got a new shell while it was off doesn't bring its old program back later.
 
 The setting applies to terminals you open after changing it, and to a terminal whose session is gone when it comes back. It's set on each Mac: in a remote workroom, it follows the setting on the Mac whose terminal started the session.

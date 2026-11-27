@@ -17,6 +17,18 @@ An agent in one terminal can work with the others through the `workroom` command
 
 To have Claude Code and Codex know this by themselves, turn on **Settings ▸ AI Agents ▸ Install the Workroom skill for Claude Code and Codex**. Workroom adds its skill to your Claude Code and Codex skill folders on your Mac, and on each host after it next connects, and removes it when you turn the setting off. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md).
 
+## Carry on a Claude Code conversation after a restart {nightly}
+
+When your Mac restarts, or a terminal's session ends with its daemon or host, a terminal that was running Claude Code starts it again in the same conversation. This works while **Resume programs after a restart** is on in [Settings ▸ Terminal](settings.md#resume-programs-after-a-restart), which it is by default.
+
+Claude Code doesn't tell the terminal how to carry on yet, so Workroom adds a `SessionStart` hook to Claude Code's settings for it: the `hooks.SessionStart` list in `~/.claude/settings.json`, and in the settings of the profile `CLAUDE_CONFIG_DIR` names when you set it, on your Mac and on each host after it next connects. Workroom removes the hook when you turn the setting off. Your own hooks and settings stay as they are, and a `settings.json` that isn't valid JSON is left alone, with a note under the setting.
+
+Each time a conversation starts, or starts again after `/clear`, the hook tells the terminal to run `claude --resume <conversation>` with the options you started `claude` with that shape the session, such as `--model`, `--permission-mode`, `--dangerously-skip-permissions` and `--add-dir`. Your prompt is left out. A profile other than the default comes back as `env CLAUDE_CONFIG_DIR=… claude --resume …`. Claude Code started with `-p`, or with an option the hook doesn't know, isn't brought back.
+
+The hook does nothing outside a Workroom terminal. Claude Code may ask you to trust the folder before it runs the hook.
+
+Codex gets no hook. A Codex terminal will come back in its conversation once Codex reports how to itself.
+
 ## Diagnose a failed command
 
 When a command fails in a terminal, the pane footer shows **Command failed (exit N)** in red. Click it to open the diagnosis.

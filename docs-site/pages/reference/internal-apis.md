@@ -453,6 +453,48 @@ workroom include-archive
 | `--output` | yes | yes | The file to write the tar to |
 | `--project` | yes |  | Project directory (defaults to the current directory) |
 
+### `workroom resume-hook`
+
+Report how to resume Claude Code, or install or remove the hook that does (used by the desktop app). The app runs it for: Claude Code's `SessionStart` hook, to report how to resume its conversation (`report`); Settings ▸ Terminal, and each host's bootstrap, to install or remove that hook.
+
+```text
+workroom resume-hook report|install|remove
+```
+
+#### `workroom resume-hook report`
+
+Report the running Claude Code's conversation to the pane, from its hook.
+
+```text
+workroom resume-hook report
+```
+
+No flags.
+
+#### `workroom resume-hook install`
+
+Install the hook in each Claude profile's settings.
+
+```text
+workroom resume-hook install
+```
+
+| Flag | Takes a value | Required | Usage |
+| ---- | ---- | ---- | ---- |
+| `--login-environment` |  |  | Read CLAUDE_CONFIG_DIR from the login shell's environment |
+
+#### `workroom resume-hook remove`
+
+Remove the hook Workroom installed, keeping the rest.
+
+```text
+workroom resume-hook remove
+```
+
+| Flag | Takes a value | Required | Usage |
+| ---- | ---- | ---- | ---- |
+| `--login-environment` |  |  | Read CLAUDE_CONFIG_DIR from the login shell's environment |
+
 ### `workroom skill`
 
 Install or remove the Workroom skill for Claude Code and Codex (used by the desktop app). The app runs it for: Settings ▸ AI Agents, and each host's bootstrap, to install or remove the Workroom skill.

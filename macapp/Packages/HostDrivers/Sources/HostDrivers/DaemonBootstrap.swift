@@ -203,10 +203,14 @@ public enum DaemonBootstrap {
   /// The Workroom skill (`workroomSkill`) is synced once the connection is up, in a task of its
   /// own and bounded (`syncWorkroomSkill`), so it never holds a connect up; `onWorkroomSkill`
   /// hears how it went.
+  ///
+  /// Claude Code's resume hook (`resumeHook`, #828) is synced the same way, after the skill:
+  /// `onResumeHook` hears how it went.
   public static func connect(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
     handOff: Bool = true, resources: URL?, scripts: ScriptLocator,
-    workroomSkill: WorkroomSkillPolicy = .leave, onWorkroomSkill: WorkroomSkillCallback? = nil
+    workroomSkill: WorkroomSkillPolicy = .leave, onWorkroomSkill: WorkroomSkillCallback? = nil,
+    resumeHook: WorkroomSkillPolicy = .leave, onResumeHook: WorkroomSkillCallback? = nil
   ) async throws -> DaemonClient {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
@@ -214,14 +218,23 @@ public enum DaemonBootstrap {
     logger.notice("daemon bootstrap: \(String(describing: outcome), privacy: .public)")
     let client = try await DaemonClient.connect(
       host: host, stream: try await driver.openStream(to: host))
-    if workroomSkill != .leave {
+    if workroomSkill != .leave || resumeHook != .leave {
       let found = outcome.skillFound
       Task.detached {
-        let result = await syncWorkroomSkill(
-          workroomSkill, found: found, host: host, driver: driver, socket: socket)
-        logger.notice(
-          "workroom skill: \(result?.summary ?? "nothing to do", privacy: .public)")
-        onWorkroomSkill?(workroomSkill, result)
+        if workroomSkill != .leave {
+          let result = await syncWorkroomSkill(
+            workroomSkill, found: found, host: host, driver: driver, socket: socket)
+          logger.notice(
+            "workroom skill: \(result?.summary ?? "nothing to do", privacy: .public)")
+          onWorkroomSkill?(workroomSkill, result)
+        }
+        if resumeHook != .leave {
+          let result = await syncResumeHook(
+            resumeHook, host: host, driver: driver, socket: socket)
+          logger.notice(
+            "claude resume hook: \(result?.summary ?? "nothing to do", privacy: .public)")
+          onResumeHook?(resumeHook, result)
+        }
       }
     }
     return client
@@ -314,6 +327,53 @@ public enum DaemonBootstrap {
       return .failed(said.isEmpty ? "skill exited \(status)" : said)
     }
     return .done(skills)
+  }
+
+  /// Installs or removes Claude Code's resume hook (#828) in each Claude profile on the host with
+  /// the host's own binary (`workroom resume-hook`), which alone decides what in a
+  /// `settings.json` is Workroom's, with `CLAUDE_CONFIG_DIR` from the host user's login
+  /// environment: installed on every connect while Settings ▸ Terminal's "Resume programs after a
+  /// restart" is on, removed on each connect after it was turned off until that goes through. A
+  /// failure, such as a kept daemon from before `resume-hook` was, is reported and never fails the
+  /// connect. The entries are `workroom skill`'s shape, one per profile's `settings.json`.
+  public static func syncResumeHook(
+    _ policy: WorkroomSkillPolicy, host: HostID, driver: any HostDriver, socket: String
+  ) async -> Outcome.WorkroomSkill? {
+    let action: String
+    switch policy {
+    case .leave: return nil
+    case .remove: action = "remove"
+    case .install: action = "install"
+    }
+    let binary =
+      (driver as? any DaemonPlacingDriver)?.daemonPath(on: host)
+      ?? DaemonInstall.binary(besideSocket: socket)
+    do {
+      let stream = try await driver.exec(
+        [binary, "resume-hook", action, "--login-environment", "--json"].map(PosixShell.quoted)
+          .joined(separator: " "),
+        on: host)
+      let answer = try await stream.communicate(nil, timeout: skillTimeout)
+      return resumeHookOutcome(status: answer.status, output: answer.output)
+    } catch {
+      return .failed(error.localizedDescription)
+    }
+  }
+
+  /// What `workroom resume-hook --json` answered: each profile's state, or why it didn't run.
+  /// Anything a login's startup printed ahead of the envelope is skipped.
+  static func resumeHookOutcome(status: Int32, output: String) -> Outcome.WorkroomSkill {
+    struct Envelope: Decodable {
+      let ok: Bool
+      let profiles: [Outcome.WorkroomSkill.Entry]?
+    }
+    let envelope = output.split(whereSeparator: \.isNewline).reversed().lazy
+      .compactMap { try? JSONDecoder().decode(Envelope.self, from: Data($0.utf8)) }.first
+    guard status == 0, let envelope, envelope.ok, let profiles = envelope.profiles else {
+      let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
+      return .failed(said.isEmpty ? "resume-hook exited \(status)" : said)
+    }
+    return .done(profiles)
   }
 
   private static func prepare(
