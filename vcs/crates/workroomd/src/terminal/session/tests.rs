@@ -3135,7 +3135,10 @@ fn a_record_clears_once_its_owner_has_exited_for_the_grace_while_the_shell_stays
         "the owner's report became the record within 5 s"
     );
     let t0 = Instant::now();
-    assert!(store.watch_resume_owners(t0), "a running owner is watched");
+    assert!(
+        !store.watch_resume_owners(t0),
+        "a running owner owes no look before output: an idle daemon sleeps"
+    );
     assert!(resume().is_some(), "a running owner keeps its record");
 
     let pid: u32 = std::fs::read_to_string(release.with_extension("pid"))
