@@ -534,6 +534,14 @@ fn launch_file() -> std::path::PathBuf {
     "/private/launch/resume-file.json".into()
 }
 
+/// The launch file a decline of `pending`, at a prompt or a deadline, would claim, with no
+/// process able to be read: none for a resume whose shell said its hook loaded.
+fn declined(pending: Option<Pending>) -> Option<std::path::PathBuf> {
+    pending
+        .filter(|pending| pending.declines(|_| None, |_| None))
+        .map(|pending| pending.file)
+}
+
 /// Value: protects=a resume whose helper never reported being declinable (#825): its launch file
 /// is the one the session was started with, overdue only once `DECLINE_AFTER` has passed, and a
 /// decline after the helper reported (or a second one) declines nothing; fails_when=the file is
@@ -543,17 +551,20 @@ fn launch_file() -> std::path::PathBuf {
 fn a_resume_whose_helper_never_reported_is_declined_once() {
     let mut s = state();
     assert_eq!(s.waiting_file(), None, "a session that resumes nothing");
-    s.resuming(&resumed_record(), launch_file());
+    s.resuming(&resumed_record(), launch_file(), None);
     let now = Instant::now();
     assert_eq!(s.waiting_file(), Some(launch_file()));
     assert_eq!(s.overdue(now), None);
-    assert_eq!(s.overdue(now + DECLINE_AFTER), Some(launch_file()));
+    assert_eq!(
+        declined(s.overdue(now + DECLINE_AFTER)),
+        Some(launch_file())
+    );
     assert_eq!(s.decline(), Some("claude".into()));
     assert_eq!(s.decline(), None, "once");
     assert_eq!(s.waiting_file(), None);
 
     let mut s = state();
-    s.resuming(&resumed_record(), launch_file());
+    s.resuming(&resumed_record(), launch_file(), None);
     helper_reports(&mut s, 1, now);
     assert_eq!(s.waiting_file(), None, "it started");
     assert_eq!(s.overdue(now + DECLINE_AFTER), None);
@@ -575,7 +586,7 @@ fn a_resumed_programs_helper_group_is_named_for_the_program() {
         move |pid: u32| processes.iter().copied().find(|process| process.pid == pid)
     };
     let mut s = state();
-    s.resuming(&resumed_record(), launch_file());
+    s.resuming(&resumed_record(), launch_file(), None);
     let report = body(
         300,
         NOW,
@@ -636,7 +647,7 @@ fn helper_reports(s: &mut Resume, offset: u64, at: Instant) -> Outcome {
 fn the_helpers_report_of_the_resumed_record_says_it_started_once() {
     let start = Instant::now();
     let mut s = state();
-    s.resuming(&resumed_record(), launch_file());
+    s.resuming(&resumed_record(), launch_file(), None);
     let other = body(4444, NOW, &argv(&["vim"]));
     let outcome = s.apply(1, &other, NOW, |_| checked(owner(4444, 1), &[]));
     assert!(
@@ -679,7 +690,7 @@ fn a_resumed_program_that_fails_at_once_says_so_once() {
     };
     // A login shell that took a minute to reach its first prompt.
     let started = |s: &mut Resume| {
-        s.resuming(&resumed_record(), launch_file());
+        s.resuming(&resumed_record(), launch_file(), None);
         helper_reports(s, 1, start + Duration::from_secs(60));
     };
     let mut s = state();
@@ -691,7 +702,7 @@ fn a_resumed_program_that_fails_at_once_says_so_once() {
         "once"
     );
     let mut s = state();
-    s.resuming(&resumed_record(), launch_file());
+    s.resuming(&resumed_record(), launch_file(), None);
     assert_eq!(
         exit(&mut s, 1, 127, Duration::from_secs(600)),
         Outcome::ResumeFailed {
@@ -744,12 +755,16 @@ fn a_resume_whose_shell_said_its_hook_loaded_waits_for_its_helper() {
     let authenticated = protocol::authenticate(&body(4100, NOW, hook), TOKEN, NOW).unwrap();
     assert_eq!(authenticated.action, Some(Action::Clear), "a spec clear");
     let mut s = state();
-    s.resuming(&resumed_record(), launch_file());
-    assert_eq!(s.unhooked_file(), Some(launch_file()));
+    s.resuming(&resumed_record(), launch_file(), None);
+    assert_eq!(declined(s.pending()), Some(launch_file()));
     assert_eq!(shell_says(&mut s, 1, hook, now), Outcome::HookLoaded);
-    assert_eq!(s.unhooked_file(), None, "a prompt mark declines nothing");
+    assert_eq!(
+        declined(s.pending()),
+        None,
+        "a prompt mark declines nothing"
+    );
     let later = now + DECLINE_AFTER * 20;
-    assert_eq!(s.overdue(later), None, "nor does any deadline");
+    assert_eq!(declined(s.overdue(later)), None, "nor does any deadline");
     assert_eq!(s.waiting_file(), Some(launch_file()), "its end removes it");
     assert_eq!(s.whole(), None, "the hook's word is no record");
     assert_eq!(
@@ -765,31 +780,105 @@ fn a_resume_whose_shell_said_its_hook_loaded_waits_for_its_helper() {
         ("clear=1:workroomhook=0", "another value"),
     ] {
         let mut s = state();
-        s.resuming(&resumed_record(), launch_file());
+        s.resuming(&resumed_record(), launch_file(), None);
         assert_eq!(
             shell_says(&mut s, 1, fields, now),
             Outcome::Cleared,
             "{why}"
         );
-        assert_eq!(s.unhooked_file(), Some(launch_file()), "{why}");
+        assert_eq!(declined(s.pending()), Some(launch_file()), "{why}");
         // After it started waiting, so this is past its deadline.
         let due = Instant::now() + DECLINE_AFTER;
-        assert_eq!(s.overdue(due), Some(launch_file()), "{why}");
+        assert_eq!(declined(s.overdue(due)), Some(launch_file()), "{why}");
     }
     let mut s = state();
-    s.resuming(&resumed_record(), launch_file());
+    s.resuming(&resumed_record(), launch_file(), None);
     let forged = format!("pid=4100:time={NOW}:{hook}:mac={}", "0".repeat(64));
     let outcome = s.apply(1, forged.as_bytes(), NOW, |_| unreachable!());
     assert!(matches!(
         s.after(outcome, 1, forged.as_bytes(), now),
         Outcome::NotAccepted { .. }
     ));
-    assert_eq!(s.unhooked_file(), Some(launch_file()), "an unsigned report");
+    assert_eq!(
+        declined(s.pending()),
+        Some(launch_file()),
+        "an unsigned report"
+    );
     assert_eq!(
         shell_says(&mut state(), 1, hook, now),
         Outcome::HookLoaded,
         "said, though a session that resumes nothing waits for nothing"
     );
+}
+
+/// Value: protects=a resume whose shell said its hook loaded being declined once `exec` replaced
+/// that shell (#825, a `.zshrc` that ends in `exec tmux`), and only on proof: its first process,
+/// still the same one by pid and start time, runs another file than the shell it was started
+/// from; an instant prompt (the same file), an image not read, a pid now another process's, or a
+/// shell or first process not known declines nothing; fails_when=the check reads a name or a
+/// path rather than the file, trusts a reused pid or an unread image, or the state stops
+/// carrying the first process or the shell to it; why_new=#825 follow-up (a pane whose shell
+/// `exec`s tmux toasted "new shell" after every restart); seam=injected process lookups
+#[test]
+fn a_hooked_resume_is_declined_only_once_exec_replaced_its_shell() {
+    use crate::terminal::process::image_of;
+    let shell = image_of(&std::env::current_exe().unwrap()).expect("a stand-in shell");
+    let other = image_of(std::path::Path::new("/bin/sh")).expect("another file");
+    assert_ne!(shell, other);
+    let root = owner(4100, 7);
+    let alive = |start: u64| {
+        move |pid: u32| {
+            Some(Identity {
+                pid,
+                start,
+                parent: 1,
+                uid: UID,
+            })
+        }
+    };
+    let pending = |hooked: bool, root: Option<Owner>, shell: Option<Image>| Pending {
+        file: launch_file(),
+        hooked,
+        root,
+        shell,
+    };
+    let hooked = pending(true, Some(root), Some(shell));
+    assert!(
+        !hooked.declines(|_| Some(shell), alive(7)),
+        "still the shell it started as, as at an instant prompt"
+    );
+    assert!(
+        hooked.declines(|_| Some(other), alive(7)),
+        "exec replaced it"
+    );
+    assert!(!hooked.declines(|_| None, alive(7)), "an image not read");
+    assert!(
+        !hooked.declines(|_| Some(other), alive(8)),
+        "the pid is another process's"
+    );
+    assert!(!hooked.declines(|_| Some(other), |_| None), "gone");
+    assert!(
+        !pending(true, Some(root), None).declines(|_| Some(other), alive(7)),
+        "a shell not known"
+    );
+    assert!(
+        !pending(true, None, Some(shell)).declines(|_| Some(other), alive(7)),
+        "a first process not known"
+    );
+    assert!(
+        pending(false, None, None).declines(|_| None, |_| None),
+        "a shell that never said its hook loaded needs no proof"
+    );
+
+    // The state hands both on, and the hook's word marks it hooked.
+    let mut s = state();
+    s.root = Some(root);
+    s.resuming(&resumed_record(), launch_file(), Some(shell));
+    assert_eq!(s.pending(), Some(pending(false, Some(root), Some(shell))));
+    shell_says(&mut s, 1, "clear=1:workroomhook=1", Instant::now());
+    assert_eq!(s.pending(), Some(hooked.clone()));
+    let due = Instant::now() + DECLINE_AFTER;
+    assert_eq!(s.overdue(due), Some(hooked), "and at its deadline");
 }
 
 /// Value: protects=a hand-off from a daemon whose table predates `launched` (#822 to #825's)

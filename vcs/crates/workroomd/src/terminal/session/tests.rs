@@ -3208,6 +3208,7 @@ fn a_resume_its_helper_never_reports_is_declined_at_the_deadline() {
             reported_at_ms: 1,
         },
         file.clone(),
+        None,
     );
     // After it started waiting, so `t0 + DECLINE_AFTER` is past its deadline.
     let t0 = Instant::now();
@@ -3238,10 +3239,11 @@ fn a_resume_its_helper_never_reports_is_declined_at_the_deadline() {
 
 /// Value: protects=a resume whose shell said Workroom's hook loaded in it surviving a prompt mark
 /// before its helper ran (an instant prompt) and the deadline (#825), while one from a shell that
-/// never said so is still declined at its first mark: the tick stops looking at the first, its
-/// launch file stays for its helper, and its status keeps the seeded record with no
+/// never said so is still declined at its first mark: the tick looks at the first only until its
+/// deadline, its launch file stays for its helper, and its status keeps the seeded record with no
 /// `resumeDeclined`; fails_when=the mark or the deadline declines a hooked resume, the hook's word
-/// drops the seeded record, the tick keeps waking for it, or an unhooked mark no longer declines;
+/// drops the seeded record, the tick keeps waking for it past its deadline, or an unhooked mark no
+/// longer declines;
 /// why_new=#825's third review (Powerlevel10k's instant prompt declined working resumes);
 /// seam=the tick run on given times, each shell held until its resume is seeded
 #[test]
@@ -3301,6 +3303,8 @@ fn a_resume_whose_hook_loaded_survives_an_early_prompt_and_the_deadline() {
                 reported_at_ms: 1,
             },
             file.clone(),
+            // No shell to compare: macOS's `/bin/sh` re-execs the shell it stands for.
+            None,
         );
         let (capture, _) = attach_capture(&store, id(n));
         std::fs::write(&gate, b"").expect("release the shell");
@@ -3315,10 +3319,13 @@ fn a_resume_whose_hook_loaded_survives_an_early_prompt_and_the_deadline() {
     assert!(seen.contains("DONE"), "read past the mark: {seen}");
     assert!(file.exists(), "the mark declined nothing");
     assert!(
-        !store.watch_resume_owners(t0),
-        "a resume whose hook loaded owes the tick no look"
+        store.watch_resume_owners(t0),
+        "a resume whose hook loaded owes the tick a look at its deadline"
     );
-    store.watch_resume_owners(t0 + DECLINE_AFTER * 4);
+    assert!(
+        !store.watch_resume_owners(t0 + DECLINE_AFTER * 4),
+        "and none after it"
+    );
     assert!(file.exists(), "nor did the deadline");
     #[cfg(feature = "terminal-state")]
     {
@@ -3348,6 +3355,126 @@ fn a_resume_whose_hook_loaded_survives_an_early_prompt_and_the_deadline() {
         store.kill(id(75));
     }
     store.kill(id(74));
+}
+
+/// Value: protects=a resume whose shell said its hook loaded being declined at its deadline once
+/// `exec` has replaced that shell (#825, a `.zshrc` that ends in `exec tmux`, whose output has no
+/// prompt mark), and not while the shell is still the file it was started from: the tick's
+/// deadline claims the launch file and the status says `resumeDeclined`; fails_when=the deadline
+/// never looks at a hooked resume, misses the exec, or declines a shell that runs on as itself;
+/// why_new=#825 follow-up (such a pane toasted "new shell" after every restart); seam=the tick run
+/// on given times, the shell held until its resume is seeded
+#[test]
+fn a_hooked_resume_whose_shell_was_execd_away_is_declined_at_its_deadline() {
+    use crate::terminal::resume::{DECLINE_AFTER, Whole, launch};
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: a daemon running as root gives no session a resume state (ADR 0082)");
+        return;
+    }
+    // A shell that is its own file: macOS's `/bin/sh` re-execs the one it stands for.
+    let bash = std::path::Path::new("/bin/bash");
+    let Some(shell) = crate::terminal::process::image_of(bash) else {
+        eprintln!("skipped: no /bin/bash");
+        return;
+    };
+    let scratch = crate::commands::Scratch::in_temp("wr-resume-execd");
+    let release = scratch.join("release");
+    // Held until `$1`, then it says its hook loaded, as the tests above sign, and READY; once
+    // `$1.more` exists it says EXECING and `exec`s `sleep`, as a `.zshrc` `exec`s tmux.
+    let script = concat!(
+        r#"echo $$ > "$1.pid"; "#,
+        r#"i=0; while [ ! -e "$1" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; "#,
+        r#"body="pid=$$:time=$(date +%s):clear=1:workroomhook=1"; "#,
+        r#"mac=$({ printf '%s:%s' "$body" "$OSC7577_TOKEN" | sha256sum 2>/dev/null "#,
+        r#"|| printf '%s:%s' "$body" "$OSC7577_TOKEN" | shasum -a 256; } | cut -d' ' -f1); "#,
+        r#"printf '\033]7577;%s:mac=%s\007' "$body" "$mac"; echo READY; "#,
+        r#"i=0; while [ ! -e "$1.more" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; "#,
+        r#"echo EXECING; exec sleep 20"#,
+    );
+    let args = [
+        OsString::from("-c"),
+        OsString::from(script),
+        OsString::from("shell"),
+        release.clone().into_os_string(),
+    ];
+    let mut e = env();
+    e.push((
+        OsString::from(crate::terminal::resume::TOKEN_VARIABLE),
+        OsString::from("a-test-token-0123456789"),
+    ));
+    let store = SessionStore::new();
+    store
+        .create(SessionSpec {
+            program: bash.as_os_str(),
+            interactive: true,
+            ..spec(id(76), &args, &e)
+        })
+        .expect("create");
+    let record = launch::Launch {
+        argv: vec!["claude".into(), "--resume".into(), "a".into()],
+        cwd: "/".into(),
+        reported_at_ms: 1,
+    };
+    let file = launch::write_launch(&scratch.join("launches"), id(76), &record).expect("file");
+    store.resuming(
+        id(76),
+        Whole {
+            argv: record.argv.clone(),
+            cwd: Some(record.cwd.clone()),
+            reported_at_ms: 1,
+        },
+        file.clone(),
+        Some(shell),
+    );
+    // After it started waiting, so `t0 + DECLINE_AFTER` is past its deadline.
+    let t0 = Instant::now();
+    let (capture, _) = attach_capture(&store, id(76));
+    std::fs::write(&release, b"").expect("release the shell");
+    let seen = wait_for(&capture, "READY", Duration::from_secs(10));
+    assert!(
+        seen.contains("READY"),
+        "the shell said its hook loaded: {seen}"
+    );
+    assert!(
+        !store.watch_resume_owners(t0 + DECLINE_AFTER),
+        "past its deadline a hooked resume owes no look"
+    );
+    assert!(
+        file.exists(),
+        "a shell that runs on as itself is waited for"
+    );
+
+    let pid: u32 = std::fs::read_to_string(release.with_extension("pid"))
+        .expect("the shell's pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    std::fs::write(release.with_extension("more"), b"").expect("release the exec");
+    let seen = wait_for(&capture, "EXECING", Duration::from_secs(10));
+    assert!(seen.contains("EXECING"), "{seen}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while crate::terminal::process::image(pid) == Some(shell) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_ne!(
+        crate::terminal::process::image(pid),
+        Some(shell),
+        "the shell exec'd sleep within 5 s"
+    );
+    store.watch_resume_owners(t0 + DECLINE_AFTER);
+    assert!(!file.exists(), "the deadline claimed the file");
+    #[cfg(feature = "terminal-state")]
+    {
+        let event = store
+            .program_status_events()
+            .into_iter()
+            .find(|(session, _)| *session == id(76))
+            .map(|(_, event)| serde_json::from_slice::<serde_json::Value>(&event).unwrap())
+            .expect("its status");
+        assert_eq!(event["resumeDeclined"], true, "{event}");
+    }
+    store.kill(id(76));
 }
 
 /// A program under a session's shell that reports how to resume it, then exits while the shell

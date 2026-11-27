@@ -541,6 +541,11 @@ pub(crate) fn launch<T>(
         .and_then(|record| record.cwd.clone())
         .map(OsString::from);
     let cwd = resumed_cwd.as_deref().or(cwd);
+    // The file its shell starts from, which `exec` replacing the shell changes
+    // (`resume::Pending::declines`).
+    let shell = record
+        .as_ref()
+        .and_then(|_| crate::terminal::process::image_of(Path::new(&invocation.program)));
     let mut failure = None;
     let created = sessions.create_then(
         SessionSpec {
@@ -558,7 +563,7 @@ pub(crate) fn launch<T>(
         |info| {
             // Before the reader starts, so the session's first status carries the record.
             if let (Some(record), Some(file)) = (record, launch_file.clone()) {
-                sessions.resuming(id, record, file);
+                sessions.resuming(id, record, file, shell);
             } else if declined {
                 sessions.resume_declined_at_start(id);
             }

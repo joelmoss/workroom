@@ -189,6 +189,45 @@ pub fn identity(pid: u32) -> Option<Identity> {
     platform::identity(pid)
 }
 
+/// An executable file by device and inode: the same file however a path names it (a symlink,
+/// Homebrew's `bin`, `/bin` merged into `/usr/bin`). What a resume compares to tell that `exec`
+/// replaced a session's shell (`crate::terminal::resume`, #825).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Image {
+    device: u64,
+    inode: u64,
+}
+
+impl Image {
+    fn of(metadata: &std::fs::Metadata) -> Image {
+        use std::os::unix::fs::MetadataExt;
+        Image {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+}
+
+/// The file at `path`, links followed. `None` for a relative path, which names no one file, or
+/// one that can't be read.
+pub fn image_of(path: &Path) -> Option<Image> {
+    if !path.is_absolute() {
+        return None;
+    }
+    std::fs::metadata(path)
+        .ok()
+        .map(|metadata| Image::of(&metadata))
+}
+
+/// The file process `pid` runs now, which `exec` changes and nothing else does: `/proc/<pid>/exe`
+/// on Linux, `proc_pidpath` on macOS. `None` when it is gone or can't be read.
+pub fn image(pid: u32) -> Option<Image> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    platform::image(pid)
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use super::name_from_argv;
@@ -354,6 +393,19 @@ mod platform {
             uid: info.pbi_uid,
         })
     }
+
+    /// The path `proc_pidpath` gives for the process's executable, stat'd.
+    pub(super) fn image(pid: u32) -> Option<super::Image> {
+        let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: `buffer` is the size passed, so the kernel cannot write past it.
+        let written = unsafe {
+            libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32)
+        };
+        use std::os::unix::ffi::OsStrExt;
+        let written = usize::try_from(written).ok().filter(|n| *n > 0)?;
+        buffer.truncate(written);
+        super::image_of(std::path::Path::new(std::ffi::OsStr::from_bytes(&buffer)))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -442,6 +494,14 @@ mod platform {
             parent,
             uid,
         })
+    }
+
+    /// `/proc/<pid>/exe` stat'd, which reaches the file the process runs even once it has been
+    /// deleted or replaced on disk.
+    pub(super) fn image(pid: u32) -> Option<super::Image> {
+        fs::metadata(format!("/proc/{pid}/exe"))
+            .ok()
+            .map(|metadata| super::Image::of(&metadata))
     }
 }
 

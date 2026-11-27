@@ -450,12 +450,92 @@ fn resumes_past_an_early_prompt_mark(shell: &str) {
     assert!(said.get("resumeDeclined").is_none(), "{shell}: {said}");
 }
 
+/// What makes `stand_in_execd` act as the stand-in.
+const STAND_IN_EXECD: &str = "WORKROOM_STAND_IN_EXECD";
+
+/// Not a test: the program a `.zshrc` (bash: `.bashrc`) `exec`s in
+/// `a_shell_execd_away_after_its_hook_loaded_declines_the_resume`, standing in for tmux or fish,
+/// as this test binary, which is never the shell's own file. It prints a prompt mark, as fish's
+/// prompt does, then `EXECD`, and reads its input until it closes.
+#[test]
+#[ignore = "a stand-in program the resume tests run, not a test"]
+fn stand_in_execd() {
+    use std::io::Write;
+    if std::env::var_os(STAND_IN_EXECD).is_none() {
+        return;
+    }
+    let mut stdout = std::io::stdout();
+    let _ = write!(stdout, "\x1b]133;A\x07EXECD\r\n");
+    let _ = stdout.flush();
+    let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+}
+
+/// Value: protects=a resume whose shell loaded Workroom's hook, then `exec`ed another program
+/// from its startup files (`exec tmux`, `exec fish`), being declined at that program's first
+/// prompt mark (#825): the command never runs, the status says `resumeDeclined` so the app
+/// forgets the record, and the launch file is claimed; fails_when=the daemon stops telling the
+/// exec'd program from the shell it started, so the record is kept and the app says "new shell"
+/// after every restart; why_new=#825 follow-up; seam=a stand-in program (`stand_in_execd`)
+#[test]
+fn a_shell_execd_away_after_its_hook_loaded_declines_the_resume() {
+    if is_root() || !common::has_terminal_state() {
+        eprintln!("skipped: needs a daemon with terminal-state, not running as root");
+        return;
+    }
+    for shell in hooked_shells() {
+        declined_once_execd_away(shell);
+    }
+}
+
+fn declined_once_execd_away(shell: &str) {
+    let name = shell.rsplit('/').next().unwrap();
+    let workspace = Workspace::new(&format!("resume-execd-{name}"));
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let home = home(&workspace, "execd");
+    let execd = format!(
+        "exec env {STAND_IN_EXECD}=1 '{}' stand_in_execd --exact --ignored --nocapture\n",
+        std::env::current_exe().unwrap().display()
+    );
+    std::fs::write(home.join(".zshrc"), &execd).unwrap();
+    std::fs::write(home.join(".bashrc"), &execd).unwrap();
+    let session = "de5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e19";
+    let file = app_launch_file(
+        &workspace,
+        session,
+        &["/bin/echo", "SHOULD-NOT-RUN"],
+        &workspace,
+    );
+    let (_client, mut reader) = restore(&socket, session, shell, &home, &file);
+    let seen = reader
+        .read_until("EXECD", Duration::from_secs(30))
+        .to_string();
+    assert!(seen.contains("EXECD"), "{shell}: {seen}");
+    let mut said = Value::Null;
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            said = status(&socket, session);
+            said["resumeDeclined"] == true
+        }),
+        "{shell}: declined at the exec'd program's mark: {said}"
+    );
+    assert!(said["resume"].is_null(), "{shell}: {said}");
+    assert!(said.get("resumeStarted").is_none(), "{shell}: {said}");
+    assert!(!seen.contains("SHOULD-NOT-RUN"), "{shell}: {seen}");
+    let launches = socket.with_extension("resume");
+    assert_eq!(
+        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        0,
+        "{shell}: its launch file was claimed"
+    );
+}
+
 /// Value: protects=the accepted limit of a resume whose shell loaded Workroom's hook but whose
-/// startup files keep it from running (a `.zshrc` that resets `precmd_functions`, one that ends
-/// in `exec fish`): nothing declines it at the first prompt, so the seeded record stays and the
-/// app's own fallback speaks; the command never runs; and the session's end removes its launch
-/// file, with or without a prompt mark; fails_when=the first prompt declines a shell whose hook
-/// loaded, the seeded record goes, the command runs anyway, or the file is left behind;
+/// startup files keep it from running in the shell it was started as (a `.zshrc` that resets
+/// `precmd_functions`): nothing declines it at the first prompt, so the seeded record stays and
+/// the app's own fallback speaks; the command never runs; and the session's end removes its
+/// launch file, with or without a prompt mark; fails_when=the first prompt declines a shell whose
+/// hook loaded, the seeded record goes, the command runs anyway, or the file is left behind;
 /// why_new=#825's third review (a hook that loaded is waited for); seam=none
 #[test]
 fn a_hook_that_loaded_but_never_runs_keeps_the_record_until_its_session_ends() {

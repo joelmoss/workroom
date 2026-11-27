@@ -27,12 +27,15 @@
 //! later, and says `resumeDeclined` (`SessionStore::decline_resume`). A shell whose hook loaded
 //! is waited for as long as it lives, since a prompt mark before the hook runs (Powerlevel10k's
 //! instant prompt, or Ghostty's own with `no_prompt_percent`) or a startup file that waits (an
-//! `ssh-add` passphrase) is no sign it won't. The cost, accepted: a startup file that keeps the
-//! loaded hook from running (a `.zshrc` that ends in `exec fish`, or that resets
-//! `precmd_functions`) is never declined, so the app keeps the record and tries it at each
-//! restart, its own fallback saying each time that the pane got a new shell
-//! (`PaneSessionAttachment.resumeUnconfirmed`). A session that ends with its file unclaimed
-//! removes it.
+//! `ssh-add` passphrase) is no sign it won't. Unless a startup file `exec`s another program in
+//! the shell's place (a `.zshrc` that ends in `exec tmux` or `exec fish`): the session's first
+//! process then runs another file than the shell it was started from, which is declined at a
+//! prompt mark or at `DECLINE_AFTER` (`resume::Pending::declines`). The cost, accepted: a startup
+//! file that keeps the loaded hook from running in the shell it started as (a `.zshrc` that
+//! resets `precmd_functions`, or `exec`s the same shell again) is never declined, so the app
+//! keeps the record and tries it at each restart, its own fallback saying each time that the
+//! pane got a new shell (`PaneSessionAttachment.resumeUnconfirmed`). A session that ends with its
+//! file unclaimed removes it.
 //!
 //! **The helper.** `resume-launch` claims the launch file, goes to the record's folder and finds
 //! the command on PATH, then forks. The child reports the record over OSC 7577 as its own pid (so
