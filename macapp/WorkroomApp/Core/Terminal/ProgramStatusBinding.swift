@@ -116,12 +116,18 @@ final class ProgramStatusBinding {
           $0.resume = resume
         }
       }
-      // After the record is written: a failed resume forgets the record it wrote.
+      // After the record is written: a failed or declined resume forgets the record it wrote.
       guard let attachment = access.surface(tabID)?.attachment else { continue }
       if monitor.resumeFailed(for: sessionID) {
         attachment.resumeFailed()
       } else if monitor.resumeStarted(for: sessionID) {
         attachment.resumeStarted()
+      } else if monitor.resumeDeclined(for: sessionID) {
+        attachment.resumeDeclined()
+      } else {
+        // The session's daemon has said something, and nothing of the resume yet: the pane's
+        // own wait starts now (`resumeFallback`).
+        attachment.sessionReported()
       }
     }
   }
@@ -222,18 +228,35 @@ final class ProgramStatusBinding {
     monitor.seed(session, host: host, records: records, stale: stale)
   }
 
+  /// How the UI-test fixture's resume goes (`UITestFixture.seedResume`).
+  enum FixtureResume {
+    /// The program started.
+    case started
+    /// It started, then exited with an error at once.
+    case failed
+    /// The daemon declined it: the shell never ran Workroom's hook.
+    case declined
+  }
+
   /// The UI-test fixture's seam for a resume (#825, `UITestFixture.seedResume`): the tab's pane
   /// waits on `program` as a launch that handed its record to the relay does, and its session's
-  /// daemon then says the program started and, when `failed`, that it exited with an error at
-  /// once, as a real status event would.
+  /// daemon then says how it went (`outcome`), as a real status event would.
   func seedResumeForFixture(
-    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, program: String, failed: Bool
+    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, program: String,
+    outcome: FixtureResume
   ) {
     let session = UUID()
     access.mutate(tabID, targetID) { $0.sessionID = session }
     follow(.local)
     access.surface(tabID)?.attachment.awaitResume(of: program)
-    monitor.seed(session, records: [], resumeStarted: true)
-    if failed { monitor.seed(session, records: [], resumeFailed: true, resumeStarted: true) }
+    switch outcome {
+    case .started:
+      monitor.seed(session, records: [], resumeStarted: true)
+    case .failed:
+      monitor.seed(session, records: [], resumeStarted: true)
+      monitor.seed(session, records: [], resumeFailed: true, resumeStarted: true)
+    case .declined:
+      monitor.seed(session, records: [], resumeDeclined: true)
+    }
   }
 }

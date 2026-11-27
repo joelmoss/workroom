@@ -67,26 +67,30 @@ final class PaneSessionAttachment {
     case awaiting(program: String)
     /// The daemon said it started, and the pane said "Resumed".
     case started(program: String, at: Date)
-    /// Nothing said so within `resumeConfirmationWait`, and the pane said it got a new shell; a
-    /// start or a failure heard later still corrects that.
+    /// The daemon declined it, or nothing said so within `resumeConfirmationWait`, and the pane
+    /// said it got a new shell; a start or a failure heard later still corrects that.
     case declined(program: String, at: Date)
   }
   private(set) var resumeState: ResumeState?
-  /// The wait that turns an unconfirmed resume into a declined one.
+  /// The wait that turns an unconfirmed resume into a declined one, once it has started
+  /// (`sessionReported`).
   private var resumeConfirmation: DispatchWorkItem?
-  /// How long a resume waits for the daemon to say its program started before the pane says it got
-  /// a new shell instead and forgets the record. It starts at `launch`, so it spans the relay's
-  /// attach, the daemon starting the session and the user's login shell starting up as far as the
-  /// helper that reports the program (`resume::launch`): the daemon gives that last part
-  /// `FAILED_WITHIN` (5 s, "longer than a login shell's startup"), and this adds a second for the
-  /// attach before it. Longer would leave a pane that came back as a plain shell saying nothing
-  /// for longer than its user takes to start typing; shorter is safe, since a start heard late
-  /// still says "Resumed", but would flip the toast for slow shells.
-  static let resumeConfirmationWait: TimeInterval = 6
+  /// How long a resume waits, once its session's daemon has first said anything of the session,
+  /// for it to say the program started or that it declined the resume, before the pane says it got
+  /// a new shell anyway and forgets the record. Only a fallback: the daemon says one or the other
+  /// itself, at the shell's first prompt or, for a shell whose prompt sends no OSC 133, 30 s after
+  /// the session started (`resume::DECLINE_AFTER`), and it publishes the session's first status as
+  /// it starts it, so this clock starts then too. It outlasts the daemon's own wait, so it decides
+  /// only where the daemon says neither (a link that dropped, a daemon replaced meanwhile), and is
+  /// counted from that first word rather than from `launch`, so hidden tabs restored together on a
+  /// cold disk, whose login shells start slowly, never time out before their daemon has decided.
+  static let resumeConfirmationWait: TimeInterval = 45
   /// This pane's: a test seam, so a test runs out the wait itself (`resumeUnconfirmed`).
   var resumeConfirmationWait = PaneSessionAttachment.resumeConfirmationWait
-  /// How long after a resume a start or failure heard still changes the toast: the daemon says a
-  /// failure within 5 s of the session starting, and an app that heard of either late says nothing.
+  /// How long after a resume's toast a start or failure heard still changes it: the daemon says a
+  /// failure within 5 s of the program starting, and once its own wait has run out (a decline it
+  /// made claims the launch file) it can't say the program started at all, so this is only for an
+  /// app that heard late, past which it says nothing.
   static let resumeFailureWindow: TimeInterval = 30
 
   /// When a remote pane reattaches after its ssh exits 255, and when it stops trying.
@@ -216,13 +220,28 @@ final class PaneSessionAttachment {
   }
 
   /// This pane's launch handed `program`'s record to the relay (#825): it says nothing until the
-  /// daemon says whether the program started, or `resumeConfirmationWait` runs out.
+  /// daemon says whether the program started or the resume was declined, or, once the daemon has
+  /// first said anything of the session (`sessionReported`), `resumeConfirmationWait` runs out.
   func awaitResume(of program: String) {
     endResume()
     resumeState = .awaiting(program: program)
+  }
+
+  /// The pane's session's daemon said something of it, and nothing yet of its resume (#825): the
+  /// fallback wait starts, once.
+  func sessionReported() {
+    guard case .awaiting = resumeState, resumeConfirmation == nil else { return }
     let wait = DispatchWorkItem { [weak self] in self?.resumeUnconfirmed() }
     resumeConfirmation = wait
     DispatchQueue.main.asyncAfter(deadline: .now() + resumeConfirmationWait, execute: wait)
+  }
+
+  /// The daemon declined the resume this pane's session was started for (#825): its folder is
+  /// gone, its shell has no Workroom hook, or the hook never ran. The pane says it got a new
+  /// shell, once, and the tab forgets the record, which would be declined again at every restart.
+  func resumeDeclined() {
+    guard case .awaiting(let program) = resumeState else { return }
+    decline(program)
   }
 
   /// The daemon said the program this pane's session was started to resume really started
@@ -255,12 +274,17 @@ final class PaneSessionAttachment {
     forgetTabResume()
   }
 
-  /// Nothing said whether the resumed program started within `resumeConfirmationWait` (a daemon
-  /// that predates `resumeStarted`, or a shell that never got as far as the program): the resume
-  /// is declined, so the pane says it got a new shell, as one with no record does, and the tab
-  /// forgets the record, so a stale command does not resume again after the next restart.
+  /// Nothing said whether the resumed program started, or that its resume was declined, within
+  /// `resumeConfirmationWait` (`sessionReported`): the resume is declined here, so the pane says
+  /// it got a new shell, as one with no record does, and the tab forgets the record, so a stale
+  /// command does not resume again after the next restart.
   func resumeUnconfirmed() {
     guard case .awaiting(let program) = resumeState else { return }
+    decline(program)
+  }
+
+  private func decline(_ program: String) {
+    resumeConfirmation?.cancel()
     resumeConfirmation = nil
     resumeState = .declined(program: program, at: Date())
     surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)

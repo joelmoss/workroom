@@ -3168,12 +3168,13 @@ final class TerminalPanes {
   }
 
   /// The UI-test fixture's seam for a resume (#825, `UITestFixture.seedResume`): the tab's pane
-  /// resumes `program`, which its daemon says started and, when `failed`, failed at once.
+  /// resumes `program`, which its daemon says went as `outcome` says.
   func seedResumeForFixture(
-    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, program: String, failed: Bool
+    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, program: String,
+    outcome: ProgramStatusBinding.FixtureResume
   ) {
     programStatusBinding.seedResumeForFixture(
-      tab: tabID, target: targetID, program: program, failed: failed)
+      tab: tabID, target: targetID, program: program, outcome: outcome)
   }
 
   /// The sidebar gallery's seam (`SidebarGallery`): what an unmounted fixture pane would show had

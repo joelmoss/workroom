@@ -17,6 +17,13 @@ use crate::terminal::pty::Pty;
 use crate::terminal::shadow::Shadow;
 use crate::util::{lock_or_recover, try_recover};
 
+/// A session's resume state, attachment and shadow (`SessionStore::resume_parts`).
+type ResumeParts = (
+    crate::terminal::resume::SharedResume,
+    Arc<Mutex<Attached>>,
+    Arc<Mutex<Shadow>>,
+);
+
 impl SessionStore {
     /// What observes this store's sessions: its kept screens, run sessions and program status.
     pub fn hooks(&self) -> &Hooks {
@@ -657,14 +664,7 @@ impl SessionStore {
     }
 
     /// Session `id`'s resume state, attachment and shadow, with the map released.
-    fn resume_parts(
-        &self,
-        id: SessionId,
-    ) -> Option<(
-        crate::terminal::resume::SharedResume,
-        Arc<Mutex<Attached>>,
-        Arc<Mutex<Shadow>>,
-    )> {
+    fn resume_parts(&self, id: SessionId) -> Option<ResumeParts> {
         lock_or_recover(&self.sessions).get(&id).map(|session| {
             (
                 Arc::clone(&session.resume),
