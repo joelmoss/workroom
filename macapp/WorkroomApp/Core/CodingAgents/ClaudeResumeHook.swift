@@ -130,9 +130,10 @@ final class ClaudeResumeHook: ObservableObject {
 
   // MARK: - This Mac
 
-  /// At launch: reconcile this Mac now and at every change of the setting.
+  /// At launch: reconcile this Mac now and at every change of the setting. A process with no home
+  /// of its own (a hosted unit run) follows nothing, so it marks nothing either.
   func follow() {
-    guard following == nil else { return }
+    guard following == nil, home != nil else { return }
     following = Task { [weak self] in
       for await _ in ProgramResume.updates() {
         guard let self else { return }
