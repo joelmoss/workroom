@@ -121,7 +121,8 @@ pub(crate) fn dispatch(
                         x_pixels: request.x_pixels,
                         y_pixels: request.y_pixels,
                     },
-                    keepalive,
+                    // Cloned: the losing create of two attaches after it (#826).
+                    keepalive.clone(),
                     ClientIdentity {
                         kind: request.client,
                         hostname: request.hostname.clone(),
@@ -136,7 +137,16 @@ pub(crate) fn dispatch(
             // between would pass the refusal and then be created. With one read, that race ends in
             // `attach()` finding nothing, which the client already takes as "ended".
             let exists = sessions.contains(id);
-            if request.existing_only && !exists {
+            let run = crate::terminal::run::is_requested(&request.env);
+            // A remote pane's attach carries its tab's resume record from the start (#826): its
+            // session gone after a host restart is made again here, under the same id, running the
+            // record, rather than shown ended or as its frozen last screen. Never a run, which
+            // keeps its stopped tab (ADR 0058), nor under a root daemon, whose sessions never
+            // resume (ADR 0082): both are refused as before, and an attach with no record too.
+            let resumes = request.resume.is_some()
+                && !run
+                && crate::terminal::resume::daemon_accepts_reports();
+            if request.existing_only && !exists && !resumes {
                 // A session that ended with its host, whose last screen was kept (#232,
                 // `crate::terminal::screens`): `Attached`, the screen, and nothing after.
                 // `attachment` stays unset, so this connection's input and resizes go nowhere, and
@@ -251,8 +261,7 @@ pub(crate) fn dispatch(
                         commands: None,
                     }
                 };
-                let run = crate::terminal::run::is_requested(&request.env);
-                launch(
+                let created = launch(
                     sessions,
                     Launch {
                         id,
@@ -266,7 +275,14 @@ pub(crate) fn dispatch(
                         resume: request.resume.as_ref(),
                     },
                     |_| attach().map_err(|e| e.to_string()),
-                )
+                );
+                // Two Macs reconnecting after a host restart both found it gone (#826): the one
+                // whose create lost the race attaches to the session the other made, which runs
+                // the program once, rather than being told it ended.
+                match created {
+                    Err(_) if sessions.contains(id) => attach().map_err(|e| e.to_string()),
+                    created => created,
+                }
             };
             match result {
                 Ok((_, granted)) => {
@@ -474,9 +490,12 @@ pub(crate) fn launch<T>(
             && key != crate::terminal::resume::launch::HELPER_VARIABLE
     });
     // A resume (#825): the session's own shell runs the record's program in its folder at its
-    // first prompt, as its first job. Only for an interactive shell, never a run.
+    // first prompt, as its first job. Only for an interactive shell, never a run, and never under
+    // a root daemon, whose sessions get no token (ADR 0082): that is declined at once.
     let resumed = resume
-        .filter(|_| !run && invocation.interactive)
+        .filter(|_| {
+            !run && invocation.interactive && crate::terminal::resume::daemon_accepts_reports()
+        })
         .and_then(|resume| resumed(sessions, id, &invocation, resume));
     // Asked to resume and can't: the app is told at once (`resumeDeclined`).
     let declined = resume.is_some() && resumed.is_none();

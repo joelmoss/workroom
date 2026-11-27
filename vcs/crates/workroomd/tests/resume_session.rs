@@ -23,6 +23,18 @@ use serde_json::{Value, json};
 /// the app's `SavedLayoutStoreTests` checks is what its writer writes), with this test's session
 /// in the name and its `argv` and `cwd` in place of the fixture's.
 fn app_launch_file(workspace: &Workspace, session: &str, argv: &[&str], cwd: &Path) -> PathBuf {
+    app_launch_file_in("app-resume", workspace, session, argv, cwd)
+}
+
+/// `app_launch_file`, in the workspace's folder `folder`: a second Mac's file for the same
+/// session, which has the same name.
+fn app_launch_file_in(
+    folder: &str,
+    workspace: &Workspace,
+    session: &str,
+    argv: &[&str],
+    cwd: &Path,
+) -> PathBuf {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/resume-launch");
     let fixture = std::fs::read_dir(&fixtures)
         .expect("testdata/resume-launch")
@@ -41,7 +53,7 @@ fn app_launch_file(workspace: &Workspace, session: &str, argv: &[&str], cwd: &Pa
     record["argv"] = json!(argv);
     record["cwd"] = json!(cwd);
 
-    let dir = workspace.join("app-resume");
+    let dir = workspace.join(folder);
     let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
     let path = dir.join(name.replace(fixture_session, session));
     let mut file = std::fs::OpenOptions::new()
@@ -124,26 +136,37 @@ fn restore(
     home: &Path,
     file: &Path,
 ) -> (common::Spawned, ClientReader) {
+    restore_with(socket, session, shell, home, Some(file), &["--no-create"])
+}
+
+/// `restore` with the attach's `flags`, and `file` only when there is one.
+fn restore_with(
+    socket: &Path,
+    session: &str,
+    shell: &str,
+    home: &Path,
+    file: Option<&Path>,
+    flags: &[&str],
+) -> (common::Spawned, ClientReader) {
     let resources = resources();
-    let mut client = attach_with_env(
-        socket,
-        session,
-        &["--no-create"],
-        &[
-            ("SHELL", shell),
-            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
-            ("WORKROOM_SESSION_RESUME", file.to_str().unwrap()),
-            ("WORKROOM_SESSION_RESOURCES", resources.to_str().unwrap()),
-            ("HOME", home.to_str().unwrap()),
-            ("ZDOTDIR", home.to_str().unwrap()),
-            ("HISTFILE", home.join(".history").to_str().unwrap()),
-            ("TERM", "xterm-256color"),
-            ("TERM_PROGRAM", ""),
-            ("ENV", ""),
-            ("BASH_ENV", ""),
-            ("PROMPT_COMMAND", ""),
-        ],
-    );
+    let history = home.join(".history");
+    let mut env = vec![
+        ("SHELL", shell),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_RESOURCES", resources.to_str().unwrap()),
+        ("HOME", home.to_str().unwrap()),
+        ("ZDOTDIR", home.to_str().unwrap()),
+        ("HISTFILE", history.to_str().unwrap()),
+        ("TERM", "xterm-256color"),
+        ("TERM_PROGRAM", ""),
+        ("ENV", ""),
+        ("BASH_ENV", ""),
+        ("PROMPT_COMMAND", ""),
+    ];
+    if let Some(file) = file {
+        env.push(("WORKROOM_SESSION_RESUME", file.to_str().unwrap()));
+    }
+    let mut client = attach_with_env(socket, session, flags, &env);
     let reader = ClientReader::new(&mut client);
     (client, reader)
 }
@@ -642,4 +665,143 @@ fn list_sessions_line(socket: &Path, session: &str) -> String {
         .unwrap_or_default()
         .trim_end()
         .to_string()
+}
+
+/// Value: protects=a remote pane's gone session (#826) made again on its FIRST attach
+/// (`--no-create --no-spawn`, as a container's client inside it and, past the relay, a Mac's
+/// dialed one), running its record, where the host's daemon kept its frozen last screen; two Macs
+/// reconnecting at once making one session whose program runs once and which both show; a live
+/// session never running a record it was sent, nor told it was declined; and a remote pane with
+/// no record still shown its frozen screen; fails_when=the relay keeps a remote record for a retry
+/// it never makes, the daemon shows the frozen screen or says "ended" instead, the losing create
+/// of two is told it ended, a live session runs the record, or a pane with no record gets a new
+/// shell; why_new=new (#826); seam=none
+#[test]
+fn a_remote_panes_gone_session_resumes_once_on_its_first_attach() {
+    if is_root() {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
+    if let Some(shell) = hooked_shells().first() {
+        resumes_on_its_first_remote_attach(shell);
+    }
+}
+
+fn resumes_on_its_first_remote_attach(shell: &str) {
+    const REMOTE: &[&str] = &["--no-create", "--no-spawn"];
+    let workspace = Workspace::new("resume-remote");
+    let socket = workspace.socket();
+    let screens = workspace.join("screens");
+    let flags = [std::ffi::OsStr::new("--screens"), screens.as_os_str()];
+    let home = home(&workspace, "remote");
+    let folder = workspace.join("the project");
+    std::fs::create_dir(&folder).unwrap();
+    let runs = workspace.join("runs");
+    let program = workspace.join("fixture-remote");
+    common::write_executable(
+        &program,
+        &format!(
+            "#!/bin/sh\necho run >> '{}'\necho \"RESUMED-$1 IN=$(pwd)\"\nexec sleep 60\n",
+            runs.display()
+        ),
+    );
+    let resumed = "4e5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e21";
+    let unrecorded = "4e5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e22";
+
+    // Before the restart: both sessions run, and with the terminal state their screens are kept.
+    let mut daemon = common::start_daemon_with(&socket, &flags);
+    let mut before = Vec::new();
+    for session in [resumed, unrecorded] {
+        let (mut client, mut reader) = restore_with(&socket, session, shell, &home, None, &[]);
+        type_into(&mut client, "echo \"BEFORE-$((40+2))\"\n");
+        reader.read_until("BEFORE-42", Duration::from_secs(30));
+        before.push(client);
+    }
+    let kept = |session: &str| {
+        std::fs::read(screens.join(format!("{session}.vt")))
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("BEFORE-42"))
+    };
+    if common::has_terminal_state() {
+        assert!(
+            wait_for(Duration::from_secs(10), || kept(resumed) && kept(unrecorded)),
+            "the screens were kept"
+        );
+    }
+    // The host restarts: the daemon and every shell die at once, and a new daemon starts over the
+    // same screens.
+    daemon.kill().unwrap();
+    daemon.wait().unwrap();
+    drop(before);
+    std::fs::remove_file(&socket).unwrap();
+    let _daemon = common::start_daemon_with(&socket, &flags);
+
+    // Two Macs at once, each with the record its host layout gave it, in its own file.
+    let argv = [program.to_str().unwrap(), "ONCE"];
+    let first = app_launch_file_in("mac-a", &workspace, resumed, &argv, &folder);
+    let second = app_launch_file_in("mac-b", &workspace, resumed, &argv, &folder);
+    let (_a, mut seen_a) = restore_with(&socket, resumed, shell, &home, Some(&first), REMOTE);
+    let (_b, mut seen_b) = restore_with(&socket, resumed, shell, &home, Some(&second), REMOTE);
+    let here = format!("RESUMED-ONCE IN={}", folder.display());
+    for (mac, reader) in [("first", &mut seen_a), ("second", &mut seen_b)] {
+        let seen = reader.read_until(&here, Duration::from_secs(30)).to_string();
+        assert!(
+            seen.contains(&here),
+            "the {mac} Mac shows the resumed program: {seen}"
+        );
+        assert!(
+            !seen.contains("ended"),
+            "the {mac} Mac isn't told it ended: {seen}"
+        );
+    }
+    assert!(
+        !first.exists() && !second.exists(),
+        "each relay claimed its file"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        std::fs::read_to_string(&runs)
+            .unwrap_or_default()
+            .lines()
+            .count(),
+        1,
+        "the program resumed once, in one session"
+    );
+    assert!(
+        !list_sessions_line(&socket, resumed).is_empty(),
+        "a listed daemon session, not the client's child"
+    );
+
+    // A live session given a record attaches as it is: nothing runs, and nothing is declined.
+    let live = app_launch_file(
+        &workspace,
+        resumed,
+        &["/bin/echo", "SHOULD-NOT-RUN"],
+        &folder,
+    );
+    let (mut again, mut seen) = restore_with(&socket, resumed, shell, &home, Some(&live), REMOTE);
+    type_into(&mut again, "\n");
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(!live.exists(), "the relay claimed it");
+    assert!(
+        !seen
+            .read_until("SHOULD-NOT-RUN", Duration::from_secs(1))
+            .contains("SHOULD-NOT-RUN"),
+        "a live session ran a record"
+    );
+    if common::has_terminal_state() {
+        let status = status(&socket, resumed);
+        assert_eq!(status["resumeStarted"], true, "{status}");
+        assert!(status.get("resumeDeclined").is_none(), "{status}");
+
+        // No record: the frozen last screen, as before (ADR 0031), and no session behind it.
+        let (_c, mut frozen) = restore_with(&socket, unrecorded, shell, &home, None, REMOTE);
+        let seen = frozen
+            .read_until("Close it to start again", Duration::from_secs(10))
+            .to_string();
+        assert!(
+            seen.contains("BEFORE-42") && seen.contains("Close it to start again"),
+            "{seen}"
+        );
+        assert!(list_sessions_line(&socket, unrecorded).is_empty());
+    }
 }
