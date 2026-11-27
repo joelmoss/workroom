@@ -33,11 +33,13 @@
 //! A file that doesn't parse, or whose `hooks` or `SessionStart` isn't what Claude reads, is left
 //! as it is and the profile reported `failed`, never overwritten. A file that already says what it
 //! should is not written; one that changes is written whole to a file of this run's own beside it
-//! and renamed over it, keeping its permissions, with every key it had (in key order: the JSON is
-//! read into a map, so a rewrite sorts the keys). A link where `settings.json` should be is
-//! followed, and the file it names written, so a dotfiles or cswap link stays a link.
+//! and renamed over it, keeping its permissions, and every byte but its `hooks` value as the user
+//! wrote it (`settings_text`: the keys inside `hooks` come out sorted). A link where
+//! `settings.json` should be is followed, and the file it names written, so a dotfiles or cswap
+//! link stays a link.
 
 mod claude;
+mod settings_text;
 
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -553,6 +555,8 @@ fn update_file(
         }
         Ok(meta) => Some(meta),
     };
+    // The file's text, when there is any, to write back as it is but for `hooks`.
+    let mut text = None;
     let mut settings = match existing {
         None => Map::new(),
         Some(_) => {
@@ -564,7 +568,11 @@ fn update_file(
                 Map::new()
             } else {
                 match serde_json::from_slice::<Value>(&bytes) {
-                    Ok(Value::Object(settings)) => settings,
+                    Ok(Value::Object(settings)) => {
+                        // Valid JSON is UTF-8.
+                        text = String::from_utf8(bytes).ok();
+                        settings
+                    }
                     Ok(_) => {
                         return Err(format!(
                             "{shown} isn't a JSON object, so Workroom left it as it is"
@@ -589,13 +597,34 @@ fn update_file(
         return Ok(state);
     }
     let mode = existing.map_or(0o600, |meta| meta.permissions().mode() & 0o7777);
-    write_atomically(path, &Value::Object(settings), mode)?;
+    let settings = Value::Object(settings);
+    let bytes = match text {
+        // Only `hooks` changes, so only it is written anew; the result must read back as exactly
+        // the settings meant, or the file is left.
+        Some(text) => settings_text::with_hooks(&text, settings.get("hooks"))
+            .filter(|written| serde_json::from_str::<Value>(written).ok() == Some(settings.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "{shown}: Workroom couldn't change its \"hooks\" alone, so left it as it is"
+                )
+            })?
+            .into_bytes(),
+        None => pretty(&settings),
+    };
+    write_atomically(path, &bytes, mode)?;
     Ok(state)
 }
 
-/// Writes `value` to `path` whole or not at all: to a file of this run's own beside it, synced,
+/// `value` indented two spaces a level, as Claude writes its settings, with a trailing newline.
+fn pretty(value: &Value) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec_pretty(value).expect("settings are JSON");
+    bytes.push(b'\n');
+    bytes
+}
+
+/// Writes `bytes` to `path` whole or not at all: to a file of this run's own beside it, synced,
 /// then renamed over it.
-fn write_atomically(path: &Path, value: &Value, mode: u32) -> Result<(), String> {
+fn write_atomically(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     let shown = path.display();
     let folder = path
         .parent()
@@ -610,15 +639,13 @@ fn write_atomically(path: &Path, value: &Value, mode: u32) -> Result<(), String>
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos())
     ));
-    let mut bytes = serde_json::to_vec_pretty(value).expect("settings are JSON");
-    bytes.push(b'\n');
     let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(mode)
         .open(&staged)
         .and_then(|mut file| {
-            file.write_all(&bytes)?;
+            file.write_all(bytes)?;
             // `mode` is masked by the umask at create; set exactly, as the file had it.
             file.set_permissions(fs::Permissions::from_mode(mode))?;
             file.sync_all()
@@ -668,10 +695,12 @@ fn write_record(home: &Path, profiles: &[PathBuf]) {
     }
     let _ = write_atomically(
         &path,
-        &serde_json::to_value(RecordFile {
-            profiles: profiles.to_vec(),
-        })
-        .expect("a record is JSON"),
+        &pretty(
+            &serde_json::to_value(RecordFile {
+                profiles: profiles.to_vec(),
+            })
+            .expect("a record is JSON"),
+        ),
         0o600,
     );
 }
