@@ -140,7 +140,9 @@ struct WorkroomTabBar: View {
       leadingInset: 8, spacing: tabSpacing, inlineLead: 0,
       // Scroll the selected workroom into view on selection (issue #129 follow-up); suspended
       // mid-drag, like the reorder gap animation below.
-      scrollTarget: selectedID, scrollSuspended: drag.isDragging,
+      // No target while the tabs are hidden, so showing them again is a new one: the scroller then
+      // reveals the selected tab once the returning tabs are laid out, as it does a new tab's.
+      scrollTarget: showsTabs ? selectedID : nil, scrollSuspended: drag.isDragging,
       flipAnimation: controlsFlipAnimation
     ) { overflowing in
       chipRun(
