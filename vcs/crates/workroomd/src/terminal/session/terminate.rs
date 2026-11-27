@@ -102,6 +102,8 @@ impl SessionStore {
             if sessions.contains_key(&id) || self.is_ending(id) {
                 return false;
             }
+            // A client closed it while nothing here held it: never resumed now (#826).
+            self.note_ended_here(id);
         }
         self.hooks.killed(id);
         crate::daemon::serve::wake_idle();
@@ -119,6 +121,8 @@ impl SessionStore {
             let mut sessions = lock_or_recover(&self.sessions);
             let session = sessions.remove(&id);
             let ending = session.as_ref().map(|_| self.mark_ending(vec![id]));
+            // Killed on purpose, so its record never resumes it (#826).
+            self.note_ended_here(id);
             (session, ending)
         };
         // The record of a session that ended with its host, or of this one. After the session
@@ -160,6 +164,9 @@ impl SessionStore {
         let (ending, _ending) = {
             let mut sessions = lock_or_recover(&self.sessions);
             let ending: Vec<Session> = sessions.drain().map(|(_, session)| session).collect();
+            for session in &ending {
+                self.note_ended_here(session.id);
+            }
             let marked = self.mark_ending(ending.iter().map(|s| s.id).collect());
             (ending, marked)
         };

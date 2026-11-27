@@ -398,11 +398,12 @@ pub(super) fn read_session(
                 let run = store.get(&id).is_some_and(|session| {
                     session.number == number && crate::terminal::run::is_run(&session.metadata)
                 });
-                (
-                    remove_if_held(&mut store, id, number),
-                    store.contains_key(&id),
-                    run,
-                )
+                let held = remove_if_held(&mut store, id, number);
+                // Under the map's lock, as it leaves: its record never resumes it (#826).
+                if held {
+                    sessions.note_ended_here(id);
+                }
+                (held, store.contains_key(&id), run)
             };
             if held {
                 hooks.ended(run);

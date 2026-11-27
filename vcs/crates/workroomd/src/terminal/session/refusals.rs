@@ -17,6 +17,20 @@ use crate::util::lock_or_recover;
 /// the next one create a session killed just before it (#310).
 pub const REFUSED_ID_WINDOW: Duration = Duration::from_secs(60);
 
+/// `REFUSED_ID_WINDOW`, but for a test, which may shorten it (`WORKROOMD_TEST_REFUSED_ID_WINDOW_MS`)
+/// to see what an attach finds of a killed session once its refusal is over (#826). Only a build
+/// with `test-support` reads it.
+fn refused_id_window() -> Duration {
+    #[cfg(feature = "test-support")]
+    if let Some(millis) = std::env::var("WORKROOMD_TEST_REFUSED_ID_WINDOW_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+    {
+        return Duration::from_millis(millis);
+    }
+    REFUSED_ID_WINDOW
+}
+
 /// Where a socket's refusals are kept, beside it in the daemon's own directory.
 pub fn refusals_path(socket: &Path) -> PathBuf {
     socket.with_extension("refused")
@@ -104,7 +118,7 @@ impl SessionStore {
         // ponytail: a scan per kill, which kills at the rate panes close never notice; a flood of
         // kills would want pruning on a timer or past a size.
         refused.retain(|_, until| *until > now);
-        refused.insert(id, now + REFUSED_ID_WINDOW);
+        refused.insert(id, now + refused_id_window());
         if let Some(path) = self.refusals.get()
             && let Err(e) = write_refusals(path, &refused, now)
         {

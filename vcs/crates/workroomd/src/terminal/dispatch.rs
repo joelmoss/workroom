@@ -11,7 +11,8 @@ use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Closer;
 use crate::terminal::pty::Size;
 use crate::terminal::session::{
-    ClientIdentity, Recipe, RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore,
+    ClientIdentity, Found, Recipe, RunSignalError, SessionId, SessionInfo, SessionSpec,
+    SessionStore,
 };
 use crate::terminal::shell;
 use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
@@ -136,15 +137,19 @@ pub(crate) fn dispatch(
             // Read ONCE, for both this and the choice below: read twice, a session that exited in
             // between would pass the refusal and then be created. With one read, that race ends in
             // `attach()` finding nothing, which the client already takes as "ended".
-            let exists = sessions.contains(id);
+            let found = sessions.found(id);
+            let exists = found == Found::Live;
             let run = crate::terminal::run::is_requested(&request.env);
             // A remote pane's attach carries its tab's resume record from the start (#826): its
             // session gone after a host restart is made again here, under the same id, running the
             // record, rather than shown ended or as its frozen last screen. Never a run, which
             // keeps its stopped tab (ADR 0058), nor under a root daemon, whose sessions never
-            // resume (ADR 0082): both are refused as before, and an attach with no record too.
+            // resume (ADR 0082), nor a session that ended under this daemon (`SessionStore::found`:
+            // a tab another Mac closed, an agent's kill): all are refused as before, and an attach
+            // with no record too.
             let resumes = request.resume.is_some()
                 && !run
+                && found == Found::EndedWithItsDaemon
                 && crate::terminal::resume::daemon_accepts_reports();
             if request.existing_only && !exists && !resumes {
                 // A session that ended with its host, whose last screen was kept (#232,
@@ -490,13 +495,31 @@ pub(crate) fn launch<T>(
             && key != crate::terminal::resume::launch::HELPER_VARIABLE
     });
     // A resume (#825): the session's own shell runs the record's program in its folder at its
-    // first prompt, as its first job. Only for an interactive shell, never a run, and never under
-    // a root daemon, whose sessions get no token (ADR 0082): that is declined at once.
+    // first prompt, as its first job. Only for an interactive shell, never a run, never under
+    // a root daemon, whose sessions get no token (ADR 0082), and never for a session that ended
+    // under this daemon (`SessionStore::found`, #826): those are declined at once, a new shell.
     let resumed = resume
         .filter(|_| {
             !run && invocation.interactive && crate::terminal::resume::daemon_accepts_reports()
         })
+        .filter(|_| match sessions.found(id) {
+            Found::EndedWithItsDaemon => true,
+            Found::EndedHere => {
+                crate::note!(
+                    "session {}: not resuming: it ended under this daemon",
+                    id.to_hyphenated()
+                );
+                false
+            }
+            // Another attach made it first, so this create loses to it, and a session that ends
+            // before this one is made ended here.
+            Found::Live => false,
+        })
         .and_then(|resume| resumed(sessions, id, &invocation, resume));
+    #[cfg(feature = "test-support")]
+    if resumed.is_some() {
+        resume_create_pause();
+    }
     // Asked to resume and can't: the app is told at once (`resumeDeclined`).
     let declined = resume.is_some() && resumed.is_none();
     let (invocation, record, launch_file) = match resumed {
@@ -549,6 +572,20 @@ pub(crate) fn launch<T>(
             }
             Err(failure.unwrap_or_else(|| error.to_string()))
         }
+    }
+}
+
+/// A test's pause between a resume's launch file and its create (`WORKROOMD_TEST_RESUME_PAUSE_MS`),
+/// so two attaches that found the same session gone both make their file before either creates,
+/// and the one that loses is seen to discard its own (#826). Only a build with `test-support`
+/// reads it.
+#[cfg(feature = "test-support")]
+fn resume_create_pause() {
+    if let Some(millis) = std::env::var("WORKROOMD_TEST_RESUME_PAUSE_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(millis));
     }
 }
 
