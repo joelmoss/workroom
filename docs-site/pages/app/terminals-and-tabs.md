@@ -181,7 +181,7 @@ A restart of your Mac, or a crash of the background helper, ends every terminal'
 - Hidden terminal tabs resume as they reconnect, so their marks in the sidebar come back without opening each tab.
 - A run tab doesn't resume: it comes back stopped, and ⌘R starts it again.
 
-A program says how to resume over the Program Resume Protocol (OSC 7577). This works in terminals on this Mac.
+A program says how to resume over the Program Resume Protocol (OSC 7577). This works in terminals on this Mac, and in a remote workroom's terminals after their host restarts: see [Reconnecting](../remote/reconnecting.md#programs-that-resume-after-the-host-restarts).
 
 ### Who is attached to a terminal {nightly}
 

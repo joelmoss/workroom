@@ -27,15 +27,20 @@ enum ResumeLaunchFile {
   /// Writes `record` for `sessionID`'s relay into `directory`, readable by this user alone from
   /// its first byte. It runs in the record's folder, else, for a record that names none, in
   /// `savedFolder`, the pane's own (ADR 0082). Its path, or nil, and nothing written, when that
-  /// folder is gone (no resume) or the file can't be made.
+  /// folder is gone (no resume) or the file can't be made. `onThisMac` false for a remote pane's
+  /// record (#826), whose folder is a path on its host: the host's daemon checks it there.
   static func write(
-    _ record: ResumeRecord, for sessionID: UUID, savedFolder: String, in directory: URL
+    _ record: ResumeRecord, for sessionID: UUID, savedFolder: String, in directory: URL,
+    onThisMac: Bool = true
   ) -> String? {
     guard record.isWellFormed else { return nil }
     let cwd = record.cwd.flatMap { $0.isEmpty ? nil : $0 } ?? savedFolder
     var isDirectory: ObjCBool = false
-    guard !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory),
-      isDirectory.boolValue, makePrivate(directory),
+    guard !cwd.isEmpty,
+      !onThisMac
+        || (FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory)
+          && isDirectory.boolValue),
+      makePrivate(directory),
       let data = contents(of: record, cwd: cwd)
     else { return nil }
     sweep(directory, olderThan: abandoned)

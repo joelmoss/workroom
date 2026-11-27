@@ -700,7 +700,7 @@ fn resumes_on_its_first_remote_attach(shell: &str) {
     let program = workspace.join("fixture-remote");
     common::write_executable(
         &program,
-        &format!(
+        format!(
             "#!/bin/sh\necho run >> '{}'\necho \"RESUMED-$1 IN=$(pwd)\"\nexec sleep 60\n",
             runs.display()
         ),
@@ -723,7 +723,8 @@ fn resumes_on_its_first_remote_attach(shell: &str) {
     };
     if common::has_terminal_state() {
         assert!(
-            wait_for(Duration::from_secs(10), || kept(resumed) && kept(unrecorded)),
+            wait_for(Duration::from_secs(10), || kept(resumed)
+                && kept(unrecorded)),
             "the screens were kept"
         );
     }
@@ -743,7 +744,9 @@ fn resumes_on_its_first_remote_attach(shell: &str) {
     let (_b, mut seen_b) = restore_with(&socket, resumed, shell, &home, Some(&second), REMOTE);
     let here = format!("RESUMED-ONCE IN={}", folder.display());
     for (mac, reader) in [("first", &mut seen_a), ("second", &mut seen_b)] {
-        let seen = reader.read_until(&here, Duration::from_secs(30)).to_string();
+        let seen = reader
+            .read_until(&here, Duration::from_secs(30))
+            .to_string();
         assert!(
             seen.contains(&here),
             "the {mac} Mac shows the resumed program: {seen}"

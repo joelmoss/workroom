@@ -55,6 +55,17 @@ A terminal whose program ended with the host shows its last screen with a bottom
 
 A container that isn't running, and an asleep boxd machine, start again when you open their workroom.
 
+### Programs that resume after the host restarts {nightly}
+
+A terminal whose program said how to start itself again, such as Claude Code through the hook Workroom installs on the host, gets that program back when it reconnects after the host restarted, in the folder it was in on the host, instead of showing that it ended. Once the program has started, the terminal says **Resumed Claude Code**, or **Resumed** and the program's name for any other. Everything in [Programs that resume after a restart](../app/terminals-and-tabs.md#programs-that-resume-after-a-restart) applies on a host too: quitting the program leaves a shell prompt, a program that fails at once says **Couldn't resume**, and a shell that can't run it says it's a new terminal.
+
+- The terminal resumes on the host, as a terminal session there like any other. If you show the same workroom on two Macs, the program starts once, and both Macs show it.
+- A terminal reconnecting to a session that is still running carries on as before, and says nothing.
+- A host Workroom has never set up, or one made again from scratch, has nothing to resume, so its terminals still say they ended.
+- Programs never resume on a host whose Workroom daemon runs as root, such as a container whose image has no other user. Its terminals say they ended, as before.
+- A hidden tab of a remote workroom resumes when you open it, as it reconnects then.
+- A run tab doesn't resume: it says its run ended, as before.
+
 ## Other things you might see
 
 - A tab's status, such as a coding agent waiting for you, shows `May be out of date: reconnecting…` while its host's connection is down. It updates once the host answers.

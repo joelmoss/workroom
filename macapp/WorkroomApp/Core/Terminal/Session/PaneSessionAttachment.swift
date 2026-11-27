@@ -63,6 +63,11 @@ final class PaneSessionAttachment {
 
   /// Where this pane's last launch stands on resuming its program (#825), by its toast's name.
   enum ResumeState: Equatable {
+    /// A remote pane's record handed to its client (#826), which sends it with its first attach:
+    /// only the host knows whether the session is gone. Its daemon numbering the session other
+    /// than `boot`, the record's, says it made the session again (a host restart), which then
+    /// awaits its start as a local one does; the same says it was live, and nothing happens.
+    case offered(program: String, boot: String)
     /// Handed to the relay; nothing has said yet whether it started.
     case awaiting(program: String)
     /// The daemon said it started, and the pane said "Resumed".
@@ -191,6 +196,13 @@ final class PaneSessionAttachment {
       } else {
         surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
       }
+    } else if !isRunSession, isRestored, service.isRemote(sessionID), let record = tabResume(),
+      let file = service.writeResumeLaunch(record, for: sessionID, savedFolder: workingDirectory)
+    {
+      // A remote pane's (#826): its host's daemon makes the session again with it only if it is
+      // gone, and its status then says so.
+      resumeFile = file
+      offerResume(of: record.displayName, boot: record.boot)
     }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
@@ -235,6 +247,29 @@ final class PaneSessionAttachment {
   func awaitResume(of program: String) {
     endResume()
     resumeState = .awaiting(program: program)
+  }
+
+  /// This remote pane's launch handed `program`'s record, told by a daemon numbering its sessions
+  /// `boot`, to its client (#826), which sends it with its first attach: it says nothing until the
+  /// host's daemon says something of the session (`sessionHeard`).
+  func offerResume(of program: String, boot: String) {
+    endResume()
+    resumeState = .offered(program: program, boot: boot)
+  }
+
+  /// The daemon of this pane's session said something of it, numbering its sessions `boot` (nil:
+  /// nothing of it yet). A remote pane that offered its record (#826) learns from it whether the
+  /// daemon made the session again with the record: one numbering its sessions other than the
+  /// record's daemon did is a new daemon, after a host restart, whose session this pane's attach
+  /// made, so the pane awaits its start; the record's own daemon held it live, so nothing resumed
+  /// and the pane says nothing. A daemon's hand-off keeps its numbering.
+  func sessionHeard(boot: String?) {
+    guard case .offered(let program, let offered) = resumeState, let boot else { return }
+    if boot == offered {
+      endResume()
+    } else {
+      awaitResume(of: program)
+    }
   }
 
   /// The pane's session's daemon said something of it, and nothing yet of its resume (#825): the

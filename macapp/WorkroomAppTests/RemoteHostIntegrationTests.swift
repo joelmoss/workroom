@@ -259,10 +259,11 @@ final class RemoteHostIntegrationTests: XCTestCase {
     /// launched from an async test (see `HostStream.spawn`).
     private let exited = Mutex<Int32?>(nil)
 
-    init(command: String) throws {
+    /// `environment`: what the app's surface adds to the pane's, as a resume record's file (#826).
+    init(command: String, environment: [String: String] = [:]) throws {
       process.executableURL = URL(fileURLWithPath: "/bin/sh")
       process.arguments = ["-c", command]
-      process.environment = [:]
+      process.environment = environment
       process.standardInput = input
       let output = Pipe()
       process.standardOutput = output
