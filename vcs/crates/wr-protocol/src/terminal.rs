@@ -266,6 +266,31 @@ pub struct AttachRequest {
     /// The machine the client is on (`HOSTNAME`, #688): for a pane, the Mac showing it. None when
     /// the client could not say, or said something `client_hostname` refuses.
     pub hostname: Option<String>,
+    /// The resume record a restored pane's tab saved (ADR 0082, #825), sent only with the attach
+    /// that recreates its gone session under the same id: the daemon starts the program it names
+    /// in that session's login shell. A daemon that predates it ignores the keys.
+    pub resume: Option<ResumeRequest>,
+}
+
+/// A resume record as an attach carries it (`RESUME_ARG`, `RESUME_CWD`, `RESUME_AT`): the command
+/// whole, which can hold secrets, so it is never printed (`Debug` shows the program alone).
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct ResumeRequest {
+    /// The command, as its program reported it.
+    pub argv: Vec<String>,
+    /// The folder it starts in.
+    pub cwd: String,
+    /// When it reported, in milliseconds since the Unix epoch.
+    pub reported_at_ms: u64,
+}
+
+impl std::fmt::Debug for ResumeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let program = self.argv.first().map_or("", |word| {
+            word.rsplit('/').next().unwrap_or(word.as_str())
+        });
+        write!(f, "ResumeRequest({program})")
+    }
 }
 
 /// What kind of client attached to a session (#688): a pane of the app, the app's own service
@@ -369,6 +394,13 @@ impl AttachRequest {
         if let Some(hostname) = &self.hostname {
             put("HOSTNAME", hostname.as_bytes());
         }
+        if let Some(resume) = &self.resume {
+            for word in &resume.argv {
+                put("RESUME_ARG", word.as_bytes());
+            }
+            put("RESUME_CWD", resume.cwd.as_bytes());
+            put("RESUME_AT", resume.reported_at_ms.to_string().as_bytes());
+        }
         for (key, value) in &self.env {
             let mut entry = b"ENV:".to_vec();
             entry.extend_from_slice(key.as_bytes());
@@ -386,6 +418,9 @@ impl AttachRequest {
             id: Some(id),
             ..Default::default()
         };
+        let mut resume = ResumeRequest::default();
+        let mut resume_cwd = None;
+        let mut unreadable = false;
         for entry in payload[16..].split(|b| *b == 0) {
             if entry.is_empty() {
                 continue;
@@ -416,12 +451,32 @@ impl AttachRequest {
                 b"HOST" => request.host_environment = value == "1",
                 b"CLIENT" => request.client = ClientKind::parse(value.as_bytes()),
                 b"HOSTNAME" => request.hostname = client_hostname(value.as_bytes()),
+                // A word that is not UTF-8 is no word a program reported: the record goes whole.
+                b"RESUME_ARG" => match value.into_string() {
+                    Ok(word) => resume.argv.push(word),
+                    Err(_) => unreadable = true,
+                },
+                b"RESUME_CWD" => match value.into_string() {
+                    Ok(cwd) => resume_cwd = Some(cwd),
+                    Err(_) => unreadable = true,
+                },
+                b"RESUME_AT" => {
+                    resume.reported_at_ms = value.to_string_lossy().parse().unwrap_or(0);
+                }
                 _ => {
                     if let Some(name) = key.strip_prefix(b"ENV:") {
                         request.env.push((OsString::from_vec(name.to_vec()), value));
                     }
                 }
             }
+        }
+        // A record needs its command and its folder; one without either is none.
+        if let Some(cwd) = resume_cwd
+            && !resume.argv.is_empty()
+            && !unreadable
+        {
+            resume.cwd = cwd;
+            request.resume = Some(resume);
         }
         Some(request)
     }
@@ -457,6 +512,7 @@ impl AttachRequest {
             host_environment: false,
             client: None,
             hostname: None,
+            resume: None,
         }
     }
 }
@@ -527,6 +583,7 @@ mod tests {
             host_environment: true,
             client: Some(ClientKind::Pane),
             hostname: Some("joels-macbook.local".into()),
+            resume: None,
         };
         let decoded = AttachRequest::decode(&request.encode()).expect("decode");
         assert_eq!(decoded, request);
@@ -556,6 +613,40 @@ mod tests {
         assert_eq!(client_hostname(&[0xff]), None);
         let older = AttachRequest::decode(&with(b"COLS=80\0")).unwrap();
         assert_eq!((older.client, older.hostname), (None, None));
+    }
+
+    /// A recreating attach carries its tab's resume record (#825) word for word, in order, with
+    /// the words a shell would split or expand kept whole; a record missing its command or its
+    /// folder is none, and the record is never printed.
+    #[test]
+    fn an_attach_carries_a_resume_record_whole_and_never_prints_it() {
+        let resume = ResumeRequest {
+            argv: vec![
+                "/opt/bin/claude".into(),
+                "--resume".into(),
+                "two words".into(),
+                "a=b".into(),
+                String::new(),
+            ],
+            cwd: "/work/a b".into(),
+            reported_at_ms: 1_795_543_200_000,
+        };
+        let request = AttachRequest {
+            id: Some(SessionId([5u8; 16])),
+            resume: Some(resume.clone()),
+            ..Default::default()
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded.resume, Some(resume));
+        assert_eq!(format!("{:?}", decoded.resume), "Some(ResumeRequest(claude))");
+        assert!(!format!("{decoded:?}").contains("two words"));
+
+        let with = |entries: &[u8]| [&[3u8; 16][..], entries].concat();
+        let decode = |entries: &[u8]| AttachRequest::decode(&with(entries)).unwrap().resume;
+        assert_eq!(decode(b"RESUME_ARG=vim\0"), None, "no folder");
+        assert_eq!(decode(b"RESUME_CWD=/w\0"), None, "no command");
+        assert_eq!(decode(b"RESUME_ARG=\xff\0RESUME_CWD=/w\0"), None, "not UTF-8");
+        assert_eq!(decode(b"COLS=80\0"), None, "an attach that never had one");
     }
 
     /// The client's environment a remote pane may hand its host (ADR 0074), and nothing else.

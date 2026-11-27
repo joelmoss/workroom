@@ -254,6 +254,11 @@ pub struct Store {
     /// next program copies it again (`restore_resume`).
     #[serde(skip)]
     resume: Option<crate::terminal::resume::Whole>,
+    /// The program this session was started to resume exited with an error at once (#825,
+    /// `resume::Outcome::ResumeFailed`), which the app's toast says. Never carried: a hand-off
+    /// comes long after.
+    #[serde(skip)]
+    resume_failed: bool,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
     #[serde(skip)]
     dirty: bool,
@@ -594,6 +599,14 @@ impl Store {
         }
     }
 
+    /// The program this session resumed failed at once (#825): published once.
+    pub fn set_resume_failed(&mut self) {
+        if !self.resume_failed {
+            self.resume_failed = true;
+            self.dirty = true;
+        }
+    }
+
     /// A hand-off's next program has the record its resume state carried (#824), unpublished:
     /// the app already has it, and a new subscriber's snapshot carries it.
     pub fn restore_resume(&mut self, resume: Option<crate::terminal::resume::Whole>) {
@@ -665,6 +678,7 @@ impl Store {
                 cwd: resume.cwd.as_deref(),
                 reported_at: resume.reported_at_ms,
             }),
+            resume_failed: self.resume_failed,
         })
         .expect("a status event serializes")
     }
@@ -787,6 +801,11 @@ struct StatusEvent<'a> {
     /// record cleared from a daemon that predates them, which sends no `resume` at all. An app
     /// that predates it ignores it.
     resume: Option<WireResume<'a>>,
+    /// Only once the program the session was started to resume (#825) exited with an error at
+    /// once: the app turns its "Resumed" toast into "Couldn't resume". An app that predates it
+    /// ignores it.
+    #[serde(rename = "resumeFailed", skip_serializing_if = "std::ops::Not::not")]
+    resume_failed: bool,
 }
 
 /// A resume record on the wire (#824): the command whole, for the app to save. Only here, on the

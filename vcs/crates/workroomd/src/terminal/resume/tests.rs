@@ -502,3 +502,39 @@ fn a_new_shell_gets_its_own_token_in_place_of_a_forwarded_one() {
         assert!(given.is_empty());
     }
 }
+
+/// Value: protects=a resumed program that exits with an error at once turning the toast into
+/// "Couldn't resume" (#825), once, and nothing else doing so; fails_when=an exit after
+/// `FAILED_WITHIN`, a success, a ^C, a session that resumed nothing, or a second exit says it
+/// failed, or the exit's clear stops being a clear; why_new=new; seam=the injected instant
+#[test]
+fn a_resumed_program_that_fails_at_once_says_so_once() {
+    let start = Instant::now();
+    let exit = |s: &mut Resume, offset: u64, status: i32, after: Duration| {
+        let report = body(4242, NOW, &format!("clear=1:workroomexit={status}"));
+        let outcome = s.apply(offset, &report, NOW, |_| unreachable!());
+        s.after(outcome, &report, start + after)
+    };
+    let failed = Outcome::ResumeFailed {
+        program: "claude".into(),
+        status: 1,
+    };
+    let mut s = state();
+    s.resuming("claude".into(), start);
+    assert_eq!(exit(&mut s, 1, 1, Duration::from_secs(4)), failed);
+    assert_eq!(exit(&mut s, 2, 1, Duration::from_secs(4)), Outcome::Cleared, "once");
+
+    for (status, after) in [(1, launch::FAILED_WITHIN), (0, Duration::ZERO), (130, Duration::ZERO)]
+    {
+        let mut s = state();
+        s.resuming("claude".into(), start);
+        assert_eq!(exit(&mut s, 1, status, after), Outcome::Cleared, "{status}");
+    }
+    assert_eq!(
+        exit(&mut state(), 1, 1, Duration::ZERO),
+        Outcome::Cleared,
+        "a session that resumed nothing"
+    );
+    let plain = body(4242, NOW, "clear=1");
+    assert_eq!(protocol::workroom_exit(&plain), None);
+}

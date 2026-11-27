@@ -150,6 +150,16 @@ pub(crate) fn handshake<S: Read + Write>(stream: &mut S) -> Result<u16, Handshak
     Ok(remote.protocol_version)
 }
 
+/// `workroomd resume-launch <file>`: what a resuming session's login shell runs (#825).
+pub fn resume_launch(args: &[String]) -> ExitCode {
+    crate::terminal::resume::launch::run_launch(args)
+}
+
+/// `workroomd resume-shell <status> <file> <shell>`: what that shell then becomes (#825).
+pub fn resume_shell(args: &[String]) -> ExitCode {
+    crate::terminal::resume::launch::run_shell(args)
+}
+
 /// `workroomd protocol`: what this build speaks, for the app's probe.
 pub fn protocol() -> ExitCode {
     // The per-service minimums appended at the end, in the order they were introduced —

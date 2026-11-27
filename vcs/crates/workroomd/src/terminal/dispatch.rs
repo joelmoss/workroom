@@ -263,6 +263,7 @@ pub(crate) fn dispatch(
                         columns: request.columns,
                         rows: request.rows,
                         metadata: session_metadata(&request.env),
+                        resume: request.resume.as_ref(),
                     },
                     |_| attach().map_err(|e| e.to_string()),
                 )
@@ -413,6 +414,9 @@ pub(crate) struct Launch<'a> {
     pub columns: u16,
     pub rows: u16,
     pub metadata: Vec<(String, String)>,
+    /// The resume record a recreating attach sent (#825), which an interactive session runs in its
+    /// folder (`resume::launch`). A run session never resumes (ADR 0058).
+    pub resume: Option<&'a wr_protocol::terminal::ResumeRequest>,
 }
 
 /// Starts a session as an attach that creates one does, or the terminal API's `session.new`
@@ -435,6 +439,7 @@ pub(crate) fn launch<T>(
         columns,
         rows,
         metadata,
+        resume,
     } = launch;
     let mut invocation = shell::invocation(
         &command.to_string_lossy(),
@@ -463,6 +468,21 @@ pub(crate) fn launch<T>(
         crate::daemon::bin_dir::folders(),
         recipe.commands.as_deref(),
     );
+    // A resume (#825): the session's login shell runs the record's program in its folder first,
+    // and is the session's shell once it ends. Only for an interactive shell, never a run.
+    let resumed = resume
+        .filter(|_| !run && invocation.interactive)
+        .and_then(|resume| resumed(sessions, id, &invocation, resume));
+    let (invocation, record) = match resumed {
+        Some((wrapper, record)) => (wrapper, Some(record)),
+        None => (invocation, None),
+    };
+    // It starts in the record's folder, which its shell is left in.
+    let resumed_cwd = record
+        .as_ref()
+        .and_then(|record| record.cwd.clone())
+        .map(OsString::from);
+    let cwd = resumed_cwd.as_deref().or(cwd);
     let mut failure = None;
     let created = sessions.create_then(
         SessionSpec {
@@ -478,6 +498,10 @@ pub(crate) fn launch<T>(
             interactive: invocation.interactive,
         },
         |info| {
+            // Before the reader starts, so the session's first status carries the record.
+            if let Some(record) = record {
+                sessions.resuming(id, record);
+            }
             register(info).map_err(|reason| {
                 failure = Some(reason);
                 crate::terminal::session::SessionError::NotFound(id.to_hyphenated())
@@ -490,6 +514,52 @@ pub(crate) fn launch<T>(
             Ok(registered)
         }
         Err(error) => Err(failure.unwrap_or_else(|| error.to_string())),
+    }
+}
+
+/// The wrapper login shell that resumes `resume` in session `id`, whose own shell is `invocation`
+/// (`resume::launch::prepare`), and the record its status starts with; `None`, logged by program
+/// alone, when it can't: the session then starts as it would have, a new shell (ADR 0082: a
+/// reported folder that is gone means no resume).
+fn resumed(
+    sessions: &SessionStore,
+    id: SessionId,
+    invocation: &shell::Invocation,
+    resume: &wr_protocol::terminal::ResumeRequest,
+) -> Option<(shell::Invocation, crate::terminal::resume::Whole)> {
+    use crate::terminal::resume::launch;
+    let record = launch::Launch {
+        argv: resume.argv.clone(),
+        cwd: resume.cwd.clone(),
+        reported_at_ms: resume.reported_at_ms,
+    };
+    let program = crate::terminal::resume::program_name(&record.argv);
+    let prepared = sessions
+        .socket()
+        .ok_or_else(|| std::io::Error::other("this daemon serves no socket"))
+        .and_then(|socket| {
+            let helper = crate::daemon::own_copy::binary()?;
+            launch::prepare(invocation, &record, &launch::dir_beside(socket), id, &helper)
+        });
+    match prepared {
+        Ok(wrapper) => {
+            crate::note!("session {}: resuming {program}", id.to_hyphenated());
+            Some((
+                wrapper,
+                crate::terminal::resume::Whole {
+                    argv: record.argv,
+                    cwd: Some(record.cwd),
+                    reported_at_ms: record.reported_at_ms,
+                },
+            ))
+        }
+        Err(error) => {
+            crate::note!(
+                "session {}: not resuming {program}: {error}",
+                id.to_hyphenated()
+            );
+            None
+        }
     }
 }
 
