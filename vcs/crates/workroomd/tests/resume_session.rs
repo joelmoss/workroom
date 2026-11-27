@@ -43,28 +43,44 @@ fn resources() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty")
 }
 
-/// The shell these tests run, as a pane would: zsh, else a bash that Ghostty's integration starts
-/// (not macOS's `/bin/bash`, which it skips), so Workroom's hook runs the record; `None`, said,
-/// when this machine has neither or the integration isn't here (a run with only `vcs/`).
-fn hooked_shell() -> Option<&'static str> {
+/// The shells these tests run, as a pane would: the first zsh and the first bash that Ghostty's
+/// integration starts (not macOS's `/bin/bash`, which it skips) that this machine has, so
+/// Workroom's hook runs the record; each one missing is said, and none when the integration
+/// isn't here (a run with only `vcs/`).
+fn hooked_shells() -> Vec<&'static str> {
     if !resources().join("shell-integration").is_dir() {
         eprintln!("skipped: no bundled shell integration (a test run with only vcs/)");
-        return None;
+        return Vec::new();
     }
-    let found = [
-        "/bin/zsh",
-        "/usr/bin/zsh",
-        "/opt/homebrew/bin/bash",
-        "/usr/bin/bash",
-        "/bin/bash",
-    ]
-    .into_iter()
-    .filter(|path| !(cfg!(target_os = "macos") && *path == "/bin/bash"))
-    .find(|path| Path::new(path).exists());
-    if found.is_none() {
-        eprintln!("skipped: no zsh, and no bash Ghostty's integration starts");
-    }
-    found
+    let candidates: [(&str, &[&str]); 2] = [
+        (
+            "zsh",
+            &["/opt/homebrew/bin/zsh", "/bin/zsh", "/usr/bin/zsh"],
+        ),
+        (
+            "bash",
+            &[
+                "/opt/homebrew/bin/bash",
+                "/usr/local/bin/bash",
+                "/usr/bin/bash",
+                "/bin/bash",
+            ],
+        ),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|(name, paths)| {
+            let found = paths
+                .iter()
+                .copied()
+                .filter(|path| !(cfg!(target_os = "macos") && *path == "/bin/bash"))
+                .find(|path| Path::new(path).exists());
+            if found.is_none() {
+                eprintln!("skipped {name}: none here that Ghostty's integration starts");
+            }
+            found
+        })
+        .collect()
 }
 
 /// A home of the test's own for `shell`, whose startup files give the prompt `PROMPT> ` and set
@@ -158,8 +174,14 @@ fn a_gone_session_resumes_its_program_as_its_shells_first_job() {
         eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
         return;
     }
-    let Some(shell) = hooked_shell() else { return };
-    let workspace = Workspace::new("resume");
+    for shell in hooked_shells() {
+        resumes_as_its_shells_first_job(shell);
+    }
+}
+
+fn resumes_as_its_shells_first_job(shell: &str) {
+    let name = shell.rsplit('/').next().unwrap();
+    let workspace = Workspace::new(&format!("resume-{name}"));
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
     let home = home(&workspace, "resume");
@@ -210,11 +232,11 @@ fn a_gone_session_resumes_its_program_as_its_shells_first_job() {
     }
 
     // ^Z: the program stops, and the shell's prompt takes the next line, in the folder as the
-    // session started there (a session's shell has its physical path, as any session's does).
+    // record names it.
     type_into(&mut client, "\x1a");
     std::thread::sleep(Duration::from_millis(500));
     type_into(&mut client, "echo \"STOPPED-$((40+2)) IN=$(pwd)\"\n");
-    let here = format!("STOPPED-42 IN={}", folder.canonicalize().unwrap().display());
+    let here = format!("STOPPED-42 IN={}", folder.display());
     let stopped = reader
         .read_until(&here, Duration::from_secs(10))
         .to_string();
@@ -258,8 +280,14 @@ fn a_program_that_fails_at_once_says_so_and_a_declined_resume_never_starts() {
         eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
         return;
     }
-    let Some(shell) = hooked_shell() else { return };
-    let workspace = Workspace::new("resume-fail");
+    for shell in hooked_shells() {
+        fails_at_once_or_is_declined(shell);
+    }
+}
+
+fn fails_at_once_or_is_declined(shell: &str) {
+    let name = shell.rsplit('/').next().unwrap();
+    let workspace = Workspace::new(&format!("resume-fail-{name}"));
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
     let home = home(&workspace, "fail");

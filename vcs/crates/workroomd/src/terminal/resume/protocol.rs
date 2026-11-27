@@ -203,7 +203,7 @@ pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Result<Report,
 }
 
 /// The status a resumed program exited with, in an authenticated `clear=1` report's Workroom key
-/// `workroomexit` (`launch::run_shell`, #825). Unknown lowercase keys are the spec's to ignore,
+/// `workroomexit` (`launch::run_launch`, #825). Unknown lowercase keys are the spec's to ignore,
 /// so any other terminal reads the report as a plain clear.
 pub(super) fn workroom_exit(body: &[u8]) -> Option<i32> {
     envelope(body, b"workroomexit=").and_then(number)

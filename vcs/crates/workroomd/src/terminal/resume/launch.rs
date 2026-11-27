@@ -352,7 +352,10 @@ pub(crate) fn prepare(
     let file = write_launch(dir, id, launch)?;
     let mut invocation = invocation.clone();
     let env = &mut invocation.environment;
-    env.retain(|(key, _)| key != FILE_VARIABLE && key != HELPER_VARIABLE);
+    env.retain(|(key, _)| key != FILE_VARIABLE && key != HELPER_VARIABLE && key != "PWD");
+    // The folder as the record names it, not its physical path, as the program had it: the
+    // session starts there, and a shell keeps a PWD that names the folder it starts in.
+    env.push((OsString::from("PWD"), OsString::from(&launch.cwd)));
     env.push((OsString::from(FILE_VARIABLE), file.clone().into_os_string()));
     env.push((
         OsString::from(HELPER_VARIABLE),
