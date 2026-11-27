@@ -450,6 +450,85 @@ fn resumes_past_an_early_prompt_mark(shell: &str) {
     assert!(said.get("resumeDeclined").is_none(), "{shell}: {said}");
 }
 
+/// Value: protects=a session whose app turned "Resume programs after a restart" off (#827) never
+/// resuming from a record, even one an attach sends anyway (an older or hand-written client, not
+/// `workroom attach`, which drops it): the daemon declines it at once and the command never
+/// runs, as `SETTING_VARIABLE` says; fails_when=the daemon trusts the attach client alone to drop
+/// the record; why_new=#827 follow-up; seam=an attach request sent by hand, as the app's own
+/// connection does
+#[test]
+fn a_session_with_resume_off_never_resumes_from_a_record_it_is_sent() {
+    if is_root() || !common::has_terminal_state() {
+        eprintln!("skipped: needs a daemon with terminal-state, not running as root");
+        return;
+    }
+    let Some(shell) = hooked_shells().into_iter().next() else {
+        return;
+    };
+    let workspace = Workspace::new("resume-off-sent");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let home = home(&workspace, "off");
+    let session = "fe5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e1a";
+    let stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut client = common::RpcClient::over(stream.try_clone().unwrap(), stream);
+    client.handshake();
+    let resources = resources();
+    let env = [
+        ("SHELL", shell),
+        ("HOME", home.to_str().unwrap()),
+        ("ZDOTDIR", home.to_str().unwrap()),
+        ("TERM", "xterm-256color"),
+        ("ENV", ""),
+        ("BASH_ENV", ""),
+        ("PROMPT_COMMAND", ""),
+        ("WORKROOM_SESSION_PROGRAM_RESUME", "off"),
+    ];
+    let request = wr_protocol::terminal::AttachRequest {
+        id: wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(session)),
+        shell: Some(shell.into()),
+        resources: Some(resources.into_os_string()),
+        columns: 80,
+        rows: 24,
+        env: env
+            .iter()
+            .map(|(key, value)| ((*key).into(), (*value).into()))
+            .collect(),
+        resume: Some(wr_protocol::terminal::ResumeRequest {
+            argv: vec!["/bin/echo".into(), "RAN-ANYWAY".into()],
+            cwd: workspace.to_str().unwrap().into(),
+            reported_at_ms: 1,
+        }),
+        ..Default::default()
+    };
+    client.send(
+        wr_protocol::envelope::Service::Terminal,
+        1,
+        wr_protocol::frame::Frame::new(wr_protocol::frame::FrameKind::Attach, request.encode()),
+    );
+    let seen = client.read_until("PROMPT> ", Duration::from_secs(30));
+    assert!(seen.contains("PROMPT> "), "{shell}: {seen}");
+    let mut said = Value::Null;
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            said = status(&socket, session);
+            said["resumeDeclined"] == true
+        }),
+        "{shell}: declined at once: {said}"
+    );
+    assert!(said.get("resumeStarted").is_none(), "{shell}: {said}");
+    let seen = client.read_until("RAN-ANYWAY", Duration::from_secs(3));
+    assert!(!seen.contains("RAN-ANYWAY"), "{shell}: {seen}");
+    assert_eq!(
+        std::fs::read_dir(socket.with_extension("resume")).map_or(0, |dir| dir.count()),
+        0,
+        "{shell}: no launch file was written"
+    );
+}
+
 /// What makes `stand_in_execd` act as the stand-in.
 const STAND_IN_EXECD: &str = "WORKROOM_STAND_IN_EXECD";
 

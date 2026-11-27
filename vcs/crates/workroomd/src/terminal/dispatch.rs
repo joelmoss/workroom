@@ -507,9 +507,12 @@ pub(crate) fn launch<T>(
     // first prompt, as its first job. Only for an interactive shell, never a run, never under
     // a root daemon, whose sessions get no token (ADR 0082), and never for a session that ended
     // under this daemon (`SessionStore::found`, #826): those are declined at once, a new shell.
+    // Nor for a session whose app turned resume off (#827), whatever record its attach sent.
     let resumed = resume
         .filter(|_| {
-            !run && invocation.interactive && crate::terminal::resume::daemon_accepts_reports()
+            !run && !recipe.resume_off
+                && invocation.interactive
+                && crate::terminal::resume::daemon_accepts_reports()
         })
         .filter(|_| match sessions.found(id) {
             Found::EndedWithItsDaemon => true,
