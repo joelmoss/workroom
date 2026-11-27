@@ -589,8 +589,8 @@ impl SessionStore {
 
     /// Session `id` was just started to resume `record` (#825): its status carries the record from
     /// its first event, so the app keeps it until the program reports itself in the new session,
-    /// and its resume state knows what it resumes, and since when. The locks are taken in the
-    /// reader's order, with the map released.
+    /// and its resume state knows what it resumes, whose helper's report says it started. The
+    /// locks are taken in the reader's order, with the map released.
     pub(crate) fn resuming(&self, id: SessionId, record: crate::terminal::resume::Whole) {
         let Some((resume, attached, shadow)) =
             lock_or_recover(&self.sessions).get(&id).map(|session| {
@@ -605,10 +605,7 @@ impl SessionStore {
         };
         let _held = lock_or_recover(&attached);
         if let Some(state) = lock_or_recover(&resume).as_mut() {
-            state.resuming(
-                crate::terminal::resume::program_name(&record.argv),
-                Instant::now(),
-            );
+            state.resuming(&record);
         }
         if let Some(status) = lock_or_recover(&shadow).status() {
             status.set_resume(Some(record));

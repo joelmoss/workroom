@@ -21,7 +21,6 @@ const DAEMON_SUBCOMMANDS: &[&str] = &[
     "run-script",
     "run-supervisor",
     "resume-launch",
-    "resume-shell",
     "protocol",
 ];
 

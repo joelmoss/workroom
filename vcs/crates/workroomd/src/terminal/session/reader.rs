@@ -128,6 +128,9 @@ fn note_resume(id: SessionId, outcome: Outcome) {
             }
             None => crate::note!("session {id}: a resume report was not accepted ({reason})"),
         },
+        Outcome::ResumeStarted { program } => {
+            crate::note!("session {id}: {program} resumed: it reported itself as it started");
+        }
         Outcome::ResumeFailed { program, status } => {
             crate::note!("session {id}: {program} couldn't be resumed: it exited {status} at once");
         }
@@ -237,7 +240,11 @@ pub(super) fn read_session(
                             record = Some(state.whole());
                         }
                     }
-                    // A resumed program that failed at once (#825): the app's toast says so.
+                    // A resumed program that started, or failed at once (#825): the app's toast
+                    // says so.
+                    let started = resumed
+                        .iter()
+                        .any(|outcome| matches!(outcome, Outcome::ResumeStarted { .. }));
                     let failed = resumed
                         .iter()
                         .any(|outcome| matches!(outcome, Outcome::ResumeFailed { .. }));
@@ -247,6 +254,9 @@ pub(super) fn read_session(
                             && let Some(status) = shadow.status()
                         {
                             status.set_resume(record);
+                            if started {
+                                status.set_resume_started();
+                            }
                             if failed {
                                 status.set_resume_failed();
                             }

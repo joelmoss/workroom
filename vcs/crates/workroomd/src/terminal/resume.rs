@@ -33,8 +33,9 @@
 //! starts it again rather than carrying it; an owner that can't be read counts as gone, since
 //! `process::identity` doesn't tell that from an exit; a record is never cleared while the
 //! session's own shell is gone, which stands in for herdr's check that the terminal is healthy;
-//! each record that clears is returned for the daemon's log; a resumed program's exit, which
-//! `launch::run_shell` reports, can say it failed to resume (`exited`); launching is `launch`'s;
+//! each record that clears is returned for the daemon's log; the helper's report of a resumed
+//! record says its program started (`started`), and its exit, which the helper reports too, can
+//! say it failed to resume (`exited`); launching is `launch`'s;
 //! and there is no rapid-loss guard, since a program that fails at once exits, which clears its
 //! record.
 
@@ -155,12 +156,30 @@ pub(crate) enum Outcome {
         reason: &'static str,
         program: Option<String>,
     },
-    /// The program this session resumed (#825) exited with an error within
-    /// `launch::FAILED_WITHIN` of the session starting: it could not be resumed.
+    /// The record this session was started to resume (#825) was reported by its helper, and
+    /// accepted: the program starts now.
+    ResumeStarted {
+        program: String,
+    },
+    /// The program this session resumed (#825) could not start, or exited with an error within
+    /// `launch::FAILED_WITHIN` of starting: it could not be resumed.
     ResumeFailed {
         program: String,
         status: i32,
     },
+}
+
+/// Where a session started to resume a record (#825) is with it.
+#[derive(Clone, Debug)]
+enum Resuming {
+    /// Its helper has not yet reported the record, whose command and folder these are.
+    Waiting {
+        program: String,
+        argv: Vec<String>,
+        cwd: Option<String>,
+    },
+    /// Its helper's report was accepted at `at`: the program started then.
+    Started { program: String, at: Instant },
 }
 
 /// What one look at a record's owner did (`Resume::check_exit`).
@@ -214,9 +233,10 @@ pub(crate) struct Resume {
     root: Option<Owner>,
     words: BTreeMap<u32, Word>,
     stream: Stream,
-    /// The program this session was started to resume (#825), and when: its failure is said only
-    /// within `launch::FAILED_WITHIN`. Not carried by a hand-off, which outlasts that.
-    resuming: Option<(String, Instant)>,
+    /// The record this session was started to resume (#825), until its program has ended or been
+    /// running for long: its failure is said only within `launch::FAILED_WITHIN` of its start.
+    /// Not carried by a hand-off, which outlasts that.
+    resuming: Option<Resuming>,
 }
 
 impl std::fmt::Debug for Resume {
@@ -318,23 +338,49 @@ impl Resume {
         }
     }
 
-    /// This session was started at `at` to resume `program` (#825).
-    pub(crate) fn resuming(&mut self, program: String, at: Instant) {
-        self.resuming = Some((program, at));
+    /// This session was started to resume `record` (#825), which its helper will report.
+    pub(crate) fn resuming(&mut self, record: &Whole) {
+        self.resuming = Some(Resuming::Waiting {
+            program: program_name(&record.argv),
+            argv: record.argv.clone(),
+            cwd: record.cwd.clone(),
+        });
     }
 
     /// What a resumed program's exit with `status`, said at `at`, means: its failure to resume
-    /// when it failed within `launch::FAILED_WITHIN` of the session starting, said once; else a
-    /// plain clear.
+    /// when it failed before it started, or within `launch::FAILED_WITHIN` of starting, said
+    /// once; else a plain clear.
     fn exited(&mut self, status: i32, at: Instant) -> Outcome {
+        let soon = |started: Instant| at.saturating_duration_since(started) < launch::FAILED_WITHIN;
         match self.resuming.take() {
-            Some((program, started))
-                if launch::failed(status)
-                    && at.saturating_duration_since(started) < launch::FAILED_WITHIN =>
-            {
+            Some(Resuming::Waiting { program, .. }) if launch::failed(status) => {
+                Outcome::ResumeFailed { program, status }
+            }
+            Some(Resuming::Started { program, at }) if launch::failed(status) && soon(at) => {
                 Outcome::ResumeFailed { program, status }
             }
             _ => Outcome::Cleared,
+        }
+    }
+
+    /// What an accepted `record` means, accepted at `at`: the resumed program starting when it is
+    /// the record the session waits for its helper to report, said once; else just accepted.
+    fn started(&mut self, outcome: Outcome, record: Option<&Record>, at: Instant) -> Outcome {
+        let reported = |argv: &Vec<String>, cwd: &Option<String>| {
+            record.is_some_and(|record| record.argv == *argv && record.reported_cwd == *cwd)
+        };
+        match self.resuming.take() {
+            Some(Resuming::Waiting { program, argv, cwd }) if reported(&argv, &cwd) => {
+                self.resuming = Some(Resuming::Started {
+                    program: program.clone(),
+                    at,
+                });
+                Outcome::ResumeStarted { program }
+            }
+            other => {
+                self.resuming = other;
+                outcome
+            }
         }
     }
 
@@ -370,16 +416,24 @@ impl Resume {
                 let outcome = self.apply(offset, &body, now, |pid| {
                     check_owner(root, uid, pid, crate::terminal::process::identity)
                 });
-                self.after(outcome, &body, at)
+                self.after(outcome, offset, &body, at)
             })
             .collect()
     }
 
-    /// What an applied report did, once a resumed program's exit (`protocol::workroom_exit`) in a
-    /// clear it made is read at `at`.
-    fn after(&mut self, outcome: Outcome, body: &[u8], at: Instant) -> Outcome {
+    /// What the report applied at `offset` did, once read at `at` for the record this session
+    /// resumes: its helper's report starting it, or its exit (`protocol::workroom_exit`) in a clear.
+    fn after(&mut self, outcome: Outcome, offset: u64, body: &[u8], at: Instant) -> Outcome {
         match (&outcome, protocol::workroom_exit(body)) {
             (Outcome::Cleared, Some(status)) => self.exited(status, at),
+            (Outcome::Accepted { .. }, _) => {
+                let record = self
+                    .words
+                    .values()
+                    .find(|word| word.offset == offset)
+                    .and_then(|word| word.record.clone());
+                self.started(outcome, record.as_ref(), at)
+            }
             _ => outcome,
         }
     }

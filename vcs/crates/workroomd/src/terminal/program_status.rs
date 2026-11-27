@@ -254,9 +254,14 @@ pub struct Store {
     /// next program copies it again (`restore_resume`).
     #[serde(skip)]
     resume: Option<crate::terminal::resume::Whole>,
-    /// The program this session was started to resume exited with an error at once (#825,
-    /// `resume::Outcome::ResumeFailed`), which the app's toast says. Never carried: a hand-off
-    /// comes long after.
+    /// The program this session was started to resume has started (#825,
+    /// `resume::Outcome::ResumeStarted`): its helper's report was accepted, so the app's toast
+    /// says it resumed. Never carried: the next program's app already saw it.
+    #[serde(skip)]
+    resume_started: bool,
+    /// The program this session was started to resume could not start or exited with an error at
+    /// once (#825, `resume::Outcome::ResumeFailed`), which the app's toast says. Never carried: a
+    /// hand-off comes long after.
     #[serde(skip)]
     resume_failed: bool,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
@@ -599,6 +604,14 @@ impl Store {
         }
     }
 
+    /// The program this session resumes has started (#825): published once.
+    pub fn set_resume_started(&mut self) {
+        if !self.resume_started {
+            self.resume_started = true;
+            self.dirty = true;
+        }
+    }
+
     /// The program this session resumed failed at once (#825): published once.
     pub fn set_resume_failed(&mut self) {
         if !self.resume_failed {
@@ -678,6 +691,7 @@ impl Store {
                 cwd: resume.cwd.as_deref(),
                 reported_at: resume.reported_at_ms,
             }),
+            resume_started: self.resume_started,
             resume_failed: self.resume_failed,
         })
         .expect("a status event serializes")
@@ -801,9 +815,14 @@ struct StatusEvent<'a> {
     /// record cleared from a daemon that predates them, which sends no `resume` at all. An app
     /// that predates it ignores it.
     resume: Option<WireResume<'a>>,
-    /// Only once the program the session was started to resume (#825) exited with an error at
-    /// once: the app turns its "Resumed" toast into "Couldn't resume". An app that predates it
-    /// ignores it.
+    /// Only once the program the session was started to resume (#825) has started, its helper's
+    /// report accepted, and from then on: the app says "Resumed". An app that predates it ignores
+    /// it.
+    #[serde(rename = "resumeStarted", skip_serializing_if = "std::ops::Not::not")]
+    resume_started: bool,
+    /// Only once the program the session was started to resume (#825) could not start, or exited
+    /// with an error within 5 s of starting, and from then on: the app says "Couldn't resume". An
+    /// app that predates it ignores it.
     #[serde(rename = "resumeFailed", skip_serializing_if = "std::ops::Not::not")]
     resume_failed: bool,
 }

@@ -503,39 +503,107 @@ fn a_new_shell_gets_its_own_token_in_place_of_a_forwarded_one() {
     }
 }
 
-/// Value: protects=a resumed program that exits with an error at once turning the toast into
-/// "Couldn't resume" (#825), once, and nothing else doing so; fails_when=an exit after
-/// `FAILED_WITHIN`, a success, a ^C, a session that resumed nothing, or a second exit says it
-/// failed, or the exit's clear stops being a clear; why_new=new; seam=the injected instant
+/// The record a session is started to resume in these tests.
+fn resumed_record() -> Whole {
+    Whole {
+        argv: vec!["claude".into(), "--resume".into(), "x".into()],
+        cwd: Some("/w".into()),
+        reported_at_ms: 0,
+    }
+}
+
+/// The helper's report of `resumed_record`, from pid 4343, applied at `offset` and read at `at`.
+fn helper_reports(s: &mut Resume, offset: u64, at: Instant) -> Outcome {
+    let report = body(
+        4343,
+        NOW,
+        &format!("{}:cwd={}", argv(&["claude", "--resume", "x"]), b64("/w")),
+    );
+    let outcome = s.apply(offset, &report, NOW, |_| checked(owner(4343, 1), &[]));
+    s.after(outcome, offset, &report, at)
+}
+
+/// Value: protects=the app's "Resumed" toast coming once the helper's own report of the record is
+/// accepted (#825), and only then; fails_when=another accepted record, a session that resumes
+/// nothing, or a second report says it started; why_new=#825 review (`resumeStarted`);
+/// seam=the injected instant
+#[test]
+fn the_helpers_report_of_the_resumed_record_says_it_started_once() {
+    let start = Instant::now();
+    let mut s = state();
+    s.resuming(&resumed_record());
+    let other = body(4444, NOW, &argv(&["vim"]));
+    let outcome = s.apply(1, &other, NOW, |_| checked(owner(4444, 1), &[]));
+    assert!(
+        matches!(s.after(outcome, 1, &other, start), Outcome::Accepted { .. }),
+        "another program's record"
+    );
+    assert_eq!(
+        helper_reports(&mut s, 2, start),
+        Outcome::ResumeStarted {
+            program: "claude".into()
+        }
+    );
+    assert!(matches!(
+        helper_reports(&mut s, 3, start),
+        Outcome::Accepted { .. }
+    ));
+    assert!(matches!(
+        helper_reports(&mut state(), 1, start),
+        Outcome::Accepted { .. }
+    ));
+}
+
+/// Value: protects=a resumed program that could not start, or exits with an error within
+/// `FAILED_WITHIN` of its helper's report, turning the toast into "Couldn't resume" (#825), once,
+/// the clock starting at that report and not at the session's start (a slow login shell);
+/// fails_when=an exit after `FAILED_WITHIN` of starting, a success, a ^C, a session that resumed
+/// nothing, or a second exit says it failed, the exit's clear stops being a clear, or a slow
+/// shell's wait counts; why_new=#825 review (the clock); seam=the injected instant
 #[test]
 fn a_resumed_program_that_fails_at_once_says_so_once() {
     let start = Instant::now();
     let exit = |s: &mut Resume, offset: u64, status: i32, after: Duration| {
         let report = body(4242, NOW, &format!("clear=1:workroomexit={status}"));
         let outcome = s.apply(offset, &report, NOW, |_| unreachable!());
-        s.after(outcome, &report, start + after)
+        s.after(outcome, offset, &report, start + after)
     };
     let failed = Outcome::ResumeFailed {
         program: "claude".into(),
         status: 1,
     };
+    // A login shell that took a minute to reach its first prompt.
+    let started = |s: &mut Resume| {
+        s.resuming(&resumed_record());
+        helper_reports(s, 1, start + Duration::from_secs(60));
+    };
     let mut s = state();
-    s.resuming("claude".into(), start);
-    assert_eq!(exit(&mut s, 1, 1, Duration::from_secs(4)), failed);
+    started(&mut s);
+    assert_eq!(exit(&mut s, 2, 1, Duration::from_secs(64)), failed);
     assert_eq!(
-        exit(&mut s, 2, 1, Duration::from_secs(4)),
+        exit(&mut s, 3, 1, Duration::from_secs(64)),
         Outcome::Cleared,
         "once"
     );
+    let mut s = state();
+    s.resuming(&resumed_record());
+    assert_eq!(
+        exit(&mut s, 1, 127, Duration::from_secs(600)),
+        Outcome::ResumeFailed {
+            program: "claude".into(),
+            status: 127
+        },
+        "it could not start"
+    );
 
     for (status, after) in [
-        (1, launch::FAILED_WITHIN),
-        (0, Duration::ZERO),
-        (130, Duration::ZERO),
+        (1, Duration::from_secs(60) + launch::FAILED_WITHIN),
+        (0, Duration::from_secs(60)),
+        (130, Duration::from_secs(60)),
     ] {
         let mut s = state();
-        s.resuming("claude".into(), start);
-        assert_eq!(exit(&mut s, 1, status, after), Outcome::Cleared, "{status}");
+        started(&mut s);
+        assert_eq!(exit(&mut s, 2, status, after), Outcome::Cleared, "{status}");
     }
     assert_eq!(
         exit(&mut state(), 1, 1, Duration::ZERO),

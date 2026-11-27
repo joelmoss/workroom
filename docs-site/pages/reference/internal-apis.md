@@ -187,7 +187,8 @@ A session's records, as they are now: one per session in the snapshot that follo
 | `records` | Its records, each as the next table says. |
 | `run` | Only on a run session: what its supervisor last wrote, such as `running` or `exited 3`. |
 | `resume` | The session's resume record whole, as the next-but-one table says, or null for none. The app saves it in the tab's saved-layout entry. A daemon that predates resume records leaves it out, which says nothing about the tab's record. |
-| `resumeFailed` | `true`, sent only then: the program the session was started to resume exited with an error within 5 s of the session starting, so the pane says it couldn't be resumed. |
+| `resumeStarted` | `true`, sent only then and in every event after: the program the session was started to resume has started, its helper's report of the record accepted, so the pane says it resumed. Left out of a session that resumes nothing, or whose resume the daemon declined (its folder is gone, or its shell has no Workroom hook). A hand-off's next program doesn't carry it. |
+| `resumeFailed` | `true`, sent only then and in every event after: the program the session was started to resume could not start, or exited with an error within 5 s of starting, so the pane says it couldn't be resumed. It can come with `resumeStarted` or, for a program that never started, without it. A hand-off's next program doesn't carry it. |
 
 ### ProgramStatus `status` records
 
@@ -318,11 +319,9 @@ The same binary is the daemon. These subcommands are its own, never the CLI's co
         writing its state (running, stopped, exited <code>) to <path>; USR1 restarts the command,
         USR2 stops it and keeps the pane, TERM stops it and exits
   workroomd resume-launch <file>
-        what a resuming session's login shell runs first (#825): claims <file>, a launch file the
-        daemon wrote, and becomes the program it names, in its folder
-  workroomd resume-shell <status> <file> <shell>
-        what that shell then becomes: the session's own shell, from <file>, after saying a
-        program that exited <status> at once could not be resumed
+        what a resuming session's shell runs at its first prompt (#825), as its first job:
+        claims <file>, a launch file the daemon wrote, and runs the program it names, in its
+        folder, saying so when it fails
   workroomd protocol
         print the protocol version this build speaks
 ```
@@ -341,8 +340,7 @@ A hand-off starts the daemon's next program in place as `serve --socket <path> -
 | `credential` | Git, as a local container workroom's credential helper; `credential relay` is set up when the container is. |
 | `run-script` | The app, to run a remote workroom's setup and teardown scripts on its host. |
 | `run-supervisor` | The daemon: it is what a run session's pty runs around its command. |
-| `resume-launch` | The daemon: a resuming session's login shell runs it first, to become the program the tab's resume record names, in its folder. |
-| `resume-shell` | The daemon: that shell then becomes it, which becomes the session's own shell, after saying a program that failed at once couldn't be resumed. |
+| `resume-launch` | The daemon: a resuming session's own shell runs it at its first prompt, through Workroom's zsh or bash hook, as its first job: it runs the program the tab's resume record names, in its folder, and says so when that fails. |
 | `protocol` | The app, to ask a binary which protocol it speaks before using it. |
 
 ## Hidden commands
