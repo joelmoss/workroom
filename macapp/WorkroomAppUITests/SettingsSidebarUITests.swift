@@ -85,6 +85,13 @@ final class SettingsSidebarUITests: XCTestCase {
     // Terminal → "Copy on select".
     pane(app, "terminal").click()
     XCTAssertTrue(waitExists(control(app, "copyOnSelect"), true), "Terminal shows its controls")
+    // The Quick Terminal's starting folder is set here, since the sidebar has no row for it
+    // (#819); with none set, it follows "New terminals open in" and offers no reset.
+    XCTAssertTrue(
+      waitExists(control(app, "quickTerminalStartingFolder"), true),
+      "Terminal ▸ Quick Terminal offers its starting folder")
+    XCTAssertFalse(
+      control(app, "quickTerminalStartingFolderReset").exists, "no reset with no folder set")
 
     // AI Agents → "Diagnose automatically".
     pane(app, "agent").click()

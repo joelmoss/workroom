@@ -1005,6 +1005,29 @@ private struct QuickTerminalSection: View {
       Toggle("Slide away when it loses focus", isOn: $hidesWhenUnfocused)
         .help("Hide the Quick Terminal when you click another window or switch apps.")
         .accessibilityIdentifier("settings.control.quickTerminalHidesWhenUnfocused")
+
+      LabeledContent("Starting folder") {
+        HStack {
+          Text(startingFolder ?? "New terminals open in")
+            .monospaced(startingFolder != nil)
+            .foregroundStyle(startingFolder == nil ? .secondary : .primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          if startingFolder != nil {
+            Button("Use “New terminals open in”") {
+              section.setStartingFolder(.quickTerminal, to: nil)
+            }
+            .help("Start the Quick Terminal's new shells in the folder below.")
+            .accessibilityIdentifier("settings.control.quickTerminalStartingFolderReset")
+          }
+          Button("Choose…", action: chooseStartingFolder)
+            .help("Choose the folder the Quick Terminal's new shells start in.")
+            .accessibilityIdentifier("settings.control.quickTerminalStartingFolder")
+        }
+      }
+      .help(
+        "The folder the Quick Terminal's new shells start in. Without one they follow “New "
+          + "terminals open in”. A new folder applies from the next new shell.")
     } header: {
       Text("Quick Terminal")
     }
@@ -1027,8 +1050,9 @@ private struct QuickTerminalSection: View {
         }
       }
       .help(
-        "The folder a new terminal with no project starts in: a standalone terminal's, or the "
-          + "Quick Terminal's. A folder that is gone opens your home folder.")
+        "The folder a new terminal with no project starts in: a standalone terminal's, or a "
+          + "terminal group's or the Quick Terminal's that has no starting folder of its own. A "
+          + "folder that is gone opens your home folder.")
     } header: {
       Text("Terminals with no project")
     }
@@ -1043,6 +1067,19 @@ private struct QuickTerminalSection: View {
       fileURLWithPath: QuickTerminalController.workingDirectory(for: directory))
     guard panel.runModal() == .OK, let url = panel.url else { return }
     directory = url.path == NSHomeDirectory() ? "" : url.path
+  }
+
+  /// The Quick Terminal's group's starting folder (ADR 0077), set here since the Open Tabs view
+  /// lists no row for it (#819); nil follows "New terminals open in".
+  private var section: TerminalsSection { .shared }
+  private var startingFolder: String? { section.quickTerminal.startingFolder }
+
+  private func chooseStartingFolder() {
+    let group = section.quickTerminal
+    guard
+      let folder = TerminalGroupPrompts.chooseStartingFolder(for: group.title, current: group)
+    else { return }
+    section.setStartingFolder(.quickTerminal, to: folder)
   }
 }
 
