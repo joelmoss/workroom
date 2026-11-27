@@ -738,6 +738,7 @@ private struct AppearanceSettingsPane: View {
   @Default(.glassOpacity) private var glassOpacity
   @Default(.diffViewMode) private var diffViewMode
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
+  @Default(.showTitleBarTabs) private var showTitleBarTabs
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @Default(.autoResizeSplitsEvenly) private var autoResizeSplitsEvenly
   /// Goes to Settings ▸ Themes.
@@ -827,6 +828,16 @@ private struct AppearanceSettingsPane: View {
       }
       .help("Layout for newly opened diff tabs. A narrow pane falls back to unified.")
       .accessibilityIdentifier("settings.control.diffView")
+
+      // The title bar's tabs, also in the title bar's right-click menu. Off leaves only the open and new workroom
+      // buttons there; the sidebar's Open Tabs view still lists what's open.
+      Toggle("Show tabs in the title bar", isOn: $showTitleBarTabs)
+        .help(
+          "Show a tab in the title bar for each open workroom, terminal and terminal group. Off "
+            + "hides them; the sidebar's Open Tabs view still lists everything open, and the "
+            + "workroom tab shortcuts still switch between them."
+        )
+        .accessibilityIdentifier("settings.control.showTitleBarTabs")
 
       // Pane dimming (issue #162): the scrim over every non-focused pane. On by default — it's what
       // makes the active terminal read instantly in a split. See `PaneTreeView.shouldDim`.

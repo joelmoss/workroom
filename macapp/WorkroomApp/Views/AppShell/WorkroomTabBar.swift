@@ -1,7 +1,14 @@
 import AppKit
+import Defaults
 import DesignSystem
 import SwiftUI
 import WorkroomDomain
+
+extension Transaction {
+  /// Set on the update that shows or hides the title-bar tabs (`showTitleBarTabs`), so the tab
+  /// run keeps that update's fade instead of its own unanimated default for tabs coming and going.
+  @Entry var togglesTitleBarTabs = false
+}
 
 /// The workroom tab bar shown in the title bar (issue #23): a chip per active target (a workroom or
 /// project root with ≥1 terminal), drag-to-reorder (reusing the shared `TabReorder` math). A tab
@@ -23,7 +30,13 @@ import WorkroomDomain
 /// the first thing to scroll away. The decision is the shared `TabStripOverflow.pinsControls`, and the
 /// scaffolding around it is the shared `OverflowingTabScroller` (so the two strips can't drift).
 struct WorkroomTabBar: View {
-  let tabs: [(sid: SidebarID, target: TerminalTarget)]
+  /// Everything open in the window, in order; `tabs` is what the bar shows of it.
+  let openTabs: [(sid: SidebarID, target: TerminalTarget)]
+  /// The tabs on show: all of them, or none with "Show tabs in the title bar" off. With none, the
+  /// bar is a window's with no tabs: the buttons sit where it has them, and with no tabs laid out
+  /// nothing can be dropped on one. Selection and the workroom-tab shortcuts read the store, not the
+  /// bar, so they still work.
+  private var tabs: [(sid: SidebarID, target: TerminalTarget)] { showsTabs ? openTabs : [] }
   let selectedID: SidebarID?
   let onSelect: (SidebarID) -> Void
   /// The live drag of a chip into the detail content (to form a split), in content-local coords —
@@ -42,6 +55,18 @@ struct WorkroomTabBar: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
 
+  /// `Defaults[.showTitleBarTabs]`, changed only inside the fade below (`followsShowTitleBarTabs`).
+  /// Held here, not passed in: this bar is its own SwiftUI root in the title bar
+  /// (`TitlebarAccessoryHost` sets its root view afresh on each update), so an animation begun
+  /// outside it never reaches the tabs. And not read through `@Default`, which reads the stored value
+  /// live, so whatever re-renders the bar first after a change (a right-click menu closing) would
+  /// show it unanimated.
+  @State private var showsTabs = Defaults[.showTitleBarTabs]
+  /// The fade's animation, for a moment after the tabs show or hide: hiding an overflowing bar's tabs
+  /// (or showing them again) moves the controls between pinned and inline, and they slide with it.
+  @State private var controlsFlipAnimation: Animation?
+  /// Which show or hide set `controlsFlipAnimation`, so only the latest one clears it.
+  @State private var controlsFlipGeneration = 0
   @State private var hoveredID: SidebarID?
   @State private var addHovering = false
   @State private var openHovering = false
@@ -115,7 +140,8 @@ struct WorkroomTabBar: View {
       leadingInset: 8, spacing: tabSpacing, inlineLead: 0,
       // Scroll the selected workroom into view on selection (issue #129 follow-up); suspended
       // mid-drag, like the reorder gap animation below.
-      scrollTarget: selectedID, scrollSuspended: drag.isDragging
+      scrollTarget: selectedID, scrollSuspended: drag.isDragging,
+      flipAnimation: controlsFlipAnimation
     ) { overflowing in
       chipRun(
         draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
@@ -128,6 +154,34 @@ struct WorkroomTabBar: View {
     // `WindowMovableController`. Deliberately NOT widened to the trailing buttons: they already work
     // while the window is movable, and churning a window-wide flag on button hover buys nothing.
     .background(WindowMovableController(movable: !drag.isDragging && hoveredID == nil))
+    .task { await followsShowTitleBarTabs() }
+    // Right-click anywhere else in the title bar for "Show Tabs".
+    .background(
+      TitlebarContextMenu(isOverTab: { [store] screenPoint in
+        guard let point = store.workroomTabRowPoint(screenPoint) else { return false }
+        return store.workroomTabFrames.values.contains { $0.contains(point) }
+      }))
+  }
+
+  /// Shows or hides the tabs as "Show tabs in the title bar" changes, from Settings or a right-click
+  /// menu: they fade as they go or come and the buttons slide with them, at once under Reduce Motion.
+  private func followsShowTitleBarTabs() async {
+    for await shown in Defaults.updates(.showTitleBarTabs) where shown != showsTabs {
+      let animation: Animation? =
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ? nil : .easeInOut(duration: 0.2)
+      controlsFlipAnimation = animation
+      controlsFlipGeneration += 1
+      let generation = controlsFlipGeneration
+      var transaction = Transaction(animation: animation)
+      transaction.togglesTitleBarTabs = true
+      withTransaction(transaction) { showsTabs = shown }
+      // Long enough for the overflow flip, which lands a layout pass after this change.
+      Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(400))
+        if controlsFlipGeneration == generation { controlsFlipAnimation = nil }
+      }
+    }
   }
 
   /// The open-workroom + new-workroom buttons as ONE block, rendered inline as the last element of the
@@ -323,11 +377,20 @@ struct WorkroomTabBar: View {
     .background { ViewAnchor { [store] in store.workroomTabRun = $0 } }
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
     .onPreferenceChange(WorkroomTabFrameKey.self) { store.workroomTabFrames = $0 }
-    // A tab let go on another goes: the rest slide up to close its place, offsets and all.
-    .animation(
-      landing == nil || reduceMotion ? nil : .easeInOut(duration: 0.18), value: tabs.map(\.sid)
-    )
-    .onChange(of: tabs.map(\.sid)) { if settling != nil { finishSettling() } }
+    // A tab let go on another goes: the rest slide up to close its place, offsets and all. Any other
+    // change to the tabs is unanimated, except showing or hiding them all, whose fade
+    // `followsShowTitleBarTabs` sets.
+    .transaction(value: tabs.map(\.sid)) { transaction in
+      guard !transaction.togglesTitleBarTabs else { return }
+      transaction.animation =
+        landing == nil || reduceMotion ? nil : .easeInOut(duration: 0.18)
+    }
+    .onChange(of: tabs.map(\.sid)) { _, ids in
+      if settling != nil { finishSettling() }
+      // A tab that goes from under the pointer (hidden from its own right-click menu) gets no
+      // hover exit, and a stale hover would keep the window from dragging by its title bar.
+      if let hoveredID, !ids.contains(hoveredID) { self.hoveredID = nil }
+    }
   }
 
   /// Tab `sid` was let go: holds the bar as it is till the tabs change (`settling`), or, should
@@ -546,6 +609,7 @@ private struct WorkroomTabChip: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
+  @Default(.showTitleBarTabs) private var showTitleBarTabs
   /// Read through Observation: this chip re-renders when its own workroom's panes change.
   private var terminals: TerminalPanes { store.terminals }
 
@@ -599,6 +663,9 @@ private struct WorkroomTabChip: View {
       // no terminals to close while its run lasts (#483): its pane's own actions end it.
       .contextMenu {
         WorkroomMenuAdapter(sid: sid, target: target, closeName: closeName, style: .full)
+        // The bar's own item (`TitlebarContextMenu`), here too, since a tab covers its stretch of bar.
+        Divider()
+        Toggle(TitleBarTabsToggle.title, isOn: $showTitleBarTabs)
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(

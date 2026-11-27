@@ -37,6 +37,10 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
   /// True while a chip drag is in flight, so the container skips the scroll — the drag already moves
   /// the run, and scrolling under the user's cursor would fight it.
   let scrollSuspended: Bool
+  /// While set, the controls' move between inline and pinned animates with it, sliding from one
+  /// place to the other: the workroom bar sets it while its tabs fade in or out together, which can
+  /// end or start an overflow. Nil (the default) flips them at once, as a resize or a new tab does.
+  let flipAnimation: Animation?
   /// The scrolling chip run, built against the current overflow state: both strips drop the hairline
   /// that sets the trailing controls apart once those controls pin — the fade and the gutter already
   /// separate the two regions, and a hairline beside a dissolving edge reads as a cut.
@@ -49,7 +53,7 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
 
   init(
     leadingInset: CGFloat, spacing: CGFloat, inlineLead: CGFloat,
-    scrollTarget: ScrollID?, scrollSuspended: Bool,
+    scrollTarget: ScrollID?, scrollSuspended: Bool, flipAnimation: Animation? = nil,
     @ViewBuilder content: @escaping (Bool) -> Content,
     @ViewBuilder controls: @escaping () -> Controls
   ) {
@@ -58,6 +62,7 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
     self.inlineLead = inlineLead
     self.scrollTarget = scrollTarget
     self.scrollSuspended = scrollSuspended
+    self.flipAnimation = flipAnimation
     self.content = content
     self.controls = controls
   }
@@ -87,6 +92,8 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
   /// A selection whose reveal may not have landed: the chip wasn't in the run yet, or a drag was in
   /// flight. Retried once — see the `chipRunWidth` and `scrollSuspended` handlers in `body`.
   @State private var pendingTarget: ScrollID?
+  /// Ties the inline and pinned controls together, so an animated flip slides them between the two.
+  @Namespace private var controlsSpace
 
   /// Whether the chips no longer fit with the controls inline, so they pin at the trailing edge and the
   /// scroller takes its fade (issue #129). See `TabStripOverflow.pinsControls` for why this can't
@@ -105,8 +112,11 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: spacing) {
           content(overflowing)
-            .onGeometryChange(
-              for: CGFloat.self, of: { $0.size.width }, action: { chipRunWidth = $0 })
+            // The width is what flips `overflowing`, and it lands a pass after the change that made
+            // it, outside that change's transaction, hence `flipAnimation` applied here.
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width in
+              withAnimation(flipAnimation) { chipRunWidth = width }
+            }
           // Fits: the controls stay inline, hugging the last chip — today's look, unchanged.
           if !overflowing { measuredControls.padding(.leading, inlineLead) }
         }
@@ -239,6 +249,10 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
   private var measuredControls: some View {
     controls()
       .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { controlsWidth = $0 })
+      // One block in two places: an animated flip moves it from one to the other rather than
+      // fading one out and the other in. Unanimated, as most flips are, this changes nothing.
+      .matchedGeometryEffect(id: "controls", in: controlsSpace)
+      .transition(.identity)
   }
 
   /// The alpha ramp over the scroller's trailing edge, so a clipped chip DISSOLVES instead of being cut
