@@ -339,8 +339,9 @@ final class SavedLayoutStoreTests: XCTestCase {
     XCTAssertEqual((file[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     let folder = try FileManager.default.attributesOfItem(atPath: directory.path)
     XCTAssertEqual((folder[.posixPermissions] as? NSNumber)?.intValue, 0o700)
-    let written = try JSONSerialization.jsonObject(
-      with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
+    let written =
+      try JSONSerialization.jsonObject(
+        with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
     XCTAssertEqual(written?["argv"] as? [String], record.argv)
 
     var gone = record
