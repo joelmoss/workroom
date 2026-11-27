@@ -556,8 +556,12 @@ final class PersistentSessionService {
       let socket = socketPath(for: .daemon)
     else { return nil }
     return ResumeLaunchFile.write(
-      record, for: sessionID, in: ResumeLaunchFile.directory(socketPath: socket))
+      record, for: sessionID,
+      in: resumeLaunchDirectory ?? ResumeLaunchFile.directory(socketPath: socket))
   }
+
+  /// Test seam: where `writeResumeLaunch` puts its files instead of beside the socket.
+  var resumeLaunchDirectory: URL?
 
   /// The command libghostty forks for this session, from the helper that owns it.
   ///

@@ -388,6 +388,61 @@ final class PaneSessionAttachmentTests: XCTestCase {
     XCTAssertFalse(service.hasAttachedPane(on: host), "a pane whose surface went holds its host")
   }
 
+  /// Value: protects=a restored local pane whose session is gone handing its tab's resume record
+  /// to its relay in a file named in `WORKROOM_SESSION_RESUME`, toasting "Resumed …", and turning
+  /// that into "Couldn't resume …" once when the daemon says it failed; and a tab with no record,
+  /// one whose folder is gone, and a run tab keeping today's behaviour; fails_when=the file or the
+  /// variable goes missing, the toast is wrong, a failure is said twice or for a pane that resumed
+  /// nothing; why_new=new (#825); seam=the service's launch folder
+  func testARestoredPaneWhoseSessionIsGoneResumesItsTabsRecord() throws {
+    let gone = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") }, ownership: { _ in .notOwned })
+    let folder = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-pane-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+    gone.resumeLaunchDirectory = folder
+    func pane(_ record: ResumeRecord?) -> (PaneSessionAttachment, FakePaneSurface) {
+      let surface = FakePaneSurface()
+      surfaces.append(surface)
+      let pane = PaneSessionAttachment(service: gone)
+      pane.surface = surface
+      addTeardownBlock { pane.close() }
+      let session = UUID()
+      pane.tabSessionID = { session }
+      pane.tabResume = { record }
+      pane.isRestored = true
+      return (pane, surface)
+    }
+    let claude = ResumeRecord(
+      argv: ["claude", "--resume", "a"], cwd: NSTemporaryDirectory(), reportedAt: 1, boot: "b")
+
+    let (resuming, toasts) = pane(claude)
+    let launch = resuming.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false)
+    let launched = try XCTUnwrap(launch, "no daemon command in this test host")
+    let file = try XCTUnwrap(
+      launched.environment.first { $0.key == ResumeLaunchFile.variable }?.value)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: file))
+    XCTAssertEqual(toasts.notices, ["Resumed Claude Code"])
+    resuming.resumeFailed()
+    resuming.resumeFailed()
+    XCTAssertEqual(toasts.notices, ["Resumed Claude Code", "Couldn't resume Claude Code"])
+
+    var away = claude
+    away.cwd = "/definitely/not/a/folder"
+    for (record, isRun, said) in [
+      (nil, false, [PaneNoticeToast.sessionReplaced]),
+      (away, false, [PaneNoticeToast.sessionReplaced]),
+      (claude, true, []),
+    ] as [(ResumeRecord?, Bool, [String])] {
+      let (plain, notices) = pane(record)
+      let launch = plain.launch(workingDirectory: "/tmp", runCommand: "x", isRunSession: isRun)
+      XCTAssertNil(launch?.environment.first { $0.key == ResumeLaunchFile.variable })
+      XCTAssertEqual(notices.notices, said)
+      plain.resumeFailed()
+      XCTAssertEqual(notices.notices, said, "a pane that resumed nothing says no failure")
+    }
+  }
+
   /// A tab's surface attaches through the service its window holds, whichever factory made the
   /// surface.
   func testATabsSurfaceAttachesThroughItsWindowsService() throws {
