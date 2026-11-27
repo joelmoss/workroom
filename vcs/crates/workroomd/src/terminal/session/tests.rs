@@ -3109,6 +3109,78 @@ fn a_report_from_a_sessions_shell_is_its_resume_record() {
     assert!(other.is_none(), "a session given no token keeps no record");
 }
 
+/// Value: protects=a resume whose shell's prompt sends no OSC 133 and never ran Workroom's hook
+/// being declined once it has waited `DECLINE_AFTER` (#825): the screens tick claims the launch
+/// file the daemon wrote, so no helper starts the program later, keeps looking until then, and
+/// says `resumeDeclined` with the seeded record gone; fails_when=the deadline stops declining,
+/// declines early, leaves the file, stops the tick looking, or keeps the seeded record;
+/// why_new=#825's second review (a declined resume never forgot its record); seam=the tick run on
+/// given times
+#[test]
+fn a_resume_its_helper_never_reports_is_declined_at_the_deadline() {
+    use crate::terminal::resume::{DECLINE_AFTER, Whole, launch};
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: a daemon running as root gives no session a resume state (ADR 0082)");
+        return;
+    }
+    let scratch = crate::commands::Scratch::in_temp("wr-resume-deadline");
+    let args = [OsString::from("-c"), OsString::from("sleep 20")];
+    let mut e = env();
+    e.push((
+        OsString::from(crate::terminal::resume::TOKEN_VARIABLE),
+        OsString::from("a-test-token-0123456789"),
+    ));
+    let store = SessionStore::new();
+    store
+        .create(SessionSpec {
+            interactive: true,
+            ..spec(id(73), &args, &e)
+        })
+        .expect("create");
+    let record = launch::Launch {
+        argv: vec!["claude".into(), "--resume".into(), "a".into()],
+        cwd: "/".into(),
+        reported_at_ms: 1,
+    };
+    let dir = scratch.join("launches");
+    let file = launch::write_launch(&dir, id(73), &record).expect("the launch file");
+    store.resuming(
+        id(73),
+        Whole {
+            argv: record.argv.clone(),
+            cwd: Some(record.cwd.clone()),
+            reported_at_ms: 1,
+        },
+        file.clone(),
+    );
+    // After it started waiting, so `t0 + DECLINE_AFTER` is past its deadline.
+    let t0 = Instant::now();
+    assert!(
+        store.watch_resume_owners(t0),
+        "a waiting resume keeps the tick looking"
+    );
+    assert!(file.exists(), "its hook may still run");
+    store.watch_resume_owners(t0 + DECLINE_AFTER);
+    assert!(!file.exists(), "the deadline claimed the file");
+    assert!(
+        !store.watch_resume_owners(t0 + DECLINE_AFTER),
+        "nothing left to watch"
+    );
+    #[cfg(feature = "terminal-state")]
+    {
+        let event = store
+            .program_status_events()
+            .into_iter()
+            .find(|(session, _)| *session == id(73))
+            .map(|(_, event)| serde_json::from_slice::<serde_json::Value>(&event).unwrap())
+            .expect("its status");
+        assert_eq!(event["resumeDeclined"], true, "{event}");
+        assert!(event["resume"].is_null(), "{event}");
+    }
+    store.kill(id(73));
+}
+
 /// A program under a session's shell that reports how to resume it, then exits while the shell
 /// runs on, has its record cleared once it has been gone for the exit grace, and not before
 /// (#823). Closing the tab, a kill, then leaves nothing of the session to show. The grace is run
