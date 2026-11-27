@@ -22,6 +22,10 @@ with open(os.environ["LINT_TEST_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 if name == "uname":
     print(os.environ.get("LINT_TEST_OS", "Darwin") if args == ["-s"] else "arm64")
+elif name == "id":
+    # A fixed identity, never the runner's own: a Mac user's by default, LINT_TEST_UID for another.
+    uid = os.environ.get("LINT_TEST_UID", "501")
+    print({{"-u": uid, "-g": "20", "-un": "tester"}}[args[0]])
 elif name == "shasum":
     sys.exit(127)
 elif name == "sha256sum":
@@ -57,7 +61,7 @@ class LinuxLintTests(unittest.TestCase):
             fixture = Path(directory)
             binary = fixture / "bin"
             binary.mkdir()
-            names = ["uname", "container", "docker", "podman", "make", "sha256sum"]
+            names = ["uname", "id", "container", "docker", "podman", "make", "sha256sum"]
             if overrides.get("LINT_TEST_NO_SHASUM"):
                 names.append("shasum")
             for name in names:
@@ -129,12 +133,19 @@ class LinuxLintTests(unittest.TestCase):
         mounts = [run[i + 1] for i, arg in enumerate(run) if arg == "--volume"]
         passwd = next(mount for mount in mounts if mount.endswith(":/etc/passwd:ro"))
         entries = [line.split(":") for line in files[passwd].splitlines()]
-        mine = [entry for entry in entries if entry[2] == str(os.getuid())]
-        self.assertEqual(len(mine), 1, files[passwd])
-        self.assertEqual(mine[0][3], str(os.getgid()))
-        self.assertEqual(mine[0][5], "/cache/home")
+        self.assertEqual(entries, [["root", "x", "0", "0", "root", "/root", "/bin/bash"],
+                                   ["tester", "x", "501", "20", "", "/cache/home", "/bin/bash"]])
+        self.assertEqual(run[run.index("--user") + 1], "501:20")
         self.assertEqual(env_of(run)["HOME"], "/cache/home")
-        self.assertIn(["root", "x", "0", "0", "root", "/root", "/bin/bash"], entries)
+
+    def test_a_root_caller_gets_one_root_entry(self):
+        # A Linux dev container runs as root, whose entry is already the first.
+        files = {}
+        result, calls = self.run_launcher("vcs-test", files=files, LINT_TEST_UID="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (passwd,) = (text for mount, text in files.items() if mount.endswith(":/etc/passwd:ro"))
+        uids = [line.split(":")[2] for line in passwd.splitlines()]
+        self.assertEqual(uids, ["0"])
 
     def test_vcs_test_gate_runs_the_tests_with_their_flags(self):
         flags = "-p workroom --test resume_session"

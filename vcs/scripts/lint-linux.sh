@@ -75,10 +75,15 @@ if [ "$TARGET" = vcs-test ]; then
   # The container runs as this user, whose uid the image has no account for (a Mac's 501), and
   # the tests that read their own account entry, as a host's daemon does, need one: root and this
   # user, home and shell as the container has them, as CI's runner has its own. Per checkout, so
-  # two workrooms' runs never write the same file.
+  # two workrooms' runs never write the same file. Root is already the first entry, so a root
+  # caller (a Linux dev container) adds no second uid 0.
   passwd="$cache/passwd-$checkout"
-  printf 'root:x:0:0:root:/root:/bin/bash\n%s:x:%s:%s::/cache/home:/bin/bash\n' \
-    "$(id -un)" "$(id -u)" "$(id -g)" > "$passwd.tmp"
+  {
+    printf 'root:x:0:0:root:/root:/bin/bash\n'
+    if [ "$(id -u)" != 0 ]; then
+      printf '%s:x:%s:%s::/cache/home:/bin/bash\n' "$(id -un)" "$(id -u)" "$(id -g)"
+    fi
+  } > "$passwd.tmp"
   mv -f "$passwd.tmp" "$passwd"
   # The tests link every test binary, which the lint never does, and cargo starts one link per
   # CPU: 18 of them outgrew the container's 4G and ld was killed (2026-11-27), with full debug info
