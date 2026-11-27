@@ -15,6 +15,8 @@
       page: guides/run-agents-in-parallel
     - title: Drive terminals from agents and scripts
       page: guides/drive-terminals-from-agents-and-scripts
+    - title: Make your program resume
+      page: guides/make-your-program-resume
     - title: Review and ship
       page: guides/review-and-ship
     - title: Work on a remote host

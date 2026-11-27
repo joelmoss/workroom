@@ -49,6 +49,7 @@ Every terminal pane's shell, on your Mac and on a remote host, gets these, so Wo
 | `WORKROOM_PANE` | The ID of the pane's terminal session. |
 | `WORKROOM_DAEMON` | The path of the socket of the Workroom daemon that runs the pane. |
 | `WORKROOM_BIN_DIR` | The folder that holds the `workroom` command of the daemon that runs the pane. It is the first entry of the pane's `PATH`. |
+| `OSC7577_TOKEN` | Nightly only. The pane's secret for the Program Resume Protocol, new for every terminal: a program signs its report of how to start it again with it. Unset in a run tab, while **Resume programs after a restart** is off, and under a daemon running as root. Keep it secret, and don't pass it on over `ssh`. See [Make your own program resume after a restart](../guides/make-your-program-resume.md). |
 
 The `workroom` in `WORKROOM_BIN_DIR` is the build of the daemon the pane talks to, so its commands always match that daemon. When the app updates, the same folder holds the new one, in panes that were already open too: at once when the daemon moves to the new build, and when the next terminal opens when only the commands changed. It comes ahead of any `workroom` you installed yourself.
 
