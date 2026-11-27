@@ -8,9 +8,9 @@ import XCTest
 final class ResumeProgramsSettingsUITests: XCTestCase {
   private static let label = "Resume programs after a restart"
   private static let help =
-    "When your Mac restarts or a terminal's session ends, programs that support it, such as "
-    + "Claude Code and Codex, come back where they were. Claude Code does so through a hook "
-    + "Workroom adds to its settings."
+    "When your Mac restarts or Workroom's background helper stops unexpectedly, programs that "
+    + "support it, such as Claude Code, come back where they were. Claude Code does so through "
+    + "a hook Workroom adds to its settings."
 
   override func setUpWithError() throws { continueAfterFailure = false }
 

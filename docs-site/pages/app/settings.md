@@ -123,7 +123,7 @@ The setting applies to terminals you open after changing it. Remote workrooms do
 
 ### Resume programs after a restart {nightly}
 
-On by default. When your Mac restarts or a terminal's session ends, programs that support it, such as Claude Code and Codex, come back where they were. See [Programs that resume after a restart](terminals-and-tabs.md#programs-that-resume-after-a-restart).
+On by default. When your Mac restarts or Workroom's background helper stops unexpectedly, programs that support it, such as Claude Code, come back where they were. A terminal you end yourself, by closing its tab or typing `exit`, doesn't come back. See [Programs that resume after a restart](terminals-and-tabs.md#programs-that-resume-after-a-restart).
 
 While it's on, Workroom keeps a hook in Claude Code's settings that lets a Claude Code conversation come back, and takes it out when you turn it off. See [Carry on a Claude Code conversation after a restart](coding-agents.md#carry-on-a-claude-code-conversation-after-a-restart).
 
