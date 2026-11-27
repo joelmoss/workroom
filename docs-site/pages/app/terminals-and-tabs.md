@@ -175,7 +175,7 @@ A restart of your Mac, or a crash of the background helper, ends every terminal'
 - If the program can't start, or exits with an error within 5 seconds of starting, the terminal says **Couldn't resume** and the program's name, and leaves you at a shell prompt. Workroom then forgets the program, so it doesn't try again after the next restart.
 - If your shell's startup files keep the program from starting (a `.zshrc` that ends in `exec fish`, or that resets `precmd_functions`), the terminal says it's a new terminal as soon as the shell shows its prompt, and Workroom forgets the program, so it doesn't try again after the next restart. A shell whose prompt Workroom can't see gets 30 seconds to start the program first.
 - If the program didn't say which folder it was in, it resumes in the terminal's last folder.
-- If the folder the program was in is gone, the terminal says it's a new terminal, and Workroom forgets the program.
+- If the folder the program was in is gone, the terminal opens a new shell, as it does for a program that never said how to resume.
 - Programs resume in zsh and bash. In any other shell, such as fish, and in macOS's own `/bin/bash`, the terminal says it's a new terminal, and Workroom forgets the program.
 - Hidden terminal tabs resume as they reconnect, so their marks in the sidebar come back without opening each tab.
 - A run tab doesn't resume: it comes back stopped, and ⌘R starts it again.

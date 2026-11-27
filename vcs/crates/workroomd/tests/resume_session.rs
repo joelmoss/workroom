@@ -318,14 +318,18 @@ fn fails_at_once_or_is_declined(shell: &str) {
     let (mut client, mut reader) = restore(&socket, failing, shell, &home, &file);
     reader.read_until("FAILING", Duration::from_secs(30));
     if common::has_terminal_state() {
+        // The record clears with the failure, not after the exit grace: the helper's clear is
+        // signed for its child, the record's owner.
+        let mut first = Value::Null;
         assert!(
             wait_for(Duration::from_secs(10), || {
-                let status = status(&socket, failing);
-                status["resumeFailed"] == true && status["resumeStarted"] == true
+                first = status(&socket, failing);
+                first["resumeFailed"] == true
             }),
-            "{}",
-            status(&socket, failing)
+            "{first}"
         );
+        assert_eq!(first["resumeStarted"], true, "{first}");
+        assert!(first["resume"].is_null(), "cleared at once: {first}");
     }
     // Worked out by the shell, so the typed line's echo can't pass for it.
     type_into(&mut client, "echo \"SHELL-$((40+2))\"\n");
