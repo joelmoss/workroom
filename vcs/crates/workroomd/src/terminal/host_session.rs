@@ -132,8 +132,7 @@ pub struct HostOrigin {
 impl HostOrigin {
     /// This process's environment and its effective user's account entry.
     fn current() -> HostOrigin {
-        // SAFETY: geteuid takes nothing and cannot fail.
-        let uid = unsafe { libc::geteuid() };
+        let uid = crate::util::euid();
         let account = crate::host::account::lookup(&uid.to_string()).ok();
         HostOrigin {
             environment: std::env::vars_os().collect(),
