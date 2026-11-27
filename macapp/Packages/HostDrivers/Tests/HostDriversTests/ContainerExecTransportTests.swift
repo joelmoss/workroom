@@ -149,6 +149,77 @@ final class ContainerExecTransportTests: XCTestCase {
     XCTAssertEqual(ContainerExecTransport.lastAttach(of: session, in: directory), .finished)
   }
 
+  /// A restored pane's resume record (#826) reaches its in-container client by a file copied in
+  /// over a separate `exec`'s stdin, never a command line: `0600` in a `0700` folder beside the
+  /// daemon's socket, replacing one an earlier copy left for the same session, with this Mac's
+  /// file removed; the client is handed its path. Without a record it is handed none. The stub
+  /// runtime runs each `exec`'s command here, as the container would.
+  func testAPanesResumeRecordIsCopiedInOverStdinAndHandedToItsClient() throws {
+    let runtime = try stubRuntime(
+      "while [ \"$1\" != workroom-abc ]; do shift; done; shift; exec \"$@\"")
+    let run = directory.appendingPathComponent("run")
+    try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+    let client = run.appendingPathComponent("workroomd")
+    try """
+    #!/bin/sh
+    echo "RESUME=${WORKROOM_SESSION_RESUME-}"
+    [ -n "${WORKROOM_SESSION_RESUME-}" ] && cat "$WORKROOM_SESSION_RESUME" && echo
+    exit 0
+    """.write(to: client, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: client.path)
+    let target = ContainerExecTransport.Target(
+      runtime: runtime, dialect: .docker, context: nil, container: "workroom-abc", user: "vscode",
+      daemonSocket: run.appendingPathComponent("workroomd.sock").path)
+    let session = UUID()
+    let id = session.uuidString.lowercased()
+    let folder = run.appendingPathComponent("resume-launch")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let left = folder.appendingPathComponent(
+      "resume-\(id)-\(String(repeating: "0", count: 32)).json")
+    try Data("{}".utf8).write(to: left)
+    let mac = directory.appendingPathComponent("mac")
+    try FileManager.default.createDirectory(at: mac, withIntermediateDirectories: true)
+    let name = "resume-\(id)-\(String(repeating: "a", count: 32)).json"
+    let record = mac.appendingPathComponent(name)
+    try Data(#"{"argv":["claude","--resume","s3cr3t"],"cwd":"/w","reportedAt":1}"#.utf8)
+      .write(to: record)
+
+    func attach(_ resume: URL?) throws -> String {
+      let command = ContainerExecTransport.attachCommand(
+        on: target, in: directory, session: session, workingDirectory: "/workspaces/app",
+        restored: true, metadata: [], runCommand: nil)
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/sh")
+      process.arguments = ["-c", command]
+      process.environment = ["PATH": "/usr/bin:/bin"].merging(
+        resume.map { ["WORKROOM_SESSION_RESUME": $0.path] } ?? [:]
+      ) { $1 }
+      let output = Pipe()
+      process.standardOutput = output
+      process.standardError = output
+      try process.run()
+      process.waitUntilExit()
+      return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    }
+
+    let staged = folder.appendingPathComponent(name)
+    let seen = try attach(record)
+    XCTAssertTrue(seen.contains("RESUME=\(staged.path)"), seen)
+    XCTAssertTrue(seen.contains("s3cr3t"), seen)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: record.path), "the Mac's file goes")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: left.path), "the earlier copy goes")
+    let mode = { (path: String) in
+      ((try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions] as? Int) ?? 0
+    }
+    XCTAssertEqual(mode(staged.path), 0o600)
+    XCTAssertEqual(mode(folder.path), 0o700)
+    // Only the copy's own exec read the record, on stdin: no command line named its words.
+    XCTAssertFalse(try asked.joined(separator: " ").contains("s3cr3t"))
+
+    try FileManager.default.removeItem(at: staged)
+    XCTAssertTrue(try attach(nil).contains("RESUME=\n"), "no record, none handed over")
+  }
+
   /// The wait itself, in a shell: none without a hook or once it is done; with a hook not done, it
   /// waits and says so.
   func testAPaneWaitsForAPostStartNotYetRun() throws {

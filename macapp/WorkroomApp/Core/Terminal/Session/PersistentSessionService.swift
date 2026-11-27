@@ -547,20 +547,27 @@ final class PersistentSessionService {
     }
   }
 
-  /// Hands a restored local pane's resume record (ADR 0082, #825) to the relay that will make its
-  /// gone session again: the file's path, which `launchEnvironment`'s caller adds as
-  /// `ResumeLaunchFile.variable`, or nil for no resume (a remote pane, a folder that is gone, no
-  /// socket). `savedFolder` is the pane's own, where a record that names none runs. Only after
-  /// `willReplaceRestoredSession` said the session is gone.
+  /// Hands a restored pane's resume record (ADR 0082, #825) to the relay that will make its gone
+  /// session again: the file's path, which `launchEnvironment`'s caller adds as
+  /// `ResumeLaunchFile.variable`, or nil for no resume (a folder that is gone, no socket).
+  /// `savedFolder` is the pane's own, where a record that names none runs. A local pane's only
+  /// after `willReplaceRestoredSession` said the session is gone.
+  ///
+  /// A remote pane's (#826) at every restored launch, since only its host knows whether the
+  /// session is gone: in this Mac's folder all the same, where its client runs, dialed from here,
+  /// or which a container's attach copies into the container (`ContainerExecTransport`). Its
+  /// folder is the host's, which the host's daemon checks.
   func writeResumeLaunch(_ record: ResumeRecord, for sessionID: UUID, savedFolder: String)
     -> String?
   {
-    guard !isRemote(sessionID), backend(forSession: sessionID) == .daemon,
+    let remote = isRemote(sessionID)
+    guard remote || backend(forSession: sessionID) == .daemon,
       let socket = socketPath(for: .daemon)
     else { return nil }
     return ResumeLaunchFile.write(
       record, for: sessionID, savedFolder: savedFolder,
-      in: resumeLaunchDirectory ?? ResumeLaunchFile.directory(socketPath: socket))
+      in: resumeLaunchDirectory ?? ResumeLaunchFile.directory(socketPath: socket),
+      onThisMac: !remote)
   }
 
   /// Test seam: where `writeResumeLaunch` puts its files instead of beside the socket.

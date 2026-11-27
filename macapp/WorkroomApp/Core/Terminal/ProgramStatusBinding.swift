@@ -118,6 +118,9 @@ final class ProgramStatusBinding {
       }
       // After the record is written: a failed or declined resume forgets the record it wrote.
       guard let attachment = access.surface(tabID)?.attachment else { continue }
+      // A remote pane that offered its record (#826) learns first whether this daemon made the
+      // session again with it.
+      attachment.sessionHeard(boot: monitor.resume(for: sessionID)?.boot)
       if monitor.resumeFailed(for: sessionID) {
         attachment.resumeFailed()
       } else if monitor.resumeStarted(for: sessionID) {

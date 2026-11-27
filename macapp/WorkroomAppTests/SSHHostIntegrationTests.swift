@@ -190,11 +190,11 @@ final class SSHHostIntegrationTests: XCTestCase {
   }
 
   nonisolated(nonsending) private func ensure(
-    _ driver: SSHHostDriver, daemon: URL
+    _ driver: SSHHostDriver, daemon: URL, resources: URL? = nil
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
       host: driver.hostID, driver: driver, socket: driver.daemonSocket,
-      daemon: { _ in daemon }, resources: nil)
+      daemon: { _ in daemon }, resources: resources)
   }
 
   nonisolated(nonsending) private func connect(_ driver: SSHHostDriver) async throws
@@ -422,6 +422,73 @@ final class SSHHostIntegrationTests: XCTestCase {
     let rebootScreen = afterReboot.read(until: "host restarted")
     XCTAssertTrue(rebootScreen.contains("SSH-LAST-SCREEN"), rebootScreen)
     XCTAssertTrue(rebootScreen.contains("ended when its host restarted"), rebootScreen)
+  }
+
+  /// Value: protects=a remote pane whose session is gone after its host's daemon died (a host
+  /// restart, as the daemon sees one) resuming its tab's record (#826): its client on this Mac
+  /// claims the file the app wrote and sends it over ssh with its first attach, so the host's new
+  /// daemon starts the user's login bash, which runs the program in its folder; a second Mac's
+  /// pane reconnecting at once shows the same session, with the program run once; fails_when=the
+  /// dialed client drops the record, the daemon shows "ended", the hook never runs on a host, or
+  /// the second pane makes a second session; why_new=new (#826); seam=a killed daemon for a host
+  /// restart
+  @MainActor
+  func testAPaneWhoseSessionIsGoneAfterARestartResumesItsRecord() async throws {
+    let fixture = try fixture()
+    let driver = driver(fixture)
+    _ = try await driver.checkHost()
+    let resources = try XCTUnwrap(GhosttyResources.bundledURL, "the app's Ghostty resources")
+    let first = try await ensure(driver, daemon: fixture.daemon, resources: resources)
+    let firstPID = try XCTUnwrap(first.startedPID)
+    let session = UUID()
+    let pane = try RemoteHostIntegrationTests.Pane(
+      command: driver.attachCommand(
+        to: driver.hostID, session: session, workingDirectory: driver.home, restored: false))
+    pane.type("echo BEFORE-RE\"\"START\n")
+    XCTAssertTrue(pane.read(until: "BEFORE-RESTART").contains("BEFORE-RESTART"))
+    pane.dropLink()
+    try await onHost(fixture, "kill -9 \(firstPID)")
+    _ = try await ensure(driver, daemon: fixture.daemon, resources: resources)
+
+    let runs = "\(driver.home)/resume-runs-\(session.uuidString.prefix(8))"
+    let record = ResumeRecord(
+      argv: [
+        "/bin/sh", "-c",
+        "echo run >> \(runs); echo \"RESUMED-$((40+2)) IN=$(pwd)\"; exec sleep 120",
+      ],
+      cwd: driver.home, reportedAt: 1, boot: "before the restart")
+    let folders = (0..<2).map { _ in
+      FileManager.default.temporaryDirectory.appendingPathComponent(
+        "wr-resume-ssh-\(UUID().uuidString.prefix(8))")
+    }
+    addTeardownBlock { for folder in folders { try? FileManager.default.removeItem(at: folder) } }
+    var panes: [RemoteHostIntegrationTests.Pane] = []
+    defer { for pane in panes { pane.dropLink() } }
+    var files: [String] = []
+    for folder in folders {
+      let file = try XCTUnwrap(
+        ResumeLaunchFile.write(
+          record, for: session, savedFolder: driver.home, in: folder, onThisMac: false))
+      files.append(file)
+      panes.append(
+        try RemoteHostIntegrationTests.Pane(
+          command: driver.attachCommand(
+            to: driver.hostID, session: session, workingDirectory: driver.home, restored: true),
+          environment: [ResumeLaunchFile.variable: file]))
+    }
+    let resumed = "RESUMED-42 IN=\(driver.home)"
+    for pane in panes {
+      let seen = pane.read(until: resumed, within: 40)
+      XCTAssertTrue(seen.contains(resumed), seen)
+      XCTAssertFalse(seen.contains("ended when its host restarted"), seen)
+    }
+    for file in files {
+      XCTAssertFalse(FileManager.default.fileExists(atPath: file), "its client claimed it")
+    }
+    try await Task.sleep(for: .milliseconds(500))
+    XCTAssertEqual(
+      try await onHost(fixture, "wc -l < \(runs); rm -f \(runs)"), "1",
+      "the program resumed once, in one session")
   }
 
   @MainActor

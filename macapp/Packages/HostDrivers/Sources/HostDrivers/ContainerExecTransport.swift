@@ -106,12 +106,58 @@ public enum ContainerExecTransport {
       [target.runtime.path]
       + arguments(
         target, tty: true,
-        command: ["sh", "-c", ownHome + ContainerHostDriver.postStartWait + "; " + script])
-    return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + exec)
+        command: [
+          "sh", "-c",
+          ownHome + ContainerHostDriver.postStartWait + "; "
+            + stagedResume(session: session, socket: target.daemonSocket) + script,
+        ])
+    let stage = arguments(
+      target, tty: false,
+      command: ["sh", "-c", stageResume(session: session, socket: target.daemonSocket), "stage"])
+    return
+      (["/bin/sh", "-c", attachWrapper, "workroom-attach", log]
+      + [([target.runtime.path] + stage).map(PosixShell.quoted).joined(separator: " ")] + exec)
       .map(PosixShell.quoted).joined(separator: " ")
   }
 
-  /// What a pane runs around its `exec`, as `sh -c <this> workroom-attach <log> <exec argv>`.
+  /// The folder in the container a pane's resume record is copied into (#826), as this Mac's is
+  /// beside its own daemon's socket (`ResumeLaunchFile.directory`): only this code writes it.
+  static func resumeFolder(besideSocket socket: String) -> String {
+    (socket as NSString).deletingLastPathComponent + "/resume-launch"
+  }
+
+  /// What the container's `sh` runs, as the remote user, to copy in a remote pane's resume record
+  /// (#826), its bytes on stdin and its file's name (`ResumeLaunchFile.name`) as `$1`: into a new
+  /// `0600` file in the `0700` `resumeFolder`, where the pane's attach finds it (`stagedResume`),
+  /// whose client claims and removes it. The record's arguments can hold secrets, so they never
+  /// travel on a command line, which a process listing shows. First, this session's files a copy
+  /// left that no attach claimed (an attach that never started), which only this code names so:
+  /// regular files alone, judged without following a link.
+  static func stageResume(session: UUID, socket: String) -> String {
+    let folder = resumeFolder(besideSocket: socket)
+    let mine = "resume-\(session.uuidString.lowercased())-"
+    return "dir=\(PosixShell.quoted(folder)); case $1 in \(mine)*.json) ;; *) exit 1;; esac; "
+      + "umask 077; mkdir -p \"$dir\" && test -d \"$dir\" && ! test -L \"$dir\" "
+      + "&& chmod 700 \"$dir\" || exit 1; "
+      + "for f in \"$dir\"/\(mine)*.json; do test -f \"$f\" && ! test -L \"$f\" && rm -f \"$f\"; "
+      + "done; cat > \"$dir/$1\""
+  }
+
+  /// The in-container half of a pane's attach that hands its client the record `stageResume`
+  /// copied in for its session, by path (#826), and nothing when there is none.
+  static func stagedResume(session: UUID, socket: String) -> String {
+    let mine = "resume-\(session.uuidString.lowercased())-"
+    return "for f in \(PosixShell.quoted(resumeFolder(besideSocket: socket)))/\(mine)*.json; do "
+      + "if test -f \"$f\"; then WORKROOM_SESSION_RESUME=$f; export WORKROOM_SESSION_RESUME; fi; "
+      + "done; "
+  }
+
+  /// What a pane runs around its `exec`, as
+  /// `sh -c <this> workroom-attach <log> <stage line> <exec argv>`.
+  ///
+  /// A restored pane's resume record (#826), in the file this Mac's `WORKROOM_SESSION_RESUME`
+  /// names, is first copied into the container over the stdin of `stage line`'s own `exec`
+  /// (`stageResume`), never its command line, and the Mac's file removed whatever came of it.
   ///
   /// With a terminal, everything the container prints comes through the terminal, so the runtime's
   /// own stderr holds only its own messages: they go to the log. One saying the container isn't
@@ -121,7 +167,11 @@ public enum ContainerExecTransport {
   /// the runtime said it. The status goes beside the log, as the ssh wrapper's does (#392), removed
   /// before the attach starts so a killed wrapper leaves none.
   public static let attachWrapper = """
-    log=$1; shift; : > "$log"; rm -f "${log%.log}.status"; \
+    log=$1; stage=$2; shift 2; : > "$log"; rm -f "${log%.log}.status"; \
+    if [ -n "${WORKROOM_SESSION_RESUME-}" ] && [ -f "$WORKROOM_SESSION_RESUME" ]; then \
+    name=${WORKROOM_SESSION_RESUME##*/}; eval "$stage \\"\\$name\\"" \
+    < "$WORKROOM_SESSION_RESUME" > /dev/null 2>&1; rm -f "$WORKROOM_SESSION_RESUME"; fi; \
+    unset WORKROOM_SESSION_RESUME; \
     "$@" 2>"$log"; status=$?; \
     if [ "$status" != 0 ] && grep -qiF \(lostLinkPatterns) "$log"; then status=255; \
     printf '\\r\\n%s\\r\\n' \(PosixShell.quoted(SSHTransport.retryNotice)) >&2; \

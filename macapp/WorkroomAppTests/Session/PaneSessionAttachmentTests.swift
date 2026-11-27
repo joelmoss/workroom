@@ -565,6 +565,64 @@ final class PaneSessionAttachmentTests: XCTestCase {
     XCTAssertEqual(unheard.notices, [], "no wait before the daemon has said anything")
   }
 
+  /// Value: protects=a restored remote pane (#826) handing its tab's record to its client at every
+  /// launch, since only the host knows whether its session is gone, with its host folder unchecked
+  /// here; saying nothing for a session its record's own daemon still holds, however sticky its
+  /// last resume's flags, nor before the daemon has said anything; and awaiting, then toasting
+  /// "Resumed …", once a new daemon (a host restart) made it again; and no record for a new pane
+  /// or a run tab; fails_when=a live reattach toasts "Resumed" or "created a new one", a resumed
+  /// session is never toasted, or a remote pane never gets the file; why_new=new (#826); seam=the
+  /// service's launch folder
+  func testARestoredRemotePaneOffersItsRecordAndToastsOnlyWhatItsHostResumed() throws {
+    let folder = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-remote-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+    service.resumeLaunchDirectory = folder
+    let record = ResumeRecord(
+      argv: ["claude", "--resume", "a"], cwd: "/home/w/not-on-this-mac", reportedAt: 1, boot: "b")
+    func launched(restored: Bool = true, run: Bool = false) throws -> (
+      PaneSessionAttachment, FakePaneSurface, String?
+    ) {
+      let pane = try remotePane(log: "", provider: true)
+      pane.tabResume = { record }
+      pane.resumeConfirmationWait = 3600
+      pane.isRestored = restored
+      let launch = pane.launch(workingDirectory: "/home/w", runCommand: "x", isRunSession: run)
+      let file = try XCTUnwrap(launch).environment.first {
+        $0.key == ResumeLaunchFile.variable
+      }?.value
+      return (pane, try surface(of: pane), file)
+    }
+
+    let (live, quiet, file) = try launched()
+    let path = try XCTUnwrap(file, "a restored remote pane hands its client the record")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+    XCTAssertEqual(live.resumeState, .offered(program: "Claude Code", boot: "b"))
+    live.sessionHeard(boot: nil)
+    live.resumeStarted()
+    live.resumeDeclined()
+    XCTAssertEqual(quiet.notices, [], "nothing said before its daemon says anything")
+    live.sessionHeard(boot: "b")
+    live.resumeStarted()
+    live.sessionReported()
+    XCTAssertNil(live.resumeState, "its record's daemon held it live")
+    XCTAssertEqual(quiet.notices, [], "a live reattach says nothing, however sticky the flags")
+
+    let (resumed, toasts, _) = try launched()
+    resumed.sessionHeard(boot: "after the restart")
+    XCTAssertEqual(resumed.resumeState, .awaiting(program: "Claude Code"))
+    resumed.resumeStarted()
+    resumed.sessionHeard(boot: "after the restart")
+    XCTAssertEqual(toasts.notices, ["Resumed Claude Code"])
+
+    for (restored, run) in [(false, false), (true, true)] {
+      let (pane, notices, file) = try launched(restored: restored, run: run)
+      XCTAssertNil(file, "restored \(restored), run \(run)")
+      XCTAssertNil(pane.resumeState)
+      XCTAssertEqual(notices.notices, [])
+    }
+  }
+
   /// A tab's surface attaches through the service its window holds, whichever factory made the
   /// surface.
   func testATabsSurfaceAttachesThroughItsWindowsService() throws {
