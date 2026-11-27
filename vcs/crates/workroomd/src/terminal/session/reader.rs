@@ -134,6 +134,9 @@ fn note_resume(id: SessionId, outcome: Outcome) {
         Outcome::ResumeFailed { program, status } => {
             crate::note!("session {id}: {program} couldn't be resumed: it exited {status} at once");
         }
+        Outcome::HookLoaded => {
+            crate::note!("session {id}: Workroom's hook loaded in its shell");
+        }
     }
 }
 
@@ -221,8 +224,11 @@ pub(super) fn read_session(
         // stream offset that matches the bytes it carries (`frozen`); what each did is logged once
         // the locks are released.
         // A resume (#825) whose helper had not reported by the end of a read that brought the
-        // shell's prompt (OSC 133) is declined once the locks are released: the hook runs the
-        // helper before the first prompt is drawn, so a prompt first means it never ran.
+        // shell's prompt (OSC 133) is declined once the locks are released, when the shell never
+        // said Workroom's hook loaded in it (`Resume::unhooked_file`): the hook runs the helper
+        // before the first prompt is drawn, so a prompt first from such a shell means it never
+        // ran. A shell whose hook loaded can print a prompt mark before it runs (an instant
+        // prompt), so it is waited for.
         let (read, clients, answer, published, waiting, resumed, declined) = {
             let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
@@ -242,10 +248,15 @@ pub(super) fn read_session(
                         && let Some(state) = lock_or_recover(resume).as_mut()
                     {
                         resumed = state.feed(&buffer[..n]);
-                        if !resumed.is_empty() {
+                        // The hook's word changes no record, so it leaves the one the session
+                        // was seeded with in its status.
+                        if resumed
+                            .iter()
+                            .any(|outcome| !matches!(outcome, Outcome::HookLoaded))
+                        {
                             record = Some(state.whole());
                         }
-                        unreported = state.waiting_file();
+                        unreported = state.unhooked_file();
                     }
                     // A resumed program that started, or failed at once (#825): the app's toast
                     // says so.

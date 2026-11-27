@@ -646,7 +646,9 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
         "resume-launch",
         "The daemon: a resuming session's own shell runs it at its first prompt, through \
          Workroom's zsh or bash hook, as its first job: it runs the program the tab's resume \
-         record names, in its folder, and says so when that fails.",
+         record names, in its folder, and says so when that fails. With `--hook-loaded`, the \
+         same shell runs it as the hook loads, before the user's startup files, to report that \
+         the hook is there, so the daemon waits for it however late the first prompt comes.",
     ),
     (
         "protocol",
@@ -854,10 +856,12 @@ const STREAM_EVENTS: &[StreamEvent] = &[
                 "`true`, sent only then and in every event after: the daemon declined the resume \
                  the session was started for, so the pane says it got a new shell and the tab \
                  forgets the record. Sent from the session's first event when the record's folder \
-                 is gone or its shell has no Workroom hook (only zsh and bash have one); else at \
-                 the shell's first OSC 133 prompt when its helper had not reported (a startup file \
-                 kept the hook from running), or 30 s after the session started for a shell whose \
-                 prompt sends no OSC 133. The daemon claims the unused launch file first, so \
+                 is gone or its shell has no Workroom hook (only zsh and bash have one); else, for \
+                 a shell that never said the hook loaded in it (one that skipped `.zshenv` or \
+                 `ENV`), at its first OSC 133 prompt when its helper had not reported, or 30 s \
+                 after the session started for a shell whose prompt sends no OSC 133. A shell \
+                 whose hook loaded is waited for as long as it runs, so a hook its startup files \
+                 keep from running is never declined. The daemon claims the unused launch file first, so \
                  nothing starts the program later, and the record it seeded goes with it. A \
                  hand-off's next program doesn't carry it.",
             ),

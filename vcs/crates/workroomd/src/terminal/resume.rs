@@ -35,7 +35,8 @@
 //! session's own shell is gone, which stands in for herdr's check that the terminal is healthy;
 //! each record that clears is returned for the daemon's log; the helper's report of a resumed
 //! record says its program started (`started`), and its exit, which the helper reports too, can
-//! say it failed to resume (`exited`); launching is `launch`'s;
+//! say it failed to resume (`exited`); the shell's own clear with `workroomhook=1` says Workroom's
+//! hook loaded in it (`hook_loaded`); launching is `launch`'s;
 //! and there is no rapid-loss guard, since a program that fails at once exits, which clears its
 //! record.
 
@@ -167,30 +168,38 @@ pub(crate) enum Outcome {
         program: String,
         status: i32,
     },
+    /// The session's shell said, as Workroom's hook loaded in it (`launch::run_hook`), that the
+    /// hook runs there: a resume it waits for is not declined at a prompt or a deadline.
+    HookLoaded,
 }
 
 /// Where a session started to resume a record (#825) is with it.
 #[derive(Clone, Debug)]
 enum Resuming {
     /// Its helper has not yet reported the record, whose command and folder these are, from the
-    /// launch file `file` this daemon wrote for it at `since`.
+    /// launch file `file` this daemon wrote for it at `since`. `hooked` once the shell said its
+    /// Workroom hook loaded (`Outcome::HookLoaded`).
     Waiting {
         program: String,
         argv: Vec<String>,
         cwd: Option<String>,
         file: std::path::PathBuf,
         since: Instant,
+        hooked: bool,
     },
     /// Its helper's report was accepted at `at`: the program started then.
     Started { program: String, at: Instant },
 }
 
 /// How long after its session started a resume whose helper has not reported is declined
-/// (`Resume::overdue`): for a shell that never ran Workroom's hook and whose prompt sends no
-/// OSC 133, which would decline it at once (`Resume::waiting_file`). Long enough for a login shell
-/// on a cold disk after a reboot, with every restored pane's shell starting at once (oh-my-zsh
-/// and nvm can take 10 s there); a hook that runs later than this finds its file claimed and
-/// starts nothing, so the outcome is the one the app was told either way.
+/// (`Resume::overdue`), when its shell never said Workroom's hook loaded in it: for a shell that
+/// skipped the hook and whose prompt sends no OSC 133, which would decline it at once
+/// (`Resume::unhooked_file`). A shell whose hook loaded is never declined this way, however long
+/// its startup files take (an `ssh-add` passphrase answered minutes later). Long enough for a
+/// login shell on a cold disk after a reboot, with every restored pane's shell starting at once
+/// (oh-my-zsh and nvm can take 10 s there), before it reaches the hook; a hook that loads later
+/// than this finds its file claimed and starts nothing, so the outcome is the one the app was told
+/// either way.
 pub(crate) const DECLINE_AFTER: Duration = Duration::from_secs(30);
 
 /// The resumed program and its helper, by pid and start time, once the program's report was
@@ -376,6 +385,7 @@ impl Resume {
             cwd: record.cwd.clone(),
             file,
             since: Instant::now(),
+            hooked: false,
         });
     }
 
@@ -388,16 +398,46 @@ impl Resume {
         }
     }
 
-    /// `waiting_file`, once it has waited `DECLINE_AFTER` at `now`.
-    pub(crate) fn overdue(&self, now: Instant) -> Option<std::path::PathBuf> {
+    /// `waiting_file`, while the shell has not said Workroom's hook loaded in it: only such a
+    /// resume is declined at the shell's first prompt or at `DECLINE_AFTER`. Once the hook loaded,
+    /// a prompt before it ran (Powerlevel10k's instant prompt prints one from the top of
+    /// `.zshrc`) or a startup file that waits (a passphrase) is no sign it won't run, so the
+    /// resume waits for the helper for as long as the session lives. A hook that loads and then
+    /// never reaches the first prompt (a `.zshrc` that ends in `exec fish`, or that resets
+    /// `precmd_functions`) is the accepted cost: nothing declines it, so the app keeps the record
+    /// and tries it again at each restart, its own fallback saying each time that the pane got a
+    /// new shell.
+    pub(crate) fn unhooked_file(&self) -> Option<std::path::PathBuf> {
         match &self.resuming {
-            Some(Resuming::Waiting { file, since, .. })
-                if now.saturating_duration_since(*since) >= DECLINE_AFTER =>
-            {
-                Some(file.clone())
-            }
+            Some(Resuming::Waiting {
+                file,
+                hooked: false,
+                ..
+            }) => Some(file.clone()),
             _ => None,
         }
+    }
+
+    /// `unhooked_file`, once it has waited `DECLINE_AFTER` at `now`.
+    pub(crate) fn overdue(&self, now: Instant) -> Option<std::path::PathBuf> {
+        match &self.resuming {
+            Some(Resuming::Waiting {
+                file,
+                since,
+                hooked: false,
+                ..
+            }) if now.saturating_duration_since(*since) >= DECLINE_AFTER => Some(file.clone()),
+            _ => None,
+        }
+    }
+
+    /// The session's shell said Workroom's hook loaded in it (`Outcome::HookLoaded`): a resume it
+    /// waits for is no longer declined at a prompt or a deadline (`unhooked_file`).
+    fn hook_loaded(&mut self) -> Outcome {
+        if let Some(Resuming::Waiting { hooked, .. }) = &mut self.resuming {
+            *hooked = true;
+        }
+        Outcome::HookLoaded
     }
 
     /// The resume still waiting is declined, its launch file claimed by the daemon: the program it
@@ -502,10 +542,12 @@ impl Resume {
     }
 
     /// What the report applied at `offset` did, once read at `at` for the record this session
-    /// resumes: its helper's report starting it, or its exit (`protocol::workroom_exit`) in a clear.
+    /// resumes: its helper's report starting it, its exit (`protocol::workroom_exit`) in a clear,
+    /// or the shell's hook loading (`protocol::workroom_hook`) in one.
     fn after(&mut self, outcome: Outcome, offset: u64, body: &[u8], at: Instant) -> Outcome {
         match (&outcome, protocol::workroom_exit(body)) {
             (Outcome::Cleared, Some(status)) => self.exited(status, at),
+            (Outcome::Cleared, None) if protocol::workroom_hook(body) => self.hook_loaded(),
             (Outcome::Accepted { .. }, _) => {
                 let record = self
                     .words

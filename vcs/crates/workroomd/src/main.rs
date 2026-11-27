@@ -67,6 +67,9 @@ fn usage() -> &'static str {
         what a resuming session's shell runs at its first prompt (#825), as its first job:
         claims <file>, a launch file the daemon wrote, and runs the program it names, in its
         folder, saying so when it fails
+  workroomd resume-launch --hook-loaded
+        what a resuming session's shell runs as Workroom's hook loads in it (#825): reports, as
+        the shell, that the hook is there to run the program
   workroomd protocol
         print the protocol version this build speaks
 "

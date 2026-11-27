@@ -3181,6 +3181,120 @@ fn a_resume_its_helper_never_reports_is_declined_at_the_deadline() {
     store.kill(id(73));
 }
 
+/// Value: protects=a resume whose shell said Workroom's hook loaded in it surviving a prompt mark
+/// before its helper ran (an instant prompt) and the deadline (#825), while one from a shell that
+/// never said so is still declined at its first mark: the tick stops looking at the first, its
+/// launch file stays for its helper, and its status keeps the seeded record with no
+/// `resumeDeclined`; fails_when=the mark or the deadline declines a hooked resume, the hook's word
+/// drops the seeded record, the tick keeps waking for it, or an unhooked mark no longer declines;
+/// why_new=#825's third review (Powerlevel10k's instant prompt declined working resumes);
+/// seam=the tick run on given times, each shell held until its resume is seeded
+#[test]
+fn a_resume_whose_hook_loaded_survives_an_early_prompt_and_the_deadline() {
+    use crate::terminal::resume::{DECLINE_AFTER, Whole, launch};
+    // SAFETY: no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: a daemon running as root gives no session a resume state (ADR 0082)");
+        return;
+    }
+    let scratch = crate::commands::Scratch::in_temp("wr-resume-hooked");
+    let release = scratch.join("release");
+    // Each shell waits for `$1`, which the test makes once its resume is seeded; the hooked one
+    // then says its hook loaded, as its own pid signed as the tests above sign, prints a prompt
+    // mark as an instant prompt does, and says DONE once `$1.more` exists.
+    let held = r#"i=0; while [ ! -e "$1" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; "#;
+    let hooked = concat!(
+        r#"body="pid=$$:time=$(date +%s):clear=1:workroomhook=1"; "#,
+        r#"mac=$({ printf '%s:%s' "$body" "$OSC7577_TOKEN" | sha256sum 2>/dev/null "#,
+        r#"|| printf '%s:%s' "$body" "$OSC7577_TOKEN" | shasum -a 256; } | cut -d' ' -f1); "#,
+        r#"printf '\033]7577;%s:mac=%s\007' "$body" "$mac"; printf '\033]133;A\007READY\n'; "#,
+        r#"i=0; while [ ! -e "$1.more" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; "#,
+        r#"echo DONE; sleep 20"#,
+    );
+    let mut e = env();
+    e.push((
+        OsString::from(crate::terminal::resume::TOKEN_VARIABLE),
+        OsString::from("a-test-token-0123456789"),
+    ));
+    let record = launch::Launch {
+        argv: vec!["claude".into(), "--resume".into(), "a".into()],
+        cwd: "/".into(),
+        reported_at_ms: 1,
+    };
+    let store = SessionStore::new();
+    let dir = scratch.join("launches");
+    let resuming = |n: u8, script: &str, mark: &str| {
+        let gate = release.with_extension(mark);
+        let args = [
+            OsString::from("-c"),
+            OsString::from(format!("{held}{script}")),
+            OsString::from("shell"),
+            gate.clone().into_os_string(),
+        ];
+        store
+            .create(SessionSpec {
+                interactive: true,
+                ..spec(id(n), &args, &e)
+            })
+            .expect("create");
+        let file = launch::write_launch(&dir, id(n), &record).expect("the launch file");
+        store.resuming(
+            id(n),
+            Whole {
+                argv: record.argv.clone(),
+                cwd: Some(record.cwd.clone()),
+                reported_at_ms: 1,
+            },
+            file.clone(),
+        );
+        let (capture, _) = attach_capture(&store, id(n));
+        std::fs::write(&gate, b"").expect("release the shell");
+        (file, capture, gate)
+    };
+    let (file, capture, gate) = resuming(74, hooked, "hooked");
+    let t0 = Instant::now();
+    let seen = wait_for(&capture, "READY", Duration::from_secs(10));
+    assert!(seen.contains("READY"), "the hooked shell's mark: {seen}");
+    std::fs::write(gate.with_extension("hooked.more"), b"").expect("release the rest");
+    let seen = wait_for(&capture, "DONE", Duration::from_secs(10));
+    assert!(seen.contains("DONE"), "read past the mark: {seen}");
+    assert!(file.exists(), "the mark declined nothing");
+    assert!(
+        !store.watch_resume_owners(t0),
+        "a resume whose hook loaded owes the tick no look"
+    );
+    store.watch_resume_owners(t0 + DECLINE_AFTER * 4);
+    assert!(file.exists(), "nor did the deadline");
+    #[cfg(feature = "terminal-state")]
+    {
+        let event = store
+            .program_status_events()
+            .into_iter()
+            .find(|(session, _)| *session == id(74))
+            .map(|(_, event)| serde_json::from_slice::<serde_json::Value>(&event).unwrap())
+            .expect("its status");
+        assert!(event.get("resumeDeclined").is_none(), "{event}");
+        assert_eq!(event["resume"]["argv"][0], "claude", "seeded: {event}");
+    }
+
+    // The negative control: a shell that never said so is declined at its first mark, which only
+    // a daemon reading OSC 133 sees.
+    #[cfg(feature = "terminal-state")]
+    {
+        let unhooked = r#"printf '\033]133;A\007READY\n'; sleep 20"#;
+        let (file, capture, _) = resuming(75, unhooked, "unhooked");
+        let seen = wait_for(&capture, "READY", Duration::from_secs(10));
+        assert!(seen.contains("READY"), "the unhooked shell's mark: {seen}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while file.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!file.exists(), "its mark claimed the file within 5 s");
+        store.kill(id(75));
+    }
+    store.kill(id(74));
+}
+
 /// A program under a session's shell that reports how to resume it, then exits while the shell
 /// runs on, has its record cleared once it has been gone for the exit grace, and not before
 /// (#823). Closing the tab, a kill, then leaves nothing of the session to show. The grace is run

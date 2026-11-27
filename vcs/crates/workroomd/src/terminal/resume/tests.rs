@@ -701,3 +701,93 @@ fn a_resumed_program_that_fails_at_once_says_so_once() {
     let plain = body(4242, NOW, "clear=1");
     assert_eq!(protocol::workroom_exit(&plain), None);
 }
+
+/// The shell's report, from pid 4100 at `offset`, that Workroom's hook loaded in it, with
+/// `fields` for its body, read at `at`.
+fn shell_says(s: &mut Resume, offset: u64, fields: &str, at: Instant) -> Outcome {
+    let report = body(4100, NOW, fields);
+    let outcome = s.apply(offset, &report, NOW, |_| {
+        unreachable!("a clear checks no owner")
+    });
+    s.after(outcome, offset, &report, at)
+}
+
+/// Value: protects=a resume whose shell said Workroom's hook loaded in it never being declined
+/// at a prompt or a deadline (#825): an instant prompt's mark, or a startup file waiting on a
+/// passphrase, comes before the hook runs, and the helper's report minutes later still starts
+/// it; the file stays the session's to remove at its end; and the announcement is a spec clear
+/// that any other terminal reads as one; fails_when=the announcement is lost, read from a plain
+/// clear, another value or an unsigned report, a hooked resume is still overdue, or a late
+/// helper report no longer says it started; why_new=#825's third review (an instant prompt and a
+/// passphrase declined resumes that would have worked); seam=the injected instant
+#[test]
+fn a_resume_whose_shell_said_its_hook_loaded_waits_for_its_helper() {
+    let now = Instant::now();
+    let hook = "clear=1:workroomhook=1";
+    let authenticated = protocol::authenticate(&body(4100, NOW, hook), TOKEN, NOW).unwrap();
+    assert_eq!(authenticated.action, Some(Action::Clear), "a spec clear");
+    let mut s = state();
+    s.resuming(&resumed_record(), launch_file());
+    assert_eq!(s.unhooked_file(), Some(launch_file()));
+    assert_eq!(shell_says(&mut s, 1, hook, now), Outcome::HookLoaded);
+    assert_eq!(s.unhooked_file(), None, "a prompt mark declines nothing");
+    let later = now + DECLINE_AFTER * 20;
+    assert_eq!(s.overdue(later), None, "nor does any deadline");
+    assert_eq!(s.waiting_file(), Some(launch_file()), "its end removes it");
+    assert_eq!(s.whole(), None, "the hook's word is no record");
+    assert_eq!(
+        helper_reports(&mut s, 2, later),
+        Outcome::ResumeStarted {
+            program: "claude".into()
+        },
+        "a passphrase answered minutes later"
+    );
+
+    for (fields, why) in [
+        ("clear=1", "a plain clear"),
+        ("clear=1:workroomhook=0", "another value"),
+    ] {
+        let mut s = state();
+        s.resuming(&resumed_record(), launch_file());
+        assert_eq!(
+            shell_says(&mut s, 1, fields, now),
+            Outcome::Cleared,
+            "{why}"
+        );
+        assert_eq!(s.unhooked_file(), Some(launch_file()), "{why}");
+        // After it started waiting, so this is past its deadline.
+        let due = Instant::now() + DECLINE_AFTER;
+        assert_eq!(s.overdue(due), Some(launch_file()), "{why}");
+    }
+    let mut s = state();
+    s.resuming(&resumed_record(), launch_file());
+    let forged = format!("pid=4100:time={NOW}:{hook}:mac={}", "0".repeat(64));
+    let outcome = s.apply(1, forged.as_bytes(), NOW, |_| unreachable!());
+    assert!(matches!(
+        s.after(outcome, 1, forged.as_bytes(), now),
+        Outcome::NotAccepted { .. }
+    ));
+    assert_eq!(s.unhooked_file(), Some(launch_file()), "an unsigned report");
+    assert_eq!(
+        shell_says(&mut state(), 1, hook, now),
+        Outcome::HookLoaded,
+        "said, though a session that resumes nothing waits for nothing"
+    );
+}
+
+/// Value: protects=a hand-off from a daemon whose table predates `launched` (#822 to #825's)
+/// still adopting each session's resume state; fails_when=`launched` stops defaulting, so the
+/// next program can't read the table and drops every session's token and records;
+/// why_new=#825's third review (no test decoded an older table); seam=none
+#[test]
+fn a_carried_state_from_a_table_without_launched_decodes() {
+    let carried = Carried::for_test(TOKEN, 7);
+    let mut json = serde_json::to_value(&carried).unwrap();
+    assert!(
+        json.as_object_mut().unwrap().remove("launched").is_some(),
+        "today's table writes it"
+    );
+    let older: Carried = serde_json::from_value(json).expect("an older table's state decodes");
+    assert_eq!(older, carried);
+    assert_eq!(older.launched, None);
+}

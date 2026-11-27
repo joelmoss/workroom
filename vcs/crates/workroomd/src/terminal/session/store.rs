@@ -718,8 +718,8 @@ impl SessionStore {
         true
     }
 
-    /// Declines each resume whose helper has not reported within `resume::DECLINE_AFTER` (#825,
-    /// `decline_resume`), and clears each resume record whose owner has been gone for
+    /// Declines each resume whose helper has not reported within `resume::DECLINE_AFTER`, from a
+    /// shell that never said Workroom's hook loaded in it (#825, `decline_resume`), and clears each resume record whose owner has been gone for
     /// `resume::EXIT_GRACE` while its session's shell runs on (ADR 0082, #823), looking at `now`;
     /// `screens::tick` runs it every
     /// `screens::INTERVAL`. Each session's resume lock is taken on its own, with the map released,
@@ -751,19 +751,21 @@ impl SessionStore {
         };
         let mut watching = false;
         for (id, resume, attached, shadow) in resumes {
-            // A resume whose helper has not reported is looked at again on every tick, and
-            // declined once it has waited `DECLINE_AFTER` (#825).
+            // A resume whose helper has not reported, from a shell that never said Workroom's
+            // hook loaded in it, is looked at again on every tick, and declined once it has
+            // waited `DECLINE_AFTER` (#825). One whose hook loaded waits for its helper with no
+            // deadline (`Resume::unhooked_file`), so it owes no look.
             let (waiting, overdue) = lock_or_recover(&resume)
                 .as_ref()
                 .map_or((false, None), |state| {
-                    (state.waiting_file().is_some(), state.overdue(now))
+                    (state.unhooked_file().is_some(), state.overdue(now))
                 });
             let declined = overdue.is_some_and(|file| {
                 self.decline_resume(
                     id,
                     &file,
                     (&resume, &attached, &shadow),
-                    "its helper never reported, so its shell ran no Workroom hook",
+                    "its shell never loaded Workroom's hook, and its helper never reported",
                 )
             });
             watching |= waiting && !declined;
