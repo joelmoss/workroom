@@ -48,7 +48,7 @@ When you close the terminal you're in and its row goes with it, because it was a
 
 Any terminal can have a name of its own, in a workroom, a group or on its own. Right-click its tab or its row in the sidebar and choose **Rename…**. On a row, the name is edited in place, as a terminal group's is: press <kbd>Return</kbd> or click away to keep it, or <kbd>Esc</kbd> to leave it as it was. From a tab, a sheet asks for it. The name shows on the tab, the pane's title bar and the row, and it comes back after a quit. Leave the name empty to show the title the program sets again.
 
-Nightly only: a terminal's name is also its session's label, so it is one name everywhere. Every Mac showing the same terminal shows the name you give it, and scripts and coding agents see it too: `workroom sessions` lists it, and `workroom send`, `workroom close` and the other terminal commands accept it as the terminal to act on. A name set by a script, with `workroom new --title` or the terminal API's `session.label`, shows on the tab, and clearing it there shows the default name again. A Run tab is named **Run** until you rename it. A terminal group's name is the app's own and isn't shared.
+Nightly only: a terminal's name is also its session's label, so it is one name everywhere. Every Mac showing the same terminal shows the name you give it, and scripts and coding agents see it too: `workroom sessions` lists it, and `workroom send`, `workroom close` and the other terminal commands accept it as the terminal to act on. A name set by a script, with `workroom new --title` or the terminal API's `session.label`, shows on the tab, and clearing it there shows the default name again. A run tab's label is its command, such as `npm run dev`, until you rename it. A terminal group's name is the app's own and isn't shared.
 
 #### Terminal groups
 
@@ -225,7 +225,11 @@ Set a run command for a project, such as `npm run dev`, and start it in any of i
 
 The workroom's title bar shows **Run** when idle and **Restart** and **Stop** while a run is going. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
 
-The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you.
+The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state.
+
+Nightly only: the run tab is named after its command, such as **npm run dev**, on one line and cut at its end when it is long. Hover the tab for the whole command. It names the command that is running, so after you change the project's run command, the tab shows the new one once a run starts with it. A name you give the tab, or a title its program sets, shows instead.
+
+If a run ends or fails while you are looking at another tab or workroom, a toast tells you.
 ### Stop from the sidebar
 
 Project-root and workroom rows show their run control only while the run command is running. Click it to stop the command. The run terminal's footer immediately shows **Stopping…**, and the run tab and sidebar control show a busy mark until the command stops. Then the sidebar control disappears even if its run terminal stays open, including for a workroom on a host.

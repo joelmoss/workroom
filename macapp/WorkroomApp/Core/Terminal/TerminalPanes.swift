@@ -124,8 +124,12 @@ struct TerminalTab: Identifiable {
 struct TerminalTitle: Equatable, Hashable, Sendable {
   /// The program's short name ("zsh"), or the whole title when it is not a default one.
   let name: String
-  /// The folder, home as `~`, when this is a program-and-folder default; else nil.
+  /// The folder, home as `~`, when this is a program-and-folder default; else nil. On a command's
+  /// title, what the command is about, faded the same way (an Investigate tab's failed command).
   var folder: String?
+  /// Whether this is the command a tab runs (`CommandName`), which is cut at its end, so its program
+  /// and first arguments stay; any other title is cut in the middle, keeping a folder's end.
+  var isCommand = false
 
   /// The title as one string: "zsh ~/dev/workroom", or `name` alone.
   var text: String { folder.map { "\(name) \($0)" } ?? name }
@@ -139,6 +143,38 @@ struct TerminalTitle: Equatable, Hashable, Sendable {
     let own = TerminalState.abbreviatingHome(path, home: home)
     let trimmed = { (p: String) in p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p }
     return trimmed(folder) == trimmed(own) ? TerminalTitle(name: name) : self
+  }
+}
+
+/// What a tab that runs a command is named by when nobody named it and its program set no title
+/// (glossary: Terminal name): the command itself, as one line ("bin/dev"), or for an Investigate tab
+/// its agent and the command it looks into ("claude" and "bin/dev"). `line` is the whole command as
+/// it was run, which the tab's tooltip shows.
+struct CommandName: Equatable, Hashable, Sendable {
+  let title: TerminalTitle
+  let line: String
+
+  /// A run tab's name: `command` on one line, nil when it is blank. Every run of whitespace is one
+  /// space, and it is cleaned as a session's label is (`TerminalPanes.cleanedName`, and the
+  /// daemon's `name`), so the label it gives a run session comes back from the daemon unchanged.
+  init?(command: String) {
+    guard let shown = Self.oneLine(command) else { return nil }
+    title = TerminalTitle(name: shown, isCommand: true)
+    line = command.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// A program's name with what it is about faded after it ("claude" and "bin/dev"); the program
+  /// alone when `subject` is blank.
+  init(program: String, subject: String?, line: String) {
+    title = TerminalTitle(
+      name: program, folder: subject.flatMap(Self.oneLine), isCommand: true)
+    self.line = line
+  }
+
+  /// `text` on one line, cleaned as a name is; nil when nothing is left.
+  static func oneLine(_ text: String) -> String? {
+    let words = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+    return TerminalPanes.cleanedName(words.joined(separator: " "))
   }
 }
 
@@ -170,6 +206,15 @@ enum TabContent {
       return s.defaultName
     }
     return TerminalTitle(name: title)
+  }
+
+  /// `title` as a tooltip shows it in full: the whole command, over several lines when it has
+  /// them, for a terminal named by its command (an Investigate tab's whole prompt); `title` itself
+  /// for any other.
+  func fullTitle(_ title: String) -> String {
+    guard case .terminal(let s) = self, let command = s.commandName, title == command.title.text
+    else { return title }
+    return command.line
   }
 
   /// What a terminal's tab chip is identified by for UI tests: its app-given name ("Terminal 2"),
@@ -337,6 +382,7 @@ extension TabSession {
           defaultTitle: state.defaultTitle, cwd: state.cwd,
           sessionID: state.sessionID?.uuidString,
           run: state.launch.isRunSession ? true : nil,
+          runCommand: state.launch.isRunSession ? state.commandName?.line : nil,
           userTitle: state.userTitle, syncedLabel: state.syncedLabel, resume: state.resume))
     case .diff(let descriptor):
       self.init(
@@ -443,9 +489,14 @@ struct TerminalState {
   /// The directory the surface was made to start in, before any shell report: what the pane's
   /// branch is read from until `cwd` arrives.
   let launchDirectory: String
-  /// The app's own name for the tab: "Terminal 2", or "Run" for a run tab. A numbered one is never
-  /// shown (`defaultName` is); it names the tab's session and is saved with the tab.
+  /// The app's own name for the tab: "Terminal 2", or "Run" for a run tab. Never shown when the tab
+  /// has a `commandName` or is numbered (`defaultName` is); it identifies the tab's chip for UI
+  /// tests and is saved with the tab.
   let defaultTitle: String
+  /// The command a run or Investigate tab runs, which names it by default (`defaultName`). Nil for
+  /// a shell, and for a run tab with a blank command, which is named "Run". Never changes: a run
+  /// started again with another command is a new tab.
+  let commandName: CommandName?
   /// The terminal's foreground program by its short name ("zsh", "vim", "claude"), as last read
   /// (`PaneLiveState.refreshForegroundProgram`): from workroomd for a daemon-backed pane, the
   /// surface's pty for one the app runs itself. Nil until first read; never saved.
@@ -454,8 +505,10 @@ struct TerminalState {
   /// (glossary: Terminal name): its program and its folder, such as "zsh ~/dev/workroom", with the
   /// folder in full and the home folder as `~`. The folder is the shell's live `cwd` (a remote
   /// pane's `hostCwd`), else where it started; the program is the shell's name until it is read.
-  /// A tab the app named itself ("Run") keeps that name, with no folder.
+  /// A tab that runs a command is named by its command (`commandName`), with no folder; one the app
+  /// named itself otherwise ("Run") keeps that name.
   var defaultName: TerminalTitle {
+    if let commandName { return commandName.title }
     guard Self.isNumberedName(defaultTitle) else { return TerminalTitle(name: defaultTitle) }
     return Self.programAndFolder(
       program: foregroundProgram ?? Self.shellName, folder: hostCwd ?? cwd ?? launchDirectory)
@@ -524,17 +577,20 @@ struct TerminalState {
   var resume: ResumeRecord?
 
   /// This terminal's session's label (#694), its name as the terminal API names it: the user's
-  /// name for it, else the name a run tab shows unnamed ("Run"); nil when it shows its default.
+  /// name for it, else the name a run tab shows unnamed (its command, or "Run" for a blank one);
+  /// nil when it shows its default.
   var sessionLabel: String? {
-    userTitle ?? (launch.isRunSession ? defaultTitle : nil)
+    userTitle ?? (launch.isRunSession ? defaultName.text : nil)
   }
 
   /// The user's name this terminal takes from its session's `label` (#694), cleaned as a rename
-  /// is: nil for none, and for the name a run tab shows unnamed ("Run"); any other label, even a
-  /// numbered one, as it is.
+  /// is: nil for none, and for the name a run tab shows unnamed (its command), or the "Run" every
+  /// run session was labelled before run tabs were named by their command; any other label, even
+  /// a numbered one, as it is.
   func userTitle(forLabel label: String?) -> String? {
     guard let name = TerminalPanes.cleanedName(label) else { return nil }
-    return launch.isRunSession && name == defaultTitle ? nil : name
+    let unnamed = launch.isRunSession && (name == defaultName.text || name == defaultTitle)
+    return unnamed ? nil : name
   }
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
   /// busy, the working directory when idle. Nil until the first report (issue #2). Kept on an
@@ -584,9 +640,11 @@ struct TerminalState {
   var programStatus: ProgramStatusRollup?
 
   init(
-    defaultTitle: String, launch: TerminalLaunch, launchDirectory: String, sessionID: UUID? = nil
+    defaultTitle: String, launch: TerminalLaunch, launchDirectory: String, sessionID: UUID? = nil,
+    commandName: CommandName? = nil
   ) {
     self.defaultTitle = defaultTitle
+    self.commandName = commandName
     self.launch = launch
     self.launchDirectory = launchDirectory
     self.sessionID = sessionID
@@ -1486,9 +1544,12 @@ final class TerminalPanes {
         // never start the command, whatever the file says (`workroomd attach`, D2).
         guard restoredRun == nil, let sessionID = payload.sessionID.flatMap(UUID.init(uuidString:))
         else { continue }
+        // Named by the command it was started with, saved with it; one saved before that was
+        // kept is named by the project's run command, almost surely the one it runs.
+        let command = runCommandForTarget(target) ?? ""
         tab = makeRunTab(
-          for: target, command: runCommandForTarget(target) ?? "", cwd: target.path,
-          runSession: true, sessionID: sessionID)
+          for: target, command: command, cwd: target.path, runSession: true,
+          sessionID: sessionID, name: CommandName(command: payload.runCommand ?? command))
         restoredRun = tab.id
       } else if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
         // `command:` is deliberately never passed, so even a hand-edited file cannot start a
@@ -1988,13 +2049,15 @@ final class TerminalPanes {
   static let backgroundRunInitialSize = CGSize(width: 800, height: 480)
 
   /// `runSession`: `command` is the project's run command, run by the daemon as a run session
-  /// (#522). Otherwise it runs in the tab's own process, as an Investigate tab's agent does.
+  /// (#522). Otherwise it runs in the tab's own process, as an Investigate tab's agent does. The tab
+  /// is named by `name`, else by `command` (`CommandName`).
   @discardableResult
   func addRunTab(
     for target: TerminalTarget, command: String, cwd: String, focus: Bool = true,
-    runSession: Bool = false
+    runSession: Bool = false, name: CommandName? = nil
   ) -> TerminalTab {
-    let tab = makeRunTab(for: target, command: command, cwd: cwd, runSession: runSession)
+    let tab = makeRunTab(
+      for: target, command: command, cwd: cwd, runSession: runSession, name: name)
     insert(tab, for: target)
     if focus {
       setFocused(tab.id, for: target.id)
@@ -2080,17 +2143,19 @@ final class TerminalPanes {
     return tab
   }
 
-  /// Build a run tab (issue #7) without placing it: the surface launches `command` in `cwd`, titled
-  /// "Run" until the program reports its own title. "Process exited. Press any key to close"
-  /// (wait_after_command) → close this tab on the keypress, without the confirm (the process has
-  /// already exited). Only run-command surfaces raise `.closeRequested`. Shared by `addRunTab` (append + focus) and
-  /// `respawnRunTab` (in-place restart, issue #40).
+  /// Build a run tab (issue #7) without placing it: the surface launches `command` in `cwd`, named
+  /// by `name`, else by `command` ("Run" when it is blank), until the program reports its own
+  /// title. "Process exited. Press any key to close" (wait_after_command) → close this tab on the
+  /// keypress, without the confirm (the process has already exited). Only run-command surfaces
+  /// raise `.closeRequested`. Shared by `addRunTab` (append + focus) and `respawnRunTab` (in-place
+  /// restart, issue #40).
   private func makeRunTab(
     for target: TerminalTarget, command: String, cwd: String, runSession: Bool,
-    sessionID: UUID? = nil
+    sessionID: UUID? = nil, name: CommandName? = nil
   ) -> TerminalTab {
     makeTerminalTab(
-      for: target, cwd: cwd, command: command, title: "Run", sessionID: sessionID,
+      for: target, cwd: cwd, command: command, title: "Run",
+      commandName: name ?? CommandName(command: command), sessionID: sessionID,
       runSession: runSession)
   }
 
@@ -2897,6 +2962,7 @@ final class TerminalPanes {
   /// (#522); otherwise a `command` runs in this pane's own process (an Investigate tab).
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
+    commandName: CommandName? = nil,
     sessionID: UUID? = nil, runSession: Bool = false, userTitle: String? = nil,
     syncedLabel: SyncedLabel? = nil, resume: ResumeRecord? = nil
   ) -> TerminalTab {
@@ -2920,9 +2986,11 @@ final class TerminalPanes {
       defaultTitle: title ?? "Terminal \(count)",
       launch: TerminalLaunch(
         isRunSession: view.isRunSession, runsCommand: view.isRunCommandSurface),
-      launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
+      launchDirectory: view.workingDirectory, sessionID: assignedSessionID,
+      commandName: commandName)
     state.userTitle = userTitle
-    // Its session is labelled with the tab's name (#694): the user's, or "Run" on a run tab; none
+    // Its session is labelled with the tab's name (#694): the user's, or its command on a run tab;
+    // none
     // for a tab that shows its default. A fresh session is made with it, so this Mac and the daemon
     // agree on it from the start; a restored tab keeps what it last agreed.
     state.syncedLabel =

@@ -310,6 +310,12 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   /// The workroom's run tab (#522): its session is a run session, reattached as the target's run,
   /// never started again. Additive: an older build reads it as an ordinary terminal.
   var run: Bool? = nil
+  /// The command a run tab was started with, which names it (`TerminalState.commandName`), so it
+  /// keeps naming what runs after a relaunch even once the project's run command is changed. A
+  /// title and nothing else: a restored run tab never starts a command, and this is never passed
+  /// to its surface. Additive: an older build ignores it, and a run tab without it is named by
+  /// the project's run command.
+  var runCommand: String? = nil
   /// The name the user gave the terminal (Rename…). Additive, so no schema bump: an older build
   /// ignores it and shows the default title.
   var userTitle: String? = nil
@@ -862,6 +868,7 @@ extension TabSession {
       terminal.defaultTitle = clamp(terminal.defaultTitle)
       terminal.cwd = clamp(terminal.cwd)
       terminal.userTitle = clamp(terminal.userTitle)
+      terminal.runCommand = clamp(terminal.runCommand)
       if let synced = terminal.syncedLabel {
         terminal.syncedLabel = SyncedLabel(label: clamp(synced.label))
       }

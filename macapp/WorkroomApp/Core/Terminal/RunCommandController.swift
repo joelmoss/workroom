@@ -188,7 +188,11 @@ final class RunCommandController: ObservableObject {
     let agent = CodingAgentBackend.forInvestigate(
       setting: codingAgentSetting, claudeMissing: bannerState.claudeMissing)
     let command = CodingAgentPrompt.investigateCommandLine(for: bannerState, agent: agent)
-    let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
+    // Named by its agent and the command it looks into ("claude" and "bin/dev"), not by its
+    // command line, whose prompt runs to several lines; the tooltip shows the whole of it.
+    let name = CommandName(
+      program: agent.executable, subject: bannerState.failureAndDiagnosis.0.command, line: command)
+    let tab = terminals.addRunTab(for: target, command: command, cwd: cwd, name: name)
     investigateTabs[tab.id] = target.id
     return tab
   }

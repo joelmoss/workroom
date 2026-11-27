@@ -129,6 +129,19 @@ final class RunStatusUITests: XCTestCase {
   }
 
   /// The sidebar hides idle controls and removes Stop when the command ends, with its tab kept.
+  /// The run tab is named by its command, not "Run": the chip's label leads with it, its spaces
+  /// squashed. (A launch argument can't carry a line break, so `RunCommandTests` covers those.)
+  func testTheRunTabIsNamedByItsCommand() {
+    let app = launchedApp(runCommand: "trap : INT;   while true; do sleep 1; done")
+    defer { app.terminate() }
+    startRun(app)
+    XCTAssertTrue(waitForRunState(app, "running"))
+    let chip = runTabChip(app)
+    XCTAssertTrue(
+      poll(timeout: 10) { chip.label.hasPrefix("trap : INT; while true; do sleep 1; done") },
+      "the chip is named by its command, got: \(chip.label)")
+  }
+
   func testSidebarOnlyShowsRunControlWhileRunning() {
     // Keep running after INT so the supervisor's grace period leaves feedback observable.
     let app = launchedApp(runCommand: "trap : INT; while true; do sleep 1; done")

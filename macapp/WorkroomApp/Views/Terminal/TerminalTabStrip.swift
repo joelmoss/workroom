@@ -529,7 +529,7 @@ private struct TerminalTabChip: View {
   }
 
   private func tooltip(_ title: String) -> String {
-    ([tab.filePath ?? title] + statusLines).joined(separator: "\n")
+    ([tab.filePath ?? tab.content.fullTitle(title)] + statusLines).joined(separator: "\n")
   }
 
   /// The chip's base line, one at a time: waiting and a stopped error are static, a running
