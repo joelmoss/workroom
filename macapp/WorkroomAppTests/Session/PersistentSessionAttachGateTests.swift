@@ -99,7 +99,9 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   func testTheAttachGuardRoutesPerSession() throws {
     let body = try Self.launchBody(in: Self.attachmentSource)
     XCTAssertTrue(
-      body.contains("service.attachCommand("),
+      // `attach(forSession:)`, `attachCommand(forSession:)` saying whether it reaches the
+      // session (#826).
+      body.contains("service.attach("),
       "launch no longer resolves an attach command")
     XCTAssertTrue(
       body.contains("forSession: sessionID"),
@@ -136,7 +138,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
         """)
     }
 
-    guard let attach = body.range(of: "attachCommand(") else {
+    guard let attach = body.range(of: "service.attach(") else {
       return XCTFail("launch no longer resolves an attach command")
     }
     XCTAssertTrue(
