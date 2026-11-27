@@ -172,7 +172,10 @@ mod tests {
             "../../../../../testdata/program-status/status.json"
         ))
         .unwrap();
-        assert_eq!(status["resume"]["argv"][2], "a-session", "the fixture has arguments");
+        assert_eq!(
+            status["resume"]["argv"][2], "a-session",
+            "the fixture has arguments"
+        );
         let out = json_output(&json!({"available": true}), &[shown(status)]).to_string();
         assert!(!out.contains("argv"), "{out}");
         assert!(!out.contains("a-session"), "{out}");

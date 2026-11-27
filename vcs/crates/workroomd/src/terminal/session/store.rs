@@ -592,9 +592,8 @@ impl SessionStore {
     /// and its resume state knows what it resumes, and since when. The locks are taken in the
     /// reader's order, with the map released.
     pub(crate) fn resuming(&self, id: SessionId, record: crate::terminal::resume::Whole) {
-        let Some((resume, attached, shadow)) = lock_or_recover(&self.sessions)
-            .get(&id)
-            .map(|session| {
+        let Some((resume, attached, shadow)) =
+            lock_or_recover(&self.sessions).get(&id).map(|session| {
                 (
                     Arc::clone(&session.resume),
                     Arc::clone(&session.attached),

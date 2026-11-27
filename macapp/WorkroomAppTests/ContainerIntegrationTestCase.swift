@@ -346,7 +346,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     let session = UUID()
     let statuses = Calls<String>()
     let availability = try await connection.subscribeProgramStatus { event in
-      if case .status(_, let reported, _, _, _, let run?, _) = event, reported == session {
+      if case .status(_, let reported, _, _, _, let run?, _, _) = event, reported == session {
         statuses.add(run)
       }
     }

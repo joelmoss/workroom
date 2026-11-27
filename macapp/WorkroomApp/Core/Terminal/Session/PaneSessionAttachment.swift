@@ -53,6 +53,15 @@ final class PaneSessionAttachment {
   var isRestored = false
   /// Project / workroom / tab / title metadata sent on attach.
   var metadata: [(key: String, value: String)] = []
+  /// Where the tab's resume record is read (ADR 0082, #825): `TerminalState.resume`, by the tab's
+  /// id, as `tabSessionID` is. Nil for a surface no tab owns.
+  var tabResume: @MainActor () -> ResumeRecord? = { nil }
+  /// The program this pane's last launch resumed, by its toast's name, and when: a failure the
+  /// daemon reports (`resumeFailed`) turns its toast into "Couldn't resume" once.
+  private(set) var resumed: (program: String, at: Date)?
+  /// How long after a resume its failure still changes the toast: the daemon says it within 5 s
+  /// of the session starting, and an app that heard it late says nothing.
+  static let resumeFailureWindow: TimeInterval = 30
 
   /// When a remote pane reattaches after its ssh exits 255, and when it stops trying.
   private var backoff = RemoteReconnectBackoff()
@@ -126,9 +135,21 @@ final class PaneSessionAttachment {
     // daemon, whose `--no-create` attach shows the session ended and starts a new one in its place.
     // See `confirmBeforeAttach`.
     service.confirmBeforeAttach(sessionID: sessionID, wasRestored: isRestored)
-    // A run session that is gone is never replaced (#522, D2): its tab says the run ended.
+    // A run session that is gone is never replaced (#522, D2): its tab says the run ended. Any
+    // other gone session is made again, running its tab's resume record in its folder when it has
+    // one (ADR 0082, #825), which the relay is handed in a file; else it is a new shell.
+    resumed = nil
+    var resumeFile: String?
     if !isRunSession, service.willReplaceRestoredSession(sessionID, wasRestored: isRestored) {
-      surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
+      if let record = tabResume(),
+        let file = service.writeResumeLaunch(record, for: sessionID)
+      {
+        resumeFile = file
+        resumed = (record.displayName, Date())
+        surface?.showPaneNotice(PaneNoticeToast.resumed(record.displayName))
+      } else {
+        surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
+      }
     }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
@@ -149,18 +170,33 @@ final class PaneSessionAttachment {
         persistent session \(sessionID.uuidString, privacy: .public) unavailable \
         (no owning helper resolved); falling back to a plain shell
         """)
+      // No relay will claim it.
+      if let resumeFile { unlink(resumeFile) }
+      resumed = nil
       return nil
     }
-    let environment = service.launchEnvironment(
+    var environment = service.launchEnvironment(
       sessionID: sessionID,
       workingDirectory: workingDirectory,
       metadata: metadata,
       runCommand: isRunSession ? runCommand : nil)
+    if let resumeFile { environment.append((ResumeLaunchFile.variable, resumeFile)) }
     // A pane's first attach starts here, not in `reattach`: without this its `lastAttachAt` stays
     // `.distantPast`, and a first attach that never connected reads as a link that was up
     // (`reconnectIfTheLinkDropped`).
     lastAttachAt = Date()
     return Launch(command: command, environment: environment)
+  }
+
+  /// The daemon said the program this pane's session was started to resume exited with an error
+  /// at once (#825): its "Resumed" toast becomes "Couldn't resume", once, and only for a resume
+  /// this pane launched lately.
+  func resumeFailed() {
+    guard let resumed, Date().timeIntervalSince(resumed.at) < Self.resumeFailureWindow else {
+      return
+    }
+    self.resumed = nil
+    surface?.showPaneNotice(PaneNoticeToast.couldNotResume(resumed.program))
   }
 
   /// The surface's child exited: its ssh, for a remote pane.

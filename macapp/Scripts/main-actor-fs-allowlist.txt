@@ -40,6 +40,8 @@ AppShell/AppStore/AppStore+VCSWrites.swift | performCommit | RepositoryLocation.
 
 Terminal/Session/DaemonHandOff.swift | mustMove | resolvingSymlinksInPath | off-main: only from handOff, which start runs in Task.detached
 Terminal/Session/DaemonHandOff.swift | run | fileExists | off-main: only from handOff, which start runs in Task.detached
+Terminal/Session/ResumeLaunchFile.swift | write | fileExists | known: a restored pane's saved folder, stat-ed once as its gone session is resumed, as restoredCwd stats the same folder at restore
+Terminal/Session/ResumeLaunchFile.swift | sweep | contentsOfDirectory | known: lists the app's own local resume-launch folder beside its socket, once per resumed pane
 Terminal/GhosttyApp.swift | resolveResources | fileExists | grandfathered: @MainActor GhosttyApp stats the app bundle's terminfo once at startup; local, never user-set
 Terminal/GhosttyApp.swift | pruneDeadTestConfigs | contentsOfDirectory | grandfathered: DEBUG test runs only, lists this process's local temporary directory
 Terminal/GhosttyResources.swift | bundledURL | fileExists | grandfathered: stats the app bundle's ghostty resources at startup (GhosttyApp, CLI main); local

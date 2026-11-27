@@ -12,6 +12,11 @@ struct PaneNoticeToast: View {
   /// What a restored pane says when its terminal had ended and it got a new one (#459).
   static let sessionReplaced =
     "This terminal was previously ended, so we created a new one for you."
+  /// What a restored pane says when its gone session's program started again in a new one
+  /// (#825): `program` as `ResumeRecord.displayName` names it.
+  static func resumed(_ program: String) -> String { "Resumed \(program)" }
+  /// What that toast becomes when the program exited with an error at once.
+  static func couldNotResume(_ program: String) -> String { "Couldn't resume \(program)" }
 
   /// Transparent room around the card for its shadow. `PaneNoticeHost` passes clicks in it through
   /// to the terminal.

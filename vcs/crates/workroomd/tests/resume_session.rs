@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 fn app_launch_file(workspace: &Workspace, session: &str, argv: &[&str], cwd: &Path) -> PathBuf {
     let dir = workspace.join("app-resume");
     let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-    let path = dir.join(format!("resume-{session}-{}.json", "0123456789abcdef".repeat(2)));
+    let path = dir.join(format!(
+        "resume-{session}-{}.json",
+        "0123456789abcdef".repeat(2)
+    ));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -124,7 +127,11 @@ fn a_gone_session_resumes_its_program_and_leaves_a_login_shell_in_its_folder() {
     assert!(!file.exists(), "the relay claimed the app's file");
     let launches = socket.with_extension("resume");
     let left = || std::fs::read_dir(&launches).map_or(0, |dir| dir.count());
-    assert_eq!(left(), 1, "the helper claimed its launch file, not yet the shell's");
+    assert_eq!(
+        left(),
+        1,
+        "the helper claimed its launch file, not yet the shell's"
+    );
     if common::has_terminal_state() {
         assert!(
             wait_for(Duration::from_secs(10), || {
@@ -185,9 +192,10 @@ fn a_program_that_fails_at_once_says_so_and_a_gone_folder_does_not_resume() {
     reader.read_until("FAILING", Duration::from_secs(20));
     if common::has_terminal_state() {
         assert!(
-            wait_for(Duration::from_secs(10), || status(&socket, failing)
-                ["resumeFailed"]
-                == true),
+            wait_for(
+                Duration::from_secs(10),
+                || status(&socket, failing)["resumeFailed"] == true
+            ),
             "{}",
             status(&socket, failing)
         );

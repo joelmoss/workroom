@@ -2962,6 +2962,10 @@ final class TerminalPanes {
     view.attachment.tabSessionID = { [tabRegistry] in
       tabRegistry.record(tabID)?.terminal?.sessionID
     }
+    // Its resume record (#825), which a restored pane whose session is gone resumes from.
+    view.attachment.tabResume = { [tabRegistry] in
+      tabRegistry.record(tabID)?.terminal?.resume
+    }
     // Stored, and so this window's, from the moment it is made: every caller puts it in the
     // target's layout in the same call.
     tabRegistry.register(view, for: tab.id)

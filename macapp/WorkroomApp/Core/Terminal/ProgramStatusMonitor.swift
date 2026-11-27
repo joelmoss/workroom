@@ -58,14 +58,18 @@ struct ProgramStatusSession: Equatable {
   var run: String? = nil
   /// Its resume record (#824), which its tab saves in the saved layout (`ProgramStatusBinding`).
   var resume: ProgramResumeReport = .unknown
+  /// The program its session was started to resume exited with an error at once (#825): its
+  /// pane's "Resumed" toast says it couldn't be resumed (`ProgramStatusBinding`).
+  var resumeFailed = false
   /// When this app first saw each waiting request, by (record id, episode).
   var blockedSince: [String: Date] = [:]
 
-  /// Whether the two differ in anything an indicator, a notification or the saved layout reads:
-  /// `progress` alone is never shown, so a change only to it is not published.
+  /// Whether the two differ in anything an indicator, a notification, a toast or the saved layout
+  /// reads: `progress` alone is never shown, so a change only to it is not published.
   func differsVisibly(from other: ProgramStatusSession) -> Bool {
     reporting != other.reporting || boot != other.boot || run != other.run
-      || resume != other.resume || records.map(Self.visible) != other.records.map(Self.visible)
+      || resume != other.resume || resumeFailed != other.resumeFailed
+      || records.map(Self.visible) != other.records.map(Self.visible)
   }
 
   /// What is shown of a record: a working or idle one's text is not (Claude Code sends a new
@@ -231,13 +235,13 @@ final class ProgramStatusMonitor: ObservableObject {
   func seed(
     _ session: UUID, host: HostID = .local, reporting: Bool = true,
     records: [ProgramStatusRecord], stale: Bool = false, boot: String = "fixture",
-    resume: ProgramResumeReport = .unknown
+    resume: ProgramResumeReport = .unknown, resumeFailed: Bool = false
   ) {
     hosts[host] = stale ? .stale : .live
     _ = store(
       ProgramStatusSession(
         host: host, boot: boot, revision: 1, reporting: reporting, records: records,
-        resume: resume),
+        resume: resume, resumeFailed: resumeFailed),
       for: session)
     notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
   }
@@ -256,6 +260,9 @@ final class ProgramStatusMonitor: ObservableObject {
   func resume(for session: UUID) -> (boot: String, report: ProgramResumeReport)? {
     sessions[session].map { ($0.boot, $0.resume) }
   }
+
+  /// Whether the program `session` was started to resume exited with an error at once (#825).
+  func resumeFailed(for session: UUID) -> Bool { sessions[session]?.resumeFailed ?? false }
 
   /// Whether the host's daemon has told this monitor about `session` and not said it ended.
   func hasSession(_ session: UUID) -> Bool { sessions[session] != nil }
@@ -316,12 +323,12 @@ final class ProgramStatusMonitor: ObservableObject {
             if inSnapshot,
               case .status(
                 let boot, let session, let revision, let reporting, let records, let run,
-                let resume) =
+                let resume, let resumeFailed) =
                 event
             {
               pending[session] = ProgramStatusSession(
                 host: host, boot: boot, revision: revision, reporting: reporting, records: records,
-                run: run, resume: resume)
+                run: run, resume: resume, resumeFailed: resumeFailed)
               continue
             }
             if inSnapshot, case .snapshotComplete = event {
@@ -404,10 +411,11 @@ final class ProgramStatusMonitor: ObservableObject {
   private func apply(_ event: ProgramStatusEvent, host: HostID) {
     switch event {
     case .status(
-      let boot, let session, let revision, let reporting, let records, let run, let resume):
+      let boot, let session, let revision, let reporting, let records, let run, let resume,
+      let resumeFailed):
       let new = ProgramStatusSession(
         host: host, boot: boot, revision: revision, reporting: reporting, records: records,
-        run: run, resume: resume)
+        run: run, resume: resume, resumeFailed: resumeFailed)
       if store(new, for: session) {
         notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
       }

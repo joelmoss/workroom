@@ -304,4 +304,48 @@ final class SavedLayoutStoreTests: XCTestCase {
     disabled.clear()
     XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "a disabled store cleared")
   }
+
+  /// A record names its program as the daemon does (`resume::program_name`), past `env`'s
+  /// assignments, and a toast names Claude Code by its product name (#825).
+  func testAResumeRecordNamesItsProgramForTheToast() {
+    func record(_ argv: [String]) -> ResumeRecord {
+      ResumeRecord(argv: argv, cwd: "/w", reportedAt: 0, boot: "b")
+    }
+    XCTAssertEqual(record(["/opt/bin/claude", "--resume", "x"]).displayName, "Claude Code")
+    let profile = record(["env", "CLAUDE_CONFIG_DIR=/p", "claude", "--resume", "x"])
+    XCTAssertEqual(profile.program, "claude")
+    XCTAssertEqual(PaneNoticeToast.resumed(profile.displayName), "Resumed Claude Code")
+    XCTAssertEqual(record(["nvim", "-S", "s.vim"]).displayName, "nvim")
+    XCTAssertEqual(PaneNoticeToast.couldNotResume("nvim"), "Couldn't resume nvim")
+    XCTAssertEqual("\(profile)", "ResumeRecord(claude)", "never the arguments")
+  }
+
+  /// Value: protects=the record reaching the relay only in a file its user alone can read, named
+  /// as the relay checks, and no file for a folder that is gone (no resume, ADR 0082);
+  /// fails_when=the file is readable by others, misnamed, or written for a gone folder;
+  /// why_new=new (#825); seam=the folder
+  func testAResumeLaunchFileIsPrivateAndOnlyForAFolderThatIsThere() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-resume-launch-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let session = UUID()
+    let record = ResumeRecord(
+      argv: ["claude", "--resume", "a b"], cwd: NSTemporaryDirectory(), reportedAt: 7, boot: "b")
+    let path = try XCTUnwrap(ResumeLaunchFile.write(record, for: session, in: directory))
+    let name = (path as NSString).lastPathComponent
+    XCTAssertTrue(ResumeLaunchFile.isLaunchName(name))
+    XCTAssertTrue(name.hasPrefix("resume-\(session.uuidString.lowercased())-"))
+    let file = try FileManager.default.attributesOfItem(atPath: path)
+    XCTAssertEqual((file[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    let folder = try FileManager.default.attributesOfItem(atPath: directory.path)
+    XCTAssertEqual((folder[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    let written = try JSONSerialization.jsonObject(
+      with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any]
+    XCTAssertEqual(written?["argv"] as? [String], record.argv)
+
+    var gone = record
+    gone.cwd = "/definitely/not/a/folder"
+    XCTAssertNil(ResumeLaunchFile.write(gone, for: session, in: directory))
+    XCTAssertFalse(ResumeLaunchFile.isLaunchName("resume-\(session.uuidString)-0.json"))
+  }
 }

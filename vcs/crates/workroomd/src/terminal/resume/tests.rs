@@ -522,10 +522,17 @@ fn a_resumed_program_that_fails_at_once_says_so_once() {
     let mut s = state();
     s.resuming("claude".into(), start);
     assert_eq!(exit(&mut s, 1, 1, Duration::from_secs(4)), failed);
-    assert_eq!(exit(&mut s, 2, 1, Duration::from_secs(4)), Outcome::Cleared, "once");
+    assert_eq!(
+        exit(&mut s, 2, 1, Duration::from_secs(4)),
+        Outcome::Cleared,
+        "once"
+    );
 
-    for (status, after) in [(1, launch::FAILED_WITHIN), (0, Duration::ZERO), (130, Duration::ZERO)]
-    {
+    for (status, after) in [
+        (1, launch::FAILED_WITHIN),
+        (0, Duration::ZERO),
+        (130, Duration::ZERO),
+    ] {
         let mut s = state();
         s.resuming("claude".into(), start);
         assert_eq!(exit(&mut s, 1, status, after), Outcome::Cleared, "{status}");
