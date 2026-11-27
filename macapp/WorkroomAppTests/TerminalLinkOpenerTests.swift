@@ -755,7 +755,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     }
     let tab = sessions.addTab(for: target)
     let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
-    view.onEvent?(.cmdClickFile("lib/user.rb:1", cwd: nil))
+    view.onEvent?(.cmdClickFile(["lib/user.rb:1"], cwd: nil))
     func opened() -> FileDescriptor? {
       for tab in sessions.tabs(for: target) {
         if case .file(let file) = tab.content { return file }
@@ -893,7 +893,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(view.resolveCmdHoverFile?("hello"), false)
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(asked.count, 0, "a hover asked the host")
-    view.onEvent?(.cmdClickFile("a.rb", cwd: nil))
+    view.onEvent?(.cmdClickFile(["a.rb"], cwd: nil))
     for _ in 0..<200 where asked.count == 0 { try await Task.sleep(for: .milliseconds(5)) }
     XCTAssertEqual(asked.count, 1, "the click did not ask the host")
   }
@@ -923,15 +923,15 @@ final class TerminalLinkOpenerTests: XCTestCase {
       }
       return nil
     }
-    view.onEvent?(.cmdClickFile("slow.rb", cwd: nil))
-    view.onEvent?(.cmdClickFile("fast.rb", cwd: nil))
+    view.onEvent?(.cmdClickFile(["slow.rb"], cwd: nil))
+    view.onEvent?(.cmdClickFile(["fast.rb"], cwd: nil))
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertEqual(opened(), "fast.rb", "a slower, older click retargeted the preview")
 
     // The pane that asked closes while the host is still answering, with another pane still
     // open in the workroom: nothing opens there.
     let other = sessions.addTab(for: target)
-    view.onEvent?(.cmdClickFile("slow.rb", cwd: nil))
+    view.onEvent?(.cmdClickFile(["slow.rb"], cwd: nil))
     sessions.closeTab(tab.id, for: target)
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertNotEqual(opened(), "slow.rb", "a closed pane's click opened a preview")
@@ -965,6 +965,107 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "a.rb", cwd: "/repo//lib/", root: "/repo").map(
         \.path), ["lib/a.rb"])
+  }
+
+  // wrappedPathCandidates — a path a program broke over rows itself (#788).
+
+  /// Rows as Claude Code prints a long path over 2, 3 and 5 of them: it breaks mid-word at the
+  /// pane's width and indents each continuation to its reply's text column. Each with the path
+  /// and the number of rows it spans.
+  private let claudeCodeReplies: [(rows: [String], path: String, spans: Int)] = [
+    (
+      ["● /Users/me/project/app/models/us", "  er_account.rb", "", "✻ Cooked for 3s"],
+      "/Users/me/project/app/models/user_account.rb", 2
+    ),
+    (
+      ["● /Users/me/project/app/mod", "  els/concerns/user_acc", "  ount.rb", "", "✻ Cooked"],
+      "/Users/me/project/app/models/concerns/user_account.rb", 3
+    ),
+    (
+      [
+        "● /Users/me/pro", "  ject/app/mo", "  dels/conce", "  rns/user_acc", "  ount.rb", "",
+        "✻ Cooked for 3s",
+      ],
+      "/Users/me/project/app/models/concerns/user_account.rb", 5
+    ),
+  ]
+
+  /// The word libghostty returns on `row` of `rows`, with the facts the view reads around it.
+  private func candidates(onRow row: Int, of rows: [String]) -> [String] {
+    let text = rows[row]
+    let word = String(text.split(separator: " ").last!)
+    let before = text[..<text.range(of: word, options: .backwards)!.lowerBound]
+    return TerminalLinkOpener.wrappedPathCandidates(
+      word: word,
+      startsRow: before.allSatisfy(\.isWhitespace),
+      endsRow: true,
+      rowsAbove: Array(rows[..<row].reversed()),
+      rowsBelow: Array(rows[(row + 1)...]))
+  }
+
+  func testAPathClaudeCodeWrappedIsWholeFromEveryRowItSpans() {
+    for reply in claudeCodeReplies {
+      for row in 0..<reply.spans {
+        XCTAssertEqual(
+          candidates(onRow: row, of: reply.rows).first, reply.path,
+          "clicked on row \(row) of \(reply.spans)")
+      }
+    }
+  }
+
+  /// A path the terminal wrapped comes from libghostty whole. The prompt rows around it join into
+  /// guesses that are no file, so the path itself is what opens.
+  func testAPathTheTerminalWrappedOpensAsLibghosttyReturnsIt() throws {
+    let dir = try temporaryDirectory()
+    try FileManager.default.createDirectory(
+      atPath: "\(dir)/app/models", withIntermediateDirectories: true)
+    let path = "\(dir)/app/models/user_account.rb"
+    FileManager.default.createFile(atPath: path, contents: nil)
+    let words = TerminalLinkOpener.wrappedPathCandidates(
+      word: path, startsRow: true, endsRow: true,
+      rowsAbove: ["me@mac repro % cat path.txt"], rowsBelow: ["me@mac repro %"])
+    XCTAssertEqual(words.last, path)
+    XCTAssertEqual(TerminalLinkOpener.cmdClickFile(words, cwd: dir)?.path, path)
+  }
+
+  func testAWordWithTextEitherSideOfItOnItsRowIsOnlyItself() {
+    XCTAssertEqual(
+      TerminalLinkOpener.wrappedPathCandidates(
+        word: "app/models/user.rb", startsRow: false, endsRow: false,
+        rowsAbove: ["  the end of a sentence"], rowsBelow: ["  more text"]),
+      ["app/models/user.rb"])
+  }
+
+  /// Prose that happens to end one row and start the next joins into a guess that is no file, so
+  /// the word the user clicked is still what opens.
+  func testUnrelatedWordsOnAdjacentRowsLeaveTheClickedFileToOpen() throws {
+    let dir = try temporaryDirectory()
+    FileManager.default.createFile(atPath: "\(dir)/user.rb", contents: nil)
+    let words = TerminalLinkOpener.wrappedPathCandidates(
+      word: "user.rb", startsRow: true, endsRow: true,
+      rowsAbove: ["Changed"], rowsBelow: ["today, and nothing else"])
+    XCTAssertEqual(TerminalLinkOpener.cmdClickFile(words, cwd: dir)?.path, "\(dir)/user.rb")
+  }
+
+  func testALineNumberOnTheLastRowOfAWrappedPathStillOpensThatLine() throws {
+    let dir = try temporaryDirectory()
+    try FileManager.default.createDirectory(
+      atPath: "\(dir)/app/models", withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: "\(dir)/app/models/user.rb", contents: nil)
+    let words = TerminalLinkOpener.wrappedPathCandidates(
+      word: "app/models/us", startsRow: false, endsRow: true,
+      rowsAbove: [], rowsBelow: ["  er.rb:12 failed"])
+    XCTAssertEqual(
+      TerminalLinkOpener.cmdClickFile(words, cwd: dir),
+      .init(path: "\(dir)/app/models/user.rb", line: 12, column: nil))
+  }
+
+  private func temporaryDirectory() throws -> String {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wrapped-path-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+    return url.path
   }
 
 }

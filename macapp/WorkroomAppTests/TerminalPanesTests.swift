@@ -2106,7 +2106,7 @@ final class RemotePaneFooterTests: XCTestCase {
     try await waitFor { hostCwd() == "/home/w/lib" }
     XCTAssertEqual(hostCwd(), "/home/w/lib")
 
-    view.onEvent?(.cmdClickFile("user.rb", cwd: nil))
+    view.onEvent?(.cmdClickFile(["user.rb"], cwd: nil))
     func opened() -> String? {
       for tab in s.tabs(for: remote) {
         if case .file(let file) = tab.content { return file.path }

@@ -3042,11 +3042,11 @@ final class TerminalPanes {
       onEvent?(.closeRequested(target, tabID))
     case .paneCommand(let command):
       onEvent?(.paneCommandRequested(target, tabID, command))
-    case .cmdClickFile(let word, let cwd):
+    case .cmdClickFile(let words, let cwd):
       if target.remoteHost != nil {
-        remoteLinks.open(word, tab: tabID, target: target)
+        remoteLinks.openCmdClick(words, tab: tabID, target: target)
       } else {
-        TerminalLinkOpener.handleCmdClickFile(word, cwd: cwd ?? target.path)
+        TerminalLinkOpener.handleCmdClickFile(words, cwd: cwd ?? target.path)
       }
     }
   }
@@ -3198,7 +3198,7 @@ final class TerminalPanes {
   func remoteFile(_ word: String, cwd: String?, target: TerminalTarget) async
     -> TerminalLinkOpener.PathCandidate?
   {
-    await remoteLinks.remoteFile(word, cwd: cwd, target: target)
+    await remoteLinks.remoteFile([word], cwd: cwd, target: target)
   }
 
   /// Tear down a tab's surface (clears callbacks before freeing, so no in-flight libghostty callback

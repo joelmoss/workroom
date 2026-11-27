@@ -235,11 +235,21 @@ enum TerminalLinkOpener {
 
   // MARK: libghostty entry points (cwd from GHOSTTY_ACTION_PWD — CMT-1)
 
-  /// ⌘-clicked a bare word (from `ghostty_surface_quicklook_word`) that resolves to a real file →
-  /// open it in the configured editor. No-op if it doesn't resolve (e.g. cwd unknown for a relative
-  /// path under ssh/tmux — see plan CMT-1).
-  static func handleCmdClickFile(_ word: String, cwd: String?) {
-    openFilePath(word, cwd: cwd)
+  /// ⌘-clicked a word (from `ghostty_surface_quicklook_word`): open the first of `words`, its
+  /// wrapped-path joins best first (`wrappedPathCandidates`), that resolves to a real file, in the
+  /// configured editor. No-op if none does (e.g. cwd unknown for a relative path under ssh/tmux —
+  /// see plan CMT-1).
+  static func handleCmdClickFile(_ words: [String], cwd: String?) {
+    guard let resolved = cmdClickFile(words, cwd: cwd) else { return }
+    openFile(resolved)
+  }
+
+  /// The file a ⌘-click on `words` opens: the first that resolves, probing no further.
+  static func cmdClickFile(_ words: [String], cwd: String?) -> ResolvedFile? {
+    for word in words {
+      if let resolved = resolveExistingFile(word, cwd: cwd) { return resolved }
+    }
+    return nil
   }
 
   /// Open the file at `path` (absolute or `cwd`-relative) in the configured editor / default app.
@@ -252,6 +262,49 @@ enum TerminalLinkOpener {
   static func openFilePath(_ path: String, cwd: String?, project: String? = nil) {
     guard let resolved = resolveExistingFile(path, cwd: cwd) else { return }
     openFile(resolved, project: project)
+  }
+
+  /// How many rows above and below the clicked word `wrappedPathCandidates` looks at. The ⌘-hover
+  /// runs it on every mouse move, so a wall of one-word rows must stay cheap.
+  static let wrappedPathRowLimit = 10
+
+  /// What a ⌘-clicked `word` may be part of when a program broke a long path over rows itself
+  /// (#788), longest first, ending with `word` alone. The caller opens the first one that is a file.
+  ///
+  /// libghostty's word already crosses a row the terminal wrapped, but a TUI such as Claude Code or
+  /// Codex breaks its own lines at the pane's width, often mid-word, and indents the continuation.
+  /// The rows carry no wrap flag, so the word is one row's piece. When `word` ends its row
+  /// (`endsRow`), the first word of the row below may continue it, and so on down while each piece
+  /// is all of its row; `startsRow` is the same upwards. `rowsAbove` and `rowsBelow` are nearest
+  /// first. Every join is only a guess, which the caller settles by asking whether it is a file.
+  static func wrappedPathCandidates(
+    word: String, startsRow: Bool, endsRow: Bool, rowsAbove: [String], rowsBelow: [String]
+  ) -> [String] {
+    /// The pieces that may continue `word` through `rows`: `piece` of each row, until a row that
+    /// holds more than its piece, or nothing.
+    func pieces(_ rows: [String], _ piece: ([Substring]) -> Substring?) -> [String] {
+      var result: [String] = []
+      for row in rows.prefix(wrappedPathRowLimit) {
+        let words = row.split(whereSeparator: \.isWhitespace)
+        guard let next = piece(words) else { break }
+        result.append(String(next))
+        if words.count > 1 { break }
+      }
+      return result
+    }
+    let above = startsRow ? pieces(rowsAbove, \.last) : []
+    let below = endsRow ? pieces(rowsBelow, \.first) : []
+    var joins: [String] = []
+    for up in 0...above.count {
+      for down in 0...below.count {
+        joins.append(
+          above.prefix(up).reversed().joined() + word + below.prefix(down).joined())
+      }
+    }
+    // Stable, so of two joins as long, the one reaching further down comes first.
+    return joins.enumerated().sorted {
+      ($0.element.count, $1.offset) > ($1.element.count, $0.offset)
+    }.map(\.element)
   }
 
   /// Does `word` resolve to an existing file? Drives the ⌘-hover pointing-hand cursor affordance.

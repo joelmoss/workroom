@@ -11,8 +11,10 @@ import WorkroomWire
 enum SurfaceEvent {
   /// A desktop notification the program raised, for the notification spine.
   case activity(TerminalActivity)
-  /// ⌘-click on a word `resolveCmdHoverFile` said is a file, with the surface's last known cwd.
-  case cmdClickFile(String, cwd: String?)
+  /// ⌘-click on a word, with the surface's last known cwd: the paths it may be part of, best first
+  /// (`TerminalLinkOpener.wrappedPathCandidates`, #788), at least one of which
+  /// `resolveCmdHoverFile` passed. The host picks the one to open.
+  case cmdClickFile([String], cwd: String?)
   /// The latest title (OSC 0/2, via shell integration): the running command while busy, the
   /// working directory when idle (issue #2).
   case titleChanged(String)
@@ -1615,9 +1617,10 @@ final class GhosttySurfaceView: NSView {
     // consume the gesture (suppress the matching mouseUp). Any other ⌘-click falls through to a
     // normal terminal press, so plain-text ⌘-clicks aren't swallowed and the press/release balance.
     if event.modifierFlags.contains(.command), !hasOSC8LinkUnderCursor,
-      let word = readWordUnderMouse(), resolveCmdHoverFile?(word) == true
+      let resolve = resolveCmdHoverFile,
+      case let words = cmdClickCandidates(), words.contains(where: resolve)
     {
-      onEvent?(.cmdClickFile(word, cwd: lastKnownCwd))
+      onEvent?(.cmdClickFile(words, cwd: lastKnownCwd))
       suppressNextMouseUp = true
       return
     }
@@ -1710,14 +1713,65 @@ final class GhosttySurfaceView: NSView {
     ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
   }
 
-  /// The word under the pointer (for ⌘-click path resolution), via libghostty's quicklook word.
-  private func readWordUnderMouse() -> String? {
-    guard let surface else { return nil }
+  /// What the word under the pointer may name, best first, for the ⌘-hover cursor and ⌘-click: the
+  /// word libghostty picks (its quicklook word, which already crosses a row the terminal wrapped)
+  /// and, when it starts or ends its row, its joins with the rows around it, for a path a program
+  /// broke over rows itself (#788, `TerminalLinkOpener.wrappedPathCandidates`).
+  private func cmdClickCandidates() -> [String] {
+    guard let surface else { return [] }
     var text = ghostty_text_s()
-    guard ghostty_surface_quicklook_word(surface, &text) else { return nil }
+    guard ghostty_surface_quicklook_word(surface, &text) else { return [] }
     defer { ghostty_surface_free_text(surface, &text) }
-    let trimmed = Self.extractString(from: text)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    guard
+      let word = Self.extractString(from: text)?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !word.isEmpty
+    else { return [] }
+    // Where the word sits: `offset_start` is its first cell in the viewport read as one array of
+    // cells, `offset_len` the distance to its last. A negative `tl_px_x` means it isn't on screen.
+    let size = ghostty_surface_size(surface)
+    let columns = Int(size.columns)
+    let rows = Int(size.rows)
+    guard text.tl_px_x >= 0, columns > 0 else { return [word] }
+    let start = Int(text.offset_start)
+    let end = start + Int(text.offset_len)
+    let (startRow, startColumn) = (start / columns, start % columns)
+    let (endRow, endColumn) = (end / columns, end % columns)
+    func cells(_ row: Int, from first: Int, to last: Int) -> String {
+      guard first <= last else { return "" }
+      return readViewportText(row: row, from: first, to: last) ?? ""
+    }
+    let startsRow = cells(startRow, from: 0, to: startColumn - 1).allSatisfy(\.isWhitespace)
+    let endsRow = cells(endRow, from: endColumn + 1, to: columns - 1).allSatisfy(\.isWhitespace)
+    let limit = TerminalLinkOpener.wrappedPathRowLimit
+    let above =
+      startsRow
+      ? stride(from: startRow - 1, through: max(0, startRow - limit), by: -1).map {
+        cells($0, from: 0, to: columns - 1)
+      } : []
+    let below =
+      endsRow
+      ? stride(from: endRow + 1, through: min(rows - 1, endRow + limit), by: 1).map {
+        cells($0, from: 0, to: columns - 1)
+      } : []
+    return TerminalLinkOpener.wrappedPathCandidates(
+      word: word, startsRow: startsRow, endsRow: endsRow, rowsAbove: above, rowsBelow: below)
+  }
+
+  /// The text of viewport `row`'s cells `first` through `last`, or nil when there is none.
+  private func readViewportText(row: Int, from first: Int, to last: Int) -> String? {
+    guard let surface else { return nil }
+    var selection = ghostty_selection_s()
+    selection.top_left = ghostty_point_s(
+      tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(first),
+      y: UInt32(row))
+    selection.bottom_right = ghostty_point_s(
+      tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT, x: UInt32(last),
+      y: UInt32(row))
+    selection.rectangle = false
+    var text = ghostty_text_s()
+    guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
+    defer { ghostty_surface_free_text(surface, &text) }
+    return Self.extractString(from: text)
   }
 
   /// Copy-on-select: on mouse-up, copy the current selection to the pasteboard if enabled (the
@@ -1742,8 +1796,8 @@ final class GhosttySurfaceView: NSView {
       setHandCursor(true)
       return
     }
-    if let word = readWordUnderMouse(), resolveCmdHoverFile?(word) == true {
-      setHandCursor(true)
+    if let resolve = resolveCmdHoverFile {
+      setHandCursor(cmdClickCandidates().contains(where: resolve))
     } else {
       setHandCursor(false)
     }

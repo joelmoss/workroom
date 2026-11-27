@@ -48,7 +48,7 @@ final class RemotePaneLinks {
       if TerminalLinkOpener.isSystemHandledURL(url) {
         NSWorkspace.shared.open(url)
       } else {
-        self?.open(TerminalLinkOpener.remoteLink(from: url), tab: tabID, target: target)
+        self?.open([TerminalLinkOpener.remoteLink(from: url)], tab: tabID, target: target)
       }
       return true
     }
@@ -58,19 +58,30 @@ final class RemotePaneLinks {
     access.state(tabID, target)?.hostCwd
   }
 
-  /// Open what `word` names on the host, from the pane `tabID`.
-  func open(_ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget) {
+  /// A ⌘-click from the pane `tabID`: the clicked word's wrapped-path joins, best first (#788).
+  /// The ones that look like a path here, as the ⌘-hover judged them, go to the host.
+  func openCmdClick(_ words: [String], tab tabID: TerminalTab.ID, target: TerminalTarget) {
+    let cwd = hostCwd(of: tabID, in: target.id)
+    let paths = words.filter {
+      TerminalLinkOpener.looksLikeRemotePath($0, cwd: cwd, root: target.path)
+    }
+    guard !paths.isEmpty else { return }
+    open(paths, tab: tabID, target: target)
+  }
+
+  /// Open the first of `words` that names a file on the host, from the pane `tabID`.
+  func open(_ words: [String], tab tabID: TerminalTab.ID, target: TerminalTarget) {
     let cwd = hostCwd(of: tabID, in: target.id)
     opens[target.id]?.cancel()
     opens[target.id] = Task { [weak self] in
       guard let self else { return }
-      let file = await self.remoteFile(word, cwd: cwd, target: target)
+      let file = await self.remoteFile(words, cwd: cwd, target: target)
       guard !Task.isCancelled else { return }
       self.opens[target.id] = nil
       guard let file else {
         // As `TerminalLinkOpener.handleOpenURL` does locally: a dropped click is otherwise
         // indistinguishable from a broken app.
-        NSLog("Workroom: no file on the host for terminal link %@", word)
+        NSLog("Workroom: no file on the host for terminal link %@", words.last ?? "")
         return
       }
       // The pane that asked may have closed while the host answered. Tab IDs are never reused,
@@ -81,15 +92,18 @@ final class RemotePaneLinks {
     }
   }
 
-  /// The first of `word`'s candidates that is a file on the host, or nil. A read capped at one byte
+  /// The first of `words`' candidates that is a file on the host, or nil. A read capped at one byte
   /// is the probe: it answers `.tooLarge` for any longer file without sending it, and fails for
   /// anything missing, refused or outside the workroom. A candidate written with a `..` is
   /// resolved on the host first (#327), so `link/../file.rb` is the file beside the link's target.
-  func remoteFile(_ word: String, cwd: String?, target: TerminalTarget) async
+  func remoteFile(_ words: [String], cwd: String?, target: TerminalTarget) async
     -> TerminalLinkOpener.PathCandidate?
   {
     guard let location = target.remoteLocation else { return nil }
-    let candidates = TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path)
+    var probed = Set<String>()
+    let candidates = words.flatMap {
+      TerminalLinkOpener.remoteCandidates(for: $0, cwd: cwd, root: target.path)
+    }.filter { probed.insert($0.onHost ?? $0.path).inserted }
     guard !candidates.isEmpty, let files = try? await remoteFiles(location) else { return nil }
     for candidate in candidates {
       var path = candidate.path
