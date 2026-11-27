@@ -61,6 +61,9 @@ struct ProgramStatusSession: Equatable {
   /// The program its session was started to resume exited with an error at once (#825): its
   /// pane's "Resumed" toast says it couldn't be resumed (`ProgramStatusBinding`).
   var resumeFailed = false
+  /// The program its session was started to resume really started (#825): only then does its
+  /// pane say "Resumed" (`PaneSessionAttachment.resumeStarted`).
+  var resumeStarted = false
   /// When this app first saw each waiting request, by (record id, episode).
   var blockedSince: [String: Date] = [:]
 
@@ -69,6 +72,7 @@ struct ProgramStatusSession: Equatable {
   func differsVisibly(from other: ProgramStatusSession) -> Bool {
     reporting != other.reporting || boot != other.boot || run != other.run
       || resume != other.resume || resumeFailed != other.resumeFailed
+      || resumeStarted != other.resumeStarted
       || records.map(Self.visible) != other.records.map(Self.visible)
   }
 
@@ -235,13 +239,14 @@ final class ProgramStatusMonitor: ObservableObject {
   func seed(
     _ session: UUID, host: HostID = .local, reporting: Bool = true,
     records: [ProgramStatusRecord], stale: Bool = false, boot: String = "fixture",
-    resume: ProgramResumeReport = .unknown, resumeFailed: Bool = false
+    resume: ProgramResumeReport = .unknown, resumeFailed: Bool = false,
+    resumeStarted: Bool = false
   ) {
     hosts[host] = stale ? .stale : .live
     _ = store(
       ProgramStatusSession(
         host: host, boot: boot, revision: 1, reporting: reporting, records: records,
-        resume: resume, resumeFailed: resumeFailed),
+        resume: resume, resumeFailed: resumeFailed, resumeStarted: resumeStarted),
       for: session)
     notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
   }
@@ -263,6 +268,9 @@ final class ProgramStatusMonitor: ObservableObject {
 
   /// Whether the program `session` was started to resume exited with an error at once (#825).
   func resumeFailed(for session: UUID) -> Bool { sessions[session]?.resumeFailed ?? false }
+
+  /// Whether the program `session` was started to resume really started (#825).
+  func resumeStarted(for session: UUID) -> Bool { sessions[session]?.resumeStarted ?? false }
 
   /// Whether the host's daemon has told this monitor about `session` and not said it ended.
   func hasSession(_ session: UUID) -> Bool { sessions[session] != nil }
@@ -323,12 +331,12 @@ final class ProgramStatusMonitor: ObservableObject {
             if inSnapshot,
               case .status(
                 let boot, let session, let revision, let reporting, let records, let run,
-                let resume, let resumeFailed) =
+                let resume, let resumeFailed, let resumeStarted) =
                 event
             {
               pending[session] = ProgramStatusSession(
                 host: host, boot: boot, revision: revision, reporting: reporting, records: records,
-                run: run, resume: resume, resumeFailed: resumeFailed)
+                run: run, resume: resume, resumeFailed: resumeFailed, resumeStarted: resumeStarted)
               continue
             }
             if inSnapshot, case .snapshotComplete = event {
@@ -412,10 +420,10 @@ final class ProgramStatusMonitor: ObservableObject {
     switch event {
     case .status(
       let boot, let session, let revision, let reporting, let records, let run, let resume,
-      let resumeFailed):
+      let resumeFailed, let resumeStarted):
       let new = ProgramStatusSession(
         host: host, boot: boot, revision: revision, reporting: reporting, records: records,
-        run: run, resume: resume, resumeFailed: resumeFailed)
+        run: run, resume: resume, resumeFailed: resumeFailed, resumeStarted: resumeStarted)
       if store(new, for: session) {
         notify(Change(host: host, sessions: [session], isLaunchSnapshot: false))
       }

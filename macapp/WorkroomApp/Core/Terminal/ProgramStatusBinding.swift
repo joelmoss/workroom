@@ -95,28 +95,43 @@ final class ProgramStatusBinding {
   }
 
   /// Puts the monitor's rollup, and its resume record (#824), on every tab of `terminals`
-  /// attached to `sessions`, and tells a pane whose resumed program failed at once (#825).
+  /// attached to `sessions`, and tells a pane that resumed its program whether it started or
+  /// failed at once (#825).
   private func applyProgramStatus(
     _ sessions: Set<UUID>,
     to terminals: [(target: TerminalTarget.ID, tab: TerminalTab.ID, state: TerminalState)]
   ) {
     for (targetID, tabID, state) in terminals {
       guard let sessionID = state.sessionID, sessions.contains(sessionID) else { continue }
-      // A program this pane resumed that failed at once (#825): its toast says so.
-      if monitor.resumeFailed(for: sessionID) { access.surface(tabID)?.attachment.resumeFailed() }
       let rollup = monitor.rollup(for: sessionID)
       let resume = resume(of: sessionID, keeping: state.resume)
-      guard rollup != state.programStatus || resume != state.resume else { continue }
-      if access.surface(tabID)?.isEffectivelyFocused == true, rollup?.done != nil,
-        state.programStatus?.done == nil
-      {
-        watchedDone.insert(tabID)
+      if rollup != state.programStatus || resume != state.resume {
+        if access.surface(tabID)?.isEffectivelyFocused == true, rollup?.done != nil,
+          state.programStatus?.done == nil
+        {
+          watchedDone.insert(tabID)
+        }
+        access.mutate(tabID, targetID) {
+          $0.programStatus = rollup
+          $0.resume = resume
+        }
       }
-      access.mutate(tabID, targetID) {
-        $0.programStatus = rollup
-        $0.resume = resume
+      // After the record is written: a failed resume forgets the record it wrote.
+      guard let attachment = access.surface(tabID)?.attachment else { continue }
+      if monitor.resumeFailed(for: sessionID) {
+        attachment.resumeFailed()
+      } else if monitor.resumeStarted(for: sessionID) {
+        attachment.resumeStarted()
       }
     }
+  }
+
+  /// A tab whose resume was declined or failed (#825) forgets the record it ran, so a stale command
+  /// does not resume again after the next restart: it keeps only a record its session's daemon
+  /// holds now, which a program that started and reported again has.
+  func forgetResume(tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID) {
+    guard let sessionID = access.state(tabID, targetID)?.sessionID else { return }
+    access.mutate(tabID, targetID) { $0.resume = self.resume(of: sessionID, keeping: nil) }
   }
 
   /// A tab pointed at another session (Detached sessions > Active tab) shows that session's
@@ -205,5 +220,20 @@ final class ProgramStatusBinding {
     access.mutate(tabID, targetID) { $0.sessionID = session }
     follow(host)
     monitor.seed(session, host: host, records: records, stale: stale)
+  }
+
+  /// The UI-test fixture's seam for a resume (#825, `UITestFixture.seedResume`): the tab's pane
+  /// waits on `program` as a launch that handed its record to the relay does, and its session's
+  /// daemon then says the program started and, when `failed`, that it exited with an error at
+  /// once, as a real status event would.
+  func seedResumeForFixture(
+    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, program: String, failed: Bool
+  ) {
+    let session = UUID()
+    access.mutate(tabID, targetID) { $0.sessionID = session }
+    follow(.local)
+    access.surface(tabID)?.attachment.awaitResume(of: program)
+    monitor.seed(session, records: [], resumeStarted: true)
+    if failed { monitor.seed(session, records: [], resumeFailed: true, resumeStarted: true) }
   }
 }

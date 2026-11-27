@@ -56,11 +56,37 @@ final class PaneSessionAttachment {
   /// Where the tab's resume record is read (ADR 0082, #825): `TerminalState.resume`, by the tab's
   /// id, as `tabSessionID` is. Nil for a surface no tab owns.
   var tabResume: @MainActor () -> ResumeRecord? = { nil }
-  /// The program this pane's last launch resumed, by its toast's name, and when: a failure the
-  /// daemon reports (`resumeFailed`) turns its toast into "Couldn't resume" once.
-  private(set) var resumed: (program: String, at: Date)?
-  /// How long after a resume its failure still changes the toast: the daemon says it within 5 s
-  /// of the session starting, and an app that heard it late says nothing.
+  /// Forgets the tab's resume record once this pane's resume was declined or failed (#825), so a
+  /// stale command does not resume again after the next restart. `TerminalPanes` points it at the
+  /// window that holds the tab (`ProgramStatusBinding.forgetResume`).
+  var forgetTabResume: @MainActor () -> Void = {}
+
+  /// Where this pane's last launch stands on resuming its program (#825), by its toast's name.
+  enum ResumeState: Equatable {
+    /// Handed to the relay; nothing has said yet whether it started.
+    case awaiting(program: String)
+    /// The daemon said it started, and the pane said "Resumed".
+    case started(program: String, at: Date)
+    /// Nothing said so within `resumeConfirmationWait`, and the pane said it got a new shell; a
+    /// start or a failure heard later still corrects that.
+    case declined(program: String, at: Date)
+  }
+  private(set) var resumeState: ResumeState?
+  /// The wait that turns an unconfirmed resume into a declined one.
+  private var resumeConfirmation: DispatchWorkItem?
+  /// How long a resume waits for the daemon to say its program started before the pane says it got
+  /// a new shell instead and forgets the record. It starts at `launch`, so it spans the relay's
+  /// attach, the daemon starting the session and the user's login shell starting up as far as the
+  /// helper that reports the program (`resume::launch`): the daemon gives that last part
+  /// `FAILED_WITHIN` (5 s, "longer than a login shell's startup"), and this adds a second for the
+  /// attach before it. Longer would leave a pane that came back as a plain shell saying nothing
+  /// for longer than its user takes to start typing; shorter is safe, since a start heard late
+  /// still says "Resumed", but would flip the toast for slow shells.
+  static let resumeConfirmationWait: TimeInterval = 6
+  /// This pane's: a test seam, so a test runs out the wait itself (`resumeUnconfirmed`).
+  var resumeConfirmationWait = PaneSessionAttachment.resumeConfirmationWait
+  /// How long after a resume a start or failure heard still changes the toast: the daemon says a
+  /// failure within 5 s of the session starting, and an app that heard of either late says nothing.
   static let resumeFailureWindow: TimeInterval = 30
 
   /// When a remote pane reattaches after its ssh exits 255, and when it stops trying.
@@ -137,16 +163,17 @@ final class PaneSessionAttachment {
     service.confirmBeforeAttach(sessionID: sessionID, wasRestored: isRestored)
     // A run session that is gone is never replaced (#522, D2): its tab says the run ended. Any
     // other gone session is made again, running its tab's resume record in its folder when it has
-    // one (ADR 0082, #825), which the relay is handed in a file; else it is a new shell.
-    resumed = nil
+    // one (ADR 0082, #825), which the relay is handed in a file; else it is a new shell. Its
+    // "Resumed" waits for the daemon to say the program started (`resumeStarted`).
+    endResume()
     var resumeFile: String?
     if !isRunSession, service.willReplaceRestoredSession(sessionID, wasRestored: isRestored) {
       if let record = tabResume(),
-        let file = service.writeResumeLaunch(record, for: sessionID)
+        let file = service.writeResumeLaunch(
+          record, for: sessionID, savedFolder: workingDirectory)
       {
         resumeFile = file
-        resumed = (record.displayName, Date())
-        surface?.showPaneNotice(PaneNoticeToast.resumed(record.displayName))
+        awaitResume(of: record.displayName)
       } else {
         surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
       }
@@ -172,7 +199,7 @@ final class PaneSessionAttachment {
         """)
       // No relay will claim it.
       if let resumeFile { unlink(resumeFile) }
-      resumed = nil
+      endResume()
       return nil
     }
     var environment = service.launchEnvironment(
@@ -188,15 +215,73 @@ final class PaneSessionAttachment {
     return Launch(command: command, environment: environment)
   }
 
-  /// The daemon said the program this pane's session was started to resume exited with an error
-  /// at once (#825): its "Resumed" toast becomes "Couldn't resume", once, and only for a resume
-  /// this pane launched lately.
-  func resumeFailed() {
-    guard let resumed, Date().timeIntervalSince(resumed.at) < Self.resumeFailureWindow else {
+  /// This pane's launch handed `program`'s record to the relay (#825): it says nothing until the
+  /// daemon says whether the program started, or `resumeConfirmationWait` runs out.
+  func awaitResume(of program: String) {
+    endResume()
+    resumeState = .awaiting(program: program)
+    let wait = DispatchWorkItem { [weak self] in self?.resumeUnconfirmed() }
+    resumeConfirmation = wait
+    DispatchQueue.main.asyncAfter(deadline: .now() + resumeConfirmationWait, execute: wait)
+  }
+
+  /// The daemon said the program this pane's session was started to resume really started
+  /// (#825): the pane says "Resumed", once. One heard after the wait ran out corrects the new-shell
+  /// toast; the record it forgot comes back with the daemon's own, which a started program has.
+  func resumeStarted() {
+    switch resumeState {
+    case .awaiting(let program):
+      confirmResume(of: program)
+    case .declined(let program, let at) where Self.isRecent(at):
+      confirmResume(of: program)
+    default:
       return
     }
-    self.resumed = nil
-    surface?.showPaneNotice(PaneNoticeToast.couldNotResume(resumed.program))
+  }
+
+  /// The daemon said the program this pane's session was started to resume exited with an error
+  /// at once (#825): the pane says "Couldn't resume", once, and only for a resume this pane
+  /// launched lately, and the tab forgets the record, which would fail again after a restart.
+  func resumeFailed() {
+    let program: String
+    switch resumeState {
+    case .awaiting(let name): program = name
+    case .started(let name, let at) where Self.isRecent(at): program = name
+    case .declined(let name, let at) where Self.isRecent(at): program = name
+    default: return
+    }
+    endResume()
+    surface?.showPaneNotice(PaneNoticeToast.couldNotResume(program))
+    forgetTabResume()
+  }
+
+  /// Nothing said whether the resumed program started within `resumeConfirmationWait` (a daemon
+  /// that predates `resumeStarted`, or a shell that never got as far as the program): the resume
+  /// is declined, so the pane says it got a new shell, as one with no record does, and the tab
+  /// forgets the record, so a stale command does not resume again after the next restart.
+  func resumeUnconfirmed() {
+    guard case .awaiting(let program) = resumeState else { return }
+    resumeConfirmation = nil
+    resumeState = .declined(program: program, at: Date())
+    surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
+    forgetTabResume()
+  }
+
+  private func confirmResume(of program: String) {
+    endResume()
+    resumeState = .started(program: program, at: Date())
+    surface?.showPaneNotice(PaneNoticeToast.resumed(program))
+  }
+
+  /// No resume to wait for any more.
+  private func endResume() {
+    resumeConfirmation?.cancel()
+    resumeConfirmation = nil
+    resumeState = nil
+  }
+
+  private static func isRecent(_ date: Date) -> Bool {
+    Date().timeIntervalSince(date) < resumeFailureWindow
   }
 
   /// The surface's child exited: its ssh, for a remote pane.
@@ -228,6 +313,7 @@ final class PaneSessionAttachment {
   func close() {
     pendingReconnect?.cancel()
     pendingReconnect = nil
+    endResume()
     if let remoteLinkObserver {
       NotificationCenter.default.removeObserver(remoteLinkObserver)
       self.remoteLinkObserver = nil

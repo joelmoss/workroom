@@ -430,6 +430,10 @@ final class GhosttySurfaceView: NSView {
     adoptFocusIfFirstResponder()
   }
 
+  /// Test seam: how many times `ensureSurfaceCreated` was asked, which a test view counts though it
+  /// makes nothing.
+  private(set) var surfaceRequests = 0
+
   /// Spawn the surface's PTY *without* waiting for window mount (issue #67, background run). Normally
   /// `createSurface` fires from `viewDidMoveToWindow`, so a run tab that's started in the background and
   /// never made active would never mount — and its command would never start (the toast would claim
@@ -438,6 +442,7 @@ final class GhosttySurfaceView: NSView {
   /// non-zero frame and create the surface now; it re-sizes correctly when it later mounts into a real
   /// pane. No-op if the surface already exists or this is a test view (`spawnsSurface == false`).
   func ensureSurfaceCreated(initialSize: CGSize) {
+    surfaceRequests += 1
     guard spawnsSurface, surface == nil else { return }
     if bounds.width <= 0 || bounds.height <= 0 {
       // Positive bounds are the one thing `createSurface` can't proceed without (it defers via

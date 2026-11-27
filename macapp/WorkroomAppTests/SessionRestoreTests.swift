@@ -106,6 +106,44 @@ final class SessionRestoreTests: XCTestCase {
     }
   }
 
+  /// Value: protects=a hidden tab whose session is gone (no live session after a reboot or a
+  /// daemon crash) mounting at recovery when it holds a resume record, so its program resumes
+  /// without the user opening it, while one with no record stays unmounted and a live one mounts as
+  /// before; fails_when=recovery visits only live sessions again, or mounts every gone tab;
+  /// why_new=new (#825 review); seam=the surface's mount requests
+  func testRecoveryMountsAGoneTabThatHoldsAResumeRecord() async throws {
+    let sessions = makeSessions()
+    sessions.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    sessions.restore(
+      TargetSession(
+        targetID: target.id.encoded,
+        tabs: [
+          terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"),
+          terminal("c", title: "Terminal 3"),
+        ]), for: target)
+    let record = ResumeRecord(
+      argv: ["claude", "--resume", "x"], cwd: "/tmp", reportedAt: 1, boot: "old")
+    var ids: [UUID] = []
+    for (index, var tab) in sessions.tabs(for: target).enumerated() {
+      guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
+      let id = UUID()
+      ids.append(id)
+      state.sessionID = id
+      state.resume = index == 0 ? record : nil
+      tab.content = .terminal(state)
+      sessions.replace(tab, for: target)
+    }
+    let live = SessionDescriptor(
+      identifier: SessionIdentifier(ids[2]), shellProcessID: 123, ttyDevice: 0,
+      workingDirectory: "/tmp", isAttached: false, metadata: [])
+
+    await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [live] }
+    let requests = sessions.tabs(for: target).map { sessions.surface($0)?.surfaceRequests }
+    XCTAssertEqual(requests, [1, 0, 1], "gone with a record, gone with none, live")
+  }
+
   // MARK: Shape
 
   func testACommandFinishingWhileOtherPanesRecoverStaysFinished() async {

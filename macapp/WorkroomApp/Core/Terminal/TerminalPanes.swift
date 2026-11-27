@@ -2980,6 +2980,10 @@ final class TerminalPanes {
   /// focus and exits to that window, or to nothing once it closes.
   private func wire(_ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget) {
     view.onEvent = { [weak self] event in self?.handle(event, tab: tabID, target: target) }
+    // A declined or failed resume (#825) forgets the record in the window that now holds the tab.
+    view.attachment.forgetTabResume = { [weak self] in
+      self?.programStatusBinding.forgetResume(tab: tabID, target: target.id)
+    }
     // Off hides the right-click menu's "Move to New Window" where panes can't move.
     view.offersWindowToggle = allowsDetach
     view.moveToWorkroomChoices = moveToWorkroomChoices.map { choices in { choices(tabID, target) } }
@@ -3163,6 +3167,15 @@ final class TerminalPanes {
       tab: tabID, target: targetID, host: host, records: records, stale: stale)
   }
 
+  /// The UI-test fixture's seam for a resume (#825, `UITestFixture.seedResume`): the tab's pane
+  /// resumes `program`, which its daemon says started and, when `failed`, failed at once.
+  func seedResumeForFixture(
+    tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID, program: String, failed: Bool
+  ) {
+    programStatusBinding.seedResumeForFixture(
+      tab: tabID, target: targetID, program: program, failed: failed)
+  }
+
   /// The sidebar gallery's seam (`SidebarGallery`): what an unmounted fixture pane would show had
   /// its program run, its live `title`, the `tool` its foreground would be recognised as and the
   /// `name` a user gave it, with no surface and no shell.
@@ -3211,6 +3224,11 @@ final class TerminalPanes {
   /// once the sessions are listed: only a local target that opens here. A missing directory's pane
   /// would reattach out of sight, and a remote workroom's pane is not a session on this Mac — one
   /// that was local last launch would reattach its old shell hidden under a remote row (#253).
+  ///
+  /// A hidden tab whose session is gone (after a reboot or a daemon crash) but that holds a resume
+  /// record mounts too, at the same pace, so its program resumes and its program-status marks come
+  /// back without the user opening it (ADR 0082, #825): its launch recreates the session. One with
+  /// no record, and a run tab, stays unmounted until it is opened, as before.
   func materializeLivePersistentSessions(
     reattaches: (TerminalTarget.ID) -> Bool,
     load: () async -> [SessionDescriptor]
@@ -3230,13 +3248,16 @@ final class TerminalPanes {
         // Earlier panes suspend while attaching. The snapshot can now describe a command that
         // finished or a pane that moved; hydrate only its current model state.
         guard reattaches(target), let tab = record(tabID, in: target),
-          let state = tab.terminal, let sessionID = state.sessionID,
-          let descriptor = live.first(where: { $0.identifier.uuid == sessionID })
+          let state = tab.terminal, let sessionID = state.sessionID
         else { continue }
+        let descriptor = live.first(where: { $0.identifier.uuid == sessionID })
+        guard descriptor != nil || (state.resume != nil && !state.launch.isRunSession) else {
+          continue
+        }
         // The local PTY belongs to the attach helper, so foreground-process recognition cannot
         // see the agent after a restart. Recover it from the helper's live command metadata;
         // screen repaint alone need not replay the shell's original command title.
-        if state.activeCodingAgentBackend == nil,
+        if let descriptor, state.activeCodingAgentBackend == nil,
           generations[tab.id]?.sessionID == sessionID,
           generations[tab.id]?.generation == state.commandFinishGeneration,
           let command = descriptor.value(forMetadataKey: "command"),

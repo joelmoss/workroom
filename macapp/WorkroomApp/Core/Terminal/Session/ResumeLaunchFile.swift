@@ -25,19 +25,20 @@ enum ResumeLaunchFile {
   }
 
   /// Writes `record` for `sessionID`'s relay into `directory`, readable by this user alone from
-  /// its first byte. Its path, or nil, and nothing written, when its folder is gone (no resume,
-  /// ADR 0082) or the file can't be made.
-  static func write(_ record: ResumeRecord, for sessionID: UUID, in directory: URL) -> String? {
-    guard let cwd = record.cwd, record.isWellFormed else { return nil }
+  /// its first byte. It runs in the record's folder, else, for a record that names none, in
+  /// `savedFolder`, the pane's own (ADR 0082). Its path, or nil, and nothing written, when that
+  /// folder is gone (no resume) or the file can't be made.
+  static func write(
+    _ record: ResumeRecord, for sessionID: UUID, savedFolder: String, in directory: URL
+  ) -> String? {
+    guard record.isWellFormed else { return nil }
+    let cwd = record.cwd.flatMap { $0.isEmpty ? nil : $0 } ?? savedFolder
     var isDirectory: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory),
-      isDirectory.boolValue, makePrivate(directory)
+    guard !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory),
+      isDirectory.boolValue, makePrivate(directory),
+      let data = contents(of: record, cwd: cwd)
     else { return nil }
     sweep(directory, olderThan: abandoned)
-    let payload: [String: Any] = [
-      "argv": record.argv, "cwd": cwd, "reportedAt": record.reportedAt,
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
     let path = directory.appendingPathComponent(name(for: sessionID)).path
     let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
     guard fd >= 0 else { return nil }
@@ -48,6 +49,17 @@ enum ResumeLaunchFile {
       return nil
     }
     return path
+  }
+
+  /// What a file holds for `record`, to run in `cwd`: the relay's `resume::launch` reads it, and
+  /// `testdata/resume-launch` holds one as this writes it, which the daemon's tests read. Its keys
+  /// sorted and its slashes unescaped, so the same record is always the same bytes.
+  static func contents(of record: ResumeRecord, cwd: String) -> Data? {
+    let payload: [String: Any] = [
+      "argv": record.argv, "cwd": cwd, "reportedAt": record.reportedAt,
+    ]
+    return try? JSONSerialization.data(
+      withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes])
   }
 
   /// A new file's name for `sessionID`: its id lowercased and hyphenated, as the daemon writes
