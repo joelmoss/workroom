@@ -346,7 +346,7 @@ pub struct Described {
     pub coding_agent: Option<crate::terminal::program_status::CodingAgent>,
     /// Its resume record (ADR 0082), without the command's arguments; `None` when no program has
     /// reported one.
-    pub resume: Option<crate::terminal::resume::Recorded>,
+    pub resume: Option<crate::terminal::resume::Redacted>,
     /// Every client attached to it, in the order they attached (#688).
     pub clients: Vec<ClientInfo>,
 }

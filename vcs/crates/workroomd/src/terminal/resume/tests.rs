@@ -36,7 +36,7 @@ fn argv(words: &[&str]) -> String {
     )
 }
 
-fn checked(owner: Owner, ancestors: &[Owner]) -> Result<Checked, NotOwner> {
+fn checked(owner: Owner, ancestors: &[Owner]) -> Result<Checked, Reason> {
     Ok(Checked {
         owner,
         ancestors: ancestors.to_vec(),
@@ -70,7 +70,7 @@ fn replay_preserves_the_last_word_and_related_owners_prefer_an_ancestor() {
     assert_eq!(
         s.apply(40, &rejected, 60, |_| unreachable!()),
         Outcome::NotAccepted {
-            reason: "malformed",
+            reason: Reason::Malformed,
             program: None
         }
     );
@@ -122,14 +122,14 @@ fn an_accepted_report_is_the_sessions_record_without_its_arguments() {
         }
     );
     assert_eq!(
-        s.recorded(),
-        Some(Recorded {
+        s.redacted(),
+        Some(Redacted {
             program: "claude".into(),
             cwd: Some("/work/calm-dune".into()),
             reported_at_ms: NOW * 1000,
         })
     );
-    assert!(!format!("{:?}{:?}", s, s.recorded()).contains("--resume"));
+    assert!(!format!("{:?}{:?}", s, s.redacted()).contains("--resume"));
 }
 
 #[test]
@@ -139,14 +139,14 @@ fn a_newer_report_from_its_owner_replaces_the_record_and_a_clear_clears_it() {
     for (offset, program) in [(1, "vim"), (2, "nvim")] {
         let report = body(42, NOW, &argv(&[program]));
         s.apply(offset, &report, NOW, |_| checked(editor, &[]));
-        assert_eq!(s.recorded().map(|r| r.program), Some(program.into()));
+        assert_eq!(s.redacted().map(|r| r.program), Some(program.into()));
     }
     let clear = body(42, NOW, "clear=1");
     assert_eq!(
         s.apply(3, &clear, NOW, |_| unreachable!()),
         Outcome::Cleared
     );
-    assert_eq!(s.recorded(), None);
+    assert_eq!(s.redacted(), None);
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn a_report_without_a_folder_uses_its_owners() {
     let report = body(41, NOW, &argv(&["nvim", "-S", "/state/session.vim"]));
     s.apply(1, &report, NOW, |_| checked(owner(41, 1), &[]));
     assert_eq!(
-        s.recorded().and_then(|recorded| recorded.cwd),
+        s.redacted().and_then(|redacted| redacted.cwd),
         Some("/owner/folder".into())
     );
 }
@@ -168,7 +168,7 @@ fn reports_that_cannot_be_trusted_change_nothing_and_say_why() {
     let last = forged.len() - 1;
     forged[last] = if forged[last] == b'0' { b'1' } else { b'0' };
     let stale = body(7, NOW - 61, "clear=1");
-    for (report, reason) in [(forged, "bad_mac"), (stale, "stale_time")] {
+    for (report, reason) in [(forged, Reason::BadMac), (stale, Reason::StaleTime)] {
         assert_eq!(
             s.apply(2, &report, NOW, |_| unreachable!()),
             Outcome::NotAccepted {
@@ -182,21 +182,17 @@ fn reports_that_cannot_be_trusted_change_nothing_and_say_why() {
 
 #[test]
 fn a_report_whose_owner_fails_its_check_is_not_accepted() {
-    for (not, reason) in [
-        (NotOwner::Gone, "owner_gone"),
-        (NotOwner::OtherUser, "other_user"),
-        (NotOwner::NotDescendant, "not_descendant"),
-    ] {
+    for reason in [Reason::OwnerGone, Reason::OtherUser, Reason::NotDescendant] {
         let mut s = state();
         let report = body(9, NOW, &argv(&["/usr/bin/lazygit"]));
         assert_eq!(
-            s.apply(1, &report, NOW, |_| Err(not)),
+            s.apply(1, &report, NOW, |_| Err(reason)),
             Outcome::NotAccepted {
                 reason,
                 program: Some("lazygit".into())
             }
         );
-        assert_eq!(s.recorded(), None);
+        assert_eq!(s.redacted(), None);
     }
 }
 
@@ -211,7 +207,7 @@ fn a_session_tracks_a_bounded_number_of_owners() {
     assert_eq!(
         s.apply(1_000, &report, NOW, |_| checked(extra, &[])),
         Outcome::NotAccepted {
-            reason: "too_many_owners",
+            reason: Reason::TooManyOwners,
             program: Some("vim".into())
         }
     );
@@ -246,10 +242,10 @@ fn an_owner_must_run_under_the_sessions_first_process_as_the_daemons_user() {
         "the shell itself"
     );
     for (pid, not) in [
-        (40, NotOwner::NotDescendant),
-        (50, NotOwner::OtherUser),
-        (60, NotOwner::NotDescendant),
-        (99, NotOwner::Gone),
+        (40, Reason::NotDescendant),
+        (50, Reason::OtherUser),
+        (60, Reason::NotDescendant),
+        (99, Reason::OwnerGone),
     ] {
         assert_eq!(
             check_owner(root, UID, pid, lookup).err(),
@@ -259,7 +255,7 @@ fn an_owner_must_run_under_the_sessions_first_process_as_the_daemons_user() {
     }
     assert_eq!(
         check_owner(None, UID, 20, lookup).err(),
-        Some(NotOwner::NotDescendant),
+        Some(Reason::NotDescendant),
         "no first process known yet"
     );
 }
@@ -307,7 +303,7 @@ fn an_owner_back_within_its_grace_starts_it_again_and_another_owners_record_is_l
 /// holds it.
 fn shared_with(shell: Owner, owner: Owner) -> SharedResume {
     let mut s = state();
-    s.root = Some(shell);
+    s.carried.root = Some(shell);
     assert!(set(&mut s, 10, NOW, owner, &[shell]));
     Arc::new(Mutex::new(Some(s)))
 }
@@ -318,7 +314,7 @@ fn recorded(shared: &SharedResume) -> bool {
         .unwrap()
         .as_ref()
         .unwrap()
-        .recorded()
+        .redacted()
         .is_some()
 }
 
@@ -401,10 +397,10 @@ fn a_rejected_report_removes_its_owners_record_and_only_its() {
     let (vim, other) = (owner(7, 1), owner(8, 1));
     let malformed = body(7, NOW, "argv=");
     let not_owned = body(7, NOW, &argv(&["vim"]));
-    type Reject = fn(u32) -> Result<Checked, NotOwner>;
+    type Reject = fn(u32) -> Result<Checked, Reason>;
     let rejections: [(&[u8], Reject); 2] = [
         (&malformed, |_| unreachable!()),
-        (&not_owned, |_| Err(NotOwner::NotDescendant)),
+        (&not_owned, |_| Err(Reason::NotDescendant)),
     ];
     for (report, find_owner) in rejections {
         let mut s = state();
@@ -445,7 +441,7 @@ fn a_command_names_its_program_past_env() {
 #[test]
 fn a_hand_off_carries_the_token_records_and_stream_position() {
     let mut s = state();
-    s.root = Some(owner(10, 100));
+    s.carried.root = Some(owner(10, 100));
     let mut stream = Vec::new();
     stream.extend_from_slice(b"some output ");
     stream.extend_from_slice(protocol::OPEN);
@@ -460,7 +456,7 @@ fn a_hand_off_carries_the_token_records_and_stream_position() {
     assert_eq!(back, carried);
     let adopted = Resume::adopted(back);
     assert_eq!(adopted.token(), TOKEN);
-    assert_eq!(adopted.stream.offset, stream.len() as u64);
+    assert_eq!(adopted.carried.offset, stream.len() as u64);
     assert_eq!(format!("{carried:?}"), "Carried([private])");
 }
 
@@ -872,7 +868,7 @@ fn a_hooked_resume_is_declined_only_once_exec_replaced_its_shell() {
 
     // The state hands both on, and the hook's word marks it hooked.
     let mut s = state();
-    s.root = Some(root);
+    s.carried.root = Some(root);
     s.resuming(&resumed_record(), launch_file(), Some(shell));
     assert_eq!(s.pending(), Some(pending(false, Some(root), Some(shell))));
     shell_says(&mut s, 1, "clear=1:workroomhook=1", Instant::now());
@@ -952,6 +948,27 @@ fn a_carried_state_reads_and_writes_the_shipped_tables_shape() {
         written,
         CARRIED_BEFORE_LAUNCHED.replace(r#""offset":7}"#, r#""offset":7,"launched":null}"#)
     );
+}
+
+/// Value: protects=the daemon's log naming why a report did not count in the words it always has;
+/// fails_when=a reason's name changes or two reasons swap; why_new=the reasons became one enum;
+/// seam=none
+#[test]
+fn a_report_that_does_not_count_says_why_in_its_log() {
+    let named = [
+        (Reason::BadMac, "bad_mac"),
+        (Reason::StaleTime, "stale_time"),
+        (Reason::NoPid, "no_pid"),
+        (Reason::Replayed, "replayed"),
+        (Reason::TooManyOwners, "too_many_owners"),
+        (Reason::OwnerGone, "owner_gone"),
+        (Reason::OtherUser, "other_user"),
+        (Reason::NotDescendant, "not_descendant"),
+        (Reason::Malformed, "malformed"),
+    ];
+    for (reason, name) in named {
+        assert_eq!(reason.as_str(), name);
+    }
 }
 
 /// Value: protects=the daemon's log saying why a resume was declined in the words it always has;

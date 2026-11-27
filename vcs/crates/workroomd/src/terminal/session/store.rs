@@ -918,7 +918,7 @@ impl SessionStore {
             .map(|(info, clients, shadow, resume)| {
                 let resume = lock_or_recover(&resume)
                     .as_ref()
-                    .and_then(|resume| resume.recorded());
+                    .and_then(|resume| resume.redacted());
                 let mut shadow = lock_or_recover(&shadow);
                 Described {
                     title: shadow.title(),
