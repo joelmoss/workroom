@@ -393,10 +393,36 @@ pub struct Session {
     resume: crate::terminal::resume::SharedResume,
 }
 
+/// What runs as a pty's foreground process `group`, in a session whose resume state is `resume`:
+/// the process that stands for the group (`resume::foreground_process`, the resumed program
+/// rather than its helper), and the name a user knows it by (`process::executable_name`). A
+/// resumed program that has not yet `execv`d still has its helper's name, and reads as having
+/// none. The resume lock is taken alone, with the attachment's released (`Session` lock order).
+pub(crate) fn foreground_named(
+    group: Option<libc::pid_t>,
+    resume: &crate::terminal::resume::SharedResume,
+) -> (Option<libc::pid_t>, Option<String>) {
+    use crate::terminal::process::executable_name;
+    let Some(group) = group else {
+        return (None, None);
+    };
+    let process = crate::terminal::resume::foreground_process(
+        resume,
+        group,
+        crate::terminal::process::identity,
+    );
+    let name = executable_name(process);
+    let name = if process != group && name == executable_name(group) {
+        None
+    } else {
+        name
+    };
+    (Some(process), name)
+}
+
 impl Session {
     pub fn info(&self) -> SessionInfo {
-        let foreground = self.pty.foreground_pgid();
-        let name = foreground.and_then(crate::terminal::process::executable_name);
+        let (foreground, name) = foreground_named(self.pty.foreground_pgid(), &self.resume);
         SessionInfo {
             id: self.id,
             pid: self.pty.child_pid(),
@@ -496,7 +522,9 @@ pub struct TakenScreen {
 ///       │                   the screens tick reading the record a cleared owner left (#824),
 ///       │                   each released before the shadow is taken to put the record in the
 ///       │                   status; `described` and the tick's owner check
-///       │                   (`watch_resume_owners`) take it alone, with the map released
+///       │                   (`watch_resume_owners`) take it alone, with the map released, and
+///       │                   `list` (`Session::info`) under the map with the attachment lock
+///       │                   released, as `foreground` takes it alone (`foreground_named`)
 ///       ├─ Transfer         a read stopping a client's transfer
 ///       ├─ Waiter.state     a wait starting on a session whose reader has just ended
 ///       ├─ encoders        the image encoders' sender: `attach` starting a transfer

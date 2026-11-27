@@ -400,16 +400,21 @@ impl SessionStore {
 
     /// What runs in session `id`'s foreground now (#692): its process group, the name a user would
     /// know its program by (`process::executable_name`, the exec-time argv a self-renaming CLI
-    /// can't change), and whether that group is the session's interactive shell. `None` when the
-    /// session has gone.
+    /// can't change; a resumed program's own, not its helper's, `foreground_named`), and whether
+    /// that group is the session's interactive shell. `None` when the session has gone.
     pub fn foreground(&self, id: SessionId) -> Option<Foreground> {
-        let (pty, interactive) = lock_or_recover(&self.sessions)
-            .get(&id)
-            .map(|session| (Arc::clone(&session.pty), session.interactive))?;
+        let (pty, interactive, resume) =
+            lock_or_recover(&self.sessions).get(&id).map(|session| {
+                (
+                    Arc::clone(&session.pty),
+                    session.interactive,
+                    Arc::clone(&session.resume),
+                )
+            })?;
         let group = pty.foreground_pgid();
         Some(Foreground {
             group,
-            name: group.and_then(crate::terminal::process::executable_name),
+            name: super::foreground_named(group, &resume).1,
             shell: interactive && group == Some(pty.child_pid()),
         })
     }
@@ -587,33 +592,136 @@ impl SessionStore {
         pending
     }
 
-    /// Session `id` was just started to resume `record` (#825): its status carries the record from
-    /// its first event, so the app keeps it until the program reports itself in the new session,
-    /// and its resume state knows what it resumes, whose helper's report says it started. The
-    /// locks are taken in the reader's order, with the map released.
-    pub(crate) fn resuming(&self, id: SessionId, record: crate::terminal::resume::Whole) {
-        let Some((resume, attached, shadow)) =
-            lock_or_recover(&self.sessions).get(&id).map(|session| {
-                (
-                    Arc::clone(&session.resume),
-                    Arc::clone(&session.attached),
-                    Arc::clone(&session.shadow),
-                )
-            })
-        else {
+    /// Session `id` was just started to resume `record` (#825) from the launch file `file` this
+    /// daemon wrote: its status carries the record from its first event, published now, so the
+    /// app keeps it until the program reports itself in the new session, and its resume state
+    /// knows what it resumes, whose helper's report says it started. The locks are taken in the
+    /// reader's order, with the map released.
+    pub(crate) fn resuming(
+        &self,
+        id: SessionId,
+        record: crate::terminal::resume::Whole,
+        file: std::path::PathBuf,
+    ) {
+        let Some((resume, attached, shadow)) = self.resume_parts(id) else {
             return;
         };
-        let _held = lock_or_recover(&attached);
-        if let Some(state) = lock_or_recover(&resume).as_mut() {
-            state.resuming(&record);
-        }
-        if let Some(status) = lock_or_recover(&shadow).status() {
-            status.set_resume(Some(record));
+        self.publish_held(id, &attached, &shadow, || {
+            if let Some(state) = lock_or_recover(&resume).as_mut() {
+                state.resuming(&record, file);
+            }
+            |status: &mut Store| status.set_resume(Some(record))
+        });
+    }
+
+    /// Session `id` was asked to resume a record it could not run (#825, `dispatch::resumed`: a
+    /// folder that is gone, a shell with no Workroom hook): declined from its first event,
+    /// published now, so the app says at once that the pane got a new shell.
+    pub(crate) fn resume_declined_at_start(&self, id: SessionId) {
+        let Some((_, attached, shadow)) = self.resume_parts(id) else {
+            return;
+        };
+        self.publish_held(id, &attached, &shadow, || {
+            |status: &mut Store| status.set_resume_declined(None)
+        });
+    }
+
+    /// Under session `id`'s attachment lock, as its reader reads: `first` (which may take the
+    /// resume lock, and releases it), then the change it returns applied to the status under the
+    /// shadow's lock and committed. Published once every lock is released.
+    fn publish_held<F: FnOnce(&mut Store)>(
+        &self,
+        id: SessionId,
+        attached: &Mutex<Attached>,
+        shadow: &Mutex<Shadow>,
+        first: impl FnOnce() -> F,
+    ) {
+        let published = {
+            let _held = lock_or_recover(attached);
+            let change = first();
+            let mut shadow = lock_or_recover(shadow);
+            shadow.status().and_then(|status| {
+                change(status);
+                let blocked = status.commit()?;
+                Some(super::hooks::Published::of(
+                    status,
+                    self.hooks.boot(),
+                    id,
+                    blocked,
+                ))
+            })
+        };
+        if let Some(published) = published {
+            self.hooks.status_changed(id, published);
         }
     }
 
-    /// Clears each resume record whose owner has been gone for `resume::EXIT_GRACE` while its
-    /// session's shell runs on (ADR 0082, #823), looking at `now`; `screens::tick` runs it every
+    /// Session `id`'s resume state, attachment and shadow, with the map released.
+    fn resume_parts(
+        &self,
+        id: SessionId,
+    ) -> Option<(
+        crate::terminal::resume::SharedResume,
+        Arc<Mutex<Attached>>,
+        Arc<Mutex<Shadow>>,
+    )> {
+        lock_or_recover(&self.sessions).get(&id).map(|session| {
+            (
+                Arc::clone(&session.resume),
+                Arc::clone(&session.attached),
+                Arc::clone(&session.shadow),
+            )
+        })
+    }
+
+    /// Declines session `id`'s resume (#825), whose helper has not reported, `why` it is: its
+    /// launch file `file` (`Resume::waiting_file`, the path this daemon wrote for the session) is
+    /// claimed first, with every lock released, so a helper that has it already runs the program
+    /// and nothing is declined; once claimed, no helper can start it later. Then, under the locks
+    /// in the reader's order, the seeded record goes from the status, which says
+    /// `resumeDeclined`, published at once. Whether it was declined.
+    pub(super) fn decline_resume(
+        &self,
+        id: SessionId,
+        file: &std::path::Path,
+        parts: (
+            &crate::terminal::resume::SharedResume,
+            &Mutex<Attached>,
+            &Mutex<Shadow>,
+        ),
+        why: &str,
+    ) -> bool {
+        let (resume, attached, shadow) = parts;
+        if crate::terminal::resume::launch::claim(file, Some(id)).is_err() {
+            return false;
+        }
+        let mut declined = None;
+        self.publish_held(id, attached, shadow, || {
+            let (program, record) = lock_or_recover(resume)
+                .as_mut()
+                .map_or((None, None), |state| (state.decline(), state.whole()));
+            let change = program.is_some().then_some(record);
+            declined = program;
+            move |status: &mut Store| {
+                if let Some(record) = change {
+                    status.set_resume_declined(record);
+                }
+            }
+        });
+        let Some(program) = declined else {
+            return false;
+        };
+        crate::note!(
+            "session {}: not resuming {program}: {why}",
+            id.to_hyphenated()
+        );
+        true
+    }
+
+    /// Declines each resume whose helper has not reported within `resume::DECLINE_AFTER` (#825,
+    /// `decline_resume`), and clears each resume record whose owner has been gone for
+    /// `resume::EXIT_GRACE` while its session's shell runs on (ADR 0082, #823), looking at `now`;
+    /// `screens::tick` runs it every
     /// `screens::INTERVAL`. Each session's resume lock is taken on its own, with the map released,
     /// as `described` takes it. A session whose record cleared publishes its status (#824), with
     /// the record read again under its attachment lock, as its reader reads it, so a report fed
@@ -643,6 +751,22 @@ impl SessionStore {
         };
         let mut watching = false;
         for (id, resume, attached, shadow) in resumes {
+            // A resume whose helper has not reported is looked at again on every tick, and
+            // declined once it has waited `DECLINE_AFTER` (#825).
+            let (waiting, overdue) = lock_or_recover(&resume)
+                .as_ref()
+                .map_or((false, None), |state| {
+                    (state.waiting_file().is_some(), state.overdue(now))
+                });
+            let declined = overdue.is_some_and(|file| {
+                self.decline_resume(
+                    id,
+                    &file,
+                    (&resume, &attached, &shadow),
+                    "its helper never reported, so its shell ran no Workroom hook",
+                )
+            });
+            watching |= waiting && !declined;
             let watched = crate::terminal::resume::watch_owners(
                 &resume,
                 now,

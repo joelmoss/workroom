@@ -512,6 +512,94 @@ fn resumed_record() -> Whole {
     }
 }
 
+/// The launch file a session resuming `resumed_record` was told of; never opened here.
+fn launch_file() -> std::path::PathBuf {
+    "/private/launch/resume-file.json".into()
+}
+
+/// Value: protects=a resume whose helper never reported being declinable (#825): its launch file
+/// is the one the session was started with, overdue only once `DECLINE_AFTER` has passed, and a
+/// decline after the helper reported (or a second one) declines nothing; fails_when=the file is
+/// forgotten, the wait is shorter, or a started resume can still be declined; why_new=#825's
+/// second review (a hook that never runs); seam=the injected instant
+#[test]
+fn a_resume_whose_helper_never_reported_is_declined_once() {
+    let mut s = state();
+    assert_eq!(s.waiting_file(), None, "a session that resumes nothing");
+    s.resuming(&resumed_record(), launch_file());
+    let now = Instant::now();
+    assert_eq!(s.waiting_file(), Some(launch_file()));
+    assert_eq!(s.overdue(now), None);
+    assert_eq!(s.overdue(now + DECLINE_AFTER), Some(launch_file()));
+    assert_eq!(s.decline(), Some("claude".into()));
+    assert_eq!(s.decline(), None, "once");
+    assert_eq!(s.waiting_file(), None);
+
+    let mut s = state();
+    s.resuming(&resumed_record(), launch_file());
+    helper_reports(&mut s, 1, now);
+    assert_eq!(s.waiting_file(), None, "it started");
+    assert_eq!(s.overdue(now + DECLINE_AFTER), None);
+    assert_eq!(s.decline(), None);
+}
+
+/// Value: protects=a resumed program reading as itself, not as its helper, wherever a session's
+/// foreground is named (#825): the program's pane title, Claude detection, its profile and
+/// `terminal.prompt`; only while the foreground group is the helper that runs it and both are the
+/// processes that reported, and carried by a hand-off; fails_when=the helper's name is shown, a
+/// reused pid or another group is renamed, or a hand-off forgets it; why_new=#825's second review
+/// (the foreground was the helper's); seam=the injected process lookup
+#[test]
+fn a_resumed_programs_helper_group_is_named_for_the_program() {
+    let shell = process(100, 1, 1, UID);
+    let helper = process(200, 2, 100, UID);
+    let program = process(300, 3, 200, UID);
+    let table = |processes: Vec<Identity>| {
+        move |pid: u32| processes.iter().copied().find(|process| process.pid == pid)
+    };
+    let mut s = state();
+    s.resuming(&resumed_record(), launch_file());
+    let report = body(
+        300,
+        NOW,
+        &format!("{}:cwd={}", argv(&["claude", "--resume", "x"]), b64("/w")),
+    );
+    let outcome = s.apply(1, &report, NOW, |_| {
+        checked(
+            Owner::from(program),
+            &[Owner::from(helper), Owner::from(shell)],
+        )
+    });
+    assert!(matches!(
+        s.after(outcome, 1, &report, Instant::now()),
+        Outcome::ResumeStarted { .. }
+    ));
+    let shared: SharedResume = Arc::new(Mutex::new(Some(s.clone())));
+    let all = || table(vec![shell, helper, program]);
+    assert_eq!(foreground_process(&shared, 200, all()), 300);
+    assert_eq!(foreground_process(&shared, 100, all()), 100, "the shell");
+    assert_eq!(foreground_process(&shared, 999, all()), 999, "another job");
+    let gone = table(vec![shell, helper]);
+    assert_eq!(foreground_process(&shared, 200, gone), 200, "it exited");
+    let reused = table(vec![shell, helper, process(300, 9, 200, UID)]);
+    assert_eq!(
+        foreground_process(&shared, 200, reused),
+        200,
+        "a reused pid"
+    );
+    let other = table(vec![shell, process(200, 8, 100, UID), program]);
+    assert_eq!(
+        foreground_process(&shared, 200, other),
+        200,
+        "another helper"
+    );
+
+    let adopted: SharedResume = Arc::new(Mutex::new(Some(Resume::adopted(s.carried()))));
+    assert_eq!(foreground_process(&adopted, 200, all()), 300, "a hand-off");
+    let nothing: SharedResume = Arc::new(Mutex::new(Some(state())));
+    assert_eq!(foreground_process(&nothing, 200, all()), 200);
+}
+
 /// The helper's report of `resumed_record`, from pid 4343, applied at `offset` and read at `at`.
 fn helper_reports(s: &mut Resume, offset: u64, at: Instant) -> Outcome {
     let report = body(
@@ -531,7 +619,7 @@ fn helper_reports(s: &mut Resume, offset: u64, at: Instant) -> Outcome {
 fn the_helpers_report_of_the_resumed_record_says_it_started_once() {
     let start = Instant::now();
     let mut s = state();
-    s.resuming(&resumed_record());
+    s.resuming(&resumed_record(), launch_file());
     let other = body(4444, NOW, &argv(&["vim"]));
     let outcome = s.apply(1, &other, NOW, |_| checked(owner(4444, 1), &[]));
     assert!(
@@ -574,7 +662,7 @@ fn a_resumed_program_that_fails_at_once_says_so_once() {
     };
     // A login shell that took a minute to reach its first prompt.
     let started = |s: &mut Resume| {
-        s.resuming(&resumed_record());
+        s.resuming(&resumed_record(), launch_file());
         helper_reports(s, 1, start + Duration::from_secs(60));
     };
     let mut s = state();
@@ -586,7 +674,7 @@ fn a_resumed_program_that_fails_at_once_says_so_once() {
         "once"
     );
     let mut s = state();
-    s.resuming(&resumed_record());
+    s.resuming(&resumed_record(), launch_file());
     assert_eq!(
         exit(&mut s, 1, 127, Duration::from_secs(600)),
         Outcome::ResumeFailed {

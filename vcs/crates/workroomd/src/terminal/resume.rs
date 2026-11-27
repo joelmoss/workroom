@@ -172,14 +172,35 @@ pub(crate) enum Outcome {
 /// Where a session started to resume a record (#825) is with it.
 #[derive(Clone, Debug)]
 enum Resuming {
-    /// Its helper has not yet reported the record, whose command and folder these are.
+    /// Its helper has not yet reported the record, whose command and folder these are, from the
+    /// launch file `file` this daemon wrote for it at `since`.
     Waiting {
         program: String,
         argv: Vec<String>,
         cwd: Option<String>,
+        file: std::path::PathBuf,
+        since: Instant,
     },
     /// Its helper's report was accepted at `at`: the program started then.
     Started { program: String, at: Instant },
+}
+
+/// How long after its session started a resume whose helper has not reported is declined
+/// (`Resume::overdue`): for a shell that never ran Workroom's hook and whose prompt sends no
+/// OSC 133, which would decline it at once (`Resume::waiting_file`). Long enough for a login shell
+/// on a cold disk after a reboot, with every restored pane's shell starting at once (oh-my-zsh
+/// and nvm can take 10 s there); a hook that runs later than this finds its file claimed and
+/// starts nothing, so the outcome is the one the app was told either way.
+pub(crate) const DECLINE_AFTER: Duration = Duration::from_secs(30);
+
+/// The resumed program and its helper, by pid and start time, once the program's report was
+/// accepted (#825): the shell made the helper its job's process group leader, so the pty's
+/// foreground group names the helper, and `foreground_process` names the program instead.
+/// Carried by a hand-off, as the program runs on through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Launched {
+    helper: Owner,
+    program: Owner,
 }
 
 /// What one look at a record's owner did (`Resume::check_exit`).
@@ -237,6 +258,8 @@ pub(crate) struct Resume {
     /// running for long: its failure is said only within `launch::FAILED_WITHIN` of its start.
     /// Not carried by a hand-off, which outlasts that.
     resuming: Option<Resuming>,
+    /// The resumed program and its helper, once it started (`foreground_process`).
+    launched: Option<Launched>,
 }
 
 impl std::fmt::Debug for Resume {
@@ -256,6 +279,9 @@ pub struct Carried {
     root: Option<Owner>,
     words: BTreeMap<u32, Word>,
     offset: u64,
+    /// `Resume::launched`; absent from a table this field predates.
+    #[serde(default)]
+    launched: Option<Launched>,
 }
 
 impl std::fmt::Debug for Carried {
@@ -271,6 +297,7 @@ impl PartialEq for Carried {
             && self.root == other.root
             && self.words == other.words
             && self.offset == other.offset
+            && self.launched == other.launched
     }
 }
 
@@ -308,6 +335,7 @@ impl Carried {
                 },
             )]),
             offset,
+            launched: None,
         }
     }
 }
@@ -335,16 +363,58 @@ impl Resume {
             words: BTreeMap::new(),
             stream: Stream::default(),
             resuming: None,
+            launched: None,
         }
     }
 
-    /// This session was started to resume `record` (#825), which its helper will report.
-    pub(crate) fn resuming(&mut self, record: &Whole) {
+    /// This session was started to resume `record` (#825), which its helper will report, from the
+    /// launch file this daemon wrote at `file`.
+    pub(crate) fn resuming(&mut self, record: &Whole, file: std::path::PathBuf) {
         self.resuming = Some(Resuming::Waiting {
             program: program_name(&record.argv),
             argv: record.argv.clone(),
             cwd: record.cwd.clone(),
+            file,
+            since: Instant::now(),
         });
+    }
+
+    /// The launch file of a resume whose helper has not reported (#825): the one path a decline
+    /// claims (`launch::claim`), and a session's end removes.
+    pub(crate) fn waiting_file(&self) -> Option<std::path::PathBuf> {
+        match &self.resuming {
+            Some(Resuming::Waiting { file, .. }) => Some(file.clone()),
+            _ => None,
+        }
+    }
+
+    /// `waiting_file`, once it has waited `DECLINE_AFTER` at `now`.
+    pub(crate) fn overdue(&self, now: Instant) -> Option<std::path::PathBuf> {
+        match &self.resuming {
+            Some(Resuming::Waiting { file, since, .. })
+                if now.saturating_duration_since(*since) >= DECLINE_AFTER =>
+            {
+                Some(file.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// The resume still waiting is declined, its launch file claimed by the daemon: the program it
+    /// would have started, `None` when it is not waiting any more.
+    pub(crate) fn decline(&mut self) -> Option<String> {
+        match self.resuming.take() {
+            Some(Resuming::Waiting { program, .. }) => Some(program),
+            other => {
+                self.resuming = other;
+                None
+            }
+        }
+    }
+
+    /// The resumed program and its helper, once it started, for `foreground_process`.
+    fn launched(&self) -> Option<Launched> {
+        self.launched
     }
 
     /// What a resumed program's exit with `status`, said at `at`, means: its failure to resume
@@ -370,10 +440,20 @@ impl Resume {
             record.is_some_and(|record| record.argv == *argv && record.reported_cwd == *cwd)
         };
         match self.resuming.take() {
-            Some(Resuming::Waiting { program, argv, cwd }) if reported(&argv, &cwd) => {
+            Some(Resuming::Waiting {
+                program, argv, cwd, ..
+            }) if reported(&argv, &cwd) => {
                 self.resuming = Some(Resuming::Started {
                     program: program.clone(),
                     at,
+                });
+                // The report's owner is the helper's child, so its parent, the first of its
+                // ancestors, is the helper.
+                self.launched = record.and_then(|record| {
+                    Some(Launched {
+                        helper: *record.ancestors.first()?,
+                        program: record.owner,
+                    })
                 });
                 Outcome::ResumeStarted { program }
             }
@@ -622,6 +702,7 @@ impl Resume {
             root: self.root,
             words: self.words.clone(),
             offset: self.stream.offset,
+            launched: self.launched,
         }
     }
 
@@ -634,7 +715,40 @@ impl Resume {
             words: carried.words,
             stream: Stream::at(carried.offset),
             resuming: None,
+            launched: carried.launched,
         }
+    }
+}
+
+/// The process whose name, folder and Claude profile stand for a session's foreground process
+/// group `group` (#825): the group's leader, except where it is the helper that runs a resumed
+/// program (`launch`), which the shell made its job's leader, so the program would read as
+/// `workroom`. There it is the program. Proof, looked up with `lookup` (`process::identity`): the
+/// session resumed a program whose report the daemon accepted, from a process under the session's
+/// shell with the leader as its parent (`Launched`), and both are still those processes (pid and
+/// start time), the program still the leader's child. The group itself is left as it is: program
+/// status and `terminal.prompt` compare groups.
+pub(crate) fn foreground_process(
+    shared: &SharedResume,
+    group: i32,
+    lookup: impl Fn(u32) -> Option<Identity>,
+) -> i32 {
+    let Some(launched) = crate::util::lock_or_recover(shared)
+        .as_ref()
+        .and_then(Resume::launched)
+    else {
+        return group;
+    };
+    if u32::try_from(group).ok() != Some(launched.helper.pid) {
+        return group;
+    }
+    let helper = lookup(launched.helper.pid).map(Owner::from) == Some(launched.helper);
+    let program = lookup(launched.program.pid).is_some_and(|program| {
+        Owner::from(program) == launched.program && program.parent == launched.helper.pid
+    });
+    match i32::try_from(launched.program.pid) {
+        Ok(pid) if helper && program => pid,
+        _ => group,
     }
 }
 

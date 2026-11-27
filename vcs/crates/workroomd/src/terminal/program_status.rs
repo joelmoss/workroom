@@ -264,6 +264,16 @@ pub struct Store {
     /// hand-off comes long after.
     #[serde(skip)]
     resume_failed: bool,
+    /// The daemon declined the resume this session was started for (#825): its shell's first
+    /// prompt came with no report from its helper, the helper never reported in
+    /// `resume::DECLINE_AFTER`, or it could not be prepared at all. The app's toast says the pane
+    /// got a new shell, and the tab forgets the record. Never carried: a hand-off comes long after.
+    #[serde(skip)]
+    resume_declined: bool,
+    /// How many OSC 133 prompts the shell has sent, so the reader can tell that a write had one
+    /// (`prompts`): the first, before a resume's helper reported, declines it. Never carried.
+    #[serde(skip)]
+    prompts: u64,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
     #[serde(skip)]
     dirty: bool,
@@ -280,6 +290,9 @@ impl Store {
     pub fn apply(&mut self, event: Event, owner: Group) {
         if matches!(event, Event::Prompt | Event::Command { .. }) {
             self.shell_marks = true;
+        }
+        if matches!(event, Event::Prompt) {
+            self.prompts += 1;
         }
         match event {
             Event::Report(report) => self.report(report, owner),
@@ -620,6 +633,21 @@ impl Store {
         }
     }
 
+    /// The resume this session was started for was declined (#825): its seeded record goes (the
+    /// session's record is now `resume`, what any program reported meanwhile), published once.
+    pub fn set_resume_declined(&mut self, resume: Option<crate::terminal::resume::Whole>) {
+        self.set_resume(resume);
+        if !self.resume_declined {
+            self.resume_declined = true;
+            self.dirty = true;
+        }
+    }
+
+    /// How many OSC 133 prompts the shell has sent (`Event::Prompt`).
+    pub fn prompts(&self) -> u64 {
+        self.prompts
+    }
+
     /// A hand-off's next program has the record its resume state carried (#824), unpublished:
     /// the app already has it, and a new subscriber's snapshot carries it.
     pub fn restore_resume(&mut self, resume: Option<crate::terminal::resume::Whole>) {
@@ -693,6 +721,7 @@ impl Store {
             }),
             resume_started: self.resume_started,
             resume_failed: self.resume_failed,
+            resume_declined: self.resume_declined,
         })
         .expect("a status event serializes")
     }
@@ -825,6 +854,11 @@ struct StatusEvent<'a> {
     /// app that predates it ignores it.
     #[serde(rename = "resumeFailed", skip_serializing_if = "std::ops::Not::not")]
     resume_failed: bool,
+    /// Only once the daemon declined the resume the session was started for (#825), and from then
+    /// on: the app says the pane got a new shell, and forgets the record. An app that predates it
+    /// ignores it.
+    #[serde(rename = "resumeDeclined", skip_serializing_if = "std::ops::Not::not")]
+    resume_declined: bool,
 }
 
 /// A resume record on the wire (#824): the command whole, for the app to save. Only here, on the
