@@ -94,6 +94,9 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
   @State private var pendingTarget: ScrollID?
   /// Ties the inline and pinned controls together, so an animated flip slides them between the two.
   @Namespace private var controlsSpace
+  /// Counts width changes made under `flipAnimation` once their animation settles: the cue to reveal
+  /// the target, which the animated layout would otherwise have scrolled away from.
+  @State private var animatedFlipsSettled = 0
 
   /// Whether the chips no longer fit with the controls inline, so they pin at the trailing edge and the
   /// scroller takes its fade (issue #129). See `TabStripOverflow.pinsControls` for why this can't
@@ -115,7 +118,15 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
             // The width is what flips `overflowing`, and it lands a pass after the change that made
             // it, outside that change's transaction, hence `flipAnimation` applied here.
             .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width in
-              withAnimation(flipAnimation) { chipRunWidth = width }
+              guard let flipAnimation else {
+                chipRunWidth = width
+                return
+              }
+              withAnimation(flipAnimation) {
+                chipRunWidth = width
+              } completion: {
+                animatedFlipsSettled += 1
+              }
             }
           // Fits: the controls stay inline, hugging the last chip — today's look, unchanged.
           if !overflowing { measuredControls.padding(.leading, inlineLead) }
@@ -201,6 +212,13 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
           proxy.scrollTo(target)
         }
+      }
+      // An animated flip (`flipAnimation`, the workroom bar's tabs coming back over an overflow)
+      // undoes any reveal made while it runs, the width retry above included, so the target is
+      // revealed again once it has settled.
+      .onChange(of: animatedFlipsSettled) { _, _ in
+        guard let target = scrollTarget, !scrollSuspended else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { proxy.scrollTo(target) }
       }
       // The drag case: a selection made while `scrollSuspended` was true was dropped, not deferred —
       // the pre-drag tap selects, and the reveal never came back. Flush it when the drag ends.
