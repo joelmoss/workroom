@@ -306,8 +306,13 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // now, whatever happens next, so its file never outlives this pane's start. A remote pane's
     // (#826), dialed from the Mac or attached inside a container, the file on the side its client
     // runs.
-    let resume = take_resume(&mut request.env, request.id)
-        .filter(|_| invoked_by_the_app && request.existing_only);
+    // None when the app turned resume off (#827), which sends no record then anyway: the file is
+    // still claimed, so it goes.
+    let resume = take_resume(&mut request.env, request.id).filter(|_| {
+        invoked_by_the_app
+            && request.existing_only
+            && crate::terminal::resume::turned_on(&request.env)
+    });
     // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and a
     // daemon started here would be the idle-exit kind a remote host must not have, racing the
     // supervised one for the socket (#228). It also changes what a lost daemon connection means:
