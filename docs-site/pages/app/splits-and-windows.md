@@ -81,7 +81,7 @@ A popped-out pane keeps its place in the main window: its tab stays where it was
 - **Go to Window** brings the pane's window to the front.
 - **Pull Back Here** moves the terminal back into this pane, where it was in the split and the tab strip. Press <kbd>Return</kbd> for it while that pane is focused.
 
-The pane keeps its title bar, with the terminal's name and its close button. Its tab, its title-bar tab and its row in the sidebar's **Open** view show a pop-out icon before its name, which is dimmed. Clicking that tab shows the pane in the main window and leaves the terminal's window where it is. **Move Back** in the window's toolbar and <kbd>⌃⌘O</kbd> also put the terminal back in its place.
+The pane keeps its title bar, with the terminal's name and its close button. Its tab, its title-bar tab and its row in the sidebar's **Open Tabs** view show a pop-out icon before its name, which is dimmed. Clicking that tab shows the pane in the main window and leaves the terminal's window where it is. **Move Back** in the window's toolbar and <kbd>⌃⌘O</kbd> also put the terminal back in its place.
 
 The terminal's window grows out of its pane as it opens, and shrinks back into the pane when the terminal goes back. A pane you drag out of the window opens where you let go. With **Reduce motion** on in System Settings ▸ Accessibility ▸ Display, the window fades in and out instead.
 

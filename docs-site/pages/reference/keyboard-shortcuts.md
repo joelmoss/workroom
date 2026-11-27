@@ -132,7 +132,7 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 | Action | Keys |
 | --- | --- |
 | Show Sidebar (Nightly only) | <kbd>⌃⌘S</kbd> |
-| Sidebar: Open (Nightly only) | <kbd>⌃⌘T</kbd> |
+| Sidebar: Open Tabs (Nightly only) | <kbd>⌃⌘T</kbd> |
 | Sidebar: Projects (Nightly only) | <kbd>⌃⌘P</kbd> |
 | Show Inspector (Nightly only) | <kbd>⌘B</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
@@ -141,7 +141,7 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 | Pull Request | <kbd>⌥⌘P</kbd> |
 | Files | <kbd>⌥⌘F</kbd> |
 
-Nightly only: **Sidebar: Open** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. In the stable release **Show Sidebar** is **Projects** and **Show Inspector** is **Inspector**. See [Open and Projects](../app/projects.md#open-and-projects).
+Nightly only: **Sidebar: Open Tabs** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. In the stable release **Show Sidebar** is **Projects** and **Show Inspector** is **Inspector**. See [Open Tabs and Projects](../app/projects.md#open-tabs-and-projects).
 
 <!-- stable -->
 ## Navigation & Attention

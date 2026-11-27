@@ -7,10 +7,11 @@ enum SidebarView: String, CaseIterable, Sendable {
   case open
   case projects
 
-  /// Its tab's name: the Open tab shows only its glyph, so this is its tooltip and spoken name.
+  /// Its name, on its View ▸ Sidebar item and spoken for its tab, which shows only its glyph. Not
+  /// "Open" alone, which reads as a verb.
   var title: String {
     switch self {
-    case .open: "Open"
+    case .open: "Open Tabs"
     case .projects: "Projects"
     }
   }
@@ -18,7 +19,7 @@ enum SidebarView: String, CaseIterable, Sendable {
   /// Its tab's tooltip.
   var help: String {
     switch self {
-    case .open: "Open: the workrooms and terminals open in this window"
+    case .open: "Open Tabs: the workrooms and terminals open in this window"
     case .projects: "Projects: every project and its workrooms"
     }
   }
