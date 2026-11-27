@@ -347,3 +347,82 @@ fn a_process_image_is_the_file_it_runs() {
     );
     assert_eq!(image(0), None);
 }
+
+/// A `KERN_PROCARGS2` buffer: `argc`, the exec path and its padding, then `words`, each ended,
+/// then the environment.
+fn procargs(argc: i32, words: &[&str]) -> Vec<u8> {
+    let mut buffer = argc.to_ne_bytes().to_vec();
+    buffer.extend_from_slice(b"/opt/node/bin/node\0\0\0\0");
+    for word in words {
+        buffer.extend_from_slice(word.as_bytes());
+        buffer.push(0);
+    }
+    buffer.extend_from_slice(b"PATH=/usr/bin\0");
+    buffer
+}
+
+fn owned(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| word.to_string()).collect()
+}
+
+/// Value: protects=a report never resuming Claude without the flags it ran with (#828);
+/// fails_when=the exact read drops empty words, or stops short of `argc` without saying;
+/// why_new=new (#828 review: node's `process.title` blanks argv); seam=none
+#[test]
+fn an_exact_procargs_read_keeps_blank_words_and_refuses_a_short_buffer() {
+    let whole = [
+        "node",
+        "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+        "--model",
+        "x",
+    ];
+    assert_eq!(exact_procargs(&procargs(4, &whole)), Some(owned(&whole)));
+    // What libuv's title leaves: the title, then every word after it empty.
+    assert_eq!(
+        exact_procargs(&procargs(4, &["claude", "", "", ""])),
+        Some(owned(&["claude", "", "", ""]))
+    );
+    // Fewer words in the buffer than `argc` says.
+    let mut short = 4i32.to_ne_bytes().to_vec();
+    short.extend_from_slice(b"/bin/node\0\0node\0cli.js\0");
+    assert_eq!(exact_procargs(&short), None);
+    assert_eq!(exact_procargs(&procargs(0, &[])), None);
+    let mut bad = 1i32.to_ne_bytes().to_vec();
+    bad.extend_from_slice(b"/bin/x\0\xff\0");
+    assert_eq!(exact_procargs(&bad), None, "not UTF-8");
+}
+
+/// Value: protects=a report never resuming Claude without the flags it ran with (#828);
+/// fails_when=the exact cmdline read drops empty words, or takes a `cmdline` the kernel cut at a
+/// rewritten end; why_new=new (#828 review); seam=none
+#[test]
+fn an_exact_cmdline_read_keeps_blank_words_and_refuses_an_unended_one() {
+    assert_eq!(
+        exact_cmdline(b"node\0/x/cli.js\0--model\0x\0"),
+        Some(owned(&["node", "/x/cli.js", "--model", "x"]))
+    );
+    // A title written over argv, the rest zeroed: the area's NULs read as empty words.
+    assert_eq!(
+        exact_cmdline(b"claude\0\0\0\0"),
+        Some(owned(&["claude", "", "", ""]))
+    );
+    // A title over the argv's last NUL: the kernel gives the title alone, unended.
+    assert_eq!(exact_cmdline(b"claude --model x"), None);
+    assert_eq!(exact_cmdline(b""), None);
+    assert_eq!(exact_cmdline(b"x\0\xff\0"), None, "not UTF-8");
+}
+
+#[test]
+fn this_process_reads_back_exactly_and_names_its_own_file() {
+    let pid = std::process::id() as i32;
+    assert_eq!(exact_arguments(pid), Some(std::env::args().collect()));
+    let path = executable_path(pid).expect("this test's binary");
+    assert_eq!(
+        std::fs::canonicalize(path).ok(),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| std::fs::canonicalize(exe).ok())
+    );
+    assert_eq!(exact_arguments(0), None);
+    assert_eq!(executable_path(0), None);
+}

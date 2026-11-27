@@ -12,8 +12,9 @@
 //! Claude's pid: never to stdout, which Claude hands the model, and not to `/dev/tty`, since Claude
 //! runs its hooks with no controlling terminal (`docs/designs/osc-7577-hook-spike.md`). With no
 //! token (not a Workroom pane, or resume turned off for it) it does nothing; with no Claude above
-//! it, a flag it doesn't know or one that means there is nothing to resume (`-p`), it sends
-//! nothing. Either way it prints nothing and succeeds, within `REPORT_BOUND`.
+//! it, Claude's arguments not provably whole (an npm install's node can write its title over
+//! them, `claude::claude_arguments`), a flag it doesn't know or one that means there is nothing
+//! to resume (`-p`), it sends nothing. Either way it prints nothing and succeeds, within `REPORT_BOUND`.
 //!
 //! **The hook** (`resume-hook install|remove`), which the app runs on the Mac while Settings ▸
 //! Terminal's "Resume programs after a restart" is on, or off, and each host's bootstrap on that
@@ -159,13 +160,11 @@ fn report() {
     let Some(id) = conversation(&read_input()) else {
         return;
     };
-    let Some((pid, argv)) = find_claude(std::os::unix::process::parent_id()) else {
+    let Some((pid, args)) = find_claude(std::os::unix::process::parent_id()) else {
         return;
     };
     let profile = std::env::var("CLAUDE_CONFIG_DIR").ok();
-    let Some(command) = claude::claude_arguments(&argv)
-        .and_then(|args| claude::resume_command(args, &id, profile.as_deref()))
-    else {
+    let Some(command) = claude::resume_command(&args, &id, profile.as_deref()) else {
         return;
     };
     let Some(now) = SystemTime::now()
@@ -228,17 +227,24 @@ fn conversation(input: &[u8]) -> Option<String> {
         .map(|input| input.session_id)
 }
 
-/// The nearest process, from `pid` up, whose arguments are Claude Code's, within `MAX_HOPS`: its
-/// pid and arguments.
+/// The nearest process, from `pid` up, that is Claude Code, within `MAX_HOPS`: its pid and its own
+/// arguments, when they are provably whole (`claude::claude_arguments`). `None` when it is
+/// Claude but they aren't, without looking further up, or when a process on the way can't be
+/// read exactly.
 fn find_claude(pid: u32) -> Option<(u32, Vec<String>)> {
     let mut next = pid;
     for _ in 0..MAX_HOPS {
         if next <= 1 {
             return None;
         }
-        let argv = process::arguments(next as i32)?;
-        if claude::claude_arguments(&argv).is_some() {
-            return Some((next, argv));
+        let raw = next as i32;
+        let argv = process::exact_arguments(raw)?;
+        let executable = process::executable_path(raw);
+        let is_file = |path: &str| process::names_a_file(raw, path);
+        match claude::claude_arguments(&argv, executable.as_deref(), &is_file) {
+            claude::Found::Claude(args) => return Some((next, args.to_vec())),
+            claude::Found::Unproven => return None,
+            claude::Found::Other => {}
         }
         next = process::identity(next)?.parent;
     }
