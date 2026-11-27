@@ -22,6 +22,8 @@
 
 use std::path::Path;
 
+use crate::terminal::process;
+
 /// How many words after it a flag takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Takes {
@@ -202,10 +204,6 @@ pub(super) fn kept_flags(args: &[String]) -> Option<Vec<String>> {
     Some(kept)
 }
 
-/// Interpreters a script `claude` (an npm install's `cli.js`, or a test's stand-in) runs under,
-/// whose own name is `argv[0]`.
-const INTERPRETERS: &[&str] = &["node", "bun", "deno", "sh", "bash", "zsh", "dash"];
-
 /// Folders that only Claude Code's own program is in: the native install's versions, and the npm
 /// package and the Agent SDK's copy of it (as `needs_the_user::AGENT_FOLDERS` finds Claude).
 const CLAUDE_FOLDERS: &[&str] = &[
@@ -222,26 +220,68 @@ fn is_claude(word: &str) -> bool {
         || CLAUDE_FOLDERS.iter().any(|folder| word.contains(folder))
 }
 
-/// Claude's own arguments, those after its program, when `argv` is Claude Code's: its program
-/// named `claude` (or in one of Claude's own folders), alone or as the script of an interpreter.
-/// `None` for any other process.
-pub(super) fn claude_arguments(argv: &[String]) -> Option<&[String]> {
-    let first = argv.first()?;
-    if is_claude(first) {
-        return Some(&argv[1..]);
+fn is_interpreter(word: &str) -> bool {
+    Path::new(word)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(process::is_interpreter)
+}
+
+/// What a process is, to the report.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Found<'a> {
+    /// Claude Code, with its own arguments (those after its program), whole.
+    Claude(&'a [String]),
+    /// Claude Code, as its argv or its executable says, but with arguments that can't be shown
+    /// to be the ones it was started with, so it gets no report: a resume without the flags it
+    /// ran with (its model, its permissions) would be worse than none.
+    Unproven,
+    /// Some other process.
+    Other,
+}
+
+/// What the process whose argv reads `argv` (`process::exact_arguments`, empty words kept) and
+/// whose executable is `executable` is. Claude Code is its program named `claude` (or in one of
+/// Claude's own folders), alone or as an interpreter's script (`process::program_index`, with
+/// `is_file` telling a script from a word), or an executable in Claude's folders.
+///
+/// Its arguments count as whole only when nothing can have written over them. A runtime that
+/// sets its title over argv (node's `process.title`, as an npm install's `cli.js` runs) leaves the
+/// title as `argv[0]` and empties every word after it on macOS; on Linux `cmdline` then reads the
+/// title alone. So: no word may be empty; the executable must be known; when it is an interpreter
+/// (`node`, `bun`, `deno`), argv must say so too and name Claude's script; when it isn't, argv
+/// must name Claude itself, not an interpreter.
+pub(super) fn claude_arguments<'a>(
+    argv: &'a [String],
+    executable: Option<&str>,
+    is_file: &dyn Fn(&str) -> bool,
+) -> Found<'a> {
+    let Some(first) = argv.first() else {
+        return Found::Other;
+    };
+    let script = process::program_index(argv, is_file).filter(|index| *index > 0);
+    let named = is_claude(first) || script.is_some_and(|index| is_claude(&argv[index]));
+    if !named && !executable.is_some_and(is_claude) {
+        return Found::Other;
     }
-    let name = Path::new(first).file_name()?.to_str()?;
-    let interpreter = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    if !INTERPRETERS.contains(&interpreter) {
-        return None;
+    if argv.iter().any(String::is_empty) {
+        return Found::Unproven;
     }
-    // The script is the interpreter's first word that is no option of its own, unless an option
-    // says that word is code to run (`sh -c claude`), whose own process is not Claude.
-    let script = argv[1..].iter().position(|word| !is_option(word))? + 1;
-    let code = argv[1..script]
-        .iter()
-        .any(|option| ["-c", "-e", "--eval", "-p", "--print"].contains(&option.as_str()));
-    (!code && is_claude(&argv[script])).then(|| &argv[script + 1..])
+    let Some(executable) = executable else {
+        return Found::Unproven;
+    };
+    if is_interpreter(executable) {
+        match script {
+            Some(index) if is_interpreter(first) && is_claude(&argv[index]) => {
+                Found::Claude(&argv[index + 1..])
+            }
+            _ => Found::Unproven,
+        }
+    } else if is_claude(first) && !is_interpreter(first) {
+        Found::Claude(&argv[1..])
+    } else {
+        Found::Unproven
+    }
 }
 
 /// Whether `id` is a conversation id as Claude gives one (a UUID): letters, digits, `-` and `_`.

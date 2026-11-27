@@ -9,7 +9,10 @@
 //! that `proc_name`/`p_comm` is the wrong source, because some CLIs rewrite their own process
 //! title after launch — Claude Code among them, observed reporting its version string ("2.1.232")
 //! rather than the command a user typed. macOS has an answer: `KERN_PROCARGS2` returns the
-//! *exec-time* argv snapshot, which no later self-renaming can touch.
+//! *exec-time* argv, which renaming the process (`p_comm`) doesn't touch. It is read from the
+//! process's own memory, though, so a runtime that writes a title over its argv strings changes
+//! it: node's `process.title` (libuv) leaves the title as `argv[0]` and every word after it empty.
+//! [`exact_arguments`] keeps those empty words, for a caller that must know argv is whole.
 //!
 //! Linux has no such guarantee. Measured (Phase 0 item 1, on a real self-renaming process):
 //!
@@ -30,11 +33,11 @@ use std::path::Path;
 /// Interpreters whose `argv[0]` (or `/proc/<pid>/exe`) names the runtime rather than the command.
 /// Matched on the basename with any trailing version stripped, so `python3.12` and `node` both hit.
 const INTERPRETERS: &[&str] = &[
-    "python", "python2", "python3", "node", "deno", "bun", "ruby", "perl", "sh", "bash", "zsh",
-    "fish", "dash", "env",
+    "python", "python2", "python3", "node", "nodejs", "deno", "bun", "ruby", "perl", "sh", "bash",
+    "zsh", "fish", "dash", "env",
 ];
 
-fn is_interpreter(name: &str) -> bool {
+pub(crate) fn is_interpreter(name: &str) -> bool {
     let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     INTERPRETERS.contains(&name) || INTERPRETERS.contains(&trimmed)
 }
@@ -88,6 +91,57 @@ pub fn arguments(pid: i32) -> Option<Vec<String>> {
     platform::arguments(pid)
 }
 
+/// A process's arguments exactly as its argv reads now, empty words kept, so a caller can tell a
+/// runtime blanked them ([module doc](self)). `None` when the read disagrees with itself: on
+/// macOS fewer than `argc` words in the buffer, on Linux a `cmdline` that doesn't end in a NUL
+/// (the kernel's sign that the process wrote over its argv's end); or a word that isn't UTF-8;
+/// or it can't be read at all.
+pub fn exact_arguments(pid: i32) -> Option<Vec<String>> {
+    if pid <= 0 {
+        return None;
+    }
+    platform::exact_arguments(pid)
+}
+
+/// The path of the file a process runs, as the kernel has it (`proc_pidpath` on macOS,
+/// `/proc/<pid>/exe` on Linux), which nothing the process writes to its argv changes. `None`
+/// when it is gone or can't be read.
+pub fn executable_path(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    platform::executable_path(pid)
+}
+
+/// argv from a `KERN_PROCARGS2` buffer, every one of its `argc` words, empty ones kept: `argc`
+/// (i32), the exec path, NUL padding, then the words, each NUL-terminated. `None` when fewer than
+/// `argc` words end inside the buffer, or one isn't UTF-8.
+#[cfg(any(target_os = "macos", test))]
+fn exact_procargs(buffer: &[u8]) -> Option<Vec<String>> {
+    let count = buffer.get(..4)?;
+    let argc = i32::from_ne_bytes([count[0], count[1], count[2], count[3]]);
+    let argc = usize::try_from(argc).ok().filter(|argc| *argc > 0)?;
+    let mut offset = 4 + buffer[4..].iter().position(|b| *b == 0)?;
+    offset += buffer[offset..].iter().position(|b| *b != 0)?;
+    let mut words = Vec::with_capacity(argc);
+    for _ in 0..argc {
+        let end = offset + buffer.get(offset..)?.iter().position(|b| *b == 0)?;
+        words.push(String::from_utf8(buffer[offset..end].to_vec()).ok()?);
+        offset = end + 1;
+    }
+    Some(words)
+}
+
+/// argv from `/proc/<pid>/cmdline`, empty words kept. `None` when it doesn't end in a NUL, or a
+/// word isn't UTF-8.
+#[cfg(any(target_os = "linux", test))]
+fn exact_cmdline(raw: &[u8]) -> Option<Vec<String>> {
+    let body = raw.strip_suffix(&[0])?;
+    body.split(|b| *b == 0)
+        .map(|word| String::from_utf8(word.to_vec()).ok())
+        .collect()
+}
+
 /// A process's controlling terminal: its device's path (`/dev/ttys003`, `/dev/pts/3`) and number,
 /// which an open of that path must match. `None` when it has none, or it can't be read: the
 /// process is gone, or belongs to another user. Workroom's Claude Code hook writes its report
@@ -124,12 +178,17 @@ fn name_from_argv(argv: &[String], is_file: &dyn Fn(&str) -> bool) -> Option<Str
 /// a word that is no file, such as a flag's value (`python -W ignore`): the interpreter is then
 /// its own answer, as a bare REPL is.
 fn program_from_argv<'a>(argv: &'a [String], is_file: &dyn Fn(&str) -> bool) -> Option<&'a str> {
+    program_index(argv, is_file).map(|index| argv[index].as_str())
+}
+
+/// Where in `argv` [`program_from_argv`]'s program is: an interpreter's script's index, else 0.
+pub(crate) fn program_index(argv: &[String], is_file: &dyn Fn(&str) -> bool) -> Option<usize> {
     let first = argv.first()?;
     let name = basename(first)?;
     if !is_interpreter(name) {
-        return Some(first);
+        return Some(0);
     }
-    for argument in argv.iter().skip(1) {
+    for (index, argument) in argv.iter().enumerate().skip(1) {
         if argument.starts_with('-') && argument.len() > 1 {
             if takes_code(name, argument) {
                 break;
@@ -137,11 +196,11 @@ fn program_from_argv<'a>(argv: &'a [String], is_file: &dyn Fn(&str) -> bool) -> 
             continue;
         }
         if is_file(argument) {
-            return Some(argument);
+            return Some(index);
         }
         break;
     }
-    Some(first)
+    Some(0)
 }
 
 /// Whether `flag`, given to the interpreter `interpreter`, takes a program inline: the next
@@ -164,7 +223,7 @@ fn takes_code(interpreter: &str, flag: &str) -> bool {
 
 /// Whether `path`, an argument of process `pid`, names a file: a relative one is the process's,
 /// resolved against its working directory, never this process's.
-fn names_a_file(pid: i32, path: &str) -> bool {
+pub(crate) fn names_a_file(pid: i32, path: &str) -> bool {
     let path = Path::new(path);
     if path.is_absolute() {
         return path.is_file();
@@ -252,6 +311,10 @@ mod platform {
     pub(super) fn arguments(pid: i32) -> Option<Vec<String>> {
         let buffer = procargs2(pid)?;
         split_procargs(&buffer).map(|(argv, _)| argv)
+    }
+
+    pub(super) fn exact_arguments(pid: i32) -> Option<Vec<String>> {
+        super::exact_procargs(&procargs2(pid)?)
     }
 
     /// The environment follows argv in the same buffer, as NUL-terminated `KEY=value` strings with
@@ -439,15 +502,24 @@ mod platform {
 
     /// The path `proc_pidpath` gives for the process's executable, stat'd.
     pub(super) fn image(pid: u32) -> Option<super::Image> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = pidpath(pid as i32)?;
+        super::image_of(std::path::Path::new(std::ffi::OsStr::from_bytes(&path)))
+    }
+
+    pub(super) fn executable_path(pid: i32) -> Option<String> {
+        String::from_utf8(pidpath(pid)?).ok()
+    }
+
+    /// `proc_pidpath`'s bytes for the process's executable.
+    fn pidpath(pid: i32) -> Option<Vec<u8>> {
         let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         // SAFETY: `buffer` is the size passed, so the kernel cannot write past it.
-        let written = unsafe {
-            libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32)
-        };
-        use std::os::unix::ffi::OsStrExt;
+        let written =
+            unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
         let written = usize::try_from(written).ok().filter(|n| *n > 0)?;
         buffer.truncate(written);
-        super::image_of(std::path::Path::new(std::ffi::OsStr::from_bytes(&buffer)))
+        Some(buffer)
     }
 }
 
@@ -492,6 +564,23 @@ mod platform {
                 .map(|s| String::from_utf8_lossy(s).into_owned())
                 .collect()
         })
+    }
+
+    pub(super) fn exact_arguments(pid: i32) -> Option<Vec<String>> {
+        super::exact_cmdline(&fs::read(format!("/proc/{pid}/cmdline")).ok()?)
+    }
+
+    /// `/proc/<pid>/exe`'s target, without the ` (deleted)` the kernel adds once the file has been
+    /// replaced on disk (a runtime upgraded under a running process).
+    pub(super) fn executable_path(pid: i32) -> Option<String> {
+        let target = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+        let target = target.to_str()?;
+        Some(
+            target
+                .strip_suffix(" (deleted)")
+                .unwrap_or(target)
+                .to_string(),
+        )
     }
 
     pub(super) fn environment_value(pid: i32, key: &str) -> Option<String> {

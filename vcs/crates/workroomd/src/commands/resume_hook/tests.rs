@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::super::Scratch;
-use super::claude::{claude_arguments, kept_flags, resume_command};
+use super::claude::{Found, claude_arguments, kept_flags, resume_command};
 use super::*;
 
 fn words(line: &str) -> Vec<String> {
@@ -13,10 +13,26 @@ fn words(line: &str) -> Vec<String> {
 
 const ID: &str = "be5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e17";
 
+/// A native install's executable, which `~/.local/bin/claude` links to.
+const NATIVE: &str = "/Users/me/.local/share/claude/versions/2.1.332";
+
+/// Any word is a file, as an interpreter's script is.
+fn any_file(_: &str) -> bool {
+    true
+}
+
+/// Claude's own arguments in `argv`, run by the native executable.
+fn native_arguments(argv: &[String]) -> Option<&[String]> {
+    match claude_arguments(argv, Some(NATIVE), &any_file) {
+        Found::Claude(args) => Some(args),
+        _ => None,
+    }
+}
+
 /// The command Claude started as `line` resumes as, with the default profile.
 fn resumed(line: &str) -> Option<String> {
     let argv = words(line);
-    let args = claude_arguments(&argv)?;
+    let args = native_arguments(&argv)?;
     resume_command(args, ID, None).map(|command| command.join(" "))
 }
 
@@ -139,7 +155,7 @@ fn a_resumed_command_reports_itself_again() {
     );
     // `env` exec's `claude`, whose own arguments are those after it.
     let again = resume_command(
-        claude_arguments(&profiled[2..]).unwrap(),
+        native_arguments(&profiled[2..]).unwrap(),
         ID,
         Some("/p/sessions/2-me"),
     );
@@ -148,33 +164,97 @@ fn a_resumed_command_reports_itself_again() {
     assert_eq!(resume_command(&[], ID, Some("")).unwrap()[0], "claude");
 }
 
+const NODE: &str = "/opt/homebrew/Cellar/node/26.1.0/bin/node";
+const CLI: &str = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js";
+
 #[test]
 fn claude_is_found_by_its_program_alone_or_under_an_interpreter() {
-    let args = |line: &str| claude_arguments(&words(line)).map(<[String]>::to_vec);
-    assert_eq!(args("claude --model x"), Some(words("--model x")));
-    assert_eq!(args("/Users/me/.local/bin/claude -c"), Some(words("-c")));
+    let args = |line: &str, executable: &str| match claude_arguments(
+        &words(line),
+        Some(executable),
+        &any_file,
+    ) {
+        Found::Claude(args) => Some(args.to_vec()),
+        _ => None,
+    };
+    assert_eq!(args("claude --model x", NATIVE), Some(words("--model x")));
     assert_eq!(
-        args("/Users/me/.local/share/claude/versions/2.1.332 --verbose"),
-        Some(words("--verbose"))
+        args("/Users/me/.local/bin/claude -c", NATIVE),
+        Some(words("-c"))
     );
+    assert_eq!(args(&format!("{NATIVE} --verbose"), NATIVE), Some(words("--verbose")));
     assert_eq!(
-        args("node /usr/local/bin/claude --model x"),
+        args("node /usr/local/bin/claude --model x", NODE),
         Some(words("--model x"))
     );
     assert_eq!(
-        args("node --no-warnings /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js -c"),
+        args(&format!("node --no-warnings {CLI} -c"), NODE),
         Some(words("-c"))
     );
-    assert_eq!(args("/bin/sh /tmp/bin/claude --ide"), Some(words("--ide")));
-    for other in [
-        "codex --model x",
-        "node server.js",
-        "/bin/zsh -c claude",
-        "2.1.332",
-        "sh",
+    assert_eq!(
+        args("/bin/sh /tmp/bin/claude --ide", "/bin/bash"),
+        Some(words("--ide"))
+    );
+    for (other, executable) in [
+        ("codex --model x", "/opt/bin/codex"),
+        ("node server.js", NODE),
+        ("/bin/zsh -c claude", "/bin/zsh"),
+        ("2.1.332", "/usr/bin/true"),
+        ("sh", "/bin/sh"),
     ] {
-        assert_eq!(args(other), None, "{other}");
+        let argv = words(other);
+        assert_eq!(
+            claude_arguments(&argv, Some(executable), &any_file),
+            Found::Other,
+            "{other}"
+        );
     }
+}
+
+/// Value: protects=a resumed Claude keeping its model, permissions, directories and MCP servers
+/// (#828); fails_when=an npm install's argv that node blanked with its title, or that names no
+/// script under node, is reported as a plain `claude --resume`; why_new=new (#828 review);
+/// seam=the argv and executable a process read gives
+#[test]
+fn an_npm_claudes_argv_counts_only_when_it_is_provably_whole() {
+    let found = |argv: &[&str], executable: Option<&str>| {
+        let argv: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
+        match claude_arguments(&argv, executable, &|path| path == CLI) {
+            Found::Claude(args) => Ok(args.to_vec()),
+            Found::Unproven => Err("unproven"),
+            Found::Other => Err("other"),
+        }
+    };
+    let flags = [
+        "--model",
+        "opus",
+        "--add-dir",
+        "../lib",
+        "--dangerously-skip-permissions",
+    ];
+    let whole: Vec<&str> = ["node", CLI].iter().chain(&flags).copied().collect();
+    assert_eq!(
+        found(&whole, Some(NODE)),
+        Ok(flags.iter().map(|w| w.to_string()).collect())
+    );
+    // node's `process.title = "claude"`: macOS reads the title, then each word after it empty.
+    let blanked = ["claude", "", "", "", "", "", ""];
+    assert_eq!(found(&blanked, Some(NODE)), Err("unproven"));
+    // Linux's `cmdline` reads the title alone, empty words dropped; node still runs it.
+    assert_eq!(found(&["claude"], Some(NODE)), Err("unproven"));
+    // Blanked only past the script: an empty prompt, or a flag's value gone.
+    assert_eq!(found(&["node", CLI, "--model", ""], Some(NODE)), Err("unproven"));
+    // Under node, with no script of Claude's named; and an executable that can't be read.
+    assert_eq!(found(&["node", "--model", "opus"], Some(NODE)), Err("other"));
+    assert_eq!(found(&whole, None), Err("unproven"));
+    // argv saying an interpreter that the executable isn't, or the reverse.
+    assert_eq!(
+        found(&["claude", "--model", "opus"], Some("/usr/bin/nodejs")),
+        Err("unproven")
+    );
+    assert_eq!(found(&whole, Some(NATIVE)), Err("unproven"));
+    // A native Claude whose title replaced argv[0] is still Claude, and gets nothing.
+    assert_eq!(found(&["2.1.332", "", ""], Some(NATIVE)), Err("unproven"));
 }
 
 #[test]
