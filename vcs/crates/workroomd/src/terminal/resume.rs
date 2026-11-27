@@ -24,8 +24,8 @@
 //! its tab closed or its daemon or host gone, takes the whole state with it; the app keeps the
 //! record it last saw for a session that ended any way but its tab being closed (#824).
 //!
-//! The decisions in `apply`, the owner check and the exit grace (`check_exit`, `watch_owners`) are
-//! ported from herdr-core (herdrdev/herdr-core#429, `crates/herdr-core/src/resume.rs` at
+//! The decisions in `apply`, the owner check and the exit grace (`check_exit`, `watch_owners`,
+//! both now in `owners`) are ported from herdr-core (herdrdev/herdr-core#429, `crates/herdr-core/src/resume.rs` at
 //! `0cb50d57832f3ebb69157ce7f023fbbc520181a8`), Licensed under the Apache License, Version 2.0
 //! (`resume/LICENSE`). Changed from the original for Workroom: the state is a session's, not a
 //! kept terminal's; each report's outcome is returned so the daemon can log why one did not count;
@@ -39,20 +39,26 @@
 //! in it, each an `Event` of one resume lifecycle (`Resuming::decide`); launching is `launch`'s;
 //! the reasons a report does not count are one `Reason`, and the owner check returns it;
 //! `Word` is `OwnerSlot`, and the state a hand-off carries is `Carried` itself, its JSON
-//! unchanged; and there is no rapid-loss guard, since a program that fails at once exits, which
+//! unchanged; the token is `token`'s; and there is no rapid-loss guard, since a program that fails at once exits, which
 //! clears its record.
 
 pub mod launch;
+mod owners;
 mod protocol;
+mod token;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::terminal::process::{Identity, Image};
+use owners::{Checked, check_owner};
+pub(crate) use owners::{Watch, foreground_process, watch_owners};
 use protocol::{Action, Stream};
+use token::daemon_user;
+pub(crate) use token::{daemon_accepts_reports, give_token, scrub};
 
 /// The environment variable a session's token is in.
 pub(crate) const TOKEN_VARIABLE: &str = "OSC7577_TOKEN";
@@ -80,9 +86,6 @@ pub(crate) const EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// The most pids one session tracks at once. A report from a new pid past it is not accepted.
 const MAX_OWNERS: usize = 256;
-
-/// The most parents the owner check walks from an owner to the session's first process.
-const MAX_ANCESTORS: usize = 128;
 
 /// One process by pid and start time, so a reused pid is a different owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -505,19 +508,6 @@ impl Launched {
     }
 }
 
-/// What one look at a record's owner did (`Resume::check_exit`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Exit {
-    /// Nothing: the owner runs, its grace has not passed, or the record is another owner's now.
-    Unchanged,
-    /// The owner was found gone, which starts its grace.
-    Gone,
-    /// The owner was found running again before its grace passed.
-    Back,
-    /// The owner stayed gone for the grace, so its record, which started `program`, cleared.
-    Cleared { program: String },
-}
-
 /// Why a report did not count (`Outcome::NotAccepted`), as the daemon's log names it
 /// (`as_str`). `BadMac`, `StaleTime` and `NoPid` ignore it (`protocol::authenticate`), and
 /// `Replayed` and `TooManyOwners` refuse it, all leaving its owner as it was; the rest reject
@@ -559,13 +549,6 @@ impl Reason {
             Reason::Malformed => "malformed",
         }
     }
-}
-
-/// An owner that passed its check.
-pub(crate) struct Checked {
-    owner: Owner,
-    ancestors: Vec<Owner>,
-    cwd: Option<String>,
 }
 
 /// One session's resume state: what a hand-off carries of it, where its scanner is, and the
@@ -658,7 +641,7 @@ impl Carried {
 }
 
 impl Resume {
-    /// A new session's state, for the token its environment was given (`new_token`), or `None`
+    /// A new session's state, for the token its environment was given (`give_token`), or `None`
     /// when it was given none.
     pub(crate) fn for_session(environment: &[(OsString, OsString)]) -> Option<Resume> {
         let token = environment
@@ -746,7 +729,7 @@ impl Resume {
         if reports.is_empty() {
             return Vec::new();
         }
-        let now = unix_now();
+        let now = crate::util::unix_seconds().unwrap_or(0);
         let at = Instant::now();
         let (root, uid) = (self.carried.root, self.carried.uid);
         reports
@@ -916,55 +899,6 @@ impl Resume {
             .map(|(_, record)| record)
     }
 
-    /// Whether a record's owner was found gone and is still inside its grace.
-    fn in_grace(&self) -> bool {
-        self.records().any(|record| record.gone_since.is_some())
-    }
-
-    /// Every record's owner.
-    fn owners(&self) -> Vec<Owner> {
-        self.records().map(|record| record.owner).collect()
-    }
-
-    /// What one look at the records' owners looks at (`watch_owners`): `None` when no record has
-    /// an owner to look at, so no look is owed.
-    pub(crate) fn watch(&self) -> Option<Watch> {
-        let owners = self.owners();
-        (!owners.is_empty()).then_some(Watch {
-            root: self.carried.root,
-            owners,
-        })
-    }
-
-    /// One look at `owner`, found `gone` (or its pid now another process's) at `now`: starts its
-    /// record's grace, ends it if the owner is back, and clears the record once it has been gone
-    /// for `EXIT_GRACE`. A record that is no longer `owner`'s (a newer report replaced it, or its
-    /// pid was reused) is left alone. The `OwnerSlot` stays, so a replay is still refused.
-    fn check_exit(&mut self, owner: Owner, gone: bool, now: Instant) -> Exit {
-        let Some(slot) = self.carried.slots.get_mut(&owner.pid) else {
-            return Exit::Unchanged;
-        };
-        let Some(record) = slot.record.as_mut().filter(|record| record.owner == owner) else {
-            return Exit::Unchanged;
-        };
-        match record.gone_since {
-            Some(since) if gone && now.saturating_duration_since(since) >= EXIT_GRACE => {
-                let program = program_name(&record.argv);
-                slot.record = None;
-                Exit::Cleared { program }
-            }
-            Some(_) if !gone => {
-                record.gone_since = None;
-                Exit::Back
-            }
-            None if gone => {
-                record.gone_since = Some(now);
-                Exit::Gone
-            }
-            _ => Exit::Unchanged,
-        }
-    }
-
     /// The session's resume record, as the terminal API shows it.
     pub(crate) fn redacted(&self) -> Option<Redacted> {
         self.whole().map(Whole::redacted)
@@ -997,134 +931,6 @@ impl Resume {
     }
 }
 
-/// The process whose name, folder and Claude profile stand for a session's foreground process
-/// group `group` (#825): the group's leader, except where it is the helper that runs a resumed
-/// program (`launch`), which the shell made its job's leader, so the program would read as
-/// `workroom`. There it is the program. Proof, looked up with `lookup` (`process::identity`): the
-/// session resumed a program whose report the daemon accepted, from a process under the session's
-/// shell with the leader as its parent (`Launched`), and both are still those processes (pid and
-/// start time), the program still the leader's child. The group itself is left as it is: program
-/// status and `terminal.prompt` compare groups.
-pub(crate) fn foreground_process(
-    shared: &SharedResume,
-    group: i32,
-    lookup: impl Fn(u32) -> Option<Identity>,
-) -> i32 {
-    let Some(launched) = crate::util::lock_or_recover(shared)
-        .as_ref()
-        .and_then(|state| state.carried.launched)
-    else {
-        return group;
-    };
-    if u32::try_from(group).ok() != Some(launched.helper.pid) {
-        return group;
-    }
-    let helper = lookup(launched.helper.pid).map(Owner::from) == Some(launched.helper);
-    let program = lookup(launched.program.pid).is_some_and(|program| {
-        Owner::from(program) == launched.program && program.parent == launched.helper.pid
-    });
-    match i32::try_from(launched.program.pid) {
-        Ok(pid) if helper && program => pid,
-        _ => group,
-    }
-}
-
-/// Checks that `pid` may own a record in a session whose first process is `root`: alive, run by
-/// `uid`, and with `root` among its parents, each parent started no later than its child (so a
-/// reused pid in the chain breaks it).
-fn check_owner(
-    root: Option<Owner>,
-    uid: u32,
-    pid: u32,
-    lookup: impl Fn(u32) -> Option<Identity>,
-) -> Result<Checked, Reason> {
-    let root = root.ok_or(Reason::NotDescendant)?;
-    let owner = lookup(pid).ok_or(Reason::OwnerGone)?;
-    if owner.uid != uid {
-        return Err(Reason::OtherUser);
-    }
-    let mut ancestors = Vec::new();
-    let mut process = owner;
-    while Owner::from(process) != root {
-        if process.pid == root.pid || process.parent == 0 || ancestors.len() == MAX_ANCESTORS {
-            return Err(Reason::NotDescendant);
-        }
-        let parent = lookup(process.parent).ok_or(Reason::NotDescendant)?;
-        if parent.start > process.start || parent.pid == process.pid {
-            return Err(Reason::NotDescendant);
-        }
-        ancestors.push(Owner::from(parent));
-        process = parent;
-    }
-    Ok(Checked {
-        owner: owner.into(),
-        ancestors,
-        cwd: crate::terminal::process::working_directory(pid as i32),
-    })
-}
-
-/// What one look at a session's record owners looks at (`watch_owners`), copied under its lock:
-/// the session's first process, and every record's owner.
-pub(crate) struct Watch {
-    root: Option<Owner>,
-    owners: Vec<Owner>,
-}
-
-/// What one look at a session's record owners found (`watch_owners`).
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Watched {
-    /// The programs whose records cleared, their owners gone for `EXIT_GRACE`.
-    pub cleared: Vec<String>,
-    /// Whether an owner is inside its grace, so another look is owed whether or not more output
-    /// comes. A running owner owes none: its exit prints its shell's prompt, which wakes the next
-    /// look, so an idle daemon still sleeps while its programs hold records.
-    pub watching: bool,
-}
-
-/// One look, at `now`, at whether each record's owner in `shared` still runs, with `lookup`
-/// (`process::identity`): an owner gone, or whose pid now names another process, starts its
-/// grace, and its record clears once it has stayed gone for `EXIT_GRACE` (`Resume::check_exit`).
-/// While the session's own shell is gone nothing clears: the session is ending, and its records
-/// must outlast it (#824).
-///
-/// The lookups run with the state's lock released, so a read waits on it only while the owners are
-/// copied (`Resume::watch`, `watch`) and while what was found is applied. A report accepted
-/// meanwhile is safe: it replaces its pid's record with one `check_exit` sees is not the owner it
-/// looked up, or is the same owner again, which is then running.
-pub(crate) fn watch_owners(
-    shared: &SharedResume,
-    watch: Watch,
-    now: Instant,
-    lookup: impl Fn(u32) -> Option<Identity>,
-) -> Watched {
-    let Watch { root, owners } = watch;
-    let running = |owner: Owner| lookup(owner.pid).map(Owner::from) == Some(owner);
-    // A record is only accepted once the first process is known, so `root` is set here.
-    if !root.is_some_and(running) {
-        // The session is ending, and its end wakes the thread itself.
-        return Watched::default();
-    }
-    let found: Vec<(Owner, bool)> = owners
-        .into_iter()
-        .map(|owner| (owner, !running(owner)))
-        .collect();
-    let mut state = crate::util::lock_or_recover(shared);
-    let Some(state) = state.as_mut() else {
-        return Watched::default();
-    };
-    let cleared = found
-        .into_iter()
-        .filter_map(|(owner, gone)| match state.check_exit(owner, gone, now) {
-            Exit::Cleared { program } => Some(program),
-            _ => None,
-        })
-        .collect();
-    Watched {
-        cleared,
-        watching: state.in_grace(),
-    }
-}
-
 /// The program a command starts, by its short name: the basename of `argv[0]`, or, for one that
 /// starts with `env` (`env CLAUDE_CONFIG_DIR=… claude --resume …`, ADR 0082), of the first word
 /// past `env`'s own options and assignments.
@@ -1147,72 +953,6 @@ pub(crate) fn program_name(argv: &[String]) -> String {
         return base(command);
     }
     base(first)
-}
-
-/// The daemon's user, whose processes alone may report, or `None` when it runs as root or setuid:
-/// such a daemon accepts no reports (ADR 0082).
-fn daemon_user() -> Option<u32> {
-    // SAFETY: neither call has preconditions.
-    let (euid, uid) = unsafe { (libc::geteuid(), libc::getuid()) };
-    (euid != 0 && euid == uid).then_some(euid)
-}
-
-/// Whether this daemon accepts reports at all (`daemon_user`): a root one gives no session a
-/// token, so no session of its resumes either, and a remote pane's gone session stays ended
-/// (#826).
-pub(crate) fn daemon_accepts_reports() -> bool {
-    daemon_user().is_some()
-}
-
-/// A new random token for an interactive session's `TOKEN_VARIABLE`, or `None` when the daemon
-/// accepts no reports (`daemon_user`) or the system's randomness fails: that session then gets no
-/// token, never a predictable one.
-pub(crate) fn new_token() -> Option<String> {
-    daemon_user()?;
-    let mut bytes = [0u8; 16];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).ok()?;
-    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-/// Gives a new session's environment its own token, or none, in place of any it was forwarded:
-/// a token from the pane an attach client was typed in belongs to that pane (ADR 0082). None for
-/// a session that isn't `interactive`, or whose app turned resume off (`resumes`, #827).
-pub(crate) fn give_token(
-    environment: &mut Vec<(OsString, OsString)>,
-    interactive: bool,
-    resumes: bool,
-) {
-    environment.retain(|(key, _)| key != TOKEN_VARIABLE);
-    if !interactive || !resumes {
-        return;
-    }
-    match new_token() {
-        Some(token) => environment.push((TOKEN_VARIABLE.into(), token.into())),
-        None if daemon_user().is_none() => {
-            // Said once: every shell of a root daemon is refused the same way.
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| {
-                crate::note!(
-                    "resume: this daemon runs as root, so no session accepts reports (root)"
-                )
-            });
-        }
-        None => crate::note!("resume: no token for a new session: the system's randomness failed"),
-    }
-}
-
-/// Keeps a pane's resume token out of a process the daemon starts that isn't a session's shell
-/// (`workroom exec`, the daemon itself, an attach client's fallback shell): a token in the
-/// environment it was handed belongs to another pane, and nothing it runs may report for it
-/// (ADR 0082).
-pub(crate) fn scrub(command: &mut std::process::Command) {
-    command.env_remove(TOKEN_VARIABLE);
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 #[cfg(test)]

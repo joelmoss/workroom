@@ -3,6 +3,7 @@
 //! 2.0, and changed for Workroom: the first sends real report bodies through `apply`, and the
 //! second runs on a monotonic clock and leaves out the rapid-loss guard. The rest are Workroom's.
 
+use super::owners::{Exit, Watched};
 use super::*;
 use crate::terminal::process::Identity;
 use std::sync::{Arc, Mutex};
@@ -445,7 +446,8 @@ fn a_hand_off_carries_the_token_records_and_stream_position() {
     let mut stream = Vec::new();
     stream.extend_from_slice(b"some output ");
     stream.extend_from_slice(protocol::OPEN);
-    stream.extend_from_slice(&body(10, unix_now(), &argv(&["vim"])));
+    let now = crate::util::unix_seconds().unwrap();
+    stream.extend_from_slice(&body(10, now, &argv(&["vim"])));
     stream.push(7);
     // The shell is not a real process here, so the owner check fails, but the report is still
     // read and its offset kept.
