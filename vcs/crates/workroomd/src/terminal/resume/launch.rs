@@ -25,9 +25,11 @@
 //! code's when its name is `resume-<session id>-<32 hex>.json` or `.shell` (`is_launch_name`),
 //! with `.claim` after it once claimed. Nothing else writes such a name there. A file left
 //! behind (its pane closed before its shell got as far as the helper) is removed by the daemon
-//! at a fresh start, when no session it made can still be waiting for one, and an hour after it
-//! was written at any later launch: never one a helper could still be about to claim. Only regular
-//! files are removed, judged by `symlink_metadata`, so a link or a FIFO with such a name is left.
+//! at a fresh start, when no session it made can still be waiting for one, and at any later
+//! launch once it is an hour old and its session (the id in its name) no longer runs: a running
+//! session's shell file waits for its program to end, however long. So never one a helper could
+//! still claim. Only regular files are removed, judged by `symlink_metadata`, so a link or a FIFO
+//! with such a name is left.
 //!
 //! The claim, the literal `execv` and the wrapper script are ported from herdr-core
 //! (herdrdev/herdr-core#429, `crates/herdr-core/src/resume/launch.rs` and
@@ -169,24 +171,23 @@ fn launch_name(id: SessionId, extension: &str) -> io::Result<String> {
 
 /// Whether `name` is a launch file's (`launch_name`), for session `id` when one is given.
 pub(crate) fn is_launch_name(name: &str, id: Option<SessionId>) -> bool {
-    let Some(stem) = name
+    launch_session(name).is_some_and(|session| id.is_none_or(|id| id == session))
+}
+
+/// The session a launch file's `name` (`launch_name`) is for; `None` for any other name.
+fn launch_session(name: &str) -> Option<SessionId> {
+    let stem = name
         .strip_suffix(".json")
         .or_else(|| name.strip_suffix(".shell"))
-        .and_then(|stem| stem.strip_prefix("resume-"))
-    else {
-        return false;
-    };
-    let Some((session, nonce)) = stem.rsplit_once('-') else {
-        return false;
-    };
-    // The id in its one written form, lowercase and hyphenated, as `launch_name` writes it.
-    let parsed = wr_protocol::terminal::parse_session_id(OsStr::new(session))
-        .filter(|parsed| parsed.to_hyphenated() == session);
-    parsed.is_some_and(|parsed| id.is_none_or(|id| id == parsed))
-        && nonce.len() == 32
+        .and_then(|stem| stem.strip_prefix("resume-"))?;
+    let (session, nonce) = stem.rsplit_once('-')?;
+    let hex = nonce.len() == 32
         && nonce
             .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    // The id in its one written form, lowercase and hyphenated, as `launch_name` writes it.
+    wr_protocol::terminal::parse_session_id(OsStr::new(session))
+        .filter(|parsed| hex && parsed.to_hyphenated() == session)
 }
 
 /// Writes `contents` to a new file for session `id` in the private folder `dir`, readable by this
@@ -264,8 +265,10 @@ pub fn claim_launch(path: &Path, id: Option<SessionId>) -> io::Result<Launch> {
 }
 
 /// Removes the launch files in `dir` (`is_launch_name`, claimed or not) older than `older_than`,
-/// or every one with `None`. Only regular files, judged without following a link.
-pub(crate) fn sweep(dir: &Path, older_than: Option<Duration>) {
+/// or every one with `None`, but never one of a session `live` says runs: its shell file waits
+/// for its program to end, however long that takes. Only regular files, judged without following
+/// a link.
+pub(crate) fn sweep(dir: &Path, older_than: Option<Duration>, live: impl Fn(SessionId) -> bool) {
     if !is_private_dir(dir) {
         return;
     }
@@ -273,7 +276,10 @@ pub(crate) fn sweep(dir: &Path, older_than: Option<Duration>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !is_launch_name(name.strip_suffix(".claim").unwrap_or(name), None) {
+        let Some(session) = launch_session(name.strip_suffix(".claim").unwrap_or(name)) else {
+            continue;
+        };
+        if live(session) {
             continue;
         }
         let path = entry.path();
@@ -294,19 +300,20 @@ pub(crate) fn sweep(dir: &Path, older_than: Option<Duration>) {
 
 /// A daemon starting fresh removes every launch file a daemon before it left (`sweep`).
 pub fn sweep_at_start(socket: &Path) {
-    sweep(&dir_beside(socket), None);
+    sweep(&dir_beside(socket), None, |_| false);
 }
 
 /// How a session starts that resumes `launch`: its `invocation` (the session's own, finished)
 /// becomes the wrapper login shell, whose files are written to `dir` for session `id`, with
-/// `helper` the daemon's own binary. `None`, and nothing written, when it can't: the session then
-/// starts as it would have.
+/// `helper` the daemon's own binary; `live` says which sessions run, whose files are left alone.
+/// An error, and nothing written, when it can't: the session then starts as it would have.
 pub(crate) fn prepare(
     invocation: &Invocation,
     launch: &Launch,
     dir: &Path,
     id: SessionId,
     helper: &Path,
+    live: impl Fn(SessionId) -> bool,
 ) -> io::Result<Invocation> {
     if !launch.is_well_formed() {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -315,7 +322,7 @@ pub(crate) fn prepare(
         return Err(io::ErrorKind::NotFound.into());
     }
     private_dir(dir)?;
-    sweep(dir, Some(ABANDONED));
+    sweep(dir, Some(ABANDONED), live);
     let shell = Shell {
         program: invocation.program.as_bytes().to_vec(),
         arguments: invocation
