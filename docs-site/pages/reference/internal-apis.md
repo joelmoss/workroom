@@ -189,7 +189,7 @@ A session's records, as they are now: one per session in the snapshot that follo
 | `resume` | The session's resume record whole, as the next-but-one table says, or null for none. The app saves it in the tab's saved-layout entry. A daemon that predates resume records leaves it out, which says nothing about the tab's record. |
 | `resumeStarted` | `true`, sent only then and in every event after: the program the session was started to resume has started, its helper's report of the record accepted, so the pane says it resumed. Left out of a session that resumes nothing, or whose resume the daemon declined (`resumeDeclined`). A hand-off's next program doesn't carry it. |
 | `resumeFailed` | `true`, sent only then and in every event after: the program the session was started to resume could not start, or exited with an error within 5 s of starting, so the pane says it couldn't be resumed. It can come with `resumeStarted` or, for a program that never started, without it. A hand-off's next program doesn't carry it. |
-| `resumeDeclined` | `true`, sent only then and in every event after: the daemon declined the resume the session was started for, so the pane says it got a new shell and the tab forgets the record. Sent from the session's first event when the record's folder is gone or its shell has no Workroom hook (only zsh and bash have one); else at the shell's first OSC 133 prompt when its helper had not reported (a startup file kept the hook from running), or 30 s after the session started for a shell whose prompt sends no OSC 133. The daemon claims the unused launch file first, so nothing starts the program later, and the record it seeded goes with it. A hand-off's next program doesn't carry it. |
+| `resumeDeclined` | `true`, sent only then and in every event after: the daemon declined the resume the session was started for, so the pane says it got a new shell and the tab forgets the record. Sent from the session's first event when the record's folder is gone or its shell has no Workroom hook (only zsh and bash have one); else, for a shell that never said the hook loaded in it (one that skipped `.zshenv` or `ENV`), at its first OSC 133 prompt when its helper had not reported, or 30 s after the session started for a shell whose prompt sends no OSC 133. A shell whose hook loaded is waited for as long as it runs, so a hook its startup files keep from running is never declined. The daemon claims the unused launch file first, so nothing starts the program later, and the record it seeded goes with it. A hand-off's next program doesn't carry it. |
 
 ### ProgramStatus `status` records
 
@@ -323,6 +323,9 @@ The same binary is the daemon. These subcommands are its own, never the CLI's co
         what a resuming session's shell runs at its first prompt (#825), as its first job:
         claims <file>, a launch file the daemon wrote, and runs the program it names, in its
         folder, saying so when it fails
+  workroomd resume-launch --hook-loaded
+        what a resuming session's shell runs as Workroom's hook loads in it (#825): reports, as
+        the shell, that the hook is there to run the program
   workroomd protocol
         print the protocol version this build speaks
 ```
@@ -341,7 +344,7 @@ A hand-off starts the daemon's next program in place as `serve --socket <path> -
 | `credential` | Git, as a local container workroom's credential helper; `credential relay` is set up when the container is. |
 | `run-script` | The app, to run a remote workroom's setup and teardown scripts on its host. |
 | `run-supervisor` | The daemon: it is what a run session's pty runs around its command. |
-| `resume-launch` | The daemon: a resuming session's own shell runs it at its first prompt, through Workroom's zsh or bash hook, as its first job: it runs the program the tab's resume record names, in its folder, and says so when that fails. |
+| `resume-launch` | The daemon: a resuming session's own shell runs it at its first prompt, through Workroom's zsh or bash hook, as its first job: it runs the program the tab's resume record names, in its folder, and says so when that fails. With `--hook-loaded`, the same shell runs it as the hook loads, before the user's startup files, to report that the hook is there, so the daemon waits for it however late the first prompt comes. |
 | `protocol` | The app, to ask a binary which protocol it speaks before using it. |
 
 ## Hidden commands

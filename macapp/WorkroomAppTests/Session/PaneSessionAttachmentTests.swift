@@ -463,23 +463,29 @@ final class PaneSessionAttachmentTests: XCTestCase {
     XCTAssertEqual(forgets(), 1)
   }
 
-  /// Value: protects=a resume nothing confirms within the wait (an older daemon, a shell that never
-  /// reached the program) saying the pane got a new shell and forgetting the record, and a start or
-  /// failure heard after that still correcting the toast; fails_when=an unconfirmed resume says
-  /// "Resumed", keeps its record, or a late start is lost; why_new=new (#825 review); seam=the
-  /// wait, run out by the test
-  func testAResumeNothingConfirmsIsDeclinedAndALateStartCorrectsIt() throws {
+  /// Value: protects=a resume nothing confirms within the wait (a shell whose Workroom hook loaded
+  /// and is still starting, one whose startup files keep the hook from running, a dropped link)
+  /// saying the pane got a new shell but keeping the record, which only the daemon's decline
+  /// forgets, and a start or failure heard after that, however late, still correcting the toast;
+  /// fails_when=an unconfirmed resume says "Resumed", forgets its record by itself, toasts twice,
+  /// loses a late start or failure past `resumeFailureWindow`, or a later decline keeps the record;
+  /// why_new=#825's third review (the fallback forgot records a hooked shell would have resumed);
+  /// seam=the wait, run out by the test; the state, checked past the window
+  func testAResumeNothingConfirmsKeepsItsRecordAndALateWordCorrectsIt() throws {
     let (pane, forgets) = goneSessionPanes()
     let (late, toasts) = pane(claude)
     XCTAssertNotNil(late.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
     late.resumeUnconfirmed()
     late.resumeUnconfirmed()
     XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced])
-    XCTAssertEqual(forgets(), 1, "a declined resume forgets its record")
+    XCTAssertEqual(forgets(), 0, "only the daemon's decline forgets the record")
+    XCTAssertEqual(late.resumeState, .unconfirmed(program: "Claude Code"), "with no clock")
     late.resumeStarted()
     XCTAssertEqual(toasts.notices, [PaneNoticeToast.sessionReplaced, "Resumed Claude Code"])
     late.resumeUnconfirmed()
+    late.resumeDeclined()
     XCTAssertEqual(toasts.notices.count, 2, "a started resume is never declined")
+    XCTAssertEqual(forgets(), 0)
 
     let (failing, failed) = pane(claude)
     XCTAssertNotNil(failing.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
@@ -487,6 +493,15 @@ final class PaneSessionAttachmentTests: XCTestCase {
     failing.resumeFailed()
     XCTAssertEqual(
       failed.notices, [PaneNoticeToast.sessionReplaced, "Couldn't resume Claude Code"])
+    XCTAssertEqual(forgets(), 1, "a failure forgets the record")
+
+    let (declined, said) = pane(claude)
+    XCTAssertNotNil(declined.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    declined.resumeUnconfirmed()
+    declined.resumeDeclined()
+    declined.resumeDeclined()
+    XCTAssertEqual(said.notices, [PaneNoticeToast.sessionReplaced], "said once")
+    XCTAssertEqual(forgets(), 2, "the daemon's decline after the fallback forgets it, once")
   }
 
   /// Value: protects=a resume the daemon declined (#825: its shell never ran Workroom's hook)

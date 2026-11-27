@@ -67,9 +67,14 @@ final class PaneSessionAttachment {
     case awaiting(program: String)
     /// The daemon said it started, and the pane said "Resumed".
     case started(program: String, at: Date)
-    /// The daemon declined it, or nothing said so within `resumeConfirmationWait`, and the pane
-    /// said it got a new shell; a start or a failure heard later still corrects that.
+    /// The daemon declined it, and the pane said it got a new shell and forgot the record; a start
+    /// or a failure heard soon after still corrects that.
     case declined(program: String, at: Date)
+    /// Nothing said how it went within `resumeConfirmationWait`, and the pane said it got a new
+    /// shell, but kept the record: the daemon waits on a shell whose Workroom hook loaded for as
+    /// long as it lives (a passphrase answered minutes later), so a start or failure it says
+    /// later, however late, still corrects the toast, and a decline it says still forgets it.
+    case unconfirmed(program: String)
   }
   private(set) var resumeState: ResumeState?
   /// The wait that turns an unconfirmed resume into a declined one, once it has started
@@ -77,20 +82,25 @@ final class PaneSessionAttachment {
   private var resumeConfirmation: DispatchWorkItem?
   /// How long a resume waits, once its session's daemon has first said anything of the session,
   /// for it to say the program started or that it declined the resume, before the pane says it got
-  /// a new shell anyway and forgets the record. Only a fallback: the daemon says one or the other
-  /// itself, at the shell's first prompt or, for a shell whose prompt sends no OSC 133, 30 s after
-  /// the session started (`resume::DECLINE_AFTER`), and it publishes the session's first status as
-  /// it starts it, so this clock starts then too. It outlasts the daemon's own wait, so it decides
-  /// only where the daemon says neither (a link that dropped, a daemon replaced meanwhile), and is
-  /// counted from that first word rather than from `launch`, so hidden tabs restored together on a
-  /// cold disk, whose login shells start slowly, never time out before their daemon has decided.
+  /// a new shell anyway, keeping the record (`resumeUnconfirmed`). Only a fallback: for a shell
+  /// that never loaded Workroom's hook the daemon declines the resume itself, at its first prompt
+  /// or, for one whose prompt sends no OSC 133, 30 s after the session started
+  /// (`resume::DECLINE_AFTER`), and it publishes the session's first status as it starts it, so
+  /// this clock starts then too. It outlasts that wait, so it speaks only where the daemon says
+  /// neither: a shell whose hook loaded and is still starting (the daemon waits for it with no
+  /// deadline), one whose startup files keep the loaded hook from running (`exec fish` at the end
+  /// of `.zshrc`, the accepted cost: the record stays, and this says so at each restart), a link
+  /// that dropped, a daemon replaced meanwhile. It is counted from that first word rather than from
+  /// `launch`, so hidden tabs restored together on a cold disk, whose login shells start slowly,
+  /// never time out before their daemon has decided.
   static let resumeConfirmationWait: TimeInterval = 45
   /// This pane's: a test seam, so a test runs out the wait itself (`resumeUnconfirmed`).
   var resumeConfirmationWait = PaneSessionAttachment.resumeConfirmationWait
-  /// How long after a resume's toast a start or failure heard still changes it: the daemon says a
-  /// failure within 5 s of the program starting, and once its own wait has run out (a decline it
-  /// made claims the launch file) it can't say the program started at all, so this is only for an
-  /// app that heard late, past which it says nothing.
+  /// How long after a resume's "Resumed" toast, or a decline the daemon said, a failure or start
+  /// heard still changes it: the daemon says a failure within 5 s of the program starting, and once
+  /// it has declined a resume (claiming the launch file) it can't say the program started at all,
+  /// so this is only for an app that heard late, past which it says nothing. An unconfirmed
+  /// resume's toast has no such limit (`ResumeState.unconfirmed`).
   static let resumeFailureWindow: TimeInterval = 30
 
   /// When a remote pane reattaches after its ssh exits 255, and when it stops trying.
@@ -237,19 +247,28 @@ final class PaneSessionAttachment {
   }
 
   /// The daemon declined the resume this pane's session was started for (#825): its folder is
-  /// gone, its shell has no Workroom hook, or the hook never ran. The pane says it got a new
+  /// gone, its shell has no Workroom hook, or the hook never loaded. The pane says it got a new
   /// shell, once, and the tab forgets the record, which would be declined again at every restart.
+  /// One heard after the fallback already said so forgets the record without a second toast.
   func resumeDeclined() {
-    guard case .awaiting(let program) = resumeState else { return }
-    decline(program)
+    switch resumeState {
+    case .awaiting(let program):
+      decline(program)
+    case .unconfirmed(let program):
+      resumeState = .declined(program: program, at: Date())
+      forgetTabResume()
+    default:
+      return
+    }
   }
 
   /// The daemon said the program this pane's session was started to resume really started
-  /// (#825): the pane says "Resumed", once. One heard after the wait ran out corrects the new-shell
-  /// toast; the record it forgot comes back with the daemon's own, which a started program has.
+  /// (#825): the pane says "Resumed", once. One heard after the fallback ran out, however late
+  /// (a passphrase answered minutes later), or soon after a decline, corrects the new-shell toast;
+  /// a record a decline forgot comes back with the daemon's own, which a started program has.
   func resumeStarted() {
     switch resumeState {
-    case .awaiting(let program):
+    case .awaiting(let program), .unconfirmed(let program):
       confirmResume(of: program)
     case .declined(let program, let at) where Self.isRecent(at):
       confirmResume(of: program)
@@ -264,7 +283,7 @@ final class PaneSessionAttachment {
   func resumeFailed() {
     let program: String
     switch resumeState {
-    case .awaiting(let name): program = name
+    case .awaiting(let name), .unconfirmed(let name): program = name
     case .started(let name, let at) where Self.isRecent(at): program = name
     case .declined(let name, let at) where Self.isRecent(at): program = name
     default: return
@@ -275,12 +294,17 @@ final class PaneSessionAttachment {
   }
 
   /// Nothing said whether the resumed program started, or that its resume was declined, within
-  /// `resumeConfirmationWait` (`sessionReported`): the resume is declined here, so the pane says
-  /// it got a new shell, as one with no record does, and the tab forgets the record, so a stale
-  /// command does not resume again after the next restart.
+  /// `resumeConfirmationWait` (`sessionReported`): the pane says it got a new shell, as one with no
+  /// record does, but the tab keeps the record. Only the daemon's own decline forgets it: a shell
+  /// whose Workroom hook loaded may still start the program (`ResumeState.unconfirmed`), and one
+  /// whose startup files keep the hook from running tries it again at the next restart, which
+  /// says so again.
   func resumeUnconfirmed() {
     guard case .awaiting(let program) = resumeState else { return }
-    decline(program)
+    resumeConfirmation?.cancel()
+    resumeConfirmation = nil
+    resumeState = .unconfirmed(program: program)
+    surface?.showPaneNotice(PaneNoticeToast.sessionReplaced)
   }
 
   private func decline(_ program: String) {
