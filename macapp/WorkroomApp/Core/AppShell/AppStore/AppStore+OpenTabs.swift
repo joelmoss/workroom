@@ -14,23 +14,29 @@ extension AppStore {
   /// which the list passes in. Its other tabs draw nothing, so their rows (unread counts, run
   /// state, diagnoses) are not built.
   func openTabsRows(showing: OpenTabsItem? = nil) -> [OpenTabsRow] {
-    displayedWorkroomTargets().map { sid, target in
-      let isSelected = sid == selectedTargetID
-      let isFolded = isOpenRowFolded(sid)
-      let tabs = terminals.tabs(for: target)
-      let stripTabs =
-        TerminalPanes.showsTabStrip(tabCount: tabs.count, for: target.id) ? tabs : []
-      let built =
-        isFolded
-        ? stripTabs.filter { showing == .tab($0.id, in: sid) } : stripTabs
-      return OpenTabsRow(
-        model: OpenTabsWorkroomRowModel(
-          sid: sid, target: target,
-          presentation: workroomTabPresentation(sid: sid, target: target),
-          marks: workroomTabMarks(sid: sid, target: target),
-          isSelected: isSelected, isFolded: isFolded, tabCount: stripTabs.count),
-        tabs: openTabsTabRows(built, sid: sid, target: target, isSelected: isSelected))
-    }
+    displayedWorkroomTargets().map { openTabsRow($0.sid, $0.target, showing: showing) }
+  }
+
+  /// `sid`'s row. `unfolded`: every tab is built whatever its fold, as a grouping that shows no
+  /// row of its own for it needs (Project, None: `openTabsLayout`).
+  func openTabsRow(
+    _ sid: SidebarID, _ target: TerminalTarget, showing: OpenTabsItem?, unfolded: Bool = false
+  ) -> OpenTabsRow {
+    let isSelected = sid == selectedTargetID
+    let isFolded = isOpenRowFolded(sid)
+    let tabs = terminals.tabs(for: target)
+    let stripTabs =
+      TerminalPanes.showsTabStrip(tabCount: tabs.count, for: target.id) ? tabs : []
+    let built =
+      isFolded && !unfolded
+      ? stripTabs.filter { showing == .tab($0.id, in: sid) } : stripTabs
+    return OpenTabsRow(
+      model: OpenTabsWorkroomRowModel(
+        sid: sid, target: target,
+        presentation: workroomTabPresentation(sid: sid, target: target),
+        marks: workroomTabMarks(sid: sid, target: target),
+        isSelected: isSelected, isFolded: isFolded, tabCount: stripTabs.count),
+      tabs: openTabsTabRows(built, sid: sid, target: target, isSelected: isSelected))
   }
 
   /// The rows of `tabs`, `target`'s tabs as its strip shows them.
@@ -135,6 +141,32 @@ extension AppStore {
     else { return false }
     sids.insert(sids.remove(at: from), at: index)
     workroomTabOrder = sids.compactMap(\.targetID)
+    return true
+  }
+
+  /// Move workroom tabs `sids` together, in their title-bar order, to `place` in the title bar, as
+  /// a grouped Open list's reorder does (`OpenRowReflow.titleBarMove`). Returns whether the order
+  /// changed.
+  @discardableResult
+  func moveWorkroomTabs(_ sids: [SidebarID], to place: OpenRowReflow.TitleBarPlace) -> Bool {
+    let current = displayedWorkroomTargets().map(\.sid)
+    let moving = current.filter(Set(sids).contains)
+    guard !moving.isEmpty else { return false }
+    var rest = current.filter { !moving.contains($0) }
+    let at: Int
+    switch place {
+    case .before(let sid):
+      guard let index = rest.firstIndex(of: sid) else { return false }
+      at = index
+    case .after(let sid):
+      guard let index = rest.firstIndex(of: sid) else { return false }
+      at = index + 1
+    case .end:
+      at = rest.count
+    }
+    rest.insert(contentsOf: moving, at: at)
+    guard rest != current else { return false }
+    workroomTabOrder = rest.compactMap(\.targetID)
     return true
   }
 
@@ -249,4 +281,32 @@ struct OpenTabsTabRowModel: Equatable {
   let isFocused: Bool
   /// Popped out into a window of its own (issue #172): its slot shows a placeholder.
   var isPoppedOut = false
+  /// Where it lives, shown after its title when no workroom row above says so: the Project and
+  /// None groupings (`OpenTabsGrouping`).
+  var context: OpenTabsTabContext?
+}
+
+/// A tab row's workroom, said after its title in a grouping with no workroom rows: the workroom's
+/// name in Project, with its project's in None, or its terminal group's name.
+struct OpenTabsTabContext: Equatable {
+  enum Name: Equatable {
+    case text(String)
+    /// A project root's, which is the branch its root is on, as the Projects view's root row
+    /// names it (`SidebarRootLabel`).
+    case root(projectPath: String)
+  }
+
+  /// The project's name, before the workroom's: in None only.
+  let project: String?
+  let name: Name
+
+  /// It in words, for a tooltip or VoiceOver: a root's branch isn't read here, so it is "root".
+  var spoken: String {
+    let name =
+      switch name {
+      case .text(let text): text
+      case .root: "root"
+      }
+    return project.map { "\($0) / \(name)" } ?? name
+  }
 }

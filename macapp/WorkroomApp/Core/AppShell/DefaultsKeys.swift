@@ -354,6 +354,10 @@ extension Defaults.Keys {
   /// an ordering hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [], suite: .app)
 
+  /// How the sidebar's Open Tabs view groups its tabs, in every window (`OpenTabsGroupingSetting`).
+  static let openTabsGrouping = Key<OpenTabsGrouping>(
+    "openTabsGrouping", default: .workroom, suite: .app)
+
   // The quick switchers' trigger modifiers (issue #132) and the Quick Terminal's and Show/Hide
   // Workroom's global shortcuts are shortcuts like any other now, in `Shortcuts` (#148), which
   // carried `switcher.*Modifier`, `quickTerminalShortcut` and `globalHotkeyEnabled` over once.

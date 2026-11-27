@@ -28,6 +28,7 @@ extension AppStore {
       unfoldedOpenTargets: unfoldedOpenTargets.isEmpty
         ? nil : unfoldedOpenTargets.sorted().map(\.encoded),
       foldedSelectedTarget: foldedSelectedOpenTarget?.encoded,
+      foldedOpenProjects: foldedOpenProjects.isEmpty ? nil : foldedOpenProjects.sorted(),
       sidebarView: sidebarView == .open ? nil : sidebarView.rawValue)
   }
 
@@ -199,6 +200,8 @@ extension AppStore {
     // `reconcileWindow` has restored by now.
     foldedSelectedOpenTarget = session.foldedSelectedTarget.flatMap(TargetID.init(encoded:))
       .flatMap { $0 == selectedTargetID?.targetID ? $0 : nil }
+    // Project groups folded in the Open Tabs view. A project no longer listed folds nothing.
+    foldedOpenProjects = Set(session.foldedOpenProjects ?? [])
 
     refreshSelectionHasTabs()
 
