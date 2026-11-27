@@ -33,7 +33,7 @@
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -109,13 +109,9 @@ impl Screens {
     /// Opens `dir`, creating it private to this user, and drops what a reboot left half-written
     /// and records beyond `MAX_RECORDS`.
     pub fn open(dir: &Path) -> io::Result<Screens> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
         // A record is whatever was on the user's screen, so the directory is theirs alone even if
         // something else created it first.
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        crate::util::private_dir(dir)?;
         let screens = Screens {
             dir: dir.to_path_buf(),
         };

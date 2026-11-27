@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(feature = "terminal-state")]
 use std::ffi::{OsStr, OsString};
+use std::os::unix::fs::PermissionsExt;
 
 /// A directory for `Screens::open` to make, inside one of this run's own.
 fn scratch(name: &str) -> crate::commands::Unmade {

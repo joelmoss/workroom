@@ -28,7 +28,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -91,11 +91,7 @@ pub struct Layouts {
 impl Layouts {
     /// Opens `dir`, creating it private to this user.
     pub fn open(dir: &Path) -> io::Result<Layouts> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        crate::util::private_dir(dir)?;
         Ok(Layouts {
             dir: dir.to_path_buf(),
             writing: Mutex::new(()),

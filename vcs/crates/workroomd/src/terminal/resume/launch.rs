@@ -79,7 +79,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -87,7 +87,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::terminal::session::SessionId;
 use crate::terminal::shell::{Invocation, shell_name};
-use crate::util::euid;
+use crate::util::{euid, private_dir};
 
 /// The variable the app names its launch file in, for the relay (`WORKROOM_SESSION_RESUME`).
 pub const APP_FILE_VARIABLE: &str = "WORKROOM_SESSION_RESUME";
@@ -162,24 +162,6 @@ impl Launch {
 /// The launch folder beside a daemon's `socket`.
 pub fn dir_beside(socket: &Path) -> PathBuf {
     socket.with_extension("resume")
-}
-
-/// Makes `dir` this user's alone, if it is not already: made `0700` when new, and an existing one
-/// must be a real folder this user owns, which is then tightened to `0700`.
-pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
-    }
-    let meta = std::fs::symlink_metadata(dir)?;
-    if !meta.is_dir() || meta.uid() != euid() {
-        return Err(io::ErrorKind::PermissionDenied.into());
-    }
-    if meta.mode() & 0o077 != 0 {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
 }
 
 /// Whether `dir` is a real folder this user owns that no one else can enter.
