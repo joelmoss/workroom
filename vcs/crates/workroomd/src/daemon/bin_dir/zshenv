@@ -5,6 +5,17 @@
 # .zshenv, as zsh would have. zsh then reads the rest of the startup files from there. Once they
 # have all run, at the first prompt, it puts the daemon's bin folder, WORKROOM_BIN_DIR, first on
 # PATH again: a login profile can move it (macOS's path_helper) or set PATH outright.
+#
+# A session that resumes a program (#825, `resume/launch.rs`) names its launch file and the helper
+# in WORKROOM_RESUME_FILE and WORKROOM_RESUME_HELPER. Both leave the environment here, before any
+# startup file runs, and at the first prompt the helper runs the file's program as this shell's
+# first job: ^Z suspends it to this shell, and `fg` brings it back.
+
+if [[ -o 'interactive' && -n "${WORKROOM_RESUME_FILE-}" && -n "${WORKROOM_RESUME_HELPER-}" ]]; then
+    'builtin' 'typeset' -g _workroom_resume_file="$WORKROOM_RESUME_FILE"
+    'builtin' 'typeset' -g _workroom_resume_helper="$WORKROOM_RESUME_HELPER"
+fi
+'builtin' 'unset' 'WORKROOM_RESUME_FILE' 'WORKROOM_RESUME_HELPER'
 
 if [[ -n "${WORKROOM_ZSH_ZDOTDIR+X}" ]]; then
     'builtin' 'export' ZDOTDIR="$WORKROOM_ZSH_ZDOTDIR"
@@ -29,5 +40,17 @@ fi
         }
         'builtin' 'typeset' -ag precmd_functions
         precmd_functions+=(_workroom_bin_first)
+    fi
+    if [[ -o 'interactive' && -n "${_workroom_resume_file-}" ]]; then
+        # After the PATH fix, so a bare command is found where the prompt would find it.
+        _workroom_resume() {
+            precmd_functions=(${precmd_functions:#_workroom_resume})
+            'builtin' 'unfunction' '_workroom_resume'
+            'builtin' 'local' file="$_workroom_resume_file" helper="$_workroom_resume_helper"
+            'builtin' 'unset' '_workroom_resume_file' '_workroom_resume_helper'
+            "$helper" resume-launch "$file"
+        }
+        'builtin' 'typeset' -ag precmd_functions
+        precmd_functions+=(_workroom_resume)
     fi
 }

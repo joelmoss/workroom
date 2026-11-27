@@ -88,17 +88,17 @@ fn a_claim_refuses_a_file_it_cannot_prove_is_its_own() {
 }
 
 /// Value: protects=the clean-up removing only launch files, and never one a helper may still
-/// claim: a new one, or any of a session that still runs, whose shell file waits for its program
-/// to end; fails_when=it removes another name, a link, a new file when told an age, or a running
+/// claim: a new one, or any of a session that still runs, whose shell may still be starting;
+/// fails_when=it removes another name, a link, a new file when told an age, or a running
 /// session's file however old; why_new=new; seam=the `live` callback
 #[test]
 fn a_sweep_removes_only_launch_files_and_never_a_running_sessions() {
     let dir = Dir::new("sweep-live");
-    let shell = write_new(&dir.0, SESSION, "shell", b"{}").unwrap();
+    let file = write_launch(&dir.0, SESSION, &launch()).unwrap();
     sweep(&dir.0, Some(Duration::ZERO), |session| session == SESSION);
-    assert!(shell.exists(), "its session still runs its program");
+    assert!(file.exists(), "its session's shell may still be starting");
     sweep(&dir.0, Some(Duration::ZERO), |_| false);
-    assert!(!shell.exists(), "its session is gone");
+    assert!(!file.exists(), "its session is gone");
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn a_sweep_removes_only_launch_files_and_not_new_ones_when_told_an_age() {
     let fresh = write_launch(&dir.0, SESSION, &launch()).unwrap();
     let claimed = dir
         .0
-        .join(format!("{}.claim", launch_name(SESSION, "shell").unwrap()));
+        .join(format!("{}.claim", launch_name(SESSION, "json").unwrap()));
     std::fs::write(&claimed, b"").unwrap();
     let other = dir.0.join("notes.txt");
     std::fs::write(&other, b"").unwrap();
@@ -131,7 +131,7 @@ fn a_launch_files_name_is_its_session_and_32_hex() {
     assert!(is_launch_name(&name, Some(SESSION)));
     assert!(is_launch_name(&name, None));
     assert!(!is_launch_name(&name, Some(SessionId([1; 16]))));
-    assert!(is_launch_name(
+    assert!(!is_launch_name(
         &launch_name(SESSION, "shell").unwrap(),
         None
     ));
@@ -169,72 +169,90 @@ fn invocation(program: &str, arguments: &[&str]) -> Invocation {
     Invocation {
         program: program.into(),
         arguments: arguments.iter().map(OsString::from).collect(),
-        environment: vec![("ZDOTDIR".into(), "/ghostty/zsh".into())],
+        environment: vec![
+            ("ZDOTDIR".into(), "/hooks/zsh".into()),
+            (FILE_VARIABLE.into(), "/another/pane's".into()),
+        ],
         interactive: true,
     }
 }
 
-fn words(invocation: &Invocation) -> Vec<String> {
+fn get<'a>(invocation: &'a Invocation, key: &str) -> Vec<&'a OsStr> {
     invocation
-        .arguments
+        .environment
         .iter()
-        .map(|a| a.to_string_lossy().into_owned())
+        .filter(|(name, _)| name == key)
+        .map(|(_, value)| value.as_os_str())
         .collect()
 }
 
-/// Value: protects=the wrapper being the session's own login shell (argv0 and flags kept, so its
-/// startup files give the program its PATH) with every path a positional parameter, never script;
-/// fails_when=the login argv0 or bash's `--posix` goes, a path is put in the script, or a shell
-/// that can't run it is given it; why_new=new; seam=none
+/// Value: protects=a resuming session being its own shell as it would have started, told of its
+/// launch file and helper by path alone, and only a shell with Workroom's hook resuming;
+/// fails_when=the shell's program, arguments or environment change, the command reaches the
+/// environment, a variable is given twice, or a shell with no hook gets a file; why_new=the
+/// wrapper script went (#825 review); seam=none
 #[test]
-fn the_wrapper_is_the_sessions_own_login_shell_with_paths_as_parameters() {
-    let (helper, launch, shell) = (
-        Path::new("/bin dir/workroom"),
-        Path::new("/r/l.json"),
-        Path::new("/r/s.shell"),
-    );
-    let zsh = wrapper(&invocation("/bin/zsh", &["-zsh"]), helper, launch, shell);
-    assert_eq!(zsh.program, "/bin/zsh");
+fn a_resuming_session_is_its_own_shell_told_of_its_file_by_path() {
+    let dir = Dir::new("prepare");
+    let shell = invocation("/bin/zsh", &["-zsh"]);
+    let helper = Path::new("/bin dir/workroom");
+    let prepared = prepare(&shell, true, &launch(), &dir.0, SESSION, helper, |_| false).unwrap();
+    assert_eq!(prepared.invocation.program, shell.program);
+    assert_eq!(prepared.invocation.arguments, shell.arguments);
+    assert!(prepared.invocation.interactive);
+    assert_eq!(get(&prepared.invocation, "ZDOTDIR"), ["/hooks/zsh"]);
     assert_eq!(
-        words(&zsh),
-        [
-            "-zsh",
-            "-ic",
-            SH_SCRIPT,
-            "/bin/zsh",
-            "/bin dir/workroom",
-            "/r/l.json",
-            "/r/s.shell"
-        ]
+        get(&prepared.invocation, FILE_VARIABLE),
+        [prepared.file.as_os_str()]
     );
-    assert_eq!(zsh.environment, invocation("", &[]).environment);
-    let bash = wrapper(
-        &invocation("/opt/bash", &["-bash", "--posix"]),
-        helper,
-        launch,
-        shell,
-    );
-    assert_eq!(words(&bash)[..3], ["-bash", "--posix", "-ic"]);
-    let fish = wrapper(&invocation("/opt/fish", &["-fish"]), helper, launch, shell);
     assert_eq!(
-        words(&fish),
-        [
-            "-fish",
-            "-i",
-            "-c",
-            FISH_SCRIPT,
-            "/bin dir/workroom",
-            "/r/l.json",
-            "/r/s.shell",
-            "/opt/fish"
-        ]
+        get(&prepared.invocation, HELPER_VARIABLE),
+        [helper.as_os_str()]
     );
-    let nu = wrapper(&invocation("/opt/nu", &["-nu"]), helper, launch, shell);
-    assert_eq!(nu.program, "/bin/sh");
-    assert_eq!(words(&nu)[..4], ["-sh", "-ic", SH_SCRIPT, "/opt/nu"]);
-    for script in [SH_SCRIPT, FISH_SCRIPT] {
-        assert!(!script.contains('/'), "no path in the script: {script}");
-    }
+    assert!(
+        prepared
+            .invocation
+            .environment
+            .iter()
+            .all(|(_, value)| !value.to_string_lossy().contains("--resume")),
+        "the command is in the file alone"
+    );
+    assert_eq!(
+        claim_launch(&prepared.file, Some(SESSION)).unwrap(),
+        launch()
+    );
+
+    let sh = invocation("/bin/sh", &["-sh"]);
+    let error = prepare(&sh, false, &launch(), &dir.0, SESSION, helper, |_| false)
+        .err()
+        .expect("no hook, no resume");
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+}
+
+/// Value: protects=a session that could not be made removing the launch file it wrote and no
+/// other: not the file of the attach that made the same id first, nor a link, nor a stray name;
+/// fails_when=its file is left, or another session's file, a link or another name is removed;
+/// why_new=#825 review (files left when `create_then` failed); seam=none
+#[test]
+fn a_session_that_was_not_made_removes_its_own_launch_file_alone() {
+    let dir = Dir::new("discard");
+    let mine = write_launch(&dir.0, SESSION, &launch()).unwrap();
+    let winners = write_launch(&dir.0, SESSION, &launch()).unwrap();
+    discard(&mine, SessionId([1; 16]));
+    assert!(mine.exists(), "not a launch file for that session");
+    discard(&mine, SESSION);
+    assert!(!mine.exists());
+    assert!(winners.exists(), "the other attach's file, of the same id");
+
+    let other = dir.0.join("notes.txt");
+    std::fs::write(&other, b"").unwrap();
+    let link = dir.0.join(launch_name(SESSION, "json").unwrap());
+    std::os::unix::fs::symlink(&other, &link).unwrap();
+    discard(&link, SESSION);
+    assert!(std::fs::symlink_metadata(&link).is_ok(), "a link is left");
+    discard(&other, SESSION);
+    assert!(other.exists(), "not a launch file's name");
 }
 
 /// Value: protects=a missing reported folder meaning no resume, and nothing left behind;
@@ -247,18 +265,17 @@ fn a_record_whose_folder_is_gone_is_not_prepared() {
         ..launch()
     };
     let shell = invocation("/bin/zsh", &["-zsh"]);
-    let error = prepare(&shell, &gone, &dir.0, SESSION, Path::new("/w"), |_| false).unwrap_err();
+    let helper = Path::new("/w");
+    let error = prepare(&shell, true, &gone, &dir.0, SESSION, helper, |_| false)
+        .err()
+        .expect("a gone folder, no resume");
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
-    let prepared = prepare(&shell, &launch(), &dir.0, SESSION, Path::new("/w"), |_| {
-        false
-    })
-    .unwrap();
-    assert_eq!(prepared.program, "/bin/zsh");
+    prepare(&shell, true, &launch(), &dir.0, SESSION, helper, |_| false).unwrap();
     assert_eq!(
         std::fs::read_dir(&dir.0).unwrap().count(),
-        2,
-        "a launch and a shell file"
+        1,
+        "one launch file, and nothing else"
     );
 }
 

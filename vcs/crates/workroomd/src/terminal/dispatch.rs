@@ -468,14 +468,19 @@ pub(crate) fn launch<T>(
         crate::daemon::bin_dir::folders(),
         recipe.commands.as_deref(),
     );
-    // A resume (#825): the session's login shell runs the record's program in its folder first,
-    // and is the session's shell once it ends. Only for an interactive shell, never a run.
+    // What a client sent under these names is another pane's, never this session's launch file.
+    invocation.environment.retain(|(key, _)| {
+        key != crate::terminal::resume::launch::FILE_VARIABLE
+            && key != crate::terminal::resume::launch::HELPER_VARIABLE
+    });
+    // A resume (#825): the session's own shell runs the record's program in its folder at its
+    // first prompt, as its first job. Only for an interactive shell, never a run.
     let resumed = resume
         .filter(|_| !run && invocation.interactive)
         .and_then(|resume| resumed(sessions, id, &invocation, resume));
-    let (invocation, record) = match resumed {
-        Some((wrapper, record)) => (wrapper, Some(record)),
-        None => (invocation, None),
+    let (invocation, record, launch_file) = match resumed {
+        Some((prepared, record)) => (prepared.invocation, Some(record), Some(prepared.file)),
+        None => (invocation, None, None),
     };
     // It starts in the record's folder, which its shell is left in.
     let resumed_cwd = record
@@ -513,11 +518,18 @@ pub(crate) fn launch<T>(
             sessions.remember_recipe(id, recipe);
             Ok(registered)
         }
-        Err(error) => Err(failure.unwrap_or_else(|| error.to_string())),
+        Err(error) => {
+            // No session runs to claim it (another attach may have made this id first, whose own
+            // file has another name): this call's file alone goes.
+            if let Some(file) = &launch_file {
+                crate::terminal::resume::launch::discard(file, id);
+            }
+            Err(failure.unwrap_or_else(|| error.to_string()))
+        }
     }
 }
 
-/// The wrapper login shell that resumes `resume` in session `id`, whose own shell is `invocation`
+/// Session `id`'s own shell, `invocation`, told of the launch file that resumes `resume`
 /// (`resume::launch::prepare`), and the record its status starts with; `None`, logged by program
 /// alone, when it can't: the session then starts as it would have, a new shell (ADR 0082: a
 /// reported folder that is gone means no resume).
@@ -526,7 +538,10 @@ fn resumed(
     id: SessionId,
     invocation: &shell::Invocation,
     resume: &wr_protocol::terminal::ResumeRequest,
-) -> Option<(shell::Invocation, crate::terminal::resume::Whole)> {
+) -> Option<(
+    crate::terminal::resume::launch::Prepared,
+    crate::terminal::resume::Whole,
+)> {
     use crate::terminal::resume::launch;
     let record = launch::Launch {
         argv: resume.argv.clone(),
@@ -541,6 +556,7 @@ fn resumed(
             let helper = crate::daemon::own_copy::binary()?;
             launch::prepare(
                 invocation,
+                crate::terminal::bin_path::hooked(invocation, crate::daemon::bin_dir::folders()),
                 &record,
                 &launch::dir_beside(socket),
                 id,
@@ -549,10 +565,10 @@ fn resumed(
             )
         });
     match prepared {
-        Ok(wrapper) => {
+        Ok(prepared) => {
             crate::note!("session {}: resuming {program}", id.to_hyphenated());
             Some((
-                wrapper,
+                prepared,
                 crate::terminal::resume::Whole {
                     argv: record.argv,
                     cwd: Some(record.cwd),

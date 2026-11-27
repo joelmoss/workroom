@@ -644,13 +644,9 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
     ),
     (
         "resume-launch",
-        "The daemon: a resuming session's login shell runs it first, to become the program the \
-         tab's resume record names, in its folder.",
-    ),
-    (
-        "resume-shell",
-        "The daemon: that shell then becomes it, which becomes the session's own shell, after \
-         saying a program that failed at once couldn't be resumed.",
+        "The daemon: a resuming session's own shell runs it at its first prompt, through \
+         Workroom's zsh or bash hook, as its first job: it runs the program the tab's resume \
+         record names, in its folder, and says so when that fails.",
     ),
     (
         "protocol",
@@ -846,10 +842,20 @@ const STREAM_EVENTS: &[StreamEvent] = &[
                  resume records leaves it out, which says nothing about the tab's record.",
             ),
             (
+                "resumeStarted",
+                "`true`, sent only then and in every event after: the program the session was \
+                 started to resume has started, its helper's report of the record accepted, so \
+                 the pane says it resumed. Left out of a session that resumes nothing, or whose \
+                 resume the daemon declined (its folder is gone, or its shell has no Workroom \
+                 hook). A hand-off's next program doesn't carry it.",
+            ),
+            (
                 "resumeFailed",
-                "`true`, sent only then: the program the session was started to resume exited \
-                 with an error within 5 s of the session starting, so the pane says it couldn't \
-                 be resumed.",
+                "`true`, sent only then and in every event after: the program the session was \
+                 started to resume could not start, or exited with an error within 5 s of \
+                 starting, so the pane says it couldn't be resumed. It can come with \
+                 `resumeStarted` or, for a program that never started, without it. A hand-off's \
+                 next program doesn't carry it.",
             ),
         ],
     },

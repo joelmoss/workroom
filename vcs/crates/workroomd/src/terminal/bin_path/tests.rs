@@ -35,6 +35,35 @@ fn a_shell_whose_hook_is_gone_starts_without_it() {
     }
 }
 
+/// Value: protects=a resume (#825) running only from a shell that runs Workroom's hook, zsh and
+/// bash under Ghostty's integration, so its first prompt runs the record as a job; fails_when=a
+/// shell with no hook, one whose hook is gone, macOS's own bash, fish, or a daemon with no hooks
+/// folder is said to have one; why_new=#825 review (job control); seam=`apply_with`'s `present`
+#[test]
+fn only_a_shell_that_runs_the_hook_can_resume() {
+    let bash_env = [
+        ("ENV", "/res/shell-integration/bash/ghostty.bash"),
+        ("GHOSTTY_BASH_INJECT", "1"),
+    ];
+    for (program, env, hook, expected) in [
+        ("/bin/zsh", &[][..], true, true),
+        ("/bin/zsh", &[][..], false, false),
+        ("/usr/bin/bash", &bash_env[..], true, true),
+        ("/usr/bin/bash", &[][..], true, false),
+        ("/usr/bin/fish", &[][..], true, false),
+        ("/bin/sh", &[][..], true, false),
+    ] {
+        let mut invocation = shell(program, env);
+        apply_with(&mut invocation, Some(&folders()), None, |_| hook);
+        assert_eq!(
+            hooked(&invocation, Some(&folders())),
+            expected,
+            "{program} {env:?} {hook}"
+        );
+        assert!(!hooked(&invocation, None), "no folders");
+    }
+}
+
 fn folders() -> Folders {
     Folders {
         bin: PathBuf::from("/run/w.bin/path"),

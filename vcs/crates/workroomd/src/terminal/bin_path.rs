@@ -123,6 +123,24 @@ fn apply_with(
     }
 }
 
+/// Whether `invocation`, once `apply` has given it `folders`, starts a shell that runs Workroom's
+/// hook: an interactive zsh, or bash where Ghostty's integration starts it. A resume needs one
+/// (`resume::launch`), which runs the program from it at the first prompt.
+pub(crate) fn hooked(invocation: &Invocation, folders: Option<&Folders>) -> bool {
+    let Some(hooks) = folders.and_then(|folders| folders.hooks.as_deref()) else {
+        return false;
+    };
+    if !invocation.interactive {
+        return false;
+    }
+    let env = &invocation.environment;
+    match shell_name(&invocation.program.to_string_lossy()) {
+        "zsh" => get(env, "ZDOTDIR") == Some(hooks.join(ZSH_DIR).as_os_str()),
+        "bash" => get(env, "ENV") == Some(hooks.join(BASH_FILE).as_os_str()),
+        _ => false,
+    }
+}
+
 /// Ghostty's `path` feature, with `folder` as the folder it appends, where Ghostty's integration
 /// starts the shell (`GHOSTTY_SHELL_INTEGRATION_XDG_DIR`, `shell::invocation`) and no feature
 /// already uses `GHOSTTY_BIN_DIR` for Ghostty's own program.
