@@ -23,23 +23,30 @@ tools-check: ## Compare this machine's tools with the versions the repo pins (re
 
 # CI's cheap gates, in the order CI's jobs fail most often, each run even when an earlier one
 # fails, then a summary. CI tests the PR merged with master, so a branch behind origin/master is
-# called out first: merge it, or a gate that depends on master (the docs' Nightly markers, which
-# compare against the latest stable tag) passes here and fails there. vcs-lint-linux needs a
+# called out first: rebase it onto origin/master, or a gate that depends on master (the docs'
+# Nightly markers, which compare against the latest stable tag) passes here and fails there. A
+# merge commit on the branch fails the run: PRs land by rebase-merge, which GitHub refuses for a
+# branch holding one (#832 had to be flattened and force-pushed). vcs-lint-linux needs a
 # container runtime (CONTRIBUTING.md). The VM UI tests and the full app-test are not in it, nor is
 # app-test-remote (Docker, Apple's `container` and the GUI test host): run that one by hand after a
 # daemon, bootstrap, CLI or remote-host change.
 PRE_PUSH_GATES := app-test-scripts docs-check docs-site-check vcs-lint vcs-lint-linux vcs-test notices-check \
   app-lint app-package-test
-pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master, or a newer libgit2 is out)
+pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master or a newer libgit2 is out; fails on a merge commit)
 	@git fetch origin master --quiet 2>/dev/null || echo "pre-push: couldn't fetch origin/master"
 	@behind=$$(git rev-list --count HEAD..origin/master 2>/dev/null || echo 0); \
 	if [ "$$behind" -gt 0 ]; then \
-	  echo "pre-push: $$behind commit(s) behind origin/master. CI tests the merge: merge origin/master first."; \
+	  echo "pre-push: $$behind commit(s) behind origin/master. CI tests the merge: rebase onto origin/master first (git rebase origin/master)."; \
+	fi; \
+	merges=$$(git rev-list --merges --count origin/master..HEAD 2>/dev/null || echo 0); \
+	failed=""; \
+	if [ "$$merges" -gt 0 ]; then \
+	  echo "pre-push: $$merges merge commit(s) on this branch; a PR here lands by rebase-merge, which refuses them. Rebase instead: git rebase origin/master."; \
+	  failed=" merge-commits"; \
 	fi; \
 	latest=$$(macapp/Scripts/vendor-libgit2.sh --latest 2>/dev/null) \
 	  || latest="newer: couldn't check for a newer libgit2 release (no network?)"; \
 	printf '%s\n' "$$latest" | sed -n 's/^newer: /pre-push: /p'; \
-	failed=""; \
 	for gate in $(PRE_PUSH_GATES); do \
 	  echo "== make $$gate"; \
 	  $(MAKE) --no-print-directory $$gate || failed="$$failed $$gate"; \
