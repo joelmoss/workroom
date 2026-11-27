@@ -40,9 +40,11 @@
 
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::kind::CliError;
@@ -500,10 +502,7 @@ fn stage(skills: &Path, text: &str, made: &[PathBuf], run: &Run) -> Result<PathB
 
 /// `.workroom-skill-<kind>.<pid>.<nanoseconds>`: unique to this run, and naming its process.
 fn leftover_name(kind: &str, pid: u32) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos());
-    format!("{LEFTOVER}{kind}.{pid}.{nanos}")
+    format!("{LEFTOVER}{kind}.{pid}.{}", nanos())
 }
 
 /// The staging and old folders in `skills` a run that is gone left behind, each removed as far as
@@ -656,12 +655,56 @@ fn read_plain_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
 
 /// Writes a file that must not be there yet, in a folder of this run's own.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-        .map_err(|error| format!("{}: {error}", path.display()))
+    create_file(path, bytes, None).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Makes the file `path`, which must not be there yet, holding `bytes`, synced: with `mode`,
+/// exactly that mode; without, the one the umask leaves.
+fn create_file(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    if let Some(mode) = mode {
+        // `mode` is masked by the umask at create; set exactly.
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    file.sync_all()
+}
+
+/// Writes `bytes` to `path` whole or not at all: to a file of this run's own beside it
+/// (`.<name>.workroom.<pid>.<nanoseconds>`), synced, then renamed over it. `mode` as
+/// [`create_file`] takes it.
+pub(super) fn write_atomically(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), String> {
+    let shown = path.display();
+    let folder = path
+        .parent()
+        .ok_or_else(|| format!("{shown} has no folder"))?;
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let staged = folder.join(format!(
+        ".{name}.workroom.{}.{}",
+        std::process::id(),
+        nanos()
+    ));
+    let written = create_file(&staged, bytes, mode).and_then(|()| fs::rename(&staged, path));
+    if let Err(error) = written {
+        // Only the file this call made, which `create_new` proves.
+        let _ = fs::remove_file(&staged);
+        return Err(format!("{shown}: {error}"));
+    }
+    Ok(())
+}
+
+/// Now, in nanoseconds since the epoch, to make a file's name this run's own.
+fn nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos())
 }
 
 fn remove_file(path: &Path) -> Result<(), String> {
@@ -679,54 +722,57 @@ struct Recorded {
     path: String,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, PartialEq)]
 struct RecordFile {
     skills: Vec<Recorded>,
 }
 
 /// The skill folders recorded under `home`; none when there is no readable record.
 fn read_record(home: &Path) -> Vec<Recorded> {
-    read_plain_file(&home.join(RECORD))
+    read_record_file::<RecordFile>(&home.join(RECORD)).skills
+}
+
+/// Records `skills` under `home` (`write_record_file`). Only a removal after a variable moved a
+/// skill would miss a record that couldn't be written.
+fn write_record(home: &Path, skills: &[Recorded]) {
+    let record = RecordFile {
+        skills: skills.to_vec(),
+    };
+    write_record_file(&home.join(RECORD), &record, None);
+}
+
+/// The record at `path`, as `skill` and `resume-hook` keep one under the home; its default (no
+/// entries) when there is no readable one, judged as [`read_plain_file`] judges a file.
+pub(super) fn read_record_file<T: DeserializeOwned + Default>(path: &Path) -> T {
+    read_plain_file(path)
         .ok()
         .flatten()
-        .and_then(|bytes| serde_json::from_slice::<RecordFile>(&bytes).ok())
-        .map(|record| record.skills)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 }
 
-/// Records `skills` under `home`, whole or not at all: a file of this run's own, renamed over the
-/// record. A record that can't be written leaves the last one; only a removal after a variable
-/// moved a skill would miss it.
-fn write_record(home: &Path, skills: &[Recorded]) {
-    let path = home.join(RECORD);
-    let Some(folder) = path.parent() else {
-        return;
-    };
-    if read_record(home) == skills && path.exists() {
-        return;
-    }
-    if skills.is_empty() && !path.exists() {
+/// Writes `record` to `path`, whole or not at all (`write_atomically`, with `mode`), making its
+/// folder: not when the record there already says it, nor when it is empty (its default) and
+/// there is none. A record that can't be written leaves the last one.
+pub(super) fn write_record_file<T>(path: &Path, record: &T, mode: Option<u32>)
+where
+    T: Serialize + DeserializeOwned + Default + PartialEq,
+{
+    if read_record_file::<T>(path) == *record && path.exists() {
         return;
     }
-    if fs::create_dir_all(folder).is_err() {
+    if *record == T::default() && !path.exists() {
         return;
     }
-    let staged = folder.join(format!(
-        ".skills.json.{}.{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos())
-    ));
-    let mut bytes = serde_json::to_vec_pretty(&RecordFile {
-        skills: skills.to_vec(),
-    })
-    .expect("a record is JSON");
+    if path
+        .parent()
+        .is_none_or(|folder| fs::create_dir_all(folder).is_err())
+    {
+        return;
+    }
+    let mut bytes = serde_json::to_vec_pretty(record).expect("a record is JSON");
     bytes.push(b'\n');
-    if write_new(&staged, &bytes).is_err() || fs::rename(&staged, &path).is_err() {
-        // Only the file this call made, which `create_new` proves.
-        let _ = fs::remove_file(&staged);
-    }
+    let _ = write_atomically(path, &bytes, mode);
 }
 
 #[cfg(test)]

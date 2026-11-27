@@ -42,7 +42,7 @@ mod claude;
 mod settings_text;
 
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::kind::CliError;
-use super::skill::{Places, given_home};
+use super::skill::{Places, given_home, read_record_file, write_atomically, write_record_file};
 use super::{Args, Context, Flag, Outcome};
 use crate::terminal::process;
 
@@ -385,19 +385,19 @@ fn take_ours(groups: &mut Vec<Value>) -> bool {
 pub(super) fn with_hook(settings: &mut Map<String, Value>) -> Result<State, String> {
     let groups = session_start(settings, true)?.expect("made");
     let ours = entry();
-    let current = groups.iter().filter(|group| **group == ours).count() == 1
+    let mut others = groups.clone();
+    let had = take_ours(&mut others);
+    // Current: taking Workroom's out took this build's group, once, and changed nothing else.
+    let current = groups.len() == others.len() + 1
         && groups
             .iter()
             .filter(|group| **group != ours)
-            .all(|group| match group.get("hooks") {
-                Some(Value::Array(handlers)) => !handlers.iter().any(is_ours),
-                _ => true,
-            });
+            .eq(others.iter());
     if current {
         return Ok(State::Current);
     }
-    let had = take_ours(groups);
-    groups.push(ours);
+    others.push(ours);
+    *groups = others;
     Ok(if had {
         State::Updated
     } else {
@@ -539,80 +539,112 @@ fn settings_file(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// Reads the settings at `path` (none there is `{}`), applies `change`, and writes them back when
-/// they changed. An error, and the file as it was, when it can't be read or parsed.
+/// Reads the settings at `path`, applies `change`, and writes them back when they changed. An
+/// error, and the file as it was, when it can't be read or parsed.
 fn update_file(
     path: &Path,
     change: fn(&mut Map<String, Value>) -> Result<State, String>,
 ) -> Result<State, String> {
+    let Loaded {
+        mut settings,
+        text,
+        mode,
+    } = load_settings(path)?;
+    let before = settings.clone();
+    let state = change(&mut settings)
+        .map_err(|why| format!("{}: {why}, so Workroom left it as it is", path.display()))?;
+    // Nothing changed, or nothing to write where there was no file.
+    if settings == before || (mode.is_none() && settings.is_empty()) {
+        return Ok(state);
+    }
+    write_settings(
+        path,
+        &Value::Object(settings),
+        text.as_deref(),
+        mode.unwrap_or(0o600),
+    )?;
+    Ok(state)
+}
+
+/// A `settings.json` as `load_settings` read it.
+struct Loaded {
+    settings: Map<String, Value>,
+    /// Its text, when it holds a JSON object, to write back as it is but for `hooks`.
+    text: Option<String>,
+    /// Its permissions; `None` when there is no file.
+    mode: Option<u32>,
+}
+
+/// The settings at `path`: none there, or only whitespace, is `{}`. An error when it isn't a plain
+/// file, is larger than Claude Code reads, or isn't a JSON object.
+fn load_settings(path: &Path) -> Result<Loaded, String> {
     let shown = path.display();
-    let existing = match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == ErrorKind::NotFound => None,
+    let mode = match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(Loaded {
+                settings: Map::new(),
+                text: None,
+                mode: None,
+            });
+        }
         Err(error) => return Err(format!("{shown}: {error}")),
         Ok(meta) if !meta.is_file() => return Err(format!("{shown} isn't a file")),
         Ok(meta) if meta.len() > SETTINGS_LIMIT => {
             return Err(format!("{shown} is larger than Claude Code reads"));
         }
-        Ok(meta) => Some(meta),
+        Ok(meta) => Some(meta.permissions().mode() & 0o7777),
     };
-    // The file's text, when there is any, to write back as it is but for `hooks`.
-    let mut text = None;
-    let mut settings = match existing {
-        None => Map::new(),
-        Some(_) => {
-            let mut bytes = Vec::new();
-            fs::File::open(path)
-                .and_then(|file| file.take(SETTINGS_LIMIT + 1).read_to_end(&mut bytes))
-                .map_err(|error| format!("{shown}: {error}"))?;
-            if bytes.iter().all(u8::is_ascii_whitespace) {
-                Map::new()
-            } else {
-                match serde_json::from_slice::<Value>(&bytes) {
-                    Ok(Value::Object(settings)) => {
-                        // Valid JSON is UTF-8.
-                        text = String::from_utf8(bytes).ok();
-                        settings
-                    }
-                    Ok(_) => {
-                        return Err(format!(
-                            "{shown} isn't a JSON object, so Workroom left it as it is"
-                        ));
-                    }
-                    Err(error) => {
-                        return Err(format!(
-                            "{shown} isn't valid JSON ({error}), so Workroom left it as it is"
-                        ));
-                    }
-                }
-            }
-        }
-    };
-    let before = settings.clone();
-    let state = change(&mut settings)
-        .map_err(|why| format!("{shown}: {why}, so Workroom left it as it is"))?;
-    if settings == before {
-        return Ok(state);
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(SETTINGS_LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(|error| format!("{shown}: {error}"))?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Loaded {
+            settings: Map::new(),
+            text: None,
+            mode,
+        });
     }
-    if existing.is_none() && settings.is_empty() {
-        return Ok(state);
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(settings)) => Ok(Loaded {
+            settings,
+            // Valid JSON is UTF-8.
+            text: String::from_utf8(bytes).ok(),
+            mode,
+        }),
+        Ok(_) => Err(format!(
+            "{shown} isn't a JSON object, so Workroom left it as it is"
+        )),
+        Err(error) => Err(format!(
+            "{shown} isn't valid JSON ({error}), so Workroom left it as it is"
+        )),
     }
-    let mode = existing.map_or(0o600, |meta| meta.permissions().mode() & 0o7777);
-    let settings = Value::Object(settings);
+}
+
+/// Writes `settings` to `path` with `mode`: as `text`, the file's own, with only its `hooks`
+/// written anew, when there is one; else whole (`pretty`).
+fn write_settings(
+    path: &Path,
+    settings: &Value,
+    text: Option<&str>,
+    mode: u32,
+) -> Result<(), String> {
     let bytes = match text {
-        // Only `hooks` changes, so only it is written anew; the result must read back as exactly
-        // the settings meant, or the file is left.
-        Some(text) => settings_text::with_hooks(&text, settings.get("hooks"))
-            .filter(|written| serde_json::from_str::<Value>(written).ok() == Some(settings.clone()))
+        // The result must read back as exactly the settings meant, or the file is left.
+        Some(text) => settings_text::with_hooks(text, settings.get("hooks"))
+            .filter(|written| {
+                serde_json::from_str::<Value>(written).ok().as_ref() == Some(settings)
+            })
             .ok_or_else(|| {
                 format!(
-                    "{shown}: Workroom couldn't change its \"hooks\" alone, so left it as it is"
+                    "{}: Workroom couldn't change its \"hooks\" alone, so left it as it is",
+                    path.display()
                 )
             })?
             .into_bytes(),
-        None => pretty(&settings),
+        None => pretty(settings),
     };
-    write_atomically(path, &bytes, mode)?;
-    Ok(state)
+    write_atomically(path, &bytes, Some(mode))
 }
 
 /// `value` indented two spaces a level, as Claude writes its settings, with a trailing newline.
@@ -622,87 +654,23 @@ fn pretty(value: &Value) -> Vec<u8> {
     bytes
 }
 
-/// Writes `bytes` to `path` whole or not at all: to a file of this run's own beside it, synced,
-/// then renamed over it.
-fn write_atomically(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    let shown = path.display();
-    let folder = path
-        .parent()
-        .ok_or_else(|| format!("{shown} has no folder"))?;
-    let name = path
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    let staged = folder.join(format!(
-        ".{name}.workroom.{}.{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos())
-    ));
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .open(&staged)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            // `mode` is masked by the umask at create; set exactly, as the file had it.
-            file.set_permissions(fs::Permissions::from_mode(mode))?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&staged, path));
-    if let Err(error) = written {
-        // Only the file this call made, which `create_new` proves.
-        let _ = fs::remove_file(&staged);
-        return Err(format!("{shown}: {error}"));
-    }
-    Ok(())
-}
-
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, PartialEq)]
 struct RecordFile {
     profiles: Vec<PathBuf>,
 }
 
 /// The profiles recorded under `home`; none when there is no readable record.
 fn read_record(home: &Path) -> Vec<PathBuf> {
-    let path = home.join(RECORD);
-    if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() <= 1 << 20) {
-        return Vec::new();
-    }
-    fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<RecordFile>(&bytes).ok())
-        .map(|record| record.profiles)
-        .unwrap_or_default()
+    read_record_file::<RecordFile>(&home.join(RECORD)).profiles
 }
 
-/// Records `profiles` under `home`, whole or not at all. A record that can't be written leaves the
-/// last one; only a removal after the variable moved a profile would miss it.
+/// Records `profiles` under `home` (`write_record_file`), readable by its owner alone. Only a
+/// removal after the variable moved a profile would miss a record that couldn't be written.
 fn write_record(home: &Path, profiles: &[PathBuf]) {
-    let path = home.join(RECORD);
-    if read_record(home) == profiles && path.exists() {
-        return;
-    }
-    if profiles.is_empty() && !path.exists() {
-        return;
-    }
-    if path
-        .parent()
-        .is_none_or(|folder| fs::create_dir_all(folder).is_err())
-    {
-        return;
-    }
-    let _ = write_atomically(
-        &path,
-        &pretty(
-            &serde_json::to_value(RecordFile {
-                profiles: profiles.to_vec(),
-            })
-            .expect("a record is JSON"),
-        ),
-        0o600,
-    );
+    let record = RecordFile {
+        profiles: profiles.to_vec(),
+    };
+    write_record_file(&home.join(RECORD), &record, Some(0o600));
 }
 
 #[cfg(test)]
