@@ -1,7 +1,7 @@
 import Foundation
 import WorkroomDomain
 
-/// The sidebar's Open section (#819): this window's workroom tabs, each unfolding to its tabs. The
+/// The sidebar's Open Tabs view (#819): this window's workroom tabs, each unfolding to its tabs. The
 /// section keeps no list of its own. Its rows are read from what the title bar reads
 /// (`displayedWorkroomTargets()`) and what each target's tab strip reads (`terminals.tabs(for:)`),
 /// with each chip's own presentation (`workroomTabPresentation`, `workroomTabMarks`,
@@ -9,11 +9,11 @@ import WorkroomDomain
 /// disagree. Fold state is the one thing it adds.
 extension AppStore {
 
-  /// The Open section's rows, in title-bar order, each holding its tabs in strip order. A folded
+  /// The Open Tabs view's rows, in title-bar order, each holding its tabs in strip order. A folded
   /// row holds only `showing`, when it is one of its tabs: its placeholder while a drag lifts it,
   /// which the list passes in. Its other tabs draw nothing, so their rows (unread counts, run
   /// state, diagnoses) are not built.
-  func openSectionRows(showing: OpenSectionItem? = nil) -> [OpenSectionRow] {
+  func openTabsRows(showing: OpenTabsItem? = nil) -> [OpenTabsRow] {
     displayedWorkroomTargets().map { sid, target in
       let isSelected = sid == selectedTargetID
       let isFolded = isOpenRowFolded(sid)
@@ -23,20 +23,20 @@ extension AppStore {
       let built =
         isFolded
         ? stripTabs.filter { showing == .tab($0.id, in: sid) } : stripTabs
-      return OpenSectionRow(
-        model: OpenSectionWorkroomRowModel(
+      return OpenTabsRow(
+        model: OpenTabsWorkroomRowModel(
           sid: sid, target: target,
           presentation: workroomTabPresentation(sid: sid, target: target),
           marks: workroomTabMarks(sid: sid, target: target),
           isSelected: isSelected, isFolded: isFolded, tabCount: stripTabs.count),
-        tabs: openSectionTabRows(built, sid: sid, target: target, isSelected: isSelected))
+        tabs: openTabsTabRows(built, sid: sid, target: target, isSelected: isSelected))
     }
   }
 
   /// The rows of `tabs`, `target`'s tabs as its strip shows them.
-  private func openSectionTabRows(
+  private func openTabsTabRows(
     _ tabs: [TerminalTab], sid: SidebarID, target: TerminalTarget, isSelected: Bool
-  ) -> [OpenSectionTabRow] {
+  ) -> [OpenTabsTabRow] {
     guard !tabs.isEmpty else { return [] }
     let activeID = terminals.activeTab(for: target)?.id
     return tabs.map { tab in
@@ -49,8 +49,8 @@ extension AppStore {
         } else {
           .fixed(tab.title)
         }
-      return OpenSectionTabRow(
-        model: OpenSectionTabRowModel(
+      return OpenTabsTabRow(
+        model: OpenTabsTabRowModel(
           sid: sid, target: target, tabID: tab.id, title: title,
           glyph: tab.content.glyph ?? "terminal", tool: tab.recognizedTool,
           isPreview: tab.isPreview, indicator: tab.indicator, programStatus: tab.programStatus,
@@ -178,14 +178,14 @@ extension AppStore {
   }
 }
 
-/// A workroom tab's row in the Open section: what its title-bar chip shows, and its tabs.
-struct OpenSectionRow: Identifiable {
+/// A workroom tab's row in the Open Tabs view: what its title-bar chip shows, and its tabs.
+struct OpenTabsRow: Identifiable {
   /// What its own row draws, which that row's equality gate compares whole.
-  let model: OpenSectionWorkroomRowModel
+  let model: OpenTabsWorkroomRowModel
   /// The tabs its strip shows, in strip order. Empty for a standalone terminal's one terminal,
   /// which shows no strip: the row itself is that terminal. Folded, only a lifted tab's
-  /// (`AppStore.openSectionRows(showing:)`); `model.tabCount` counts them all.
-  let tabs: [OpenSectionTabRow]
+  /// (`AppStore.openTabsRows(showing:)`); `model.tabCount` counts them all.
+  let tabs: [OpenTabsTabRow]
 
   var id: SidebarID { sid }
   var sid: SidebarID { model.sid }
@@ -197,7 +197,7 @@ struct OpenSectionRow: Identifiable {
 
 /// What a workroom tab's Open row draws: its chip's presentation and marks, its place in the window
 /// and how many tabs it folds, never the tabs themselves, whose rows are their own.
-struct OpenSectionWorkroomRowModel: Equatable {
+struct OpenTabsWorkroomRowModel: Equatable {
   let sid: SidebarID
   let target: TerminalTarget
   let presentation: WorkroomTabPresentation
@@ -213,9 +213,9 @@ struct OpenSectionWorkroomRowModel: Equatable {
 }
 
 /// One tab's row under its workroom: what its strip chip shows.
-struct OpenSectionTabRow: Identifiable {
+struct OpenTabsTabRow: Identifiable {
   /// What the row draws, which its equality gate compares whole.
-  let model: OpenSectionTabRowModel
+  let model: OpenTabsTabRowModel
   /// The tab's record, outside the model: its title is read through `TabTitleReader` from
   /// `tab.content`, as the strip's chip reads it, since a terminal's changes many times a second.
   let tab: TerminalTab
@@ -227,7 +227,7 @@ struct OpenSectionTabRow: Identifiable {
 }
 
 /// What a tab's Open row draws of it and of the window, comparable without reading its live title.
-struct OpenSectionTabRowModel: Equatable {
+struct OpenTabsTabRowModel: Equatable {
   let sid: SidebarID
   let target: TerminalTarget
   let tabID: TerminalTab.ID

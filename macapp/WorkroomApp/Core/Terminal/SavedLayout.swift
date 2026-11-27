@@ -507,7 +507,7 @@ struct WindowSession: Codable, Hashable, Sendable {
   @Lossy var workroomSplits: [LayoutNode<String>]
   /// `AppStore.expandedTerminalTargets` — which sidebar terminal subtrees are open.
   var expandedTargets: [String]?
-  /// `AppStore.unfoldedOpenTargets` — which Open section rows were unfolded by hand (#819).
+  /// `AppStore.unfoldedOpenTargets` — which Open Tabs view rows were unfolded by hand (#819).
   var unfoldedOpenTargets: [String]?
   /// `AppStore.foldedSelectedOpenTarget` — the selected target, when its Open row was folded by
   /// hand (#819 story 70).

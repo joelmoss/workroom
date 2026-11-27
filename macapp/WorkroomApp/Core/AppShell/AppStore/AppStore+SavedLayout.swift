@@ -132,7 +132,7 @@ extension AppStore {
     // exactly the per-window authority the session file exists to provide.
     pendingRestoreSelection = claimed.selectedTargetID.flatMap(TargetID.init(encoded:))
     // The sidebar's view (ADR 0083) depends on nothing loading, so it comes back with the claim,
-    // before the window's first restore: no flash of the Open view in a window saved on Projects.
+    // before the window's first restore: no flash of the Open Tabs view in a window saved on Projects.
     // A value this build doesn't know shows Open.
     sidebarView = claimed.sidebarView.flatMap(SidebarView.init(rawValue:)) ?? .open
   }
@@ -190,7 +190,7 @@ extension AppStore {
       (session.expandedTargets ?? []).compactMap(TargetID.init(encoded:))
     )
     .intersection(restoredTargetIDs.union(deferredTargetSessions.keys))
-    // Open section folds (#819), for the same targets.
+    // Open Tabs view folds (#819), for the same targets.
     unfoldedOpenTargets = Set(
       (session.unfoldedOpenTargets ?? []).compactMap(TargetID.init(encoded:))
     )

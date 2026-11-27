@@ -1,7 +1,7 @@
 import DesignSystem
 import SwiftUI
 
-/// A workroom tab's title, as its title-bar chip and its Open section row both show it (#819): a
+/// A workroom tab's title, as its title-bar chip and its Open Tabs view row both show it (#819): a
 /// standalone terminal's program with its folder, else the project's or group's name, then a
 /// workroom's own name after a slash. The accent marks unread activity. Each caller sets the font.
 struct WorkroomTabTitle: View {
@@ -39,7 +39,7 @@ struct WorkroomTabTitle: View {
   }
 }
 
-/// A workroom tab's run-command mark (#7), as its chip and its Open section row show it: green
+/// A workroom tab's run-command mark (#7), as its chip and its Open Tabs view row show it: green
 /// play while running, a red octagon once the last run failed (#79: a distinct glyph, not just a
 /// red tint). Nothing once a run stops cleanly. Its glyph and colour are the run tab's
 /// (`RunStateIcon`).

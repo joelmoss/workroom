@@ -46,11 +46,11 @@ final class SidebarGalleryTests: XCTestCase {
     }
   }
 
-  /// The Open section (#819) lists the gallery's workroom tabs, the standalone terminals and groups
+  /// The Open Tabs view (#819) lists the gallery's workroom tabs, the standalone terminals and groups
   /// among them, with tab rows under the ones the gallery unfolds.
-  func testTheOpenSectionShowsTheGallerysWorkroomTabs() throws {
+  func testTheOpenTabsShowsTheGallerysWorkroomTabs() throws {
     let store = seededStore()
-    let rows = store.openSectionRows()
+    let rows = store.openTabsRows()
     let standalones = rows.filter { if case .standalone = $0.sid { true } else { false } }
     XCTAssertEqual(standalones.count, Gallery.standaloneTerminals.count)
     XCTAssertTrue(rows.contains { if case .terminalGroup = $0.sid { true } else { false } })

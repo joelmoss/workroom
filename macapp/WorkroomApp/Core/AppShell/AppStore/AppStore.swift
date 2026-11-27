@@ -216,7 +216,7 @@ final class AppStore: ObservableObject {
     // instead of lingering on the previous workroom's commits until the panel's `.task` catches
     // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
     if selectedTargetID != oldValue {
-      // Selecting a target unfolds its Open section row (#819).
+      // Selecting a target unfolds its Open Tabs view row (#819).
       foldedSelectedOpenTarget = nil
       // Opening a container workroom starts its container if it was stopped (#309).
       let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
@@ -418,12 +418,12 @@ final class AppStore: ObservableObject {
   var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
-  /// Workroom targets whose Open section row (#819) was unfolded by hand. Every other row but the
+  /// Workroom targets whose Open Tabs view row (#819) was unfolded by hand. Every other row but the
   /// selected one is folded. Persisted with the session, like `expandedTerminalTargets`.
   var unfoldedOpenTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
-  /// The selected target, when its Open section row was folded by hand since it was selected
+  /// The selected target, when its Open Tabs view row was folded by hand since it was selected
   /// (#819). Selecting a target clears it, so selecting unfolds the row. Persisted with the
   /// session, with the selection it folds (story 70).
   var foldedSelectedOpenTarget: TerminalTarget.ID? {

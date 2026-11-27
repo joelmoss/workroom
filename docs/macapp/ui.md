@@ -168,9 +168,9 @@ The sidebar's rows go further: each is an Equatable view of a value model behind
 change elsewhere in the store re-runs no row, and the selection, drag and run state are leaves that
 read their own. The sidebar mounts only the view its switcher shows (`SidebarViewSwitcher`, ADR
 0083), so the hidden view's rows never run; the switcher reads the selection, and each tab's
-attention dot is a leaf of its own. The Open view's list is its rows' adapter: it rebuilds `openSectionRows()` on
+attention dot is a leaf of its own. The Open Tabs view's list is its rows' adapter: it rebuilds `openTabsRows()` on
 any change, and each workroom and tab row compares its whole value model
-(`OpenSectionWorkroomRowModel`, `OpenSectionTabRowModel`), so only the rows whose model changed
+(`OpenTabsWorkroomRowModel`, `OpenTabsTabRowModel`), so only the rows whose model changed
 re-run; a tab row's menu is a modifier of its own, so its reads stay out of the row. A `.contextMenu` closure is lazy (a re-rendering row does not build its menu), so the
 workroom menu's adapter and store reads need no gate.
 

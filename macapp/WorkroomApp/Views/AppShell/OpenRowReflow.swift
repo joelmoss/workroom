@@ -41,26 +41,26 @@ struct OpenRowReflow: Equatable {
   }
 
   /// The List's rows as the model had them when the row lifted, a placeholder for it included.
-  let items: [OpenSectionItem]
+  let items: [OpenTabsItem]
   /// The List's rows as the drag measured its drop zones: `items` without a placeholder.
-  let measured: [OpenSectionItem]
+  let measured: [OpenTabsItem]
   /// Other workrooms a lifted tab can join among their tabs.
   let joinable: Set<SidebarID>
-  let dragged: OpenSectionItem
+  let dragged: OpenTabsItem
   /// The rows it lands among, top to bottom, itself included.
-  let domain: [OpenSectionItem]
+  let domain: [OpenTabsItem]
   /// Rows out of the list while it is lifted: a lifted workroom's own tabs.
-  let hidden: Set<OpenSectionItem>
+  let hidden: Set<OpenTabsItem>
   /// Its place among `domain` when it lifted.
   let origin: Int
   /// A lifted tab that can become a standalone terminal: it lands between workrooms too.
   let leavesWorkroom: Bool
   /// The workroom rows, top to bottom.
-  let workrooms: [OpenSectionItem]
+  let workrooms: [OpenTabsItem]
   /// `domain` without the lifted row.
-  private let others: [OpenSectionItem]
+  private let others: [OpenTabsItem]
   /// Each row's index in `measured`.
-  private let measuredIndex: [OpenSectionItem: Int]
+  private let measuredIndex: [OpenTabsItem: Int]
   /// Where it would land: nil while the pointer is outside the list, where no gap shows.
   private(set) var landing: Landing? {
     didSet {
@@ -69,11 +69,11 @@ struct OpenRowReflow: Equatable {
   }
   /// The rows the List shows, top to bottom: the lifted row in the gap, or left out when there is
   /// none. Arranged again only when `landing` changes, as the pointer reads it on every move.
-  private(set) var order: [OpenSectionItem] = []
+  private(set) var order: [OpenTabsItem] = []
 
   init?(
-    items: [OpenSectionItem], dragged: OpenSectionItem, leavesWorkroom: Bool = false,
-    joinable: Set<SidebarID> = [], measured: [OpenSectionItem]? = nil
+    items: [OpenTabsItem], dragged: OpenTabsItem, leavesWorkroom: Bool = false,
+    joinable: Set<SidebarID> = [], measured: [OpenTabsItem]? = nil
   ) {
     guard items.contains(dragged) else { return nil }
     let owner = dragged.owner
@@ -110,7 +110,7 @@ struct OpenRowReflow: Equatable {
 
   /// The row whose place on screen measures the list: the lifted row's own, or, for a placeholder,
   /// its folded workroom's.
-  var anchor: OpenSectionItem { measured.contains(dragged) ? dragged : .workroom(dragged.owner) }
+  var anchor: OpenTabsItem { measured.contains(dragged) ? dragged : .workroom(dragged.owner) }
 
   /// The index among `domain` a drop now gives it, nil when it would stay where it is or leave
   /// its workroom.
@@ -140,12 +140,12 @@ struct OpenRowReflow: Equatable {
   }
 
   /// Workroom `sid`'s tab rows as they were when the row lifted, the lifted one left out.
-  private func tabRows(of sid: SidebarID) -> [OpenSectionItem] {
+  private func tabRows(of sid: SidebarID) -> [OpenTabsItem] {
     items.filter { !$0.isWorkroom && $0.owner == sid && $0 != dragged }
   }
 
   /// `order` for `landing`.
-  private func arranged() -> [OpenSectionItem] {
+  private func arranged() -> [OpenTabsItem] {
     let base = items.filter { !hidden.contains($0) }
     switch landing {
     case nil:
@@ -165,7 +165,7 @@ struct OpenRowReflow: Equatable {
       return rows
     case .between(let index):
       let blocks = Self.blocksByLead(of: base.filter { $0 != dragged })
-      var rows: [OpenSectionItem] = []
+      var rows: [OpenTabsItem] = []
       for (at, lead) in workrooms.enumerated() {
         if at == index { rows.append(dragged) }
         rows += blocks[lead] ?? [lead]
@@ -179,7 +179,7 @@ struct OpenRowReflow: Equatable {
         let blocks = Self.blocksByLead(of: base)
         return leads.flatMap { blocks[$0] ?? [$0] }
       }
-      var rows: [OpenSectionItem] = []
+      var rows: [OpenTabsItem] = []
       var placed = false
       for item in base {
         if domain.contains(item) {
@@ -195,8 +195,8 @@ struct OpenRowReflow: Equatable {
 
   /// Each workroom row's block in `rows`, top to bottom: the row and the tabs under it, and where
   /// in `rows` it starts. Rows above the first workroom row are in none.
-  private static func blocks(of rows: [OpenSectionItem]) -> [(top: Int, rows: [OpenSectionItem])] {
-    var blocks: [(top: Int, rows: [OpenSectionItem])] = []
+  private static func blocks(of rows: [OpenTabsItem]) -> [(top: Int, rows: [OpenTabsItem])] {
+    var blocks: [(top: Int, rows: [OpenTabsItem])] = []
     for (index, item) in rows.enumerated() {
       if item.isWorkroom {
         blocks.append((index, [item]))
@@ -208,8 +208,8 @@ struct OpenRowReflow: Equatable {
   }
 
   /// `blocks(of:)` by their workroom row.
-  private static func blocksByLead(of rows: [OpenSectionItem]) -> [OpenSectionItem:
-    [OpenSectionItem]]
+  private static func blocksByLead(of rows: [OpenTabsItem]) -> [OpenTabsItem:
+    [OpenTabsItem]]
   {
     Dictionary(
       blocks(of: rows).map { ($0.rows[0], $0.rows) }, uniquingKeysWith: { _, last in last })
@@ -255,7 +255,7 @@ struct OpenRowReflow: Equatable {
   /// `pointer(at:)` for a lifted tab.
   private mutating func tabPointer(at y: CGFloat, pitch: CGFloat) {
     let rows = order
-    let own = OpenSectionItem.workroom(dragged.owner)
+    let own = OpenTabsItem.workroom(dragged.owner)
     let slot = Int((y / pitch).rounded(.down))
     guard y >= 0, slot < rows.count else {
       // Above the first row or below the last.
@@ -339,7 +339,7 @@ struct OpenRowReflow: Equatable {
   }
 }
 
-extension OpenSectionItem {
+extension OpenTabsItem {
   var isWorkroom: Bool {
     if case .workroom = self { return true }
     return false

@@ -1,6 +1,6 @@
 import AppKit
 
-/// Follows a drag begun on an Open section row to its release (#819). The section is a `List`,
+/// Follows a drag begun on an Open Tabs view row to its release (#819). The section is a `List`,
 /// whose table tracks the mouse itself once a press on a row reaches it (`NSTableView.mouseDown`
 /// runs its own event loop): the row's `DragGesture` reports the drag's first move, then no more
 /// moves and no release, so the drag would never end (measured in the VM; the retired Terminals
@@ -55,7 +55,7 @@ final class OpenRowDrag {
 
   private let mouse: Mouse
   private let startsTimer: Bool
-  private var item: OpenSectionItem?
+  private var item: OpenTabsItem?
   /// The first report's place, in the gesture's space and on screen, which maps one to the other.
   private var start = CGPoint.zero
   private var startGlobal = CGPoint.zero
@@ -76,7 +76,7 @@ final class OpenRowDrag {
   }
 
   /// Whether a drag of `item` is being followed.
-  func isFollowing(_ item: OpenSectionItem) -> Bool { self.item == item }
+  func isFollowing(_ item: OpenTabsItem) -> Bool { self.item == item }
 
   /// Row `item`'s gesture reported a move to `location` (`.global`), begun at `startLocation`.
   /// The first report, the press's, arms the drag; later ones are the timer's to make, so a
@@ -85,7 +85,7 @@ final class OpenRowDrag {
   /// the release, of a drag that has already ended. A drag of another row still followed ends
   /// first. Escape during the drag calls `onCancel` instead, and the release then does nothing.
   func changed(
-    _ item: OpenSectionItem, location: CGPoint, startLocation: CGPoint,
+    _ item: OpenTabsItem, location: CGPoint, startLocation: CGPoint,
     onMove: @escaping (Report) -> Void, onEnd: @escaping (Report) -> Void,
     onCancel: @escaping () -> Void = {}
   ) {
@@ -120,7 +120,7 @@ final class OpenRowDrag {
   }
 
   /// Row `item`'s gesture ended, when it does get the release: the drag ends there, once.
-  func ended(_ item: OpenSectionItem) {
+  func ended(_ item: OpenTabsItem) {
     guard self.item == item else { return }
     finish(at: mouse.location())
   }

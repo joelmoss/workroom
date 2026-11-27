@@ -3,7 +3,7 @@ import Observation
 import WorkroomDomain
 
 /// A tab dragged into its target's panes to split them (issue #3), by its strip chip or by its row
-/// in the sidebar's Open section (#819). One per target (`TerminalPanes.contentDrop(for:)`), so the
+/// in the sidebar's Open Tabs view (#819). One per target (`TerminalPanes.contentDrop(for:)`), so the
 /// sidebar, which is not inside the target's view, reaches the same drop the strip does.
 ///
 /// `preview` is the live drop preview `PaneTreeView` draws, in content-local coordinates. It is

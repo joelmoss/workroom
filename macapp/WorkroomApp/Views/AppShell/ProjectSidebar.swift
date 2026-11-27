@@ -25,9 +25,9 @@ struct ProjectSidebar: View, Equatable {
     static var rowEvaluations = 0
     static var menuEvaluations = 0
     static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
-    /// The Open section's rows' hover, by row: kept apart from `didRenderHover`, whose ids a
+    /// The Open Tabs view's rows' hover, by row: kept apart from `didRenderHover`, whose ids a
     /// project's root and workroom rows share with their Open rows.
-    static var didRenderOpenHover: ((OpenSectionItem, Binding<Bool>) -> Void)?
+    static var didRenderOpenHover: ((OpenTabsItem, Binding<Bool>) -> Void)?
   #endif
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -51,7 +51,7 @@ struct ProjectSidebar: View, Equatable {
     top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
   static let terminalRowInsets = EdgeInsets(
     top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
-  /// The Open view's rows (a workroom tab's, a group's, a standalone terminal's): the view's top
+  /// The Open Tabs view's rows (a workroom tab's, a group's, a standalone terminal's): the view's top
   /// level, at a project row's leading inset, so each row's glyph sits under the switcher's Open
   /// glyph. A workroom tab's tabs step one level in themselves (`SidebarOpenTabRow`).
   static let sectionRowInsets = rowInsets
@@ -301,9 +301,9 @@ extension View {
     static var terminalTitles: [TerminalTab.ID: String] = [:]
     /// The fill each terminal row's background last drew, by tab.
     static var terminalFills: [TerminalTab.ID: Color] = [:]
-    /// The Open section's workroom and tab rows (#819), by row. Not in `byRow` or `total`: a
+    /// The Open Tabs view's workroom and tab rows (#819), by row. Not in `byRow` or `total`: a
     /// project's root and workroom rows share their ids with their Open rows.
-    static var openRows: [OpenSectionItem: Int] = [:]
+    static var openRows: [OpenTabsItem: Int] = [:]
 
     static var total: Int { project + root + workroom + terminal }
 
@@ -332,8 +332,8 @@ extension View {
 /// Hover belongs to a row: changing it must not invalidate the sidebar's List (#534).
 struct SidebarHoverRegion<Content: View>: View {
   var id: SidebarID? = nil
-  /// An Open section row's, for `ProjectSidebar.didRenderOpenHover`.
-  var openItem: OpenSectionItem? = nil
+  /// An Open Tabs view row's, for `ProjectSidebar.didRenderOpenHover`.
+  var openItem: OpenTabsItem? = nil
   @ViewBuilder let content: (Bool) -> Content
   @State private var hovered = false
 
@@ -596,7 +596,7 @@ struct RunningSpinner: View {
 
 extension RunningSpinner {
   /// The busy mark `indicator` shows on a row: dots while a command runs, the failure mark once one
-  /// reported an error, else nothing. Shared by the Open section's workroom and tab rows (#819).
+  /// reported an error, else nothing. Shared by the Open Tabs view's workroom and tab rows (#819).
   @ViewBuilder static func of(_ indicator: PaneIndicator) -> some View {
     switch indicator {
     case .running(let failed): RunningSpinner(failed: failed)

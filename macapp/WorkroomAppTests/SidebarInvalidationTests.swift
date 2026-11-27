@@ -71,7 +71,7 @@ final class SidebarInvalidationTests: XCTestCase {
 
   /// Real folders, so the targets open terminals and can run a command. With `section`, the
   /// Terminals section lists a standalone terminal and a named group too, each holding one terminal.
-  /// The sidebar shows `view`: the Projects view's rows unless a test asks for the Open view's.
+  /// The sidebar shows `view`: the Projects view's rows unless a test asks for the Open Tabs view's.
   private func fixture(section: Bool = false, view: SidebarView = .projects) throws -> Fixture {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
       .appendingPathComponent("sidebar-invalidation-\(UUID().uuidString)")
@@ -611,7 +611,7 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertTrue(title.hasSuffix(" \(folder)"), "the row shows the new folder, not \(title)")
   }
 
-  // MARK: Open section
+  // MARK: Open Tabs view
 
   /// A standalone terminal's agent stopping changes what its Open row shows (its spinner), and
   /// nothing of any other Open row, the group's and the roots' beside it included (#819).
@@ -648,7 +648,7 @@ final class SidebarInvalidationTests: XCTestCase {
     f.store.selectionStatusTask?.cancel()
     try await render(f)
     XCTAssertEqual(
-      Set(f.store.openSectionRows().first { $0.sid == f.rootA }?.tabs.map(\.id) ?? []),
+      Set(f.store.openTabsRows().first { $0.sid == f.rootA }?.tabs.map(\.id) ?? []),
       [f.tabA, other.id], "A's row is unfolded to its two tabs")
     // Twice, measuring the second: a view type's first update re-runs it whatever its inputs.
     try await agentStartsWorking(on: f.surfaceA)
@@ -673,7 +673,7 @@ final class SidebarInvalidationTests: XCTestCase {
   /// alone, which swaps its glyph for the fold chevron while it can fold.
   func testHoveringAGroupsOpenRowReRunsOnlyThatRow() async throws {
     // The rows first draw while the fixture hosts them, so the hook is set before it.
-    var hovers: [OpenSectionItem: Binding<Bool>] = [:]
+    var hovers: [OpenTabsItem: Binding<Bool>] = [:]
     ProjectSidebar.didRenderOpenHover = { item, binding in hovers[item] = binding }
     defer { ProjectSidebar.didRenderOpenHover = nil }
     let f = try fixture(section: true, view: .open)
@@ -701,8 +701,8 @@ final class SidebarInvalidationTests: XCTestCase {
     f.store.selectedTargetID = f.rootA
     f.store.selectionStatusTask?.cancel()
     try await render(f)
-    let items = SidebarOpenList.items(of: f.store.openSectionRows())
-    let dragged = OpenSectionItem.tab(f.tabA, in: f.rootA)
+    let items = SidebarOpenList.items(of: f.store.openTabsRows())
+    let dragged = OpenTabsItem.tab(f.tabA, in: f.rootA)
     let slot = try XCTUnwrap(items.firstIndex(of: dragged))
     XCTAssertEqual(items[slot + 1], .tab(other.id, in: f.rootA), "A's two tabs are listed")
     let pitch = SidebarOpenList.rowPitch
@@ -744,7 +744,7 @@ final class SidebarInvalidationTests: XCTestCase {
     _ = f.store.terminals.addTab(for: f.a.rootTarget)
     // Unfolded, so its tab rows are built.
     f.store.setOpenRow(f.rootA, folded: false)
-    let row = try XCTUnwrap(f.store.openSectionRows().first { $0.sid == f.rootA })
+    let row = try XCTUnwrap(f.store.openTabsRows().first { $0.sid == f.rootA })
     let tab = try XCTUnwrap(row.tabs.first)
     for ghost in [
       SidebarOpenList.ghost(
@@ -764,7 +764,7 @@ final class SidebarInvalidationTests: XCTestCase {
 
   /// Value: protects=the sidebar mounts only the view its switcher shows, so the hidden one's rows
   /// neither run nor stay on screen as drop zones (ADR 0083); fails_when=both Lists stay mounted,
-  /// the Projects tree keeps running behind the Open view, or switching back loses a row;
+  /// the Projects tree keeps running behind the Open Tabs view, or switching back loses a row;
   /// no_claim=the tabs' clicks (`SidebarViewSwitcherUITests`)
   func testTheSidebarMountsOnlyTheViewItShows() async throws {
     SidebarRowPasses.reset()
@@ -779,7 +779,7 @@ final class SidebarInvalidationTests: XCTestCase {
     SidebarRowPasses.reset()
     f.store.collapsedProjects.insert(f.a.path)
     try await render(f)
-    XCTAssertEqual(tables(f).count, 1, "the Open view's List alone")
+    XCTAssertEqual(tables(f).count, 1, "the Open Tabs view's List alone")
     XCTAssertEqual(SidebarRowPasses.tree, 0, "a change to the hidden tree runs no tree")
     XCTAssertEqual(SidebarRowPasses.total, 0, "nor any of its rows")
 

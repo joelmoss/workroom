@@ -3,7 +3,7 @@ import WorkroomDomain
 import WorkroomVCS
 
 /// What a workroom tab shows, wherever it is drawn: its title-bar chip (`WorkroomTabChip`) and its
-/// Open section row (#819) read these, so the two cannot drift.
+/// Open Tabs view row (#819) read these, so the two cannot drift.
 extension AppStore {
   func workroomTabPresentation(sid: SidebarID, target: TerminalTarget) -> WorkroomTabPresentation {
     let primaryLabel: String

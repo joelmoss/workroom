@@ -15,7 +15,7 @@ final class OpenRowDragTests: XCTestCase {
   private var escape = false
   private var moves: [OpenRowDrag.Report] = []
   private var ends: [OpenRowDrag.Report] = []
-  private let item = OpenSectionItem.workroom(.terminalGroup(UUID()))
+  private let item = OpenTabsItem.workroom(.terminalGroup(UUID()))
 
   private func follower() -> OpenRowDrag {
     OpenRowDrag(
