@@ -873,9 +873,9 @@ private struct TerminalSettingsPane: View {
   }
 
   private static let resumeProgramsHelp =
-    "When your Mac restarts or a terminal's session ends, programs that support it, such as "
-    + "Claude Code and Codex, come back where they were. Claude Code does so through a hook "
-    + "Workroom adds to its settings."
+    "When your Mac restarts or Workroom's background helper stops unexpectedly, programs that "
+    + "support it, such as Claude Code, come back where they were. Claude Code does so through "
+    + "a hook Workroom adds to its settings."
 
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
