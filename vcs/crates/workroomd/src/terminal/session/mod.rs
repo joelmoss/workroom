@@ -565,6 +565,18 @@ pub struct TakenScreen {
 /// the daemon is a connection's writer, which every service treats as a closed connection once
 /// poisoned: a panic while it was held can leave part of an envelope on the stream, and a frame
 /// written after it would be misread by the peer's decoder.
+/// What an attach carrying a resume record finds of its id (`SessionStore::found`, #826).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// A live session, which the attach joins: nothing resumes.
+    Live,
+    /// Gone with its daemon or its host: the record may make it again.
+    EndedWithItsDaemon,
+    /// Ended under this daemon's boot, on purpose or by its own exit: the record never resumes,
+    /// and the attach is answered as it would be without one.
+    EndedHere,
+}
+
 #[derive(Clone, Default)]
 pub struct SessionStore {
     sessions: Arc<Mutex<HashMap<SessionId, Session>>>,
@@ -583,6 +595,13 @@ pub struct SessionStore {
     /// then (#297). Only ever locked alone or inside the session map's lock, never the other way
     /// round.
     refused: Arc<Mutex<HashMap<SessionId, Instant>>>,
+    /// Every id whose session ended under this program: its shell exited, or a client killed it
+    /// (or killed the id while nothing held it). A record never resumes one of these (`found`,
+    /// #826): only a session that ended with its daemon or its host does. Set where the session
+    /// leaves the map, under its lock, and only ever locked alone or inside it. One id per session
+    /// ended in the program's life, and none cleared: an id made again and ended again is one
+    /// entry.
+    ended_here: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     /// Where `refused` is kept for the next program to serve this socket, when this one serves
     /// one (`keep_refusals`).
     refusals: Arc<OnceLock<PathBuf>>,

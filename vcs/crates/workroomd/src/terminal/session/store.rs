@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use super::reader::read_session;
 use super::refusals::wall_now;
 use super::{
-    Attached, CREATED_KEY, ClientInfo, Described, Foreground, Hooks, NEXT_SESSION, RunSignalError,
-    Session, SessionError, SessionId, SessionInfo, SessionParts, SessionSpec, SessionStore,
-    TakenScreen, until,
+    Attached, CREATED_KEY, ClientInfo, Described, Foreground, Found, Hooks, NEXT_SESSION,
+    RunSignalError, Session, SessionError, SessionId, SessionInfo, SessionParts, SessionSpec,
+    SessionStore, TakenScreen, until,
 };
 use crate::terminal::program_status::Store;
 use crate::terminal::pty::Pty;
@@ -324,6 +324,47 @@ impl SessionStore {
 
     pub fn contains(&self, id: SessionId) -> bool {
         lock_or_recover(&self.sessions).contains_key(&id)
+    }
+
+    /// What an attach carrying a resume record finds of `id` (#826): its live session, or whether
+    /// a gone one may be made again to run the record. A session that ended under this daemon's
+    /// boot never may: its shell exited, or a client killed it (a closed tab on another Mac, an
+    /// agent's `session.kill`), and its program was stopped on purpose. Only one that ended with
+    /// its daemon or its host may, and where this daemon keeps screens (`serve --screens`, every
+    /// remote host) only one whose last screen the store kept: such a session leaves its record
+    /// behind, and one that ends under any daemon has it removed (its kill at once, its exit on the
+    /// screens thread's next pass, which `ended_here` covers until then). A daemon keeping no
+    /// screens (this Mac's) has only `ended_here`, which a hand-off doesn't carry.
+    ///
+    /// One look under the map's lock, which is also where `Hooks::creating` removes the record of
+    /// a session taking the id: an attach racing another's create finds either the record or the
+    /// live session, never neither (the losing create attaches to the winner's).
+    pub(crate) fn found(&self, id: SessionId) -> Found {
+        let sessions = lock_or_recover(&self.sessions);
+        if sessions.contains_key(&id) {
+            return Found::Live;
+        }
+        if lock_or_recover(&self.ended_here).contains(&id) {
+            return Found::EndedHere;
+        }
+        // A build without the terminal state keeps no screens (its records are empty), so it has
+        // nothing to tell a host restart from a kill by, and goes by `ended_here` alone.
+        let kept = match self.hooks.screens.get() {
+            Some(screens) if cfg!(feature = "terminal-state") => screens.holds(id),
+            _ => true,
+        };
+        drop(sessions);
+        if kept {
+            Found::EndedWithItsDaemon
+        } else {
+            Found::EndedHere
+        }
+    }
+
+    /// Notes that `id`'s session ended under this program (`found`), with the map's lock held by
+    /// the caller as it leaves it.
+    pub(super) fn note_ended_here(&self, id: SessionId) {
+        lock_or_recover(&self.ended_here).insert(id);
     }
 
     /// Sorted by id so the list is stable between calls — an unordered list makes a UI reorder

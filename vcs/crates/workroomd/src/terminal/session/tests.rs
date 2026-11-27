@@ -2418,6 +2418,61 @@ fn attaching_an_unknown_session_is_an_error() {
     ));
 }
 
+/// Value: protects=a resume record making a session again only when it ended with its daemon or
+/// host, never one that ended under this store: killed (a tab another Mac closed, an agent's
+/// `session.kill`), killed while absent, killed with every other, or exited on its own; and, where
+/// screens are kept, only one whose record the store kept; fails_when=any of those ends is left
+/// unnoted, or a kept-screens store resumes an id with no record; why_new=#826's review: a killed
+/// session came back silently on a Mac that slept past the kill's refusal; seam=none
+#[test]
+fn only_a_session_that_ended_with_its_daemon_is_found_resumable() {
+    let store = SessionStore::new();
+    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    let e = env();
+    assert_eq!(store.found(id(60)), Found::EndedWithItsDaemon, "never held");
+    store.create(spec(id(61), &args, &e)).expect("create");
+    assert_eq!(store.found(id(61)), Found::Live);
+    store.kill(id(61));
+    assert_eq!(store.found(id(61)), Found::EndedHere, "killed");
+    assert!(store.end_if_absent(id(62)));
+    assert_eq!(store.found(id(62)), Found::EndedHere, "killed while absent");
+    let quick = [OsString::from("-c"), OsString::from("exit 0")];
+    store.create(spec(id(63), &quick, &e)).expect("create");
+    store.create(spec(id(64), &args, &e)).expect("create");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while store.contains(id(63)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!store.contains(id(63)), "the shell exited within 10 s");
+    assert_eq!(store.found(id(63)), Found::EndedHere, "exited on its own");
+    store.kill_all();
+    assert_eq!(
+        store.found(id(64)),
+        Found::EndedHere,
+        "killed with every other"
+    );
+
+    let dir = crate::commands::Scratch::in_temp("wr-found-screens");
+    let kept = SessionStore::new();
+    let screens = crate::terminal::screens::Screens::open(&dir.join("screens")).expect("open");
+    screens
+        .save(id(65), 80, 24, b"before the restart")
+        .expect("save");
+    kept.hooks().screens.keep(screens);
+    assert_eq!(
+        kept.found(id(65)),
+        Found::EndedWithItsDaemon,
+        "its record kept"
+    );
+    let unkept = if cfg!(feature = "terminal-state") {
+        Found::EndedHere
+    } else {
+        // Such a build keeps no screens, so it can't tell a host restart from a kill.
+        Found::EndedWithItsDaemon
+    };
+    assert_eq!(kept.found(id(66)), unkept, "no record kept");
+}
+
 #[test]
 fn kill_removes_the_session_and_reaps_the_child() {
     let store = SessionStore::new();

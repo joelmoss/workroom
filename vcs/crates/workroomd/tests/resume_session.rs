@@ -808,3 +808,213 @@ fn resumes_on_its_first_remote_attach(shell: &str) {
         assert!(list_sessions_line(&socket, unrecorded).is_empty());
     }
 }
+
+/// Asks the daemon at `socket` to kill `session`, as a tab closed on another Mac does
+/// (`endSession`), and waits for its answer.
+fn kill(socket: &Path, session: &str) {
+    use wr_protocol::frame::{Frame, FrameKind};
+    let id = wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(session))
+        .expect("a session id")
+        .0
+        .to_vec();
+    let reply = common::control(socket, Frame::new(FrameKind::Kill, id));
+    assert_eq!(reply.kind, FrameKind::Acknowledged, "the kill was answered");
+}
+
+/// Value: protects=a session ended under its daemon's boot never coming back from a record
+/// (#826): one killed (a tab another Mac closed while this one slept past the kill's refusal, an
+/// agent's `session.kill`) or exited on its own is answered as it was before the record existed:
+/// on a host (`--screens`), its frozen screen or "ended" and no session; on this Mac, a new shell,
+/// with the resume declined so the app forgets the record; fails_when=the daemon resumes any
+/// gone session it is sent a record for, the kill or the exit stops being noted, or a declined
+/// local resume stops saying so; why_new=#826's review; seam=a shorter kill refusal
+/// (`WORKROOMD_TEST_REFUSED_ID_WINDOW_MS`), which otherwise refuses the create on its own for a
+/// minute
+#[test]
+fn a_session_that_ended_under_its_daemon_never_resumes_from_a_record() {
+    if is_root() {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
+    if let Some(shell) = hooked_shells().first() {
+        for remote in [false, true] {
+            ended_here_never_resumes(shell, remote);
+        }
+    }
+}
+
+fn ended_here_never_resumes(shell: &str, remote: bool) {
+    let side = if remote { "host" } else { "mac" };
+    let workspace = Workspace::new(&format!("resume-ended-{side}"));
+    let socket = workspace.socket();
+    let screens = workspace.join("screens");
+    let flags: Vec<&std::ffi::OsStr> = if remote {
+        vec![std::ffi::OsStr::new("--screens"), screens.as_os_str()]
+    } else {
+        Vec::new()
+    };
+    let _daemon = common::start_daemon_with_env(
+        &socket,
+        &flags,
+        &[("WORKROOMD_TEST_REFUSED_ID_WINDOW_MS", "200")],
+    );
+    let home = home(&workspace, "ended");
+    let folder = workspace.join("the project");
+    std::fs::create_dir(&folder).unwrap();
+    let runs = workspace.join("runs");
+    let program = workspace.join("fixture-ended");
+    common::write_executable(
+        &program,
+        format!(
+            "#!/bin/sh\necho run >> '{}'\necho RESUMED-HERE\nexec sleep 60\n",
+            runs.display()
+        ),
+    );
+    let killed = "5e5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e31";
+    let exited = "5e5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e32";
+    let mut clients = Vec::new();
+    for session in [killed, exited] {
+        let (mut client, mut reader) = restore_with(&socket, session, shell, &home, None, &[]);
+        type_into(&mut client, "echo \"BEFORE-$((40+2))\"\n");
+        reader.read_until("BEFORE-42", Duration::from_secs(30));
+        clients.push(client);
+    }
+    if remote && common::has_terminal_state() {
+        let kept = |session: &str| screens.join(format!("{session}.vt")).exists();
+        assert!(
+            wait_for(Duration::from_secs(10), || kept(killed) && kept(exited)),
+            "the screens were kept, as a host restart would find them"
+        );
+    }
+    kill(&socket, killed);
+    type_into(&mut clients[1], "exit\n");
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            list_sessions_line(&socket, killed).is_empty()
+                && list_sessions_line(&socket, exited).is_empty()
+        }),
+        "both sessions ended"
+    );
+    drop(clients);
+    // Past the kill's refusal, as a Mac that slept through it.
+    std::thread::sleep(Duration::from_millis(500));
+
+    let argv = [program.to_str().unwrap()];
+    let attach: &[&str] = if remote {
+        &["--no-create", "--no-spawn"]
+    } else {
+        &["--no-create"]
+    };
+    for session in [killed, exited] {
+        let file = app_launch_file(&workspace, session, &argv, &folder);
+        let (mut client, mut reader) =
+            restore_with(&socket, session, shell, &home, Some(&file), attach);
+        if remote {
+            // Its frozen screen, if its exit's record removal hasn't come round yet, else ended.
+            let seen = reader
+                .read_until("Close it to start again", Duration::from_secs(10))
+                .to_string();
+            assert!(seen.contains("Close it to start again"), "{side}: {seen}");
+            assert!(
+                list_sessions_line(&socket, session).is_empty(),
+                "{side}: no session made"
+            );
+        } else {
+            type_into(&mut client, "echo \"NEW-$((40+2))\"\n");
+            let seen = reader
+                .read_until("NEW-42", Duration::from_secs(30))
+                .to_string();
+            assert!(seen.contains("NEW-42"), "{side}: a new shell: {seen}");
+            if common::has_terminal_state() {
+                let status = status(&socket, session);
+                assert_eq!(status["resumeDeclined"], true, "{side}: {status}");
+            }
+        }
+        assert!(!file.exists(), "{side}: the relay claimed the app's file");
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !runs.exists(),
+        "{side}: a session ended under its daemon resumed its program"
+    );
+    let launches = socket.with_extension("resume");
+    assert_eq!(
+        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        0,
+        "{side}: a declined resume writes no launch file"
+    );
+}
+
+/// Value: protects=two attaches that both found a session gone after its daemon went, and both
+/// made their launch file for its record, making one session whose program runs once (#826): the
+/// one whose create loses attaches to the winner's session and discards its own file, which
+/// holds the record's arguments; fails_when=the losing create is told it ended, runs the program
+/// a second time, or leaves its file behind; why_new=#826's review (the losing arm was untested);
+/// seam=a pause between a resume's file and its create (`WORKROOMD_TEST_RESUME_PAUSE_MS`), so both
+/// make their file before either creates
+#[test]
+fn the_losing_create_of_two_resumes_attaches_and_discards_its_file() {
+    if is_root() {
+        eprintln!("skipped: a daemon running as root accepts no resume reports (ADR 0082)");
+        return;
+    }
+    let Some(shell) = hooked_shells().first().copied() else {
+        return;
+    };
+    let workspace = Workspace::new("resume-race");
+    let socket = workspace.socket();
+    let mut daemon =
+        common::start_daemon_with_env(&socket, &[], &[("WORKROOMD_TEST_RESUME_PAUSE_MS", "2000")]);
+    let home = home(&workspace, "race");
+    let folder = workspace.join("the project");
+    std::fs::create_dir(&folder).unwrap();
+    let runs = workspace.join("runs");
+    let program = workspace.join("fixture-race");
+    common::write_executable(
+        &program,
+        format!(
+            "#!/bin/sh\necho run >> '{}'\necho \"RACED IN=$(pwd)\"\nexec sleep 60\n",
+            runs.display()
+        ),
+    );
+    let session = "6e5a1e0f-0d6c-4c9f-9c3e-2b7f1d0a8e41";
+    let argv = [program.to_str().unwrap()];
+    let first = app_launch_file_in("mac-a", &workspace, session, &argv, &folder);
+    let second = app_launch_file_in("mac-b", &workspace, session, &argv, &folder);
+    let (_a, mut seen_a) = restore(&socket, session, shell, &home, &first);
+    let (_b, mut seen_b) = restore(&socket, session, shell, &home, &second);
+    let here = format!("RACED IN={}", folder.display());
+    for (which, reader) in [("first", &mut seen_a), ("second", &mut seen_b)] {
+        let seen = reader
+            .read_until(&here, Duration::from_secs(30))
+            .to_string();
+        assert!(
+            seen.contains(&here),
+            "the {which} shows the program: {seen}"
+        );
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        std::fs::read_to_string(&runs)
+            .unwrap_or_default()
+            .lines()
+            .count(),
+        1,
+        "the program ran once, in one session"
+    );
+    let launches = socket.with_extension("resume");
+    assert_eq!(
+        std::fs::read_dir(&launches).map_or(0, |dir| dir.count()),
+        0,
+        "the winner's helper claimed its file and the loser discarded its own"
+    );
+    daemon.kill().unwrap();
+    daemon.wait().unwrap();
+    let mut log = String::new();
+    std::io::Read::read_to_string(daemon.stderr.as_mut().expect("stderr"), &mut log).unwrap();
+    assert_eq!(
+        log.matches(&format!("session {session}: resuming")).count(),
+        2,
+        "both attaches made their file, so one create lost: {log}"
+    );
+}

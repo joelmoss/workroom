@@ -168,6 +168,13 @@ impl Screens {
         Some((columns, rows, screen.to_vec()))
     }
 
+    /// Whether a session's record is here, as a file, judged without following a link: what a
+    /// resume asks of a gone session (`SessionStore::found`, #826). A cheap look, made under the
+    /// store's lock; a record that turns out unreadable is still shown as none (`render`).
+    pub fn holds(&self, id: SessionId) -> bool {
+        fs::symlink_metadata(self.path(id)).is_ok_and(|meta| meta.file_type().is_file())
+    }
+
     /// Removes a session's record, durably: a record that came back after a power cut would show
     /// a pane its user closed as one that ended with its host.
     pub fn remove(&self, id: SessionId) {
