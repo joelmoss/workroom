@@ -33,8 +33,8 @@ use std::path::Path;
 /// Interpreters whose `argv[0]` (or `/proc/<pid>/exe`) names the runtime rather than the command.
 /// Matched on the basename with any trailing version stripped, so `python3.12` and `node` both hit.
 const INTERPRETERS: &[&str] = &[
-    "python", "python2", "python3", "node", "nodejs", "deno", "bun", "ruby", "perl", "sh", "bash",
-    "zsh", "fish", "dash", "env",
+    "python", "python2", "python3", "node", "deno", "bun", "ruby", "perl", "sh", "bash", "zsh",
+    "fish", "dash", "env",
 ];
 
 pub(crate) fn is_interpreter(name: &str) -> bool {

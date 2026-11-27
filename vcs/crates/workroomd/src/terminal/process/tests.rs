@@ -412,6 +412,9 @@ fn an_exact_cmdline_read_keeps_blank_words_and_refuses_an_unended_one() {
     assert_eq!(exact_cmdline(b"x\0\xff\0"), None, "not UTF-8");
 }
 
+/// Value: protects=the exact read and executable path working on a live process, not only on
+/// fixtures (#828); fails_when=either platform's read is wired to the wrong source; why_new=new
+/// (#828 review); seam=none
 #[test]
 fn this_process_reads_back_exactly_and_names_its_own_file() {
     let pid = std::process::id() as i32;
