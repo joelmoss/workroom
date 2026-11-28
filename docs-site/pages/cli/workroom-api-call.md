@@ -1,7 +1,6 @@
 ---
 title: workroom api call
 description: "Call METHOD with JSON parameters: inline, @FILE, or - for stdin."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

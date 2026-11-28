@@ -1,7 +1,6 @@
 ---
 title: workroom help agents
 description: "How a coding agent drives Workroom's terminals with the terminal API's commands, as `workroom help agents` and the Workroom skill explain it."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

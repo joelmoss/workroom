@@ -110,7 +110,7 @@ Choose **Edit Label…** to change it, or **Remove Label** to go back to the rea
 
 ## Close a workroom
 
-Right-click a workroom's tab and choose **Close** to close all of its terminals and take it out of the tab bar. Nightly only: you can also hover over the tab and click the **✕** that shows at its end. The workroom itself and its files stay, and you can open it again. Workroom asks you to confirm.
+Right-click a workroom's tab and choose **Close** to close all of its terminals and take it out of the tab bar. You can also hover over the tab and click the **✕** that shows at its end. The workroom itself and its files stay, and you can open it again. Workroom asks you to confirm.
 
 ## Move a workroom to another window
 
@@ -132,7 +132,7 @@ Deleting removes the workroom's directory. For a workroom on your Mac, Workroom 
 
 The row leaves the sidebar at once. Workroom runs your project's `scripts/workroom_teardown` script in the background, then removes the directory. You cannot delete a workroom while its setup is still running.
 
-Nightly only. Only you can delete a workroom or a project. Run by a coding agent such as Claude Code or Codex, `workroom delete` and `workroom delete-project` delete nothing and tell the agent to ask you to delete it here or in your own terminal. `workroom delete --pretend` and `workroom delete-project --pretend`, which only show what a delete would remove, still run. This stops a confused agent, not a determined one. See [What a coding agent leaves to you](../guides/drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
+Only you can delete a workroom or a project. Run by a coding agent such as Claude Code or Codex, `workroom delete` and `workroom delete-project` delete nothing and tell the agent to ask you to delete it here or in your own terminal. `workroom delete --pretend` and `workroom delete-project --pretend`, which only show what a delete would remove, still run. This stops a confused agent, not a determined one. See [What a coding agent leaves to you](../guides/drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
 
 ### When the teardown fails
 

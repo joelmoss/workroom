@@ -1,7 +1,6 @@
 ---
 title: workroom api
 description: "List, describe and call the terminal API's methods."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

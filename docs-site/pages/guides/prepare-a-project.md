@@ -74,7 +74,7 @@ If the teardown script fails, the delete stops and nothing is removed, so you ca
 again. The app shows the script's output and offers **Delete Anyway**, which deletes the workroom without
 running it. From the CLI, run `workroom delete <name> --skip-teardown`.
 
-### When the folder isn't the workroom's {nightly}
+### When the folder isn't the workroom's
 
 Workroom runs a teardown script only in a folder Git registers as one of the project's worktrees. If the
 workroom's folder has been moved, replaced, or belongs to another project, the delete stops before any
@@ -123,7 +123,7 @@ workroom untrust        # forget this project's approvals
 
 See [`workroom trust`](../cli/workroom-trust.md).
 
-Nightly only. Only you can approve a script. Run by a coding agent such as Claude Code or Codex,
+Only you can approve a script. Run by a coding agent such as Claude Code or Codex,
 `workroom trust` approves nothing, and `workroom create` never asks about an unapproved setup
 script, even in a terminal the agent holds: each tells the agent to ask you to approve it in the app
 or in your own terminal. This stops a confused agent, not a determined one. See

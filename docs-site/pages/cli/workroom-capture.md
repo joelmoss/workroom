@@ -1,7 +1,6 @@
 ---
 title: workroom capture
 description: "Print a terminal session's screen, or its history, as text."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

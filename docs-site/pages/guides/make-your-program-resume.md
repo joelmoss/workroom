@@ -1,7 +1,6 @@
 ---
 title: Make your own program resume after a restart
 description: Have a program or script you run in a Workroom terminal come back where it was after your Mac restarts, by reporting how to start it again over the Program Resume Protocol (OSC 7577).
-nightly: true
 ---
 
 When your Mac restarts, or Workroom's background helper stops unexpectedly, a terminal whose program said how to start itself again gets that program back, in its folder, instead of an empty shell. Claude Code does this through a hook Workroom installs. Any program of yours can do it too, by sending the terminal a short report over the [Program Resume Protocol](https://www.superlogical.com/rex/docs/build/program-resume) (OSC 7577).

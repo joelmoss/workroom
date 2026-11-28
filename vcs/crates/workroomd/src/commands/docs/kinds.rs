@@ -6,7 +6,7 @@
 //! what is between them is written.
 
 use super::super::kind::{ALL, Table};
-use super::{MAC_ONLY_IS_NIGHTLY, cell};
+use super::cell;
 
 /// The page, under `docs-site/pages`.
 pub(super) const PAGE: &str = "reference/json-output.md";
@@ -34,14 +34,8 @@ fn rows(table: Table) -> String {
         if in_table != table {
             continue;
         }
-        // The docs' Nightly rule: a row new since the latest stable release says so.
-        let mark = if MAC_ONLY_IS_NIGHTLY && kind.new_with_the_rust_binary() {
-            "Nightly only. "
-        } else {
-            ""
-        };
         text += &format!(
-            "| `{}` | {} | {mark}{} |\n",
+            "| `{}` | {} | {} |\n",
             kind.code(),
             kind.exit_code(),
             cell(meaning)
@@ -153,19 +147,16 @@ mod tests {
         assert!(page.ends_with(&format!("\n{END}\n")));
     }
 
-    /// The Rust binary's own kinds are Nightly only while that binary is, as the docs' rule has a
-    /// row new since the stable release say.
+    /// A row is the kind's meaning alone: no kind's row carries a Nightly mark, since a stable
+    /// release (v3.2.0) has every kind the Rust binary added.
     #[test]
-    fn the_rust_binarys_kinds_are_marked_nightly() {
+    fn no_kinds_row_is_marked_nightly() {
         let page = spliced(&page()).unwrap();
-        let mark = if MAC_ONLY_IS_NIGHTLY {
-            "Nightly only. "
-        } else {
-            ""
-        };
         for kind in [Kind::MacOnly, Kind::ManagedInstall, Kind::NeedsTheUser] {
+            let row = format!("| `{}` | 3 | ", kind.code());
+            assert!(page.contains(&row), "{}", kind.code());
             assert!(
-                page.contains(&format!("| `{}` | 3 | {mark}", kind.code())),
+                !page.contains(&format!("{row}Nightly only.")),
                 "{}",
                 kind.code()
             );

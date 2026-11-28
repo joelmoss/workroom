@@ -9,9 +9,9 @@ description: "Delete an existing workroom."
 
 Delete an existing workroom. When run without a name, shows an interactive multi-select menu.
 
-Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
+Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
-Nightly only. Only a person may run it. Under a coding agent, such as Claude Code or Codex, it is refused with NeedsTheUser and changes nothing, on a Mac or elsewhere, before anything else is checked: the agent asks you to do it in the Workroom app or in your own terminal. With --pretend, which changes nothing, it runs. That stops a confused coding agent, not a determined one.
+Only a person may run it. Under a coding agent, such as Claude Code or Codex, it is refused with NeedsTheUser and changes nothing, on a Mac or elsewhere, before anything else is checked: the agent asks you to do it in the Workroom app or in your own terminal. With --pretend, which changes nothing, it runs. That stops a confused coding agent, not a determined one.
 
 ```text
 workroom delete [NAME]

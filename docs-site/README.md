@@ -119,9 +119,7 @@ The pages under `pages/cli/` are generated from the CLI's commands. Don't edit t
 The `workroom` binary generates them from its commands table, the one `--help` and shell completion
 read (`vcs/crates/workroomd/src/commands/docs.rs`), and its test fails when they are stale. Every page
 carries the generator's comment under the front matter. The generator writes, checks and removes only
-pages that carry it; any other page in `pages/cli/` fails the test. The terminal API's pages, and
-`workroom help agents`, are marked Nightly until a stable release has them. `make docs-check` runs the
-test.
+pages that carry it; any other page in `pages/cli/` fails the test. `make docs-check` runs the test.
 
 ## Generated Reference pages
 

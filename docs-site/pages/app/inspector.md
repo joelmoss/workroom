@@ -7,7 +7,7 @@ The inspector is the panel on the right. It reads each workroom's Git repository
 
 ## Open the inspector
 
-Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. Nightly only: **View ▸ Inspector** is a submenu, with **Show Inspector** and each pane's item in it. The icon strip at its right edge, the activity bar, switches between panes:
+Press <kbd>⌘B</kbd> (**View ▸ Inspector ▸ Show Inspector**) to show or hide it. **View ▸ Inspector** is a submenu, with **Show Inspector** and each pane's item in it. The icon strip at its right edge, the activity bar, switches between panes:
 
 | Pane | Shows | Shortcut |
 | --- | --- | --- |
@@ -17,13 +17,13 @@ Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. Nightly only:
 
 **View** also has an item for each section of the Changes pane: **Changes**, **History** (<kbd>⌥⌘Y</kbd>) and **Pull Request** (<kbd>⌥⌘P</kbd>). Each opens the inspector at that section. The **Room** menu repeats these pane and section items, without the shortcuts. The sections stack in the Changes pane, and you can collapse them or drag the dividers to resize them.
 
-The inspector follows the workroom you are in. Nightly only: in a terminal with no project it follows the terminal's folder instead. See [Terminals and the inspector](#terminals-and-the-inspector).
+The inspector follows the workroom you are in. In a terminal with no project it follows the terminal's folder instead. See [Terminals and the inspector](#terminals-and-the-inspector).
 
 ### Workroom header
 
 The inspector shows the project and workroom name above its panes, led by the icon the sidebar shows for the workroom, or a house for a project's root. The **Workroom actions** menu beside the name has **Move to New Window**, the label items and **Delete Workroom…**. See [Workrooms](workrooms.md).
 
-## Terminals and the inspector {nightly}
+## Terminals and the inspector
 
 A standalone terminal or a terminal group has no workroom, but its inspector still works. It follows the folder the focused terminal is in. Run `cd` and the inspector moves with it. The Quick Terminal is the exception: it has no inspector.
 

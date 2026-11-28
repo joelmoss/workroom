@@ -1,7 +1,6 @@
 ---
 title: workroom prompt
 description: "Give the coding agent in a terminal session a prompt."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

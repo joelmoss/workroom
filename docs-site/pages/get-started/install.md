@@ -27,7 +27,7 @@ Every terminal pane in the app has `workroom` on its `PATH`, so you can run it t
 anything. It is the app's own copy. If you have also installed `workroom` yourself, with the menu item
 below or the installer, your shell runs that one instead.
 
-Nightly only. A pane's `workroom` comes first on its `PATH`, ahead of one you installed yourself: it
+A pane's `workroom` comes first on its `PATH`, ahead of one you installed yourself: it
 is the build of the Workroom daemon that runs the pane, so its commands always match it. See
 [Environment variables](../reference/environment-variables.md#variables-your-terminals-receive).
 

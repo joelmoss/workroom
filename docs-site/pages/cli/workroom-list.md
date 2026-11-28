@@ -5,7 +5,7 @@ description: "List all workrooms for the current project."
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
+Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
 ```text
 workroom list

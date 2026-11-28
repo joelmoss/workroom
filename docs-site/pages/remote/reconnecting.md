@@ -55,7 +55,7 @@ A terminal whose program ended with the host shows its last screen with a bottom
 
 A container that isn't running, and an asleep boxd machine, start again when you open their workroom.
 
-### Programs that resume after the host restarts {nightly}
+### Programs that resume after the host restarts
 
 A terminal whose program said how to start itself again, such as Claude Code through the hook Workroom installs on the host, gets that program back when it reconnects after the host restarted, in the folder it was in on the host, instead of showing that it ended. Once the program has started, the terminal says **Resumed Claude Code**, or **Resumed** and the program's name for any other. Everything in [Programs that resume after a restart](../app/terminals-and-tabs.md#programs-that-resume-after-a-restart) applies on a host too: quitting the program leaves a shell prompt, a program that fails at once says **Couldn't resume**, and a shell that can't run it says it's a new terminal.
 

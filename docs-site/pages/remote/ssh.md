@@ -97,7 +97,7 @@ logout, see [below](#servers-that-end-your-processes-at-logout)). Workroom insta
 uses no `sudo`. Its files live under `~/.local/state/workroom`; Release and Nightly share them,
 while a Dev build uses its own state folder.
 
-## Servers that end your processes at logout {nightly}
+## Servers that end your processes at logout
 
 Some servers set systemd-logind's `KillUserProcesses=yes`, which ends everything you started when
 your ssh login closes. On such a server, Workroom's daemon would die as soon as the login that

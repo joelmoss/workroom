@@ -1,7 +1,6 @@
 ---
 title: Drive terminals from agents and scripts
 description: Let a coding agent or a script list Workroom's terminals, read them, run commands in them, wait on them and hand work to another agent, with the workroom command and its terminal API.
-nightly: true
 ---
 
 Every terminal pane in Workroom runs under a daemon, on your Mac and on each remote host. The `workroom` command in a pane talks to that daemon through its terminal API. From one pane, a coding agent or a script can list the other terminals, read their screens, run a command in one and get its exit code, wait for something to happen, type into one, give the agent in another a prompt, and open or close terminals.

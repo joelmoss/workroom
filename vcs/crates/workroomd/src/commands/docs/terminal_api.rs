@@ -455,7 +455,6 @@ pub(super) fn page() -> String {
         "Terminal API",
         "Every method of the terminal API, with its parameters, result, errors and an example, \
          every event it streams, and how its requests and replies are shaped.",
-        true,
     );
     text += &format!(
         "The terminal API is the daemon's public JSON service: what the `workroom` commands that \
@@ -1065,7 +1064,7 @@ mod tests {
     fn the_page_describes_every_method() {
         let page = page();
         assert!(page.contains(HEADER));
-        assert!(page.contains("\nnightly: true\n"));
+        assert!(!page.contains("\nnightly: true\n"));
         for method in METHODS {
             assert!(
                 page.contains(&format!("\n### `{}`\n", method.name)),

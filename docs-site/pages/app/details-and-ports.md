@@ -8,7 +8,7 @@ container, or on an SSH host, it also lists the ports forwarded to your Mac and 
 
 ## Open the Details pane
 
-Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top of the activity bar in the inspector. See [The inspector](inspector.md). With no workroom selected, the pane says **Select a workroom to see where it runs.** Nightly only: for a terminal with no project it shows **This Mac** and the folder the terminal is in, under **Folder**, and nothing more. See [Terminals and the inspector](inspector.md#terminals-and-the-inspector).
+Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top of the activity bar in the inspector. See [The inspector](inspector.md). With no workroom selected, the pane says **Select a workroom to see where it runs.** For a terminal with no project it shows **This Mac** and the folder the terminal is in, under **Folder**, and nothing more. See [Terminals and the inspector](inspector.md#terminals-and-the-inspector).
 
 ## What it shows
 
