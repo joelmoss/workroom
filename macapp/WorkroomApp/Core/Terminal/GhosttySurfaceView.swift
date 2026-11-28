@@ -679,13 +679,32 @@ final class GhosttySurfaceView: NSView {
 
   override var acceptsFirstResponder: Bool { true }
 
+  /// `.focused` is a pane choice, so a first responder change a popover makes doesn't raise it
+  /// (`isPaneChoice`). A popover hands its parent window's first responder back as it orders out
+  /// (`_setSharesParentFirstResponder`), during the click inside the popover that closed it. That is
+  /// AppKit restoring the pane the popover opened over, not a choice of it, and taking it as one put
+  /// the selection back on that pane, over the member of a workroom split Investigate had just
+  /// brought forward from the diagnosis popover.
   override func becomeFirstResponder() -> Bool {
     let ok = super.becomeFirstResponder()
     if ok {
       setSurfaceFocused(true)
-      onEvent?(.focused)
+      if Self.isPaneChoice(eventWindow: NSApp.currentEvent?.window, surfaceWindow: window) {
+        onEvent?(.focused)
+      }
     }
     return ok
+  }
+
+  /// Whether a first responder change made while `NSApp.currentEvent` is in `eventWindow` is a
+  /// choice of a pane in `surfaceWindow`. It isn't when that event is in one of the pane's
+  /// window's child windows, as a popover is: the popover handing its parent's first responder back
+  /// as the click in it closes it. Anything else stands, since `currentEvent` is only the last
+  /// event, not necessarily what moved the focus: a menu item, another window's drag or panel, or
+  /// code running long after the event.
+  static func isPaneChoice(eventWindow: NSWindow?, surfaceWindow: NSWindow?) -> Bool {
+    guard let eventWindow, let surfaceWindow, eventWindow !== surfaceWindow else { return true }
+    return eventWindow.parent !== surfaceWindow
   }
 
   override func resignFirstResponder() -> Bool {

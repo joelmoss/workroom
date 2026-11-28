@@ -197,6 +197,27 @@ final class HoldsKeyboardTests: XCTestCase {
     XCTAssertTrue(window.firstResponder === surface)
   }
 
+  // MARK: A change during an event in a child window is no pane choice
+
+  /// A popover ordering out hands its parent window's first responder back during the click in
+  /// the popover that closed it. Taken as `.focused`, it put the selection back on the pane the
+  /// popover opened over, over the member of a workroom split Investigate had just brought forward
+  /// (`TerminalCodingAgentUITests`' dimmed-split-member case).
+  func testAChangeDuringAnEventInAChildWindowIsNoPaneChoice() {
+    let main = window(holding: [], store: nil)
+    let popover = window(holding: [], store: nil)
+    let other = window(holding: [], store: nil)
+    main.addChildWindow(popover, ordered: .above)
+    defer { main.removeChildWindow(popover) }
+    func choice(_ event: NSWindow?) -> Bool {
+      GhosttySurfaceView.isPaneChoice(eventWindow: event, surfaceWindow: main)
+    }
+    XCTAssertTrue(choice(main), "a click in the pane's own window")
+    XCTAssertTrue(choice(nil), "no event")
+    XCTAssertTrue(choice(other), "another window's event: a menu, a panel, another window's drag")
+    XCTAssertFalse(choice(popover), "a click in a popover that closed and handed the keyboard back")
+  }
+
   // MARK: A refused claim is made once the live state allows it
 
   /// `caller`'s pane hosted as the pane tree hosts it, in a window registered with `store`: focused
