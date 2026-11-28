@@ -11,7 +11,7 @@ With `--json`, a command prints exactly one JSON object on stdout, then exits wi
 
 In `--json` mode a command never prompts. `workroom delete` needs `--confirm NAME`, and anything that would ask a question fails instead.
 
-Commands that run in `--json` mode: `create`, `list` (with `--warnings none|fast|full`), `delete`, `version`. `base set`, `base clear`, `trust`, `trust status` and `untrust` run in `--json` mode too. The app also uses hidden commands, such as `add-project` and `delete-project`, which [Internal APIs](internal-apis.md#hidden-commands) (Nightly only) describes.
+Commands that run in `--json` mode: `create`, `list` (with `--warnings none|fast|full`), `delete`, `version`. `base set`, `base clear`, `trust`, `trust status` and `untrust` run in `--json` mode too. The app also uses hidden commands, such as `add-project` and `delete-project`, which [Internal APIs](internal-apis.md#hidden-commands) describes.
 
 ## The result envelope
 
@@ -93,8 +93,8 @@ Branch on the exit code when you don't need the details.
 | `4` | Cancelled, or nothing to do. |
 | `5` | A setup or teardown script failed. |
 | `6` | The config file could not be read, written or parsed. |
-| `7` | Nightly only. A terminal API command could reach no daemon it can use: none answers, or the one that does is too old for the command. |
-| `8` | Nightly only. A terminal API wait timed out. |
+| `7` | A terminal API command could reach no daemon it can use: none answers, or the one that does is too old for the command. |
+| `8` | A terminal API wait timed out. |
 
 `workroom trust status` has its own answers: `0` when every script is approved or ignored by git, `1` when one is not, and `2` when it can't tell.
 
@@ -112,7 +112,7 @@ Branch on the exit code when you don't need the details.
 | `InvalidName` | 3 | The workroom name failed validation. |
 | `DirExists` | 3 | The target directory already exists. |
 | `WorkspaceExists` | 3 | The Git worktree already exists. |
-| `WorkspaceNotFound` | 3 | The Git worktree to delete doesn't exist. In the Nightly, also when the workroom's folder isn't a worktree Git registers for the project, so its teardown script won't run there. |
+| `WorkspaceNotFound` | 3 | The Git worktree to delete doesn't exist, or the workroom's folder isn't a worktree Git registers for the project, so its teardown script won't run there. |
 | `ConfirmationMismatch` | 2 | `--confirm` didn't match the workroom's name. |
 | `UnsafeDeletePath` | 2 | Workroom refused to delete an unsafe or reserved path. |
 | `Cancelled` | 4 | The user aborted, or there was nothing to do. |
@@ -133,14 +133,14 @@ Branch on the exit code when you don't need the details.
 | `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
 | `CloneFailed` | 1 | `add-project --clone` could not clone the repository. The message carries git's own error, such as `Permission denied (publickey).`; git never prompts, so missing credentials fail here. Nothing was registered. |
 | `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it, or the folder gained files while the clone ran. No clone is left behind. Hidden staging that a crashed clone on this machine left is removed first and doesn't count. When only clone staging (`.clone-*` folders and `.clone-*.lock` files) is in the way, the message names it. |
-| `MacOnly` | 3 | Nightly only. A command that reads or writes the Mac's Workroom config, such as `create` or `list`, ran somewhere other than a Mac, such as a remote host. |
-| `ManagedInstall` | 3 | Nightly only. `update` ran in an install something else keeps up to date: the copy inside the Workroom app, the daemon the app installed on a host, or the daemon's own copy that its terminals run. Update the app instead; a host gets each newer build when the app connects. |
-| `NeedsTheUser` | 3 | Nightly only. `trust`, `delete` or `delete-project` ran under a coding agent, such as Claude Code or Codex: approving a script and deleting are the user's to do. Nothing was approved or deleted. The message says to ask the user to do it in the Workroom app, or to run the command in their own terminal. |
+| `MacOnly` | 3 | A command that reads or writes the Mac's Workroom config, such as `create` or `list`, ran somewhere other than a Mac, such as a remote host. |
+| `ManagedInstall` | 3 | `update` ran in an install something else keeps up to date: the copy inside the Workroom app, the daemon the app installed on a host, or the daemon's own copy that its terminals run. Update the app instead; a host gets each newer build when the app connects. |
+| `NeedsTheUser` | 3 | `trust`, `delete` or `delete-project` ran under a coding agent, such as Claude Code or Codex: approving a script and deleting are the user's to do. Nothing was approved or deleted. The message says to ask the user to do it in the Workroom app, or to run the command in their own terminal. |
 | `InternalError` | 1 | Anything else. |
 
 <!-- End of the generated kinds. -->
 
-### The terminal API's kinds {nightly}
+### The terminal API's kinds
 
 The commands that drive terminals (`sessions`, `capture`, `wait`, `send`, `command`, `prompt`, `events`, `new`, `close`, `run-control` and `api`) return these, and `NotADirectory` for a `new --cwd` that is no folder. A kind may carry more in `error.details`, and `TargetAmbiguous` lists the terminals it matched in `error.matches`. `workroom command` exits with the command's own code when it runs, so tell its failures from the command's by `ok` in its `--json` envelope. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md), and the [terminal API reference](terminal-api.md) for the kinds each method can return.
 

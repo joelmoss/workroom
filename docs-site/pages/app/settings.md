@@ -49,17 +49,17 @@ See [Notifications](notifications.md).
 | Setting | What it does |
 | --- | --- |
 | **Appearance** | **System**, **Light** or **Dark**. System follows macOS. |
-| **Themes** | Nightly only. The family your light theme and dark theme both belong to, or **Custom** when they come from different families. Click it to go to [Themes](#themes). |
+| **Themes** | The family your light theme and dark theme both belong to, or **Custom** when they come from different families. Click it to go to [Themes](#themes). |
 | **Diff view** | **Unified** or **Side by Side** for diffs you open from now on. A narrow pane always falls back to unified. |
-| **Glass** | Nightly only. Frosts the window: the desktop shows through it, blurred, behind the theme's colours, and the terminals frost with it. A slider from 70% to 100%: lower shows more through, and 100% (the default) is off. The window is opaque in full screen and while **Reduce transparency** is on in macOS's Accessibility settings. |
-| **Show tabs in the title bar** | Nightly only. Shows a tab in the title bar for each open workroom, terminal and terminal group. On by default. Off hides them, leaving the open-workroom and **+** buttons; the sidebar's [Open Tabs view](projects.md#the-open-tabs-view) still lists everything open, and the workroom tab shortcuts still switch between them. Right-click the title bar and choose **Show Tabs** to do the same. |
+| **Glass** | Frosts the window: the desktop shows through it, blurred, behind the theme's colours, and the terminals frost with it. A slider from 70% to 100%: lower shows more through, and 100% (the default) is off. The window is opaque in full screen and while **Reduce transparency** is on in macOS's Accessibility settings. |
+| **Show tabs in the title bar** | Shows a tab in the title bar for each open workroom, terminal and terminal group. On by default. Off hides them, leaving the open-workroom and **+** buttons; the sidebar's [Open Tabs view](projects.md#the-open-tabs-view) still lists everything open, and the workroom tab shortcuts still switch between them. Right-click the title bar and choose **Show Tabs** to do the same. |
 | **Dim unfocused panes** | Shades every pane except the focused one so the active terminal stands out in a split. On by default. |
 | **Automatically resize splits evenly** | When you add or close a pane, or drag one to a new place in its split, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size. Off leaves the dividers where you put them. See [Even out a split](splits-and-windows.md#even-out-a-split). |
 | **Load author avatars** | Fetches author and reviewer avatars from Gravatar and GitHub. Off shows coloured initials only and makes no network request. |
 
 <kbd>⇧⌘L</kbd> (**View ▸ Light Mode** or **Dark Mode**) flips between light and dark without opening Settings.
 
-## Themes {nightly}
+## Themes
 
 **Appearance** decides which of your two themes is on screen: the light theme while the appearance is Light, the dark theme while it is Dark. Terminals change with it. The Themes pane has the same **Appearance** switch at the top, beside the name of your theme family, or **Custom** when your two themes come from different families.
 
@@ -97,7 +97,7 @@ A favourite whose theme file goes missing keeps its star, and is listed again wh
 | **Confirm before closing a terminal** | Asks before closing a terminal, because that ends its shell and anything running in it, with no undo. |
 | **Open file paths in** | The app that opens a file path you <kbd>⌘</kbd>-click in a terminal: **Default App**, or one of Visual Studio Code, Zed and Xcode if installed. |
 
-### Font and cursor {nightly}
+### Font and cursor
 
 The top of the Terminal pane shows a few lines of terminal in your theme, set the way your terminals will be, with your cursor. Changes reach every open terminal straight away.
 
@@ -122,7 +122,7 @@ On, new terminals set `TERM=xterm-ghostty`. Programs that look a terminal up by 
 
 The setting applies to terminals you open after changing it. Remote workrooms don't use this setting. They use `xterm-ghostty` once Workroom has installed its entry on the remote machine, and `xterm-256color` until then.
 
-### Resume programs after a restart {nightly}
+### Resume programs after a restart
 
 On by default. When your Mac restarts or Workroom's background helper stops unexpectedly, programs that support it, such as Claude Code, come back where they were. A terminal you end yourself, by closing its tab or typing `exit`, doesn't come back. See [Programs that resume after a restart](terminals-and-tabs.md#programs-that-resume-after-a-restart).
 
@@ -142,15 +142,15 @@ The **Stop Detached Terminals…** button counts the background terminals that n
 | --- | --- |
 | **Slides in from** | The screen edge the Quick Terminal slides in from: **Top** (the default), **Bottom**, **Left** or **Right**. It sits centred along that edge until you drag it somewhere else. Dragging it to another edge changes this setting too. |
 | **Slide away when it loses focus** | Hides the Quick Terminal when you click another window or switch to another app. On by default. Off leaves it up until you press its shortcut. |
-| **Starting folder** | Nightly only. The folder the Quick Terminal's new shells start in. **Choose…** picks one, and **Use “New terminals open in”**, shown only then, goes back. Without one it follows [**New terminals open in**](#terminals-with-no-project). |
+| **Starting folder** | The folder the Quick Terminal's new shells start in. **Choose…** picks one, and **Use “New terminals open in”**, shown only then, goes back. Without one it follows [**New terminals open in**](#terminals-with-no-project). |
 
 A Quick Terminal that is only hidden keeps its shells, so a new folder applies from the next new tab. Its global shortcut is <kbd>⌥§</kbd> by default. Change it in [Shortcuts](#shortcuts). See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
 
-### Terminals with no project {nightly}
+### Terminals with no project
 
 | Setting | What it does |
 | --- | --- |
-| **New terminals open in** | Nightly only. The folder a new terminal with no project starts in, a standalone terminal's, or a terminal group's or the Quick Terminal's when it has no starting folder of its own, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
+| **New terminals open in** | The folder a new terminal with no project starts in, a standalone terminal's, or a terminal group's or the Quick Terminal's when it has no starting folder of its own, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
 
 ## Shortcuts
 
@@ -176,7 +176,7 @@ See [Coding agents](coding-agents.md#diagnose-a-failed-command).
 
 See [Coding agents](coding-agents.md#usage).
 
-### Workroom skill {nightly}
+### Workroom skill
 
 | Setting | What it does |
 | --- | --- |

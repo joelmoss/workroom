@@ -1,7 +1,6 @@
 ---
 title: workroom close
 description: "Close a terminal session, and its tab or split in the app."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

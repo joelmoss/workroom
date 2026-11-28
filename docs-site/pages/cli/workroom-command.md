@@ -1,7 +1,6 @@
 ---
 title: workroom command
 description: "Run a shell command in a terminal session and exit with its code."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

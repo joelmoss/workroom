@@ -1,7 +1,6 @@
 ---
 title: Terminal API
 description: "Every method of the terminal API, with its parameters, result, errors and an example, every event it streams, and how its requests and replies are shaped."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

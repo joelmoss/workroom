@@ -74,7 +74,7 @@ To put it back, press <kbd>⌃⌘O</kbd> again (**Window ▸ Move back to main w
 
 Workroom restores a popped-out pane to the same place when you relaunch.
 
-### Its place in the main window {nightly}
+### Its place in the main window
 
 A popped-out pane keeps its place in the main window: its tab stays where it was in the tab strip, and in a split its pane stays in the split. That pane says the terminal is open in another window, and offers two buttons:
 

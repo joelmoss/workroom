@@ -1,7 +1,6 @@
 ---
 title: workroom api describe
 description: "Show METHOD's parameter and result schemas, with examples."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

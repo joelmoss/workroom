@@ -764,12 +764,11 @@ fn hidden_section(command: &Command, path: &str, app: &str, sub: bool) -> String
         text += "\n\n";
     }
     // A command only a person may run says so first: under a coding agent its refusal comes
-    // before `MacOnly` (#793). Nightly only, as the CLI pages mark it.
+    // before `MacOnly` (#793).
     let says = (!sub)
         .then(|| super::super::needs_the_user::says(command.name))
         .flatten();
     if let Some(says) = &says {
-        text += "Nightly only. ";
         text += &escaped(says);
         text += "\n\n";
     }
@@ -994,7 +993,6 @@ pub(super) fn page() -> String {
         "The daemon services, frames, subcommands and hidden commands the Workroom app uses \
          beyond the terminal API, documented for anyone who finds them useful, with no promise \
          that they stay the same.",
-        true,
     );
     text += "> [!WARNING]\n\
              > These are what the Workroom app uses to talk to its daemons and its CLI. They are \
@@ -1386,7 +1384,7 @@ mod tests {
     fn the_page_says_it_promises_nothing() {
         let page = page();
         assert!(page.contains(HEADER));
-        assert!(page.contains("\nnightly: true\n"));
+        assert!(!page.contains("\nnightly: true\n"));
         assert!(page.contains("not covered by the terminal API's compatibility promise"));
         assert!(page.contains("may change in any release"));
     }

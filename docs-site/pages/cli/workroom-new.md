@@ -1,7 +1,6 @@
 ---
 title: workroom new
 description: "Open a new terminal beside this one, as a tab or a split in the app."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

@@ -1,7 +1,6 @@
 ---
 title: workroom events
 description: "Stream terminal sessions' events as JSON lines: a snapshot, then live changes."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

@@ -1,7 +1,6 @@
 ---
 title: workroom send
 description: "Type text and keys into a terminal session."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

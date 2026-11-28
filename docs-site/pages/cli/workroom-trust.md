@@ -9,9 +9,9 @@ description: "Approve a project's setup and teardown scripts so Workroom runs th
 
 Approve the setup and teardown scripts a create or delete would run next, by their exact contents. In a terminal each one is shown first and you are asked. A changed script needs approving again. A script git ignores in the project's root needs no approval. With --pretend it fetches nothing, and warns that the start it judges may be out of date.
 
-Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
+Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
-Nightly only. Only a person may run it. Under a coding agent, such as Claude Code or Codex, it is refused with NeedsTheUser and changes nothing, on a Mac or elsewhere, before anything else is checked: the agent asks you to do it in the Workroom app or in your own terminal. That stops a confused coding agent, not a determined one.
+Only a person may run it. Under a coding agent, such as Claude Code or Codex, it is refused with NeedsTheUser and changes nothing, on a Mac or elsewhere, before anything else is checked: the agent asks you to do it in the Workroom app or in your own terminal. That stops a confused coding agent, not a determined one.
 
 ```text
 workroom trust

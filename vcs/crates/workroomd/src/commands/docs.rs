@@ -8,9 +8,6 @@
 //! its front matter, and the test removes only pages that do: a page without it is someone's own
 //! file, which the test reports and leaves alone.
 //!
-//! The terminal API's commands (those `help agents` guides) and `help agents` are marked Nightly:
-//! no stable release has them yet. Cutting one that does drops the mark ([`nightly`]).
-//!
 //! It writes three Reference pages too ([`reference`]): the terminal API's (`terminal_api`), from
 //! the methods and schemas `api.describe` serves; the internal APIs the app uses (`internal`), from
 //! the daemon's services, frames and subcommands and the hidden commands; and the error kinds in
@@ -30,12 +27,6 @@ use super::{ABOUT, COMMANDS, Command, Flag, global_flags, honours_pretend};
 /// The line under a page's front matter that makes it this generator's.
 const HEADER: &str = "<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->";
 
-/// Whether no stable release refuses the Mac-only commands off the Mac yet: the Go CLI in v3.1.0
-/// ran them on Linux, so the line saying they don't is marked Nightly only, as docs-site/README.md
-/// has prose mark what ships only in Nightly. The first stable release with the Rust binary sets it
-/// false (the curate-release skill's docs step).
-const MAC_ONLY_IS_NIGHTLY: bool = true;
-
 /// The CLI's one-line description, its page's and every link to it.
 const SHORT: &str = "Manage development workrooms";
 
@@ -43,9 +34,9 @@ fn pages_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../docs-site/pages/cli")
 }
 
-/// Whether the top-level command `name`'s pages are Nightly: no stable release has the terminal
-/// API, whose commands are the ones `help agents` guides.
-fn nightly(name: &str) -> bool {
+/// Whether the top-level command `name` is one of the terminal API's, the commands `help agents`
+/// guides: its pages link to `help agents` and the API's reference.
+fn guided(name: &str) -> bool {
     GUIDED.iter().any(|guided| guided.command == name)
 }
 
@@ -103,11 +94,10 @@ fn file_name(path: &str) -> String {
     format!("workroom-{}.md", path.replace(' ', "-"))
 }
 
-fn front_matter(title: &str, description: &str, nightly: bool) -> String {
-    let nightly = if nightly { "nightly: true\n" } else { "" };
+fn front_matter(title: &str, description: &str) -> String {
     // Quoted, as JSON quotes it, which YAML reads the same: a description can hold ": ".
     let description = serde_json::to_string(description).expect("a string is JSON");
-    format!("---\ntitle: {title}\ndescription: {description}\n{nightly}---\n\n{HEADER}\n\n")
+    format!("---\ntitle: {title}\ndescription: {description}\n---\n\n{HEADER}\n\n")
 }
 
 /// A link to another page, in a "See also" list.
@@ -117,7 +107,7 @@ fn see(title: &str, file: &str, short: &str) -> String {
 
 /// The CLI's own page: what `workroom --help` says, its flags, and a link to every command.
 fn root() -> String {
-    let mut text = front_matter("workroom", &format!("{SHORT}."), false);
+    let mut text = front_matter("workroom", &format!("{SHORT}."));
     text += "## Synopsis\n\n";
     text += &escaped(ABOUT);
     text += "\n\n```text\nworkroom [command]\n```\n\n## Options\n\n```text\n";
@@ -125,23 +115,17 @@ fn root() -> String {
     text += "```\n\n## See also\n\n";
     let mut commands: Vec<&Command> = public(COMMANDS).collect();
     commands.sort_by_key(|command| command.name);
-    // This page is stable, so the links to Nightly pages say so in their prose (docs-site/README.md).
     for command in commands {
-        let short = if nightly(command.name) {
-            format!("{} (Nightly only)", command.short)
-        } else {
-            command.short.to_string()
-        };
         text += &see(
             &format!("workroom {}", command.name),
             &file_name(command.name),
-            &short,
+            command.short,
         );
     }
     text += &see(
         "workroom help agents",
         "workroom-help-agents.md",
-        "The terminal API, for coding agents (Nightly only)",
+        "The terminal API, for coding agents",
     );
     text
 }
@@ -151,11 +135,7 @@ fn root() -> String {
 fn page(command: &Command, parents: &[&Command]) -> String {
     let top = parents.first().copied().unwrap_or(command);
     let path = format!("workroom {}", command_path(parents, command));
-    let mut text = front_matter(
-        &path,
-        &format!("{}.", command.short.trim_end_matches('.')),
-        nightly(top.name),
-    );
+    let mut text = front_matter(&path, &format!("{}.", command.short.trim_end_matches('.')));
     // A synopsis only when `--help` says more than the description does, as cobra wrote these
     // pages: a heading new to a stable command's page would need a Nightly marker.
     if let Some(long) = command.long {
@@ -164,15 +144,12 @@ fn page(command: &Command, parents: &[&Command]) -> String {
         text += "\n\n";
     }
     if command.mac_only {
-        if MAC_ONLY_IS_NIGHTLY {
-            text += "Nightly only. ";
-        }
         text += "Runs on a Mac only, and fails with `MacOnly` elsewhere.\n\n";
     }
     if parents.is_empty()
         && let Some(says) = super::needs_the_user::says(command.name)
     {
-        text += &format!("Nightly only. {}\n\n", escaped(&says));
+        text += &format!("{}\n\n", escaped(&says));
     }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     text += "## Options\n\n```text\n";
@@ -212,7 +189,7 @@ fn page(command: &Command, parents: &[&Command]) -> String {
             sub.short,
         );
     }
-    if nightly(top.name) {
+    if guided(top.name) {
         text += &see(
             "workroom help agents",
             "workroom-help-agents.md",
@@ -243,7 +220,6 @@ fn help_agents() -> String {
         "workroom help agents",
         "How a coding agent drives Workroom's terminals with the terminal API's commands, as \
          `workroom help agents` and the Workroom skill explain it.",
-        true,
     );
     page += "## Synopsis\n\nWhat `workroom help agents` prints, and the Workroom skill for Claude \
              Code and Codex holds.\n\n```text\nworkroom help agents\n```\n\n";
@@ -546,33 +522,20 @@ mod tests {
         assert!(!generated.contains(&"workroom-add-project.md".to_string()));
     }
 
-    /// The terminal API's pages and `help agents` are Nightly; the rest describe stable commands.
+    /// Every command is in a stable release (v3.2.0 has the terminal API), so no CLI page is
+    /// marked Nightly, in its front matter or in its prose.
     #[test]
-    fn only_the_terminal_apis_pages_are_nightly() {
-        let pages = pages();
-        let is_nightly = |name: &str| pages[name].contains("\nnightly: true\n");
-        for name in [
-            "workroom-sessions.md",
-            "workroom-api-call.md",
-            "workroom-help-agents.md",
-        ] {
-            assert!(is_nightly(name), "{name}");
-        }
-        for name in [
-            "workroom.md",
-            "workroom-create.md",
-            "workroom-base-set.md",
-            "workroom-completion-zsh.md",
-        ] {
-            assert!(!is_nightly(name), "{name}");
+    fn no_cli_page_is_nightly() {
+        for (name, page) in pages() {
+            assert!(!page.contains("\nnightly: true\n"), "{name}");
+            assert!(!page.contains("Nightly only"), "{name}");
         }
     }
 
-    /// A Mac-only command's page says so, and while no stable release refuses it on Linux (the Go
-    /// CLI ran it there), says that the refusal is Nightly only, as docs-site/README.md has prose
-    /// mark it. Every page of a Mac-only command or subcommand carries the line; no other does.
+    /// A Mac-only command's page says it is refused elsewhere. Every page of a Mac-only command or
+    /// subcommand carries the line; no other does.
     #[test]
-    fn a_mac_only_page_says_its_refusal_elsewhere_is_nightly() {
+    fn a_mac_only_page_says_its_refusal_elsewhere() {
         fn walk(command: &Command, path: &str, mac_only: &mut Vec<String>, rest: &mut Vec<String>) {
             if command.hidden {
                 return;
@@ -592,14 +555,9 @@ mod tests {
         }
         assert!(mac_only.contains(&"workroom-create.md".to_string()));
         let pages = pages();
-        let mark = if MAC_ONLY_IS_NIGHTLY {
-            "Nightly only. "
-        } else {
-            ""
-        };
-        let line = format!("\n{mark}Runs on a Mac only, and fails with `MacOnly` elsewhere.\n");
+        let line = "\nRuns on a Mac only, and fails with `MacOnly` elsewhere.\n";
         for name in &mac_only {
-            assert!(pages[name].contains(&line), "{name}:\n{}", pages[name]);
+            assert!(pages[name].contains(line), "{name}:\n{}", pages[name]);
         }
         for name in &rest {
             assert!(!pages[name].contains("Mac only"), "{name}");
@@ -607,11 +565,11 @@ mod tests {
     }
 
     /// The pages of the commands only a person may run (#793) say a coding agent is refused them,
-    /// Nightly only; a subcommand's page (`trust status`) and every other command's don't.
+    /// a subcommand's page (`trust status`) and every other command's don't.
     #[test]
     fn a_guarded_commands_page_says_a_coding_agent_is_refused_it() {
         let pages = pages();
-        let line = "\nNightly only. Only a person may run it. Under a coding agent";
+        let line = "\nOnly a person may run it. Under a coding agent";
         for name in ["workroom-trust.md", "workroom-delete.md"] {
             assert!(pages[name].contains(line), "{name}:\n{}", pages[name]);
         }

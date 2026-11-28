@@ -9,13 +9,13 @@ A project is a Git repository you have registered with Workroom. This page shows
 
 The sidebar on the left lists every project. Each project expands into its root, then its workrooms. The root is the project's own checkout. Click the project name to expand or collapse it. Workroom remembers which projects are open, and which one you had selected, when you relaunch.
 
-Each project row has a **+** button that creates a workroom. See [Workrooms](workrooms.md#create-a-workroom). Hover the row to reveal a gear button, which opens the project's [settings](#project-settings). Nightly only: the **+** shows only while you hover the row too, beside the gear, and so does the arrow after the project's name. Click anywhere else on the row to fold its workrooms away or show them again.
+Hover a project row to reveal its **+** button, which creates a workroom (see [Workrooms](workrooms.md#create-a-workroom)), and beside it a gear button, which opens the project's [settings](#project-settings). The arrow after the project's name shows only while you hover the row too. Click anywhere else on the row to fold its workrooms away or show them again.
 
 Right-click a project row for **New Workroom**, **Project Settings…** and **Delete Project…**.
 
-To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>). Nightly only: it's **View ▸ Sidebar ▸ Show Sidebar**.
+To hide or show the sidebar, use **View ▸ Sidebar ▸ Show Sidebar** (<kbd>⌃⌘S</kbd>).
 
-### Open Tabs and Projects {nightly}
+### Open Tabs and Projects
 
 The sidebar shows one of two views at a time. The bar at its top switches between them: the terminal icon is the **Open Tabs** view, and the four-squares icon is **Projects**, the project tree. Hover either for its name. The view you're on is underlined. A new window starts on **Open Tabs**, and each window remembers its view when you relaunch. **View ▸ Sidebar ▸ Open Tabs** (<kbd>⌃⌘T</kbd>) and **View ▸ Sidebar ▸ Projects** (<kbd>⌃⌘P</kbd>) switch too, and show the sidebar if it's hidden. The one showing is checked.
 
@@ -27,7 +27,7 @@ While you drag a terminal or a tab, rest it on the other view's tab for a moment
 
 The sidebar sits flat against the window's edge, with a thin line between it and the workroom. When you hide it and hover the sidebar button to reveal it, it floats over the workroom as a card, with the same bar and views.
 
-### The Open Tabs view {nightly}
+### The Open Tabs view
 
 The **Open Tabs** view lists this window's workroom tabs, in the title bar's order, so you can see everything open in the window at once when the tabs there have run out of room, or when you have hidden them: right-click the title bar and choose **Show Tabs**. Each row unfolds to that workroom's tabs, the same ones the tab strip shows: terminals, diffs, files and changesets. Another window's tabs never appear.
 
@@ -50,7 +50,7 @@ The **Open Tabs** view lists this window's workroom tabs, in the title bar's ord
 
 The tabs in the title bar are unchanged.
 
-### The Projects view {nightly}
+### The Projects view
 
 The **Projects** view is the project tree described above. With no projects yet, while the **Open Tabs** view lists standalone terminals, it says **No projects yet** and offers **Add Project…**.
 
@@ -58,7 +58,7 @@ The button beside its **+** is **Collapse All** while any project or any workroo
 
 ## Add a project
 
-1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. Nightly only: the **+** is beside **Projects** at the top of the projects instead. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.
+1. Click the **+** beside **Projects** at the top of the projects in the sidebar, or choose **File ▸ New Project…**. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.
 2. Choose one of the three sources:
    - **From existing path…** adds a Git repository that is already on disk.
    - **Create new directory…** makes a new folder and runs `git init` in it.
@@ -127,7 +127,7 @@ Deleting a project removes it from Workroom. What happens to the files depends o
 
 With either option that removes local workrooms, each workroom's teardown script runs before its directory goes, and a failing teardown stops the delete. **Remove from Workroom only** runs no local teardown scripts. Remote workrooms are deleted, with their teardowns, whichever option you choose. After a failure, **Delete Without Teardowns** skips the scripts for every remaining workroom. See [Delete a workroom](workrooms.md#delete-a-workroom).
 
-Nightly only. A coding agent can't delete a project for you: run by one, `workroom delete-project` deletes nothing and tells it to ask you. See [What a coding agent leaves to you](../guides/drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
+A coding agent can't delete a project for you: run by one, `workroom delete-project` deletes nothing and tells it to ask you. See [What a coding agent leaves to you](../guides/drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
 
 Deleting a project also closes its terminals. If a coding agent started with **Investigate** is still running there, the sheet warns you that deleting stops it. Workroom will not delete a project while a workroom in it is still being created.
 

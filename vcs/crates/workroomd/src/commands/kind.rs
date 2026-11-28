@@ -227,16 +227,6 @@ impl Kind {
         }
     }
 
-    /// Whether the kind is new with the Rust binary (ADR 0078), which no stable release has yet,
-    /// so its row in the docs is marked Nightly while `commands::docs` says that binary is.
-    #[cfg(test)]
-    pub(crate) fn new_with_the_rust_binary(self) -> bool {
-        matches!(
-            self,
-            Kind::MacOnly | Kind::ManagedInstall | Kind::NeedsTheUser
-        )
-    }
-
     /// What the docs say the kind means, and which of their tables it is in: the error kinds of
     /// `docs-site/pages/reference/json-output.md`, which `make docs-cli` writes from this
     /// (`commands::docs::kinds`). A match with no wildcard, so no kind can be added without them.
@@ -255,9 +245,8 @@ impl Kind {
             Kind::WorkspaceExists => (Workroom, "The Git worktree already exists."),
             Kind::WorkspaceNotFound => (
                 Workroom,
-                "The Git worktree to delete doesn't exist. In the Nightly, also when the \
-                 workroom's folder isn't a worktree Git registers for the project, so its \
-                 teardown script won't run there.",
+                "The Git worktree to delete doesn't exist, or the workroom's folder isn't a \
+                 worktree Git registers for the project, so its teardown script won't run there.",
             ),
             Kind::ConfirmationMismatch => {
                 (Workroom, "`--confirm` didn't match the workroom's name.")

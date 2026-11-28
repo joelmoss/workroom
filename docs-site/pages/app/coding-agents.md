@@ -11,13 +11,13 @@ Start `claude` or `codex` in a workroom's terminal. Give each agent its own work
 
 Workroom shows when an agent needs you. See [Notifications](notifications.md#when-a-terminal-needs-you).
 
-## Let agents drive other terminals {nightly}
+## Let agents drive other terminals
 
 An agent in one terminal can work with the others through the `workroom` command: list them, read their screens, run a command in one and get its exit code, wait for a dev server to say it is ready, or give the agent in another terminal a prompt and wait for its turn to end. `workroom help agents` explains every command to an agent.
 
 To have Claude Code and Codex know this by themselves, turn on **Settings ▸ AI Agents ▸ Install the Workroom skill for Claude Code and Codex**. Workroom adds its skill to your Claude Code and Codex skill folders on your Mac, and on each host after it next connects, and removes it when you turn the setting off. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md).
 
-## Carry on a Claude Code conversation after a restart {nightly}
+## Carry on a Claude Code conversation after a restart
 
 When your Mac restarts, or a terminal's session ends with its daemon or host, a terminal that was running Claude Code starts it again in the same conversation. This works while **Resume programs after a restart** is on in [Settings ▸ Terminal](settings.md#resume-programs-after-a-restart), which it is by default.
 
@@ -37,7 +37,7 @@ The diagnosis has these buttons:
 
 - **Diagnose** asks a coding agent for the cause and a suggested fix.
 - **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it. A suggestion that runs over more than one line is dropped, because a line break could run it before you review it, so that diagnosis has no **Insert fix**. Use **Investigate** instead.
-- **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived. Nightly only: its tab is named after the agent and the command that failed, such as **claude npm test**; hover it for the whole prompt.
+- **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived. Its tab is named after the agent and the command that failed, such as **claude npm test**; hover it for the whole prompt.
 - The **x** button dismisses it.
 
 The diagnosis always uses the Claude Code command-line tool installed on your Mac, with its tools turned off, so nothing in the failed command's output can make it run anything. Codex has no such mode, so it never runs the diagnosis. If Claude Code is not found, the footer says so, and when Codex is installed and is your pick for **Investigate with**, it still offers **Investigate**. If neither is installed, it tells you to install one. If Claude Code is not signed in, the footer tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.

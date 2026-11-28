@@ -1,7 +1,6 @@
 ---
 title: workroom wait
 description: "Wait for something to happen in a terminal session."
-nightly: true
 ---
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->

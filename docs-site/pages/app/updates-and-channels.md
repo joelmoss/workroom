@@ -62,4 +62,4 @@ workroom update --channel pre  # switch to the pre channel and install its lates
 
 `workroom update --channel nightly` is refused. Install `workroom-nightly` as above instead.
 
-A `workroom` that is bundled inside the macOS app is managed by the app. Use **Check for Updates…** there. Nightly only: so is the `workroom` a Workroom terminal runs from `WORKROOM_BIN_DIR`, and `workroom update` typed there says so, with the kind `ManagedInstall`. A build made from source cannot update itself. To put the command on your `PATH` from the app, choose **Workroom ▸ Install ‘workroom’ Command in PATH…**.
+A `workroom` that is bundled inside the macOS app is managed by the app. Use **Check for Updates…** there. So is the `workroom` a Workroom terminal runs from `WORKROOM_BIN_DIR`, and `workroom update` typed there says so, with the kind `ManagedInstall`. A build made from source cannot update itself. To put the command on your `PATH` from the app, choose **Workroom ▸ Install ‘workroom’ Command in PATH…**.

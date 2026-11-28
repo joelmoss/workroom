@@ -79,7 +79,7 @@ The two **Global** shortcuts work from any app; every other shortcut works while
 | Next Terminal Tab | <kbd>⌥⌘→</kbd> |
 | Previous Terminal Tab | <kbd>⌥⌘←</kbd> |
 
-Nightly only: **New Standalone Terminal** opens a terminal that belongs to no project, from anywhere. <kbd>⌘T</kbd> does the same when a project's row or nothing is selected, or when a standalone terminal is. See [Terminals with no project](../app/terminals-and-tabs.md#terminals-with-no-project).
+**New Standalone Terminal** opens a terminal that belongs to no project, from anywhere. <kbd>⌘T</kbd> does the same when a project's row or nothing is selected, or when a standalone terminal is. See [Terminals with no project](../app/terminals-and-tabs.md#terminals-with-no-project).
 
 <!-- stable -->
 ## Panes & Splits
@@ -95,7 +95,7 @@ Nightly only: **New Standalone Terminal** opens a terminal that belongs to no pr
 | Last-Used Pane | <kbd>⌃⇥</kbd> |
 | Move Pane into New Window / Back | <kbd>⌃⌘O</kbd> |
 
-Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal turn it and the new terminal into an unnamed terminal group. See [Terminal groups](../app/terminals-and-tabs.md#terminal-groups).
+<kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal turn it and the new terminal into an unnamed terminal group. See [Terminal groups](../app/terminals-and-tabs.md#terminal-groups).
 
 <!-- stable -->
 ## In the Terminal
@@ -131,17 +131,17 @@ Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal tu
 
 | Action | Keys |
 | --- | --- |
-| Show Sidebar (Nightly only) | <kbd>⌃⌘S</kbd> |
-| Sidebar: Open Tabs (Nightly only) | <kbd>⌃⌘T</kbd> |
-| Sidebar: Projects (Nightly only) | <kbd>⌃⌘P</kbd> |
-| Show Inspector (Nightly only) | <kbd>⌘B</kbd> |
+| Show Sidebar | <kbd>⌃⌘S</kbd> |
+| Sidebar: Open Tabs | <kbd>⌃⌘T</kbd> |
+| Sidebar: Projects | <kbd>⌃⌘P</kbd> |
+| Show Inspector | <kbd>⌘B</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
 | Changes | <kbd>⌥⌘C</kbd> |
 | History | <kbd>⌥⌘Y</kbd> |
 | Pull Request | <kbd>⌥⌘P</kbd> |
 | Files | <kbd>⌥⌘F</kbd> |
 
-Nightly only: **Sidebar: Open Tabs** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. In the stable release **Show Sidebar** is **Projects** and **Show Inspector** is **Inspector**. See [Open Tabs and Projects](../app/projects.md#open-tabs-and-projects).
+**Sidebar: Open Tabs** and **Sidebar: Projects** show the sidebar's two views, from **View ▸ Sidebar**. See [Open Tabs and Projects](../app/projects.md#open-tabs-and-projects).
 
 <!-- stable -->
 ## Navigation & Attention
@@ -169,6 +169,6 @@ Nightly only: **Sidebar: Open Tabs** and **Sidebar: Projects** show the sidebar'
 | Theme… | <kbd>⇧⌘K</kbd> |
 | Toggle Light/Dark Mode | <kbd>⇧⌘L</kbd> |
 
-Nightly only: in a theme list, the <kbd>⇧⌘K</kbd> picker or Settings ▸ Themes, <kbd>⌘D</kbd> stars or unstars the theme you're on and <kbd>⌘F</kbd> lists only your favourites. Everywhere else they keep their usual commands, Split Right and Find. See [Favourite themes](../app/settings.md#favourite-themes).
+In a theme list, the <kbd>⇧⌘K</kbd> picker or Settings ▸ Themes, <kbd>⌘D</kbd> stars or unstars the theme you're on and <kbd>⌘F</kbd> lists only your favourites. Everywhere else they keep their usual commands, Split Right and Find. See [Favourite themes](../app/settings.md#favourite-themes).
 
 The last-used switchers switch to where you were last, not to the next one in position. See [Details and ports](../app/details-and-ports.md) for the inspector's Details.
